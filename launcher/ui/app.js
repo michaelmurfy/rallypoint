@@ -326,8 +326,8 @@ function modCard(m, compact) {
     actions.append(pill("Waiting for download", "warn"));
   } else {
     const base = m.addon_for ? store.mods.catalog.find((b) => b.id === m.addon_for) : null;
-    if (base && !base.installed) actions.append(pill(`Needs ${base.name}`, "warn"));
-    else actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
+    actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
+    if (base && !base.installed) actions.append(pill(`Also needs ${base.name}`, "warn"));
   }
   return h("div", { class: "card" },
     h("div", { class: "mod" },
