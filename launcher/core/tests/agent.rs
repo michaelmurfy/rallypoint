@@ -291,13 +291,14 @@ fn checksums_go_to_the_relay_and_a_disagreement_comes_back_to_both_engines() {
     let (ea, eb) = (engine_socket(&a, 8088), engine_socket(&b, 8088));
     std::thread::sleep(Duration::from_millis(200));
     // each engine reports its own checksum for frame 100 to its local agent; they differ
-    ea.send_to(&Packet::Crc { frame: 100, crc: 0x12C26F6A }.encode(), a.local).unwrap();
-    eb.send_to(&Packet::Crc { frame: 100, crc: 0xE67396AE }.encode(), b.local).unwrap();
+    ea.send_to(&Packet::Crc { frame: 100, crc: 0x12C26F6A, host: true }.encode(), a.local).unwrap();
+    eb.send_to(&Packet::Crc { frame: 100, crc: 0xE67396AE, host: false }.encode(), b.local).unwrap();
     let mut buf = [0u8; 256];
     for (name, sock) in [("a", &ea), ("b", &eb)] {
         let n = sock.recv(&mut buf).unwrap_or_else(|e| panic!("{name} got no verdict: {e}"));
         let Some(Packet::Desync(v)) = Packet::decode(&buf[..n]) else { panic!("{name}: {:?}", &buf[..n]) };
-        assert_eq!((v.frame, v.certain, v.players.len()), (100, false, 2));
+        assert_eq!((v.frame, v.certain, v.players.len()), (100, true, 2));
+        assert!(v.host.is_some());
     }
     // and the launcher can show it
     let t = Instant::now();

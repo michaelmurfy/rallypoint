@@ -641,7 +641,7 @@ function connectionCard() {
       row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
       row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
       d.desync ? row("Sync check", d.desync.certain
-        ? `Out of sync at frame ${d.desync.frame}: ${d.desync.players.filter((p) => p.odd).map((p) => p.vip).join(", ")} differ from the others`
+        ? `Out of sync at frame ${d.desync.frame}: ${d.desync.players.filter((p) => p.odd).map((p) => p.vip).join(", ")} differ from ${d.desync.host ? "the host" : "the others"}`
         : `Out of sync at frame ${d.desync.frame}: the players disagree and the server cannot tell who is right`, "bad") : row("Sync check", "all players agree so far", "ok"),
       d.server_identity ? row("Encryption", `on, server identity ${d.server_identity}${d.identity_saved ? " (checked against the saved one)" : " (saved now)"}`, "ok") : null,
       s ? [

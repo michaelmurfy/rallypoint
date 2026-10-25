@@ -1,5 +1,5 @@
 diff --git a/Core/GameEngine/Include/GameNetwork/RelayWire.h b/Core/GameEngine/Include/GameNetwork/RelayWire.h
-index 625da85..11b77ff 100644
+index 625da85..e0d58b4 100644
 --- a/Core/GameEngine/Include/GameNetwork/RelayWire.h
 +++ b/Core/GameEngine/Include/GameNetwork/RelayWire.h
 @@ -11,7 +11,7 @@
@@ -11,28 +11,32 @@ index 625da85..11b77ff 100644
  static const size_t HEADER = 9; // tag + vip(4) + src port(2) + dst port(2)
  
  struct Config
-@@ -89,4 +89,53 @@ inline bool decode(const uint8_t *in, size_t n, uint32_t &srcIp, uint16_t &srcPo
+@@ -89,4 +89,58 @@ inline bool decode(const uint8_t *in, size_t n, uint32_t &srcIp, uint16_t &srcPo
  	return true;
  }
  
-+// Engine -> agent: this machine's simulation checksum for a game frame. The relay compares every player's checksum.
-+inline size_t encodeCrc(uint8_t *out, uint32_t frame, uint32_t crc)
++// Engine -> agent: this machine's simulation checksum for a game frame; `host` is true on the game host, whose simulation
++// is the master the others are measured against. The relay compares every player's checksum.
++inline size_t encodeCrc(uint8_t *out, uint32_t frame, uint32_t crc, bool host)
 +{
 +	out[0] = TagCrc;
 +	put32(out + 1, frame);
 +	put32(out + 5, crc);
-+	return 9;
++	out[9] = host ? 1 : 0;
++	return 10;
 +}
 +
 +inline uint32_t get32(const uint8_t *in) { return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) | ((uint32_t)in[2] << 8) | in[3]; }
 +
-+// Agent -> engine: the relay found that the players' checksums for `frame` differ. If `certain`, a strict majority
-+// agreed and the entries marked `odd` are the players that diverged; otherwise nobody can say who is right.
++// Agent -> engine: the relay found that the players' checksums for `frame` differ. If `certain`, the entries marked `odd`
++// are the players that diverged from the master (the host if `host` is set, otherwise the majority); otherwise nobody can
++// say who is right.
 +static const int MaxSyncPlayers = 8;
 +struct Desync
 +{
 +	uint32_t frame;
 +	bool certain;
++	uint32_t host; // host order; 0 when the verdict did not go by the host
 +	int count;
 +	uint32_t vip[MaxSyncPlayers]; // host order, same as the game's slot addresses
 +	uint32_t crc[MaxSyncPlayers];
@@ -41,18 +45,19 @@ index 625da85..11b77ff 100644
 +
 +inline bool decodeDesync(const uint8_t *in, size_t n, Desync &d)
 +{
-+	// tag, frame (4), certain (1), count (1), then count * (virtual address 4, checksum 4, odd 1)
-+	if (n < 7 || in[0] != TagDesync)
++	// tag, frame (4), certain (1), host (4), count (1), then count * (virtual address 4, checksum 4, odd 1)
++	if (n < 11 || in[0] != TagDesync)
 +		return false;
-+	const int count = in[6];
-+	if (count > MaxSyncPlayers || n != (size_t)(7 + count * 9))
++	const int count = in[10];
++	if (count > MaxSyncPlayers || n != (size_t)(11 + count * 9))
 +		return false;
 +	d.frame = get32(in + 1);
 +	d.certain = in[5] != 0;
++	d.host = get32(in + 6);
 +	d.count = count;
 +	for (int i = 0; i < count; ++i)
 +	{
-+		const uint8_t *e = in + 7 + i * 9;
++		const uint8_t *e = in + 11 + i * 9;
 +		d.vip[i] = get32(e);
 +		d.crc[i] = get32(e + 4);
 +		d.odd[i] = e[8] != 0;
@@ -63,32 +68,33 @@ index 625da85..11b77ff 100644
  }
 +
 +// Implemented in udp.cpp (the engine target): send our checksum to the agent; take the relay's latest verdict, if any.
-+void RelayWire_ReportCrc(uint32_t frame, uint32_t crc);
++void RelayWire_ReportCrc(uint32_t frame, uint32_t crc, bool host);
 +bool RelayWire_TakeDesync(RelayWire::Desync &out);
 diff --git a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
-index 2369f35..cee1e1e 100644
+index 2369f35..0fab01d 100644
 --- a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
 +++ b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
-@@ -52,6 +52,7 @@
+@@ -52,6 +52,8 @@
  
  #include "GameLogic/AIPathfind.h"
  #include "GameLogic/GameLogic.h"
 +#include "GameNetwork/RelayWire.h"
++#include "GameNetwork/GameInfo.h"
  #include "GameLogic/Locomotor.h"
  #include "GameLogic/Object.h"
  #include "GameLogic/ObjectCreationList.h"
-@@ -2142,6 +2143,9 @@ void GameLogic::logicMessageDispatcher( GameMessage *msg, void *userData )
+@@ -2142,6 +2144,9 @@ void GameLogic::logicMessageDispatcher( GameMessage *msg, void *userData )
  				}
  
  				UnsignedInt newCRC = msg->getArgument(0)->integer;
 +				// Playing through a Rallypoint relay: give it our checksum so it can compare it with the other players'.
 +				if (msgPlayer->isLocalPlayer())
-+					RelayWire_ReportCrc(getFrame(), newCRC);
++					RelayWire_ReportCrc(getFrame(), newCRC, TheGameInfo && TheGameInfo->getLocalSlotNum() == 0); // slot 0 is the host
  				//DEBUG_LOG(("Received CRC of %8.8X from %ls on frame %d", newCRC,
  					//msgPlayer->getPlayerDisplayName().str(), m_frame));
  				m_cachedCRCs[msgPlayer->getPlayerIndex()] = newCRC;
 diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
-index 8368fec..dd21879 100644
+index 8368fec..b29c3d0 100644
 --- a/Core/GameEngine/Source/GameNetwork/udp.cpp
 +++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
 @@ -302,6 +302,40 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
@@ -109,7 +115,7 @@ index 8368fec..dd21879 100644
 +}
 +
 +// Tell the agent our simulation checksum for a frame; it passes it to the relay, which compares all players'.
-+void RelayWire_ReportCrc(uint32_t frame, uint32_t crc)
++void RelayWire_ReportCrc(uint32_t frame, uint32_t crc, bool host)
 +{
 +  const RelayWire::Config &relay = RelayWire::config();
 +  if (!relay.on)
@@ -120,7 +126,7 @@ index 8368fec..dd21879 100644
 +  if (fd < 0)
 +    return;
 +  uint8_t pkt[16];
-+  const size_t n = RelayWire::encodeCrc(pkt, frame, crc);
++  const size_t n = RelayWire::encodeCrc(pkt, frame, crc, host);
 +  sockaddr_in to;
 +  memset(&to, 0, sizeof(to));
 +  to.sin_family = AF_INET;
@@ -150,7 +156,7 @@ index 8368fec..dd21879 100644
      if (!RelayWire::decode(buf, (size_t)n, srcIp, srcPort, dstPort, payload, payloadLen) || payloadLen > len)
        continue; // not for us, or too big for the caller's buffer
 diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
-index 2de32a7..4b6a248 100644
+index 2de32a7..8da9be2 100644
 --- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
 @@ -69,6 +69,7 @@
@@ -161,7 +167,7 @@ index 2de32a7..4b6a248 100644
  #include "GameClient/LoadScreen.h"
  #include "GameClient/MapUtil.h"
  #include "GameClient/Mouse.h"
-@@ -3678,6 +3679,41 @@ extern __int64 Total_Load_3D_Assets;
+@@ -3678,6 +3679,53 @@ extern __int64 Total_Load_3D_Assets;
  // ------------------------------------------------------------------------------------------------
  /** Update all objects in the world by invoking their update() methods. */
  // ------------------------------------------------------------------------------------------------
@@ -192,8 +198,20 @@ index 2de32a7..4b6a248 100644
 +			who.concat(L", ");
 +		who.concat(name);
 +	}
++	// The host's game is the master: everyone else is measured against it.
++	const uint32_t me = RelayWire::config().vip;
++	Bool iAmOdd = FALSE;
++	for (int i = 0; i < d.count; ++i)
++		if (d.vip[i] == me && d.odd[i])
++			iAmOdd = TRUE;
 +	UnicodeString msg;
-+	if (d.certain)
++	if (d.certain && d.host && d.host == me)
++		msg.format(L"Rallypoint: out of sync with you (the host) at frame %u: %ls.", d.frame, who.str());
++	else if (d.certain && d.host && iAmOdd)
++		msg.format(L"Rallypoint: your game went out of sync with the host at frame %u.", d.frame);
++	else if (d.certain && d.host)
++		msg.format(L"Rallypoint: out of sync with the host at frame %u: %ls.", d.frame, who.str());
++	else if (d.certain)
 +		msg.format(L"Rallypoint: the game went out of sync at frame %u. Out of step with the others: %ls.", d.frame, who.str());
 +	else
 +		msg.format(L"Rallypoint: the game went out of sync at frame %u. The server cannot tell who is right (%ls).", d.frame, who.str());
@@ -203,7 +221,7 @@ index 2de32a7..4b6a248 100644
  void GameLogic::update()
  {
  	USE_PERF_TIMER(GameLogic_update)
-@@ -3728,6 +3764,12 @@ void GameLogic::update()
+@@ -3728,6 +3776,12 @@ void GameLogic::update()
  	UnsignedInt now = getFrame();
  	TheGameClient->setFrame(now);
  

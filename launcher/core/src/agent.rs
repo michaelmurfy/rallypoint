@@ -65,6 +65,8 @@ pub struct Diagnostics {
 pub struct DesyncView {
     pub frame: u32,
     pub certain: bool,
+    /// The host the others were measured against (virtual address), if the verdict went by the host.
+    pub host: Option<String>,
     pub players: Vec<DesyncPlayer>,
 }
 
@@ -303,6 +305,7 @@ impl Agent {
                                             health.lock().unwrap().desync = Some(DesyncView {
                                                 frame: v.frame,
                                                 certain: v.certain,
+                                                host: v.host.map(|h| format!("{}.{}.{}.{}", h[0], h[1], h[2], h[3])),
                                                 players: v.players.iter().map(|e| DesyncPlayer { vip: format!("{}.{}.{}.{}", e.vip[0], e.vip[1], e.vip[2], e.vip[3]), crc: format!("{:08X}", e.crc), odd: e.odd }).collect(),
                                             });
                                         }
