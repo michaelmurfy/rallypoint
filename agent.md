@@ -29,6 +29,7 @@ Rallypoint: cross-platform (macOS, Windows, Linux) launcher and multiplayer stac
 - Not encrypted: an on-path attacker can read/replay traffic and the verifier. Server->client packets are unsigned (off-path spoofing needs the client's ephemeral port). The agent's loopback socket trusts any local process (same-user threat model).
 
 ## Rules
+- **Pull requests only.** Never push to `main`. Branch (`feat/…`, `fix/…`, `docs/…`), push the branch, open a PR with `gh pr create`, let CI run, and merge after review. Release tags are the one thing pushed directly, and only from a merged `main` (`make release VERSION=…`).
 - Licensing: launcher/server/shared/scripts/docs are MIT (`LICENSE`). Anything derived from the engine (`patches/`, `RelayWire.h`, other engine edits) is GPL-3.0 + EA terms. Never copy engine code into the MIT parts, and keep the launcher talking to the engine only as a separate process.
 - Put logic in `launcher/core` or `server` lib with a test; keep the Tauri shell and UI thin.
 - Detect games by `.big` files (`INIZH.big` = Zero Hour, `INI.big` = Generals). Steam app IDs (Generals 2229870, Zero Hour 2732960) are used only by the steamcmd download.
