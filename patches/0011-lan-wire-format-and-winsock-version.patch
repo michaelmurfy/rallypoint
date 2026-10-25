@@ -1,0 +1,332 @@
+diff --git a/Core/GameEngine/Include/GameNetwork/LANAPI.h b/Core/GameEngine/Include/GameNetwork/LANAPI.h
+index 5fd4f63..55d15bd 100644
+--- a/Core/GameEngine/Include/GameNetwork/LANAPI.h
++++ b/Core/GameEngine/Include/GameNetwork/LANAPI.h
+@@ -48,7 +48,8 @@ static const Int m_lanMaxOptionsLength = MAX_LANAPI_PACKET_SIZE - ( 8 + (g_lanGa
+ 																														+ (g_lanLoginNameLength+1) + (g_lanHostNameLength+1) );
+ static const Int g_maxSerialLength = 23; // including the trailing '\0'
+ 
+-struct LANMessage;
++template <class WChar> struct LANMessageT;
++typedef LANMessageT<WideChar> LANMessage;
+ 
+ /**
+  * The LANAPI class is used to instantiate a singleton which
+@@ -141,7 +142,8 @@ public:
+  * LAN message class
+  */
+ #pragma pack(push, 1)
+-struct LANMessage
++template <class WChar>
++struct LANMessageT
+ {
+ 	enum Type				          ///< What kind of message are we?
+ 	{
+@@ -171,7 +173,7 @@ struct LANMessage
+ 		MSG_REQUEST_GAME_INFO,	///< For direct connect, get the game info from a specific IP Address
+ 	} messageType;
+ 
+-	WideChar name[g_lanPlayerNameLength+1]; ///< My name, for convenience
++	WChar name[g_lanPlayerNameLength+1]; ///< My name, for convenience
+ 	char userName[g_lanLoginNameLength+1];	///< login name, for convenience
+ 	char hostName[g_lanHostNameLength+1];		///< machine name, for convenience
+ 
+@@ -188,13 +190,13 @@ struct LANMessage
+ 		// GameJoined is sent with REQUEST_GAME_LEAVE
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 		} GameToLeave;
+ 
+ 		// GameInfo if sent with GAME_ANNOUNCE
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			Bool inProgress;
+ 			char options[m_lanMaxOptionsLength+1];
+ 			Bool isDirectConnect;
+@@ -204,7 +206,7 @@ struct LANMessage
+ 		struct
+ 		{
+ 			UnsignedInt ip;
+-			WideChar playerName[g_lanPlayerNameLength+1];
++			WChar playerName[g_lanPlayerNameLength+1];
+ 		} PlayerInfo;
+ 
+ 		// GameToJoin is sent with REQUEST_JOIN
+@@ -219,7 +221,7 @@ struct LANMessage
+ 		// GameJoined is sent with JOIN_ACCEPT
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			UnsignedInt gameIP;
+ 			UnsignedInt playerIP;
+ 			Int slotPosition;
+@@ -228,7 +230,7 @@ struct LANMessage
+ 		// GameNotJoined is sent with JOIN_DENY
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			UnsignedInt gameIP;
+ 			UnsignedInt playerIP;
+ 			LANAPIInterface::ReturnType reason;
+@@ -237,14 +239,14 @@ struct LANMessage
+ 		// Accept is sent with SET_ACCEPT
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			Bool isAccepted;
+ 		} Accept;
+ 
+ 		// Accept is sent with MAP_AVAILABILITY
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			UnsignedInt mapCRC;	// to make sure we're talking about the same map
+ 			Bool hasMap;
+ 		} MapStatus;
+@@ -252,9 +254,9 @@ struct LANMessage
+ 		// Chat is sent with CHAT
+ 		struct
+ 		{
+-			WideChar gameName[g_lanGameNameLength+1];
++			WChar gameName[g_lanGameNameLength+1];
+ 			LANAPIInterface::ChatType chatType;
+-			WideChar message[g_lanMaxChatLength+1];
++			WChar message[g_lanMaxChatLength+1];
+ 		} Chat;
+ 
+ 		// GameOptions is sent with GAME_OPTIONS
+@@ -267,15 +269,11 @@ struct LANMessage
+ };
+ #pragma pack(pop)
+ 
+-// TODO(macos): On non-Windows, WideChar maps to the platform wchar_t (4 bytes
+-// on macOS/Linux) rather than the 2-byte UTF-16 unit assumed by the wire format,
+-// so the WideChar[] members inside LANMessage are twice as large and the struct
+-// overflows MAX_LANAPI_PACKET_SIZE. LAN multiplayer is not wire-compatible (or
+-// functional) on this port yet, so this layout assert is Windows-only. A future
+-// phase that wants cross-platform LAN play must make WideChar a true 16-bit type.
+-#if defined(_WIN32)
+-static_assert(sizeof(LANMessage) <= MAX_LANAPI_PACKET_SIZE, "LANMessage struct cannot be larger than the max packet size");
+-#endif
++// The in-memory message uses the platform's WideChar; what goes on the wire is the same layout with 16-bit
++// characters (what Windows sends), so every platform fits a packet and can talk to the others.
++typedef LANMessageT<WideChar> LANMessage;
++typedef LANMessageT<uint16_t> LANWireMessage;
++static_assert(sizeof(LANWireMessage) <= MAX_LANAPI_PACKET_SIZE, "LANWireMessage struct cannot be larger than the max packet size");
+ 
+ 
+ /**
+@@ -392,6 +390,7 @@ protected:
+ 
+ protected:
+ 	void sendMessage(LANMessage *msg, UnsignedInt ip = 0); // Convenience function
++	void sendWire(LANWireMessage *msg, UnsignedInt ip);
+ 	void removePlayer(LANPlayer *player);
+ 	void removeGame(LANGameInfo *game);
+ 	void addPlayer(LANPlayer *player);
+diff --git a/b/Core/GameEngine/Include/GameNetwork/LANWire.h b/Core/GameEngine/Include/GameNetwork/LANWire.h
+new file mode 100644
+index 0000000..5273bcf
+--- /dev/null
++++ b/Core/GameEngine/Include/GameNetwork/LANWire.h
+@@ -0,0 +1,43 @@
++// LAN lobby packets carry text as UTF-16 code units on every platform, so a Mac and a Windows PC can see each
++// other's games. WideChar is 16 bits only on Windows; elsewhere it is 32, which made the in-memory LANMessage
++// larger than a packet. Pure functions, no engine dependencies.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace LANWire
++{
++
++// Copies a NUL-terminated string between character types of any width, converting through code points
++// (UTF-16 surrogate pairs <-> single 32-bit characters). Always terminates dst and never splits a pair.
++template <class D, class S>
++inline void text(D *dst, size_t dstCap, const S *src, size_t srcCap)
++{
++	if (dstCap == 0)
++		return;
++	size_t o = 0;
++	for (size_t i = 0; i < srcCap && src[i] != 0; ++i)
++	{
++		uint32_t cp = (uint32_t)src[i];
++		if (sizeof(S) == 2 && cp >= 0xD800 && cp <= 0xDBFF && i + 1 < srcCap && (uint32_t)src[i + 1] >= 0xDC00 && (uint32_t)src[i + 1] <= 0xDFFF)
++			cp = 0x10000 + ((cp - 0xD800) << 10) + ((uint32_t)src[++i] - 0xDC00);
++		if (sizeof(D) == 2 && cp >= 0x10000)
++		{
++			if (o + 2 >= dstCap)
++				break;
++			cp -= 0x10000;
++			dst[o++] = (D)(0xD800 + (cp >> 10));
++			dst[o++] = (D)(0xDC00 + (cp & 0x3FF));
++		}
++		else
++		{
++			if (o + 1 >= dstCap)
++				break;
++			dst[o++] = (D)cp;
++		}
++	}
++	dst[o] = 0;
++}
++
++}
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+index bb9da79..fc2b3e2 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+@@ -31,6 +31,7 @@
+ #include "Common/Registry.h"
+ #include "GameNetwork/LANAPI.h"
+ #include "GameNetwork/RelayWire.h"
++#include "GameNetwork/LANWire.h"
+ #include "GameNetwork/networkutil.h"
+ #include "Common/GlobalData.h"
+ #include "Common/RandomValue.h"
+@@ -183,11 +184,87 @@ void LANAPI::reset()
+ 
+ }
+ 
++// In-memory LANMessage <-> wire layout (16-bit characters). Only the variant for the message type is converted.
++template <class D, class S>
++static void lanConvert(D &d, const S &s)
++{
++	memset(&d, 0, sizeof(d));
++	d.messageType = (typename D::Type)(int)s.messageType;
++	LANWire::text(d.name, ARRAY_SIZE(d.name), s.name, ARRAY_SIZE(s.name));
++	memcpy(d.userName, s.userName, sizeof(d.userName));
++	memcpy(d.hostName, s.hostName, sizeof(d.hostName));
++#define LAN_TEXT(v, f) LANWire::text(d.v.f, ARRAY_SIZE(d.v.f), s.v.f, ARRAY_SIZE(s.v.f))
++	switch (s.messageType)
++	{
++	case S::MSG_GAME_ANNOUNCE:
++		LAN_TEXT(GameInfo, gameName);
++		d.GameInfo.inProgress = s.GameInfo.inProgress;
++		memcpy(d.GameInfo.options, s.GameInfo.options, sizeof(d.GameInfo.options));
++		d.GameInfo.isDirectConnect = s.GameInfo.isDirectConnect;
++		break;
++	case S::MSG_REQUEST_GAME_INFO:
++		d.PlayerInfo.ip = s.PlayerInfo.ip;
++		LAN_TEXT(PlayerInfo, playerName);
++		break;
++	case S::MSG_REQUEST_JOIN:
++		d.GameToJoin.gameIP = s.GameToJoin.gameIP;
++		d.GameToJoin.exeCRC = s.GameToJoin.exeCRC;
++		d.GameToJoin.iniCRC = s.GameToJoin.iniCRC;
++		memcpy(d.GameToJoin.serial, s.GameToJoin.serial, sizeof(d.GameToJoin.serial));
++		break;
++	case S::MSG_JOIN_ACCEPT:
++		LAN_TEXT(GameJoined, gameName);
++		d.GameJoined.gameIP = s.GameJoined.gameIP;
++		d.GameJoined.playerIP = s.GameJoined.playerIP;
++		d.GameJoined.slotPosition = s.GameJoined.slotPosition;
++		break;
++	case S::MSG_JOIN_DENY:
++		LAN_TEXT(GameNotJoined, gameName);
++		d.GameNotJoined.gameIP = s.GameNotJoined.gameIP;
++		d.GameNotJoined.playerIP = s.GameNotJoined.playerIP;
++		d.GameNotJoined.reason = s.GameNotJoined.reason;
++		break;
++	case S::MSG_REQUEST_GAME_LEAVE:
++		LAN_TEXT(GameToLeave, gameName);
++		break;
++	case S::MSG_SET_ACCEPT:
++		LAN_TEXT(Accept, gameName);
++		d.Accept.isAccepted = s.Accept.isAccepted;
++		break;
++	case S::MSG_MAP_AVAILABILITY:
++		LAN_TEXT(MapStatus, gameName);
++		d.MapStatus.mapCRC = s.MapStatus.mapCRC;
++		d.MapStatus.hasMap = s.MapStatus.hasMap;
++		break;
++	case S::MSG_CHAT:
++		LAN_TEXT(Chat, gameName);
++		d.Chat.chatType = s.Chat.chatType;
++		LAN_TEXT(Chat, message);
++		break;
++	case S::MSG_GAME_START_TIMER:
++		d.StartTimer.seconds = s.StartTimer.seconds;
++		break;
++	case S::MSG_GAME_OPTIONS:
++		memcpy(d.GameOptions.options, s.GameOptions.options, sizeof(d.GameOptions.options));
++		break;
++	default:
++		break; // no payload beyond the header fields
++	}
++#undef LAN_TEXT
++}
++
+ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
++{
++	LANWireMessage wire;
++	lanConvert(wire, *msg);
++	sendWire(&wire, ip);
++}
++
++void LANAPI::sendWire(LANWireMessage *msg, UnsignedInt ip)
+ {
+ 	if (ip != 0)
+ 	{
+-		m_transport->queueSend(ip, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
++		m_transport->queueSend(ip, lobbyPort, (unsigned char *)msg, sizeof(LANWireMessage) /*, 0, 0 */);
+ 	}
+ 	else if ((m_currentGame != nullptr) && (m_currentGame->getIsDirectConnect()))
+ 	{
+@@ -197,14 +274,14 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
+ 			if (i != localSlot) {
+ 				GameSlot *slot = m_currentGame->getSlot(i);
+ 				if ((slot != nullptr) && (slot->isHuman())) {
+-					m_transport->queueSend(slot->getIP(), lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
++					m_transport->queueSend(slot->getIP(), lobbyPort, (unsigned char *)msg, sizeof(LANWireMessage) /*, 0, 0 */);
+ 				}
+ 			}
+ 		}
+ 	}
+ 	else
+ 	{
+-		m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
++		m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANWireMessage) /*, 0, 0 */);
+ 	}
+ }
+ 
+@@ -362,7 +439,14 @@ void LANAPI::update()
+ 				continue;
+ 			}
+ 
+-			LANMessage *msg = (LANMessage *)(m_transport->m_inBuffer[i].data);
++			// Packets arrive in the wire layout (16-bit characters); work on a native copy. A short packet is
++			// zero-padded, never read past its end.
++			LANWireMessage wire;
++			memset(&wire, 0, sizeof(wire));
++			memcpy(&wire, m_transport->m_inBuffer[i].data, min((size_t)m_transport->m_inBuffer[i].length, sizeof(wire)));
++			LANMessage nativeMsg;
++			lanConvert(nativeMsg, wire);
++			LANMessage *msg = &nativeMsg;
+ 			//DEBUG_LOG(("LAN message type %s from %ls (%s@%s)", GetMessageTypeString(msg->messageType).str(),
+ 			//	msg->name, msg->userName, msg->hostName));
+ 			switch (msg->messageType)
+diff --git a/Dependencies/Utility/osdep_compat/winsock.h b/Dependencies/Utility/osdep_compat/winsock.h
+index 9db6759..ce37be3 100644
+--- a/Dependencies/Utility/osdep_compat/winsock.h
++++ b/Dependencies/Utility/osdep_compat/winsock.h
+@@ -23,7 +23,9 @@ typedef int SOCKET;
+ 
+ // Winsock startup/shutdown are no-ops on POSIX.
+ typedef struct WSAData { unsigned short wVersion; char szDescription[257]; } WSADATA, *LPWSADATA;
+-inline int  WSAStartup(unsigned short, LPWSADATA) { return 0; }
++// Report the version asked for: callers (Transport::init) reject the socket layer if wVersion is not 2.2,
++// and an untouched WSADATA read as garbage, so the LAN lobby failed with "Failed trying to communicate with the network".
++inline int  WSAStartup(unsigned short ver, LPWSADATA data) { if (data) { data->wVersion = ver; data->szDescription[0] = 0; } return 0; }
+ inline int  WSACleanup() { return 0; }
+ inline int  WSAGetLastError() { return errno; }
+ inline int  closesocket(SOCKET s) { return ::close(s); }
