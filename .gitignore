@@ -3,3 +3,4 @@ target/
 serials*.txt
 .env
 data/
+launcher/src-tauri/tauri.version.json

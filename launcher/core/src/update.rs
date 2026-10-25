@@ -16,7 +16,7 @@ const DOWNLOAD_PREFIX: &str = "https://github.com/michaelmurfy/rallypoint/releas
 
 /// The running version: the release tag when CI built this binary, otherwise the crate version.
 pub fn current_version() -> &'static str {
-    option_env!("RALLYPOINT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+    option_env!("RALLYPOINT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).trim_start_matches('v')
 }
 
 // ---- versions (semver precedence, which is what makes alpha.10 newer than alpha.9) -----------------------------
