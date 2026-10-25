@@ -1,3 +1,14 @@
+## Rallypoint 0.2.0-beta.2
+
+Still a **prerelease**. A small build to get the multiplayer sync logs working.
+
+- **Multiplayer sync logs now work.** Settings > Multiplayer sync logs was switched on but the game ignored it, so no logs were written on macOS or Windows. Turn it on for both players, play until the game goes out of sync, then use Compare in Settings to find the first frame and line that differ.
+- Builds of 0.2.0-beta.1 can still play with this one: the game simulation itself is unchanged.
+
+Known gaps are unchanged from beta.1 (multiplayer still out of sync after a couple of minutes in some games; resyncing an out-of-step player is not built).
+
+---
+
 ## Rallypoint 0.2.0-beta.1
 
 The version number moves to **0.2** because multiplayer changed substantially. Still a **prerelease**: a full multiplayer game through the relay has not been played end to end yet, so please report what you hit.
