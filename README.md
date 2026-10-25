@@ -109,6 +109,8 @@ On by default on macOS and Windows: any resolution, ultrawide, Retina. Menus, th
 
 **Status: still to do.** The relay server, the encryption, the server key checks and the connection diagnostics are built and tested, and the game only ever sees the relay's own address range while you are connected. A full multiplayer game through it has not been played yet, so treat it as work in progress.
 
+Games between macOS and Windows use the same simulation math on both (a deterministic maths library and strict floating point settings), and the lobby refuses to let in a player whose game data or Rallypoint simulation version differs, instead of starting a game that goes out of sync. If a game still goes out of sync, turn on *Settings → Multiplayer sync logs* on both machines, play again, and use **Compare with another player…** to see exactly where the two games first differed.
+
 Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
 
 Everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305), including the serial, the room and the password proof. The first time you connect to a server the launcher remembers its identity key; if a different server ever answers at that address, it refuses to connect and asks you. The server keeps its key in its data volume (`serials.key`): back it up, because a new key makes every player see a changed identity. Compare the fingerprint from `make key` with the one shown on the Online tab to be sure of a server the first time.

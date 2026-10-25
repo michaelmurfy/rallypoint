@@ -13,4 +13,5 @@ pub mod maps;
 pub mod mods;
 pub mod proc;
 pub mod steam;
+pub mod syncdiff;
 pub mod update;
