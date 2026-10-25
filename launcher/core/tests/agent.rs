@@ -1,6 +1,6 @@
 //! Two agents against the real relay state machine over loopback UDP, with fake engine sockets.
 use generals_core::agent::{Agent, Status};
-use generals_proto::{Packet, Reason};
+use generals_proto::{game_packet, Packet, Reason};
 use generals_server::{Serials, Server};
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,14 +80,14 @@ fn handshake_and_relay_between_two_clients() {
 
     let mut buf = [0u8; 2048];
     // A's lobby broadcast reaches B's lobby socket only.
-    a_lobby.send_to(&Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: b"hi".to_vec() }.encode(), a.local).unwrap();
+    a_lobby.send_to(&Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: game_packet(b"hi") }.encode(), a.local).unwrap();
     let n = b_lobby.recv(&mut buf).unwrap();
-    assert_eq!(Packet::decode(&buf[..n]), Some(Packet::Bcast { vip: va, src_port: 8086, dst_port: 8086, payload: b"hi".to_vec() }));
+    assert_eq!(Packet::decode(&buf[..n]), Some(Packet::Bcast { vip: va, src_port: 8086, dst_port: 8086, payload: game_packet(b"hi") }));
 
     // B's game packet addressed to A's vip reaches A's game socket, not its lobby socket.
-    b_game.send_to(&Packet::Data { vip: va, src_port: 8088, dst_port: 8088, payload: b"cmd".to_vec() }.encode(), b.local).unwrap();
+    b_game.send_to(&Packet::Data { vip: va, src_port: 8088, dst_port: 8088, payload: game_packet(b"cmd") }.encode(), b.local).unwrap();
     let n = a_game.recv(&mut buf).unwrap();
-    assert!(matches!(Packet::decode(&buf[..n]), Some(Packet::Data { payload, dst_port: 8088, .. }) if payload == b"cmd"));
+    assert!(matches!(Packet::decode(&buf[..n]), Some(Packet::Data { payload, dst_port: 8088, .. }) if payload == game_packet(b"cmd")));
     a_lobby.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
     assert!(a_lobby.recv(&mut buf).is_err());
     drop(b_lobby);
@@ -153,7 +153,7 @@ fn rooms_are_separate_and_passworded_and_vanish_when_empty() {
     wait(&other, |s| matches!(s, Status::Connected(_)));
     let (a_lobby, b_lobby, o_lobby) = (engine_socket(&a, 8086), engine_socket(&b, 8086), engine_socket(&other, 8086));
     std::thread::sleep(Duration::from_millis(200));
-    a_lobby.send_to(&Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: b"x".to_vec() }.encode(), a.local).unwrap();
+    a_lobby.send_to(&Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: game_packet(b"x") }.encode(), a.local).unwrap();
     let mut buf = [0u8; 2048];
     assert!(b_lobby.recv(&mut buf).is_ok());
     o_lobby.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
@@ -164,5 +164,58 @@ fn rooms_are_separate_and_passworded_and_vanish_when_empty() {
     std::thread::sleep(Duration::from_millis(300));
     let reuse = Agent::start(&server, "AAA", "alpha", "brand new").unwrap();
     assert!(matches!(wait(&reuse, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn the_tunnel_carries_game_packets_and_nothing_else() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = start(&server, "AAA");
+    let b = start(&server, "BBB");
+    let vb = match wait(&b, |s| matches!(s, Status::Connected(_))) {
+        Status::Connected(v) => v,
+        s => panic!("{s:?}"),
+    };
+    wait(&a, |s| matches!(s, Status::Connected(_)));
+    let (a_game, b_game) = (engine_socket(&a, 8088), engine_socket(&b, 8088));
+    std::thread::sleep(Duration::from_millis(200));
+    let send = |payload: Vec<u8>, src: u16, dst: u16| a_game.send_to(&Packet::Data { vip: vb, src_port: src, dst_port: dst, payload }.encode(), a.local).unwrap();
+    let mut buf = [0u8; 2048];
+    b_game.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+    // web traffic, a foreign port, an oversized datagram: none of it comes out the other end
+    send(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n".to_vec(), 8088, 8088);
+    send(game_packet(b"x"), 8088, 53);
+    send(game_packet(b"x"), 4444, 8088);
+    send(game_packet(&[1; 1500]), 8088, 8088);
+    assert!(b_game.recv(&mut buf).is_err(), "nothing but game packets may pass");
+    // a Bind for a port that is not the game's is ignored: that socket receives nothing
+    let stranger = engine_socket(&b, 9999);
+    stranger.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+    send(game_packet(b"real"), 8088, 8088);
+    assert!(b_game.recv(&mut buf).is_ok(), "a genuine game packet still passes");
+    assert!(stranger.recv(&mut buf).is_err());
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn diagnostics_show_latency_loss_and_what_the_relay_reports() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = start(&server, "AAA");
+    let b = start(&server, "BBB");
+    wait(&a, |s| matches!(s, Status::Connected(_)));
+    wait(&b, |s| matches!(s, Status::Connected(_)));
+    assert!(Agent::start(&server, "nope", "room", "pw").unwrap().diagnostics().is_none(), "nothing to show before connecting");
+    let t = Instant::now();
+    let d = loop {
+        let d = a.diagnostics().unwrap();
+        if d.rtt_ms.is_some() && d.server.is_some() {
+            break d;
+        }
+        assert!(t.elapsed() < Duration::from_secs(6), "no diagnostics: {d:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(d.rtt_ms.unwrap() < 500 && d.loss_pct == Some(0));
+    let s = d.server.unwrap();
+    assert_eq!((s.rooms, s.players, s.room_players), (1, 2, 2));
     stop.store(true, Ordering::Relaxed);
 }

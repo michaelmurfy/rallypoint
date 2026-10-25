@@ -77,6 +77,7 @@ fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
     sock.set_read_timeout(Some(Duration::from_secs(1)))?;
     let mut server = Server::new(Serials::parse(&read(file)));
     server.set_open(open);
+    server.set_version(version());
 
     // Optional country limit, e.g. ALLOWED_COUNTRIES=NZ,AU
     let countries: Vec<String> = env("ALLOWED_COUNTRIES", "").split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
@@ -105,11 +106,15 @@ fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
             server.set_serials(Serials::parse(&read(file)));
         }
     };
+    // Housekeeping (expiry, reading the serial file) runs once a second, not once per datagram: a flood of
+    // packets must not be able to make each one trigger a scan of every session or a stat() of the file.
+    let (mut last_tick, mut last_hello_reload) = (u64::MAX, u64::MAX);
     loop {
         let now = start.elapsed().as_secs();
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
             if let Some(p) = Packet::decode(&buf[..n]) {
-                if matches!(p, Packet::Hello { .. }) {
+                if matches!(p, Packet::Hello { .. }) && last_hello_reload != now {
+                    last_hello_reload = now;
                     reload(&mut server);
                 }
                 for (to, out) in server.handle(from, p, now) {
@@ -125,7 +130,10 @@ fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
                 }
             }
         }
-        server.expire(now);
-        reload(&mut server);
+        if now != last_tick {
+            last_tick = now;
+            server.expire(now);
+            reload(&mut server);
+        }
     }
 }

@@ -6,9 +6,14 @@
 
 use sha2::{Digest, Sha256};
 
-pub const MAX_PAYLOAD: usize = 1400;
+/// Largest game datagram the engine builds (`MAX_UDP_PAYLOAD_SIZE`). Nothing bigger is relayed.
+pub const MAX_PAYLOAD: usize = 1100;
+/// The only logical UDP ports the tunnel carries: the engine's lobby socket and its in-game socket.
+pub const LOBBY_PORT: u16 = 8086;
+pub const GAME_PORTS: [u16; 2] = [LOBBY_PORT, 8088];
 pub const MAX_SERIAL: usize = 64;
 pub const MAX_ROOM: usize = 32;
+pub const MAX_VERSION: usize = 24;
 
 pub type Vip = [u8; 4];
 pub type Cookie = [u8; 16];
@@ -56,8 +61,31 @@ pub enum Packet {
     Issued { serial: String },
     /// Client -> server: leave the room now (otherwise the session times out).
     Leave,
-    /// Client -> server wrapper for in-session packets (Bcast, Data, Ping, Leave).
+    /// Client -> server wrapper for in-session packets (Bcast, Data, Ping, Leave, StatsRequest).
     Signed { token: u64, inner: Box<Packet> },
+    /// Client -> server (inside `Signed`): ask how the relay is doing.
+    StatsRequest,
+    /// Server -> client: the answer to `StatsRequest`. Aggregates only; nothing about other rooms.
+    Stats(ServerStats),
+}
+
+/// What a relay reports about itself to a connected client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerStats {
+    pub uptime_secs: u32,
+    /// Rooms in use and players in all rooms (a room is a game or a lobby waiting for one).
+    pub rooms: u16,
+    pub players: u16,
+    pub max_rooms: u16,
+    pub max_players: u16,
+    /// How many are in the asking client's own room.
+    pub room_players: u8,
+    /// Highest of room use and player use, 0-100.
+    pub load_pct: u8,
+    /// Packets and kilobits relayed during the last full second.
+    pub pps: u32,
+    pub kbps: u32,
+    pub version: String,
 }
 
 fn data(tag: u8, vip: &Vip, src: u16, dst: u16, payload: &[u8]) -> Vec<u8> {
@@ -91,6 +119,21 @@ impl Packet {
             Packet::Leave => vec![10],
             Packet::Signed { token, inner } => [&[11][..], &token.to_be_bytes(), &inner.encode()].concat(),
             Packet::Challenge { cookie } => [&[12][..], cookie].concat(),
+            Packet::StatsRequest => vec![13],
+            Packet::Stats(s) => [
+                &[14][..],
+                &s.uptime_secs.to_be_bytes(),
+                &s.rooms.to_be_bytes(),
+                &s.players.to_be_bytes(),
+                &s.max_rooms.to_be_bytes(),
+                &s.max_players.to_be_bytes(),
+                &[s.room_players, s.load_pct],
+                &s.pps.to_be_bytes(),
+                &s.kbps.to_be_bytes(),
+                &[s.version.len().min(MAX_VERSION) as u8],
+                &s.version.as_bytes()[..s.version.len().min(MAX_VERSION)],
+            ]
+            .concat(),
         }
     }
 
@@ -142,9 +185,65 @@ impl Packet {
                 Packet::Signed { token, inner: Box::new(Self::decode_inner(&rest[8..], false)?) }
             }
             12 => Packet::Challenge { cookie: rest.try_into().ok()? },
+            13 if rest.is_empty() => Packet::StatsRequest,
+            14 if rest.len() >= 23 => {
+                let u32_at = |i: usize| u32::from_be_bytes(rest[i..i + 4].try_into().unwrap());
+                let u16_at = |i: usize| u16::from_be_bytes(rest[i..i + 2].try_into().unwrap());
+                let (version, tail) = take_str(&rest[22..], MAX_VERSION)?;
+                tail.is_empty().then_some(Packet::Stats(ServerStats {
+                    uptime_secs: u32_at(0),
+                    rooms: u16_at(4),
+                    players: u16_at(6),
+                    max_rooms: u16_at(8),
+                    max_players: u16_at(10),
+                    room_players: rest[12],
+                    load_pct: rest[13],
+                    pps: u32_at(14),
+                    kbps: u32_at(18),
+                    version,
+                }))?
+            }
             _ => return None,
         })
     }
+}
+
+/// Does `p` look like a datagram the game engine made? The engine obfuscates each packet (XOR with a rolling mask
+/// over whole 32-bit words) and starts it with a CRC and the magic 0xF00D (`Transport.cpp`). The relay only
+/// carries such packets, so the tunnel cannot be used for anything but the game.
+pub fn is_game_packet(p: &[u8]) -> bool {
+    const HEADER: usize = 6; // crc (4) + magic (2)
+    if p.len() <= HEADER || p.len() > MAX_PAYLOAD {
+        return false;
+    }
+    let mut plain = p.to_vec();
+    let mut mask: u32 = 0xFADE;
+    for w in plain.chunks_exact_mut(4) {
+        let v = u32::from_be_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
+        w.copy_from_slice(&v.to_le_bytes());
+        mask = mask.wrapping_add(0x321);
+    }
+    let crc = u32::from_le_bytes([plain[0], plain[1], plain[2], plain[3]]);
+    let magic = u16::from_le_bytes([plain[4], plain[5]]);
+    let sum = plain[4..].iter().fold(0u32, |c, &b| (c << 1).wrapping_add(b as u32).wrapping_add(c >> 31));
+    magic == 0xF00D && sum == crc
+}
+
+/// A datagram the way the engine builds it: CRC and magic in front of `payload`, then obfuscated. For tests and
+/// tools; the game does this itself.
+pub fn game_packet(payload: &[u8]) -> Vec<u8> {
+    let mut p = vec![0u8; 4];
+    p.extend_from_slice(&0xF00Du16.to_le_bytes());
+    p.extend_from_slice(payload);
+    let crc = p[4..].iter().fold(0u32, |c, &b| (c << 1).wrapping_add(b as u32).wrapping_add(c >> 31));
+    p[..4].copy_from_slice(&crc.to_le_bytes());
+    let mut mask: u32 = 0xFADE;
+    for w in p.chunks_exact_mut(4) {
+        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
+        w.copy_from_slice(&v.to_be_bytes());
+        mask = mask.wrapping_add(0x321);
+    }
+    p
 }
 
 pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
@@ -189,6 +288,8 @@ mod tests {
             Packet::Leave,
             Packet::Signed { token: 42, inner: Box::new(Packet::Data { vip: [1, 2, 3, 4], src_port: 1, dst_port: 2, payload: vec![5] }) },
             Packet::Signed { token: 42, inner: Box::new(Packet::Ping) },
+            Packet::Signed { token: 42, inner: Box::new(Packet::StatsRequest) },
+            Packet::Stats(ServerStats { uptime_secs: 86_400, rooms: 3, players: 9, max_rooms: 256, max_players: 2048, room_players: 4, load_pct: 12, pps: 1500, kbps: 800, version: "0.1.0-beta.4".into() }),
         ] {
             assert_eq!(Packet::decode(&p.encode()), Some(p));
         }
@@ -221,6 +322,37 @@ mod tests {
         // trailing junk where none is allowed
         assert_eq!(Packet::decode(&[8; 3]), None);
         assert_eq!(Packet::decode(&[6, 0]), None);
+    }
+
+    /// Packets built by the engine's own Transport code (its CRC class and encryptBuf), captured with a small C++ program.
+    #[test]
+    fn recognises_real_game_packets_and_nothing_else() {
+        let hex = |s: &str| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let a = hex("00007f2902010df20604052307");
+        let b = hex("00019bf165470df26173644e6c73");
+        assert!(is_game_packet(&a) && is_game_packet(&b));
+        assert_eq!(game_packet(&[1, 2, 3, 4, 5, 6, 7]), a);
+        assert_eq!(game_packet(b"Generals"), b);
+        // any change breaks the CRC; so does the wrong size, or something that is not a game packet at all
+        for i in 0..a.len() {
+            let mut bad = a.clone();
+            bad[i] ^= 1;
+            assert!(!is_game_packet(&bad), "flipped byte {i}");
+        }
+        assert!(!is_game_packet(&a[..6]) && !is_game_packet(&[]) && !is_game_packet(&[0; 1101]));
+        assert!(!is_game_packet(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+        assert!(!is_game_packet(&[0u8; 64]));
+    }
+
+    #[test]
+    fn stats_reject_malformed() {
+        let ok = Packet::Stats(ServerStats { uptime_secs: 1, rooms: 1, players: 1, max_rooms: 1, max_players: 1, room_players: 1, load_pct: 1, pps: 1, kbps: 1, version: "v".into() }).encode();
+        assert!(Packet::decode(&ok).is_some());
+        assert_eq!(Packet::decode(&ok[..ok.len() - 1]), None);
+        assert_eq!(Packet::decode(&[&ok[..], &[0][..]].concat()), None);
+        assert_eq!(Packet::decode(&[13, 0]), None);
+        let long = Packet::Stats(ServerStats { uptime_secs: 0, rooms: 0, players: 0, max_rooms: 0, max_players: 0, room_players: 0, load_pct: 0, pps: 0, kbps: 0, version: "x".repeat(200) });
+        assert_eq!(Packet::decode(&long.encode()), Some(Packet::Stats(ServerStats { uptime_secs: 0, rooms: 0, players: 0, max_rooms: 0, max_players: 0, room_players: 0, load_pct: 0, pps: 0, kbps: 0, version: "x".repeat(MAX_VERSION) })));
     }
 
     #[test]

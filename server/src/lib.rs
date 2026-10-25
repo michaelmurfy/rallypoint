@@ -1,6 +1,6 @@
 //! Relay state machine. No sockets or clocks in here: `handle` takes the sender and the time and returns
 //! the datagrams to send, so it is testable without a network.
-use generals_proto::{ct_eq, sha256, Cookie, Packet, Reason, Verifier, Vip};
+use generals_proto::{ct_eq, is_game_packet, sha256, Cookie, Packet, Reason, ServerStats, Verifier, Vip, GAME_PORTS, LOBBY_PORT};
 pub mod geo;
 
 use std::collections::{HashMap, HashSet};
@@ -13,6 +13,16 @@ pub const ROOM_SIZE: usize = 8; // Generals' player limit
 const PASSWORD_TRIES: u32 = 10;
 const PASSWORD_WINDOW_SECS: u64 = 600;
 pub const REGISTRATIONS_PER_HOUR: usize = 5;
+/// Sign-ups the whole server will issue per hour, however many addresses ask (an attacker with many addresses,
+/// e.g. a whole IPv6 range, must not be able to fill the serial file).
+pub const REGISTRATIONS_PER_HOUR_TOTAL: usize = 300;
+/// Sessions from one address (a household or LAN party sits behind one).
+pub const SESSIONS_PER_IP: usize = 16;
+/// Unknown serials one address may try per window before it is cut off (serials are 64 random bits).
+const SERIAL_TRIES: u32 = 20;
+/// Per session and second: more than this is a flood, and is dropped. A game uses a small fraction.
+pub const SESSION_PACKETS_PER_SEC: u32 = 600;
+pub const SESSION_BYTES_PER_SEC: u32 = 400_000;
 /// A Register retry from the same address within this window gets the same serial back (UDP loss).
 const REGISTER_DEDUP_SECS: u64 = 60;
 const VIP_PREFIX: [u8; 3] = [10, 77, 0];
@@ -60,6 +70,10 @@ struct Session {
     vip: Vip,
     token: u64,
     last_seen: u64,
+    /// Packets and bytes seen from this session in second `window`.
+    window: u64,
+    pkts: u32,
+    bytes: u32,
 }
 
 type Out = Vec<(SocketAddr, Packet)>;
@@ -77,6 +91,31 @@ pub struct Server {
     by_ip: HashMap<IpAddr, Vec<u64>>,
     bad_passwords: HashMap<IpAddr, (u64, u32)>,
     new_serials: Vec<String>,
+    all_signups: Vec<u64>,
+    bad_serials: HashMap<IpAddr, (u64, u32)>,
+    version: String,
+    /// Relay load: totals for the second in progress (`sec`), and the last full second.
+    sec: u64,
+    sec_pkts: u32,
+    sec_bytes: u32,
+    last_pps: u32,
+    last_kbps: u32,
+}
+
+/// Address used for per-source limits. An IPv6 user typically owns a whole /64, so that is the unit; an IPv4-mapped
+/// IPv6 address counts as the IPv4 one.
+fn rate_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(a) => match a.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let mut o = a.octets();
+                o[8..].fill(0);
+                IpAddr::V6(o.into())
+            }
+        },
+        v4 => v4,
+    }
 }
 
 fn valid_room(name: &str) -> bool {
@@ -108,6 +147,14 @@ impl Server {
             by_ip: HashMap::new(),
             bad_passwords: HashMap::new(),
             new_serials: vec![],
+            all_signups: vec![],
+            bad_serials: HashMap::new(),
+            version: String::new(),
+            sec: 0,
+            sec_pkts: 0,
+            sec_bytes: 0,
+            last_pps: 0,
+            last_kbps: 0,
         };
         s.reseed();
         s
@@ -148,6 +195,11 @@ impl Server {
         std::mem::take(&mut self.new_serials)
     }
 
+    /// Shown to clients in their diagnostics.
+    pub fn set_version(&mut self, v: &str) {
+        self.version = v.chars().filter(|c| !c.is_control()).take(generals_proto::MAX_VERSION).collect();
+    }
+
     pub fn room_count(&self) -> usize {
         self.rooms.len()
     }
@@ -168,6 +220,39 @@ impl Server {
             !h.is_empty()
         });
         self.bad_passwords.retain(|_, (t, _)| now.saturating_sub(*t) < PASSWORD_WINDOW_SECS);
+        self.bad_serials.retain(|_, (t, _)| now.saturating_sub(*t) < PASSWORD_WINDOW_SECS);
+        self.all_signups.retain(|t| now.saturating_sub(*t) < 3600);
+        self.roll(now);
+    }
+
+    /// Close the load window when the second changes; a gap of more than a second means it was idle.
+    fn roll(&mut self, now: u64) {
+        if now != self.sec {
+            let idle = now > self.sec + 1;
+            self.last_pps = if idle { 0 } else { self.sec_pkts };
+            self.last_kbps = if idle { 0 } else { (self.sec_bytes as u64 * 8).div_ceil(1000).min(u32::MAX as u64) as u32 };
+            self.sec = now;
+            self.sec_pkts = 0;
+            self.sec_bytes = 0;
+        }
+    }
+
+    fn stats(&self, now: u64, room: &str) -> ServerStats {
+        let players = self.sessions.len();
+        let max_players = MAX_ROOMS * ROOM_SIZE;
+        let pct = |n: usize, max: usize| (n * 100).div_ceil(max.max(1)).min(100) as u8; // anything in use shows at least 1%
+        ServerStats {
+            uptime_secs: now.min(u32::MAX as u64) as u32,
+            rooms: self.rooms.len() as u16,
+            players: players as u16,
+            max_rooms: MAX_ROOMS as u16,
+            max_players: max_players as u16,
+            room_players: self.sessions.values().filter(|s| s.room == room).count() as u8,
+            load_pct: pct(self.rooms.len(), MAX_ROOMS).max(pct(players, max_players)),
+            pps: self.last_pps,
+            kbps: self.last_kbps,
+            version: self.version.clone(),
+        }
     }
 
     /// A room exists only while it has members.
@@ -182,6 +267,7 @@ impl Server {
     }
 
     pub fn handle(&mut self, from: SocketAddr, pkt: Packet, now: u64) -> Out {
+        self.roll(now);
         // ponytail: every in-session packet is signed with a per-session token, but the wire is not encrypted:
         // an on-path attacker can still read or replay traffic. Add a handshake key exchange if that matters.
         match pkt {
@@ -209,30 +295,54 @@ impl Server {
         if !ct_eq(&me.token.to_be_bytes(), &token.to_be_bytes()) {
             return vec![]; // wrong token: could be a spoofer, so do not answer
         }
+        // Flood limit per session; dropped packets do not keep the session alive.
+        if me.window != now {
+            (me.window, me.pkts, me.bytes) = (now, 0, 0);
+        }
+        let size = match &pkt {
+            Packet::Bcast { payload, .. } | Packet::Data { payload, .. } => payload.len() as u32 + 9,
+            _ => 1,
+        };
+        if me.pkts >= SESSION_PACKETS_PER_SEC || me.bytes.saturating_add(size) > SESSION_BYTES_PER_SEC {
+            return vec![];
+        }
+        me.pkts += 1;
+        me.bytes += size;
         me.last_seen = now;
         let (my_vip, room) = (me.vip, me.room.clone());
         let same_room = |s: &Session| s.room == room;
-        match pkt {
+        // The tunnel is for the game only: its two UDP ports, and datagrams the engine itself made.
+        let game_ok = |src: u16, dst: u16, payload: &[u8], ports: &[u16]| GAME_PORTS.contains(&src) && ports.contains(&dst) && is_game_packet(payload);
+        let out: Out = match pkt {
             Packet::Ping => vec![(from, Packet::Ping)],
+            Packet::StatsRequest => vec![(from, Packet::Stats(self.stats(now, &room)))],
             Packet::Leave => {
                 self.sessions.remove(&from);
                 self.gc_rooms();
                 vec![]
             }
-            Packet::Bcast { src_port, dst_port, payload, .. } => self
+            Packet::Bcast { src_port, dst_port, payload, .. } if game_ok(src_port, dst_port, &payload, &[LOBBY_PORT]) => self
                 .sessions
                 .iter()
                 .filter(|(a, s)| **a != from && same_room(s))
                 .map(|(a, _)| (*a, Packet::Bcast { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
-            Packet::Data { vip, src_port, dst_port, payload } => self
+            Packet::Data { vip, src_port, dst_port, payload } if game_ok(src_port, dst_port, &payload, &GAME_PORTS) => self
                 .sessions
                 .iter()
                 .filter(|(a, s)| **a != from && same_room(s) && s.vip == vip)
                 .map(|(a, _)| (*a, Packet::Data { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
             _ => vec![],
+        };
+        // Count what the relay actually forwarded (not pings and stats).
+        for (_, p) in &out {
+            if let Packet::Bcast { payload, .. } | Packet::Data { payload, .. } = p {
+                self.sec_pkts = self.sec_pkts.saturating_add(1);
+                self.sec_bytes = self.sec_bytes.saturating_add(payload.len() as u32 + 9);
+            }
         }
+        out
     }
 
     /// Stateless sign-up: first ask gets a Challenge cookie bound to the source address, and only a client that
@@ -255,7 +365,11 @@ impl Server {
                 return Packet::Issued { serial: serial.clone() };
             }
         }
-        let hist = self.by_ip.entry(from.ip()).or_default();
+        self.all_signups.retain(|t| now.saturating_sub(*t) < 3600);
+        if self.all_signups.len() >= REGISTRATIONS_PER_HOUR_TOTAL {
+            return Packet::Reject(Reason::RateLimited);
+        }
+        let hist = self.by_ip.entry(rate_key(from.ip())).or_default();
         hist.retain(|t| now.saturating_sub(*t) < 3600);
         if hist.len() >= REGISTRATIONS_PER_HOUR {
             return Packet::Reject(Reason::RateLimited);
@@ -265,6 +379,7 @@ impl Server {
         };
         let serial = format_serial(bytes);
         hist.push(now);
+        self.all_signups.push(now);
         self.serials.active.insert(serial.clone());
         self.recent.insert(from, (now, serial.clone()));
         self.new_serials.push(serial.clone());
@@ -276,6 +391,16 @@ impl Server {
             return Packet::Reject(Reason::Revoked);
         }
         if !self.serials.active.contains(&serial) {
+            // Guessing serials: cut an address (or IPv6 /64) off after a few misses.
+            let key = rate_key(from.ip());
+            let e = self.bad_serials.entry(key).or_insert((now, 0));
+            if now.saturating_sub(e.0) >= PASSWORD_WINDOW_SECS {
+                *e = (now, 0);
+            }
+            if e.1 >= SERIAL_TRIES {
+                return Packet::Reject(Reason::RateLimited);
+            }
+            e.1 += 1;
             return Packet::Reject(Reason::UnknownSerial);
         }
         if !valid_room(&room) {
@@ -293,7 +418,10 @@ impl Server {
         if self.sessions.values().any(|s| s.serial == serial) {
             return Packet::Reject(Reason::InUse);
         }
-        let ip = from.ip();
+        let ip = rate_key(from.ip());
+        if self.sessions.keys().filter(|a| rate_key(a.ip()) == ip).count() >= SESSIONS_PER_IP {
+            return Packet::Reject(Reason::RateLimited);
+        }
         if self.bad_passwords.get(&ip).is_some_and(|&(t, n)| now.saturating_sub(t) < PASSWORD_WINDOW_SECS && n >= PASSWORD_TRIES) {
             return Packet::Reject(Reason::RateLimited);
         }
@@ -322,7 +450,7 @@ impl Server {
         };
         let (vip, token) = ([VIP_PREFIX[0], VIP_PREFIX[1], VIP_PREFIX[2], n], u64::from_be_bytes(t));
         self.rooms.entry(room.clone()).or_insert(verifier);
-        self.sessions.insert(from, Session { serial, room, vip, token, last_seen: now });
+        self.sessions.insert(from, Session { serial, room, vip, token, last_seen: now, window: now, pkts: 0, bytes: 0 });
         Packet::Welcome { vip, token }
     }
 }
@@ -330,7 +458,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use generals_proto::room_verifier;
+    use generals_proto::{game_packet, room_verifier};
 
     fn addr(p: u16) -> SocketAddr {
         format!("127.0.0.1:{p}").parse().unwrap()
@@ -363,7 +491,10 @@ mod tests {
         Packet::Signed { token, inner: Box::new(inner) }
     }
     fn bcast(b: u8) -> Packet {
-        Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: vec![b] }
+        Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: game_packet(&[b]) }
+    }
+    fn data(vip: Vip, port: u16, payload: Vec<u8>) -> Packet {
+        Packet::Data { vip, src_port: port, dst_port: port, payload }
     }
 
     #[test]
@@ -401,10 +532,10 @@ mod tests {
         assert_eq!(s.handle(addr(1), sign(ta, bcast(1)), 1).iter().map(|o| o.0).collect::<Vec<_>>(), [addr(2)]);
         assert!(s.handle(addr(3), sign(td, bcast(2)), 1).is_empty());
         // unicast cannot cross rooms: .2 exists only in "lan", so a player in "other" reaches nobody
-        let cross = Packet::Data { vip: [10, 77, 0, 2], src_port: 8088, dst_port: 8088, payload: vec![] };
+        let cross = data([10, 77, 0, 2], 8088, game_packet(&[1]));
         assert!(s.handle(addr(3), sign(td, cross), 1).is_empty());
         // ...while inside "lan" the same address is delivered
-        let local = Packet::Data { vip: [10, 77, 0, 1], src_port: 8088, dst_port: 8088, payload: vec![] };
+        let local = data([10, 77, 0, 1], 8088, game_packet(&[1]));
         assert_eq!(s.handle(addr(2), sign(tb, local), 1).iter().map(|o| o.0).collect::<Vec<_>>(), [addr(1)]);
     }
 
@@ -534,5 +665,131 @@ mod tests {
     #[test]
     fn serial_format() {
         assert_eq!(format_serial([0xAB, 0xCD, 0, 1, 2, 3, 4, 5]), "ABCD-0001-0203-0405");
+    }
+
+    fn join(s: &mut Server, from: SocketAddr, serial: &str, room: &str, now: u64) -> (Vip, u64) {
+        welcome(s.handle(from, hello(serial, room, ""), now))
+    }
+
+    #[test]
+    fn only_game_traffic_is_relayed() {
+        let mut s = server();
+        let (_, ta) = join(&mut s, addr(1), "AAA", "r", 0);
+        let (vb, _) = join(&mut s, addr(2), "BBB", "r", 0);
+        let ok = |s: &mut Server, p: Packet| s.handle(addr(1), sign(ta, p), 1).len();
+        // the engine's own datagrams on its two ports pass
+        assert_eq!(ok(&mut s, data(vb, 8088, game_packet(b"hello"))), 1);
+        assert_eq!(ok(&mut s, data(vb, 8086, game_packet(b"hello"))), 1);
+        // anything else does not: not a game packet, a foreign port, a broadcast outside the lobby, too big
+        assert_eq!(ok(&mut s, data(vb, 8088, b"GET / HTTP/1.1\r\n\r\n".to_vec())), 0, "not a game packet");
+        assert_eq!(ok(&mut s, data(vb, 8088, vec![0; 64])), 0);
+        assert_eq!(ok(&mut s, data(vb, 53, game_packet(b"hello"))), 0, "foreign port");
+        assert_eq!(ok(&mut s, data(vb, 8088, game_packet(&[7; 2000]))), 0, "oversized");
+        assert_eq!(ok(&mut s, Packet::Data { vip: vb, src_port: 8088, dst_port: 443, payload: game_packet(b"x") }), 0);
+        assert_eq!(ok(&mut s, Packet::Bcast { vip: [0; 4], src_port: 8088, dst_port: 8088, payload: game_packet(b"x") }), 0, "broadcast is for the lobby port only");
+        assert_eq!(ok(&mut s, bcast(1)), 1);
+        // a corrupted game packet fails its CRC
+        let mut bad = game_packet(b"hello");
+        bad[8] ^= 0x40;
+        assert_eq!(ok(&mut s, data(vb, 8088, bad)), 0);
+    }
+
+    #[test]
+    fn a_flooding_session_is_cut_off_but_others_are_not() {
+        let mut s = server();
+        let (_, ta) = join(&mut s, addr(1), "AAA", "r", 0);
+        let (_, tb) = join(&mut s, addr(2), "BBB", "r", 0);
+        let sent = (0..SESSION_PACKETS_PER_SEC + 50).filter(|_| !s.handle(addr(1), sign(ta, bcast(1)), 5).is_empty()).count();
+        assert_eq!(sent as u32, SESSION_PACKETS_PER_SEC);
+        assert_eq!(s.handle(addr(2), sign(tb, bcast(1)), 5).len(), 1, "another player is unaffected");
+        assert_eq!(s.handle(addr(1), sign(ta, bcast(1)), 6).len(), 1, "the limit is per second");
+        // bytes are limited too
+        let big = game_packet(&[9; 1000]);
+        let n = (0..1000).filter(|_| !s.handle(addr(2), sign(tb, Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: big.clone() }), 9).is_empty()).count();
+        assert!(n as u32 * 1010 <= SESSION_BYTES_PER_SEC && n > 100, "{n}");
+    }
+
+    #[test]
+    fn stats_describe_the_relay_without_leaking_other_rooms() {
+        let mut s = server();
+        s.set_version("0.1.0-test");
+        let (_, ta) = join(&mut s, addr(1), "AAA", "alpha", 0);
+        join(&mut s, addr(2), "BBB", "alpha", 0);
+        join(&mut s, addr(3), "DDD", "beta", 0);
+        for _ in 0..4 {
+            s.handle(addr(1), sign(ta, bcast(1)), 10);
+        }
+        s.expire(11); // closes second 10
+        let out = s.handle(addr(1), sign(ta, Packet::StatsRequest), 11);
+        let Packet::Stats(st) = &out[0].1 else { panic!("{out:?}") };
+        assert_eq!((st.rooms, st.players, st.room_players, st.max_rooms), (2, 3, 2, MAX_ROOMS as u16));
+        assert_eq!((st.pps, st.uptime_secs, st.version.as_str()), (4, 11, "0.1.0-test"));
+        assert_eq!(st.load_pct, 1, "3 of 2048 players, 2 of 256 rooms");
+        assert!(st.kbps > 0);
+        // an idle second reads as zero, and unsigned or unknown askers get nothing useful
+        s.expire(20);
+        let Packet::Stats(st) = &s.handle(addr(1), sign(ta, Packet::StatsRequest), 20)[0].1 else { panic!() };
+        assert_eq!(st.pps, 0);
+        assert!(s.handle(addr(1), Packet::StatsRequest, 20).is_empty());
+        assert_eq!(s.handle(addr(9), sign(ta, Packet::StatsRequest), 20), [(addr(9), Packet::Reject(Reason::NotAuthed))]);
+    }
+
+    #[test]
+    fn one_address_cannot_hold_unlimited_sessions() {
+        let mut serials = String::new();
+        for i in 0..SESSIONS_PER_IP + 2 {
+            serials += &format!("S{i}\n");
+        }
+        let mut s = Server::new(Serials::parse(&serials));
+        s.set_rng(counting_rng());
+        for i in 0..SESSIONS_PER_IP {
+            join(&mut s, addr_from("203.0.113.5", 1000 + i as u16), &format!("S{i}"), &format!("room{i}"), 0);
+        }
+        let over = hello(&format!("S{SESSIONS_PER_IP}"), "x", "");
+        assert_eq!(s.handle(addr_from("203.0.113.5", 2000), over, 0), [(addr_from("203.0.113.5", 2000), Packet::Reject(Reason::RateLimited))]);
+        let other = hello(&format!("S{SESSIONS_PER_IP}"), "x", "");
+        welcome(s.handle(addr_from("203.0.113.6", 2000), other, 0)); // a different address is fine
+    }
+
+    #[test]
+    fn ipv6_limits_apply_to_the_whole_64() {
+        assert_eq!(rate_key("2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().unwrap()), rate_key("2001:db8:1:2::1".parse().unwrap()));
+        assert_ne!(rate_key("2001:db8:1:2::1".parse().unwrap()), rate_key("2001:db8:1:3::1".parse().unwrap()));
+        assert_eq!(rate_key("::ffff:192.0.2.1".parse().unwrap()), "192.0.2.1".parse::<IpAddr>().unwrap());
+        let mut s = server();
+        for i in 0..SERIAL_TRIES {
+            let from: SocketAddr = format!("[2001:db8::{:x}]:5000", i + 1).parse().unwrap(); // a new address each time, same /64
+            assert_eq!(s.handle(from, hello(&format!("NOPE{i}"), "r", ""), 0), [(from, Packet::Reject(Reason::UnknownSerial))]);
+        }
+        let from: SocketAddr = "[2001:db8::ffff]:5000".parse().unwrap();
+        assert_eq!(s.handle(from, hello("NOPE", "r", ""), 0), [(from, Packet::Reject(Reason::RateLimited))], "serial guessing is cut off");
+        assert_eq!(s.handle(from, hello("AAA", "r", ""), 0), [(from, Packet::Reject(Reason::RateLimited))].map(|_| (from, s.handle(from, hello("AAA", "r", ""), 0).remove(0).1)), "real serials still reach the other checks");
+    }
+
+    #[test]
+    fn sign_ups_have_a_global_hourly_cap() {
+        let mut s = server();
+        let mut n = 0u64;
+        s.set_rng(Box::new(move || {
+            n += 1;
+            Some(n.to_be_bytes())
+        }));
+        let mut issued = 0;
+        'outer: for a in 0..=255u8 {
+            for b in 0..=255u8 {
+                let from = addr_from(&format!("198.51.{a}.{b}"), 4000);
+                let Packet::Challenge { cookie } = s.handle(from, Packet::Register { cookie: [0; 16] }, 0).remove(0).1 else { panic!() };
+                match s.handle(from, Packet::Register { cookie }, 0).remove(0).1 {
+                    Packet::Issued { .. } => issued += 1,
+                    Packet::Reject(Reason::RateLimited) => break 'outer,
+                    p => panic!("{p:?}"),
+                }
+            }
+        }
+        assert_eq!(issued, REGISTRATIONS_PER_HOUR_TOTAL);
+        // the hour passes
+        let from = addr_from("198.51.100.1", 4000);
+        let Packet::Challenge { cookie } = s.handle(from, Packet::Register { cookie: [0; 16] }, 3700).remove(0).1 else { panic!() };
+        assert!(matches!(s.handle(from, Packet::Register { cookie }, 3700).remove(0).1, Packet::Issued { .. }));
     }
 }

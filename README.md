@@ -103,6 +103,8 @@ On by default. Set `GEN_STRETCH=1` in the environment to get the original stretc
 
 Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
 
+While you are connected the Online tab shows how it is going: your latency, jitter and packet loss, the traffic you are sending, and the server's version, uptime, rooms and players in use, and load. The tunnel carries only the game's own network traffic (its lobby and game ports); anything else is dropped, and each player is limited to a sensible packet rate so one client cannot flood a server.
+
 ### Run a server
 
 Needs Docker, `make`, and one open **UDP** port (7777 by default).

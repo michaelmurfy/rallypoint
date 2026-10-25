@@ -271,6 +271,12 @@ fn relay_disconnect(relay: tauri::State<Relay>) {
     *relay.0.lock().unwrap() = None;
 }
 
+/// Latency, packet loss and the relay's own load figures; `None` unless connected.
+#[tauri::command]
+fn relay_diagnostics(relay: tauri::State<Relay>) -> Option<generals_core::agent::Diagnostics> {
+    relay.0.lock().unwrap().as_ref().and_then(|a| a.diagnostics())
+}
+
 #[tauri::command]
 fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
     use generals_proto::Reason::*;
@@ -560,7 +566,7 @@ fn main() {
             get_config, save_config, set_camera_height, graphics_apply_high, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
-            relay_connect, relay_disconnect, relay_status,
+            relay_connect, relay_disconnect, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
             launch_game
         ])
