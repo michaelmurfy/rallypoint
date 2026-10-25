@@ -108,7 +108,8 @@ async function loadMods() {
   notifyMods();
 }
 
-const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
+const needsOf = (m) => (m.addon_for ? (store.mods.catalog.find((b) => b.id === m.addon_for) || {}).name || null : null);
+const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name, needs: needsOf(m) })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
 const selectedFolders = () => {
   const have = new Set(installedMods().map((m) => m.folder));
   return (prefs.get().mods || []).filter((f) => have.has(f));
@@ -208,6 +209,7 @@ async function startWatch(m) {
   } catch (e) { return say(errText(e), "bad"); }
   store.watch = { id: m.id, name: m.name, found: null };
   notifyMods();
+  document.getElementById("main")?.scrollTo({ top: 0, behavior: "smooth" }); // the banner is at the top of the page
   clearInterval(watchTimer);
   watchTimer = setInterval(async () => {
     if (!store.watch) return clearInterval(watchTimer);
@@ -225,12 +227,16 @@ async function cancelWatch() {
 }
 /** Install `path`; with `id` it becomes that catalog mod. Errors are shown and the user can try another file. */
 async function installPath(path, id) {
-  say("Installing…", "busy");
+  // What was picked is what gets installed: the card swaps to a progress state right away, with nothing left to choose.
+  const mod = id && store.mods.catalog.find((m) => m.id === id);
+  store.installing = { id: id || "*", name: mod ? mod.name : "mod" };
+  if (id) { clearInterval(watchTimer); store.watch = null; }
+  notifyMods();
   try {
     const r = await invoke("mods_install", { path, id: id || null });
     say(`${r.folder} installed (${r.bigs} game file${r.bigs === 1 ? "" : "s"})`, "ok");
-    if (id) { clearInterval(watchTimer); store.watch = null; }
   } catch (e) { say(errText(e), "bad"); }
+  store.installing = null;
   await loadMods();
 }
 /** Native file or folder picker, opened in the Downloads folder. */
@@ -403,10 +409,22 @@ function gameFilesPanel(onChange) {
   return { el, dispose: () => timers.forEach(clearInterval) };
 }
 
+/** What a mod is and how it is played, in one line. */
+function modRole(m) {
+  const base = m.addon_for ? store.mods.catalog.find((b) => b.id === m.addon_for) : null;
+  if (base) return { pill: `Add-on for ${base.name}`, how: base.installed ? `Plays together with ${base.name}, which is already installed.` : `Needs ${base.name} installed first. Rallypoint plays the two together.`, base };
+  const adds = store.mods.catalog.filter((x) => x.addon_for === m.id).map((x) => x.name);
+  return { pill: "Plays on its own", how: adds.length ? `Play it by itself, or add ${adds.join(" and ")} on top.` : "Play it by itself.", base: null };
+}
+
 function modCard(m, compact) {
   const waiting = store.watch && store.watch.id === m.id;
+  const busy = store.installing && store.installing.id === m.id;
+  const role = modRole(m);
   const actions = h("div", { class: "row" });
-  if (m.installed) {
+  if (busy) {
+    actions.append(h("span", { class: "live busy", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…"));
+  } else if (m.installed) {
     actions.append(pill("Installed", "ok"));
     if (!compact) {
       let armed = false;
@@ -419,23 +437,38 @@ function modCard(m, compact) {
     }
   } else if (waiting) {
     actions.append(pill("Waiting for download", "warn"));
+  } else if (m.pick) {
+    // The player brings the files: nothing to wait for in the launcher.
+    actions.append(
+      h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"),
+      h("button", { class: "btn", onclick: () => choose(m.id, true) }, "Choose folder…"));
   } else {
-    const base = m.addon_for ? store.mods.catalog.find((b) => b.id === m.addon_for) : null;
     actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
-    if (base && !base.installed) actions.append(pill(`Also needs ${base.name}`, "warn"));
   }
-  return h("div", { class: "card" },
+  const missingBase = role.base && !role.base.installed && !m.installed;
+  return h("div", { class: "card" + (role.base ? " addon" : "") },
     h("div", { class: "mod" },
-      h("div", {}, h("h3", {}, m.name), h("p", { class: "muted" }, m.description)),
+      h("div", {}, h("div", { class: "row" }, h("h3", {}, m.name), pill(role.pill, role.base ? "" : "ok")), h("p", { class: "muted" }, m.description), !compact ? h("p", { class: "small" + (missingBase ? " warn-text" : " muted") }, role.how) : null),
       actions),
     !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null,
     h("div", { class: "row" },
+      m.pick && !m.installed && !busy ? h("button", { class: "btn small", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Open download page") : null,
       h("button", { class: "btn small ghost", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
+}
+
+/** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
+function modGroups() {
+  const all = store.mods.catalog;
+  const ids = new Set(all.map((m) => m.id));
+  return all.filter((m) => !m.addon_for || !ids.has(m.addon_for)).flatMap((m) => [
+    modCard(m, false),
+    ...all.filter((x) => x.addon_for === m.id).map((x) => h("div", { class: "addons" }, modCard(x, false))),
+  ]);
 }
 
 function watchBanner() {
   const w = store.watch;
-  if (!w) return null;
+  if (!w || store.installing) return null;
   return h("div", { class: "banner stack" },
     h("div", {}, h("b", {}, `Download ${w.name} in your browser`), h("p", { class: "muted small" }, "When the download has finished, choose the file here. Shockwave's own Windows launcher is not started; Rallypoint unpacks the installer and loads the game archives.")),
     w.found ? h("div", { class: "row" }, h("span", { class: "small" }, "Found in Downloads: "), h("code", {}, w.found.name), h("button", { class: "btn small primary", onclick: () => installPath(w.found.path, w.id) }, "Install this file")) : null,
@@ -469,7 +502,7 @@ function playPage() {
     fill(picks, mods.length ? mods.map((m) => {
       const on = selectedFolders().includes(m.folder);
       const box = h("input", { type: "checkbox", checked: on, onchange: () => toggleMod(m.folder, box.checked) });
-      return h("label", { class: "pick" }, box, m.name);
+      return h("label", { class: "pick" }, box, m.name, m.needs ? h("span", { class: "muted small" }, `  add-on, plays together with ${m.needs}`) : null);
     }) : h("p", { class: "muted small" }, "No mods installed yet."));
   }
   refreshers.add(fillMods); fillMods();
@@ -514,8 +547,9 @@ function modsPage() {
   const maps = mapsCard();
   const body = h("div", { class: "stack" });
   const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
+  const dropBusy = h("span", { class: "live busy", hidden: true, role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…");
   const drop = h("div", { class: "drop", id: "dropzone" },
-    h("b", {}, "Add a mod from a file"),
+    h("b", {}, "Add another mod from a file"), dropBusy,
     h("span", { class: "small" }, "Drop it here, or choose it: .zip, .7z, .rar, a folder, or an installer .exe"),
     h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn", onclick: () => choose(null, true) }, "Choose folder…")),
     h("div", { class: "row" }, path, h("button", { class: "btn small", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install path")));
@@ -528,10 +562,11 @@ function modsPage() {
       h("li", {}, "Many mods also offer a plain .zip or \"no installer\" download. Choose that when you can.")));
 
   function render() {
+    dropBusy.hidden = !(store.installing && store.installing.id === "*");
     fill(body,
       watchBanner(),
-      h("h2", {}, "Featured"),
-      store.mods.catalog.map((m) => modCard(m, false)),
+      h("h2", {}, "Mods"),
+      modGroups(),
       store.mods.other.length ? h("h2", {}, "Your other mods") : null,
       store.mods.other.map((o) => {
         let armed = false;

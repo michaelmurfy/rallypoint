@@ -424,6 +424,13 @@ fn open_mods_folder(app: tauri::AppHandle) -> Result<(), String> {
     open_folder(&mods_dir(&app)?)
 }
 
+/// Open the mod's official download page, without watching for anything: the player points to the files.
+#[tauri::command]
+fn open_download_page(id: String) -> Result<(), String> {
+    let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
+    open_url(if m.download_page.is_empty() { &m.homepage } else { &m.download_page })
+}
+
 #[tauri::command]
 fn open_homepage(id: String) -> Result<(), String> {
     open_url(&catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?.homepage)
@@ -588,7 +595,7 @@ fn main() {
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
-            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, icons_install,
+            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
             launch_game
         ])
         .run(tauri::generate_context!())

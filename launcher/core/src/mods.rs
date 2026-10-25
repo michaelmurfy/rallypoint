@@ -29,6 +29,9 @@ pub struct Mod {
     /// Id of the mod this one is an add-on for. The engine loads one mod folder, so at launch the two are combined.
     #[serde(default)]
     pub addon_for: Option<String>,
+    /// The player brings the files (a download, an installer's folder) with a file picker; nothing is watched for.
+    #[serde(default)]
+    pub pick: bool,
 }
 
 pub fn load_manifest(json: &str) -> Result<Vec<Mod>, serde_json::Error> {
@@ -343,6 +346,15 @@ mod tests {
     }
 
     #[test]
+    fn bundled_mods_are_picked_by_the_player_and_chaos_is_the_add_on() {
+        let m = load_manifest(include_str!("../../../mods/mods.json")).unwrap();
+        assert!(m.iter().all(|x| x.pick), "the player brings the files; nothing waits for a download");
+        let by = |id: &str| m.iter().find(|x| x.id == id).unwrap();
+        assert_eq!(by("shockwave").addon_for, None, "Shockwave plays on its own");
+        assert_eq!(by("shockwave-chaos").addon_for.as_deref(), Some("shockwave"));
+    }
+
+    #[test]
     fn bundled_addon_points_at_a_catalog_mod() {
         let m = load_manifest(include_str!("../../../mods/mods.json")).unwrap();
         let chaos = m.iter().find(|m| m.id == "shockwave-chaos").unwrap();
@@ -373,8 +385,8 @@ mod tests {
         assert!(compose(&mods, "Missing", "Addon").unwrap_err().contains("installed first"));
         assert!(compose(&mods, "../x", "Addon").is_err());
         let cat = vec![
-            Mod { id: "base".into(), name: "Base".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Base".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: None },
-            Mod { id: "add".into(), name: "Add".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Addon".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: Some("base".into()) },
+            Mod { id: "base".into(), name: "Base".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Base".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: None, pick: false },
+            Mod { id: "add".into(), name: "Add".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Addon".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: Some("base".into()), pick: false },
         ];
         assert_eq!(with_bases(&cat, &["Addon".into()]), ["Base".to_string(), "Addon".to_string()]);
         let stacked = stack(&mods, &with_bases(&cat, &["Addon".into()])).unwrap().unwrap();

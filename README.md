@@ -87,7 +87,7 @@ Many mods ship a Windows installer (and some also a launcher program, or patch t
 
 What can't work: a patched `generals.exe` / `game.dat`, or a feature that exists only inside the mod's own launcher program. Rallypoint's engine loads the mod's `.big` and `.gib` files. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
 
-Setup downloads GenTool's sharp command-bar icons (Control Bar HD) and loads them with the game. A higher camera is optional on the Play tab and stays off unless you turn it on.
+Setup downloads GenTool's sharp command-bar icons (Control Bar HD) and loads them with the game. On ultrawide screens the command bar and its icons keep their proportions and sit in the middle of the screen with the rest of the interface. A higher camera is optional on the Play tab and stays off unless you turn it on.
 
 ### Maps
 

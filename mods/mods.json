@@ -9,7 +9,8 @@
     "detect": [
       "shockwave"
     ],
-    "notes": "On the download page choose the full release. It arrives as a Windows installer, usually inside a .zip. Drop that file here. Rallypoint unpacks the game archives and does not start Shockwave's own launcher, so the same download works on macOS and Windows."
+    "notes": "Download it from ModDB. It arrives as a Windows installer, usually inside a .zip: choose that file, or run the installer into an empty folder and choose the folder. Rallypoint unpacks the game archives and never starts Shockwave's own launcher, so the same download works on macOS and Windows.",
+    "pick": true
   },
   {
     "id": "shockwave-chaos",
@@ -22,6 +23,7 @@
       "chaos"
     ],
     "addon_for": "shockwave",
-    "notes": "An add-on for Shockwave: you need both to play. Its download is a plain .zip that installs directly. Rallypoint combines it with Shockwave when you launch, so nothing in your Shockwave folder is changed."
+    "notes": "Download the .zip from ModDB, unpack it if you like, then choose the .zip or its folder. Rallypoint plays it together with Shockwave, so nothing in your Shockwave folder is changed.",
+    "pick": true
   }
 ]
