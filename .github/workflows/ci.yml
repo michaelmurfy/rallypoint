@@ -12,6 +12,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p generals-core
 
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p generals-proto -p generals-server
+
   engine-math:
     runs-on: ubuntu-latest
     steps:
