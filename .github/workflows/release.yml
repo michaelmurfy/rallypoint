@@ -23,8 +23,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           submodules: true
       - run: brew install ninja
       - run: sh patches/apply.sh
@@ -41,7 +42,7 @@ jobs:
           mkdir -p out/engine
           cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
           ls -la out/engine
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-macos
           path: out/engine
@@ -52,8 +53,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           submodules: true
       - run: sh patches/apply.sh
         shell: bash
@@ -85,7 +87,7 @@ jobs:
           $crt = Get-ChildItem "$env:VCToolsRedistDir\x86" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
           if (-not $crt) { throw "no x86 CRT under $env:VCToolsRedistDir" }
           'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-windows
           path: out/engine
@@ -104,7 +106,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Tag matches app version
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -113,19 +117,19 @@ jobs:
           app=$(python3 -c "import json;print(json.load(open('launcher/src-tauri/tauri.conf.json'))['version'])")
           [ "$core" = "$app" ] || { echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $app"; exit 1; }
       - if: matrix.engine != ''
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ matrix.engine }}
           path: launcher/src-tauri/engine
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
       - id: tauri-cli
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-tauri*
           key: tauri-cli-2.12.4-${{ runner.os }}
       - if: steps.tauri-cli.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-binstall
       - if: steps.tauri-cli.outputs.cache-hit != 'true'
@@ -148,7 +152,7 @@ jobs:
           mkdir -p dist
           find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
           ls dist
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-launcher-${{ matrix.os }}
           path: dist/*
@@ -162,8 +166,10 @@ jobs:
       contents: read
       packages: write # push the image to GHCR
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Work out the version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
@@ -195,7 +201,7 @@ jobs:
           docker tag rallypoint-relay "$IMAGE:$VERSION"
           docker push "$IMAGE:$VERSION"
           case "$VERSION" in *-*) ;; *) docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest" ;; esac
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-server
           path: dist/*
@@ -209,8 +215,10 @@ jobs:
     permissions:
       contents: write # create the release
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
