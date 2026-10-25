@@ -71,6 +71,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path out/engine | Out-Null
           Get-ChildItem engine/build/win32/Core/Release, engine/build/win32/GeneralsMD/Release -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -in '.exe', '.dll' } | Copy-Item -Destination out/engine -Verbose
+          # The engine must run on the VC++ runtime it was built with: an older system msvcp140.dll (14.29 is common)
+          # crashes in std::mutex::lock. Microsoft allows these files to be shipped beside the executable.
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x86" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          if (-not $crt) { throw "no x86 CRT under $env:VCToolsRedistDir" }
+          'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: engine-windows
