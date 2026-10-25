@@ -1,0 +1,25 @@
+# Manual helper: prints the SHA-256 of the pinned DepotDownloader downloads so they can be pinned in
+# launcher/core/src/assets.rs. Run it when bumping the DepotDownloader version.
+name: Tool checksums
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: DepotDownloader release tag
+        default: DepotDownloader_3.4.0
+
+permissions:
+  contents: read
+
+jobs:
+  hash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hash the release zips
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          for p in macos-arm64 macos-x64 windows-x64 linux-x64 linux-arm64; do
+            curl -fsSL --proto '=https' --proto-redir '=https' -o "$p.zip" "https://github.com/SteamRE/DepotDownloader/releases/download/$VERSION/DepotDownloader-$p.zip"
+            echo "CHECKSUM $p $(sha256sum "$p.zip" | cut -d' ' -f1) $(stat -c %s "$p.zip")"
+          done
