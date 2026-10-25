@@ -27,7 +27,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test -p generals-core -p generals-proto -p generals-server
+      # Linux ships the relay server only (no launcher or engine for Linux), so it tests just the server and its protocol.
+      - if: runner.os == 'Linux'
+        run: cargo test -p generals-proto -p generals-server
+      - if: runner.os != 'Linux'
+        run: cargo test -p generals-core -p generals-proto -p generals-server
 
   engine-math:
     runs-on: ubuntu-latest
