@@ -1,0 +1,47 @@
+diff --git a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+index dfceee6..c4e1a11 100644
+--- a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+@@ -59,6 +59,21 @@ void Win32BIGFileSystem::init() {
+ 
+ 	loadBigFilesFromDirectory("", "*.big");
+ 
++#if RTS_ZEROHOUR
++	// Weather.ini ships only in Zero Hour's INIZH.big. If the working directory is the executable's
++	// folder rather than the game folder, that archive was not loaded above and startup throws while
++	// reading Data\INI\Default\Weather. The launcher names the game folder with GEN_ZH_PATH.
++	if (TheFileSystem && !TheFileSystem->doesFileExist("Data\\INI\\Default\\Weather.ini")) {
++		const char* zhPathEnv = ::getenv("GEN_ZH_PATH");
++		if (zhPathEnv && zhPathEnv[0]) {
++			AsciiString zhPath = zhPathEnv;
++			const char last = zhPathEnv[strlen(zhPathEnv) - 1];
++			if (last != '/' && last != '\\')
++				zhPath.concat('/');
++			loadBigFilesFromDirectory(zhPath, "*.big");
++		}
++	}
++#endif
+ #if RTS_ZEROHOUR
+     // load original Generals assets
+     AsciiString installPath;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 7c0e0a1..9a1b2c2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1244,5 +1244,16 @@ void GlobalData::parseCustomDefinition()
+ void GlobalData::parseCustomDefinition()
+ {
++	// GenTool's camera (d3d8.cfg pitch, and a higher zoom-out). Off unless the launcher asks.
++	if (const char* height = ::getenv("GEN_MAX_CAMERA_HEIGHT")) {
++		float v = (float)atof(height);
++		if (v >= 300.0f && v <= 1200.0f)
++			m_maxCameraHeight = v;
++	}
++	if (const char* pitch = ::getenv("GEN_CAMERA_PITCH")) {
++		float v = (float)atof(pitch);
++		if (v >= 15.0f && v <= 60.0f)
++			m_cameraPitch = v;
++	}
+ 	if (addon::HasFullviewportDat())
+ 	{
+ 		// TheSuperHackers @tweak xezon 03/08/2025 Force full viewport for 'Control Bar Pro' Addons like GenTool did it.

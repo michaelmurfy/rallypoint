@@ -62,7 +62,7 @@ Open the **Mods** tab.
 
 1. Press **Get** next to a mod. Your browser opens the mod's official download page; download it (choose the full release, ideally a `.zip` or "no installer" file). Rallypoint spots the finished file in your Downloads folder and installs it by itself.
 2. Or **drag and drop** a `.zip`, `.7z`, `.rar`, `.tar.gz`, a folder, or an installer `.exe` onto the window, or paste its path.
-3. Pick the mod from the **Mod** list on the Play tab.
+3. Tick the mods you want on the Play tab. Several can load at once; an add-on is laid over the mod it needs.
 
 Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be removed from the Mods tab (**Open mods folder** shows you where).
 
@@ -80,12 +80,14 @@ Unpacking uses tools already on your computer. macOS and Windows can open `.zip`
 
 Many mods ship a Windows installer (and some also a launcher program, or patch the game's own executable). Rallypoint runs a ported engine, so what matters is the mod's **game data** (`.big` files). Your options, best first:
 
-1. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build. Use that. (Shockwave's own download is an installer in a `.zip` that `innoextract` and 7-Zip can't open, so use option 3: run it on Windows, or in Wine or CrossOver on a Mac, install to a new empty folder, then choose that folder. Shockwave Chaos is a plain `.zip` and installs directly.)
-2. **Drop the installer on the window.** If `innoextract` or 7-Zip is installed, Rallypoint unpacks the installer without running it and keeps the game files.
+1. **Drop the installer on the window.** Shockwave's download is a Clickteam installer (often inside a `.zip`). Rallypoint unpacks the game archives itself and does not start Shockwave's Windows launcher, so the same file works on macOS and Windows. Shockwave Chaos is a plain `.zip` and installs directly. For other installers, `innoextract` or 7-Zip unpacks them the same way.
+2. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build.
 3. **On Windows, run the installer normally**, then drag the folder it installed into onto the Mods tab. Rallypoint copies the game files into its own `Mods` folder.
 4. **Unpack it yourself** with `innoextract -d out Setup.exe` or `7z x Setup.exe -oout`, then drop the `out` folder on the window.
 
-What can't work: anything that needs the mod's own program (`.exe`) or a patched `generals.exe` / `game.dat`. The ported engine ignores those, so features that rely on them won't appear, but the mod's `.big` files still load. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
+What can't work: a patched `generals.exe` / `game.dat`, or a feature that exists only inside the mod's own launcher program. Rallypoint's engine loads the mod's `.big` and `.gib` files. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
+
+The setup wizard can also download GenTool's sharp command-bar icons (Control Bar HD) and load them as a mod layer. A higher camera is optional on the Play tab and stays off unless you turn it on.
 
 ### Maps
 

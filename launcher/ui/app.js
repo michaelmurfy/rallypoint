@@ -55,9 +55,16 @@ const errText = (e) => (typeof e === "string" ? e : (e && e.message) || String(e
 const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "Offline", page: "play", watch: null, update: null, updateNote: "", maps: null };
 const nativeRes = () => ({ w: Math.round(screen.width * devicePixelRatio), h: Math.round(screen.height * devicePixelRatio) });
 
+const ICON_FOLDER = "Control Bar HD";
 const prefs = {
   get() {
-    try { return { res: "native", fs: false, mod: "", ...JSON.parse(localStorage.getItem("rallypoint.prefs") || "{}") }; } catch { return { res: "native", fs: false, mod: "" }; }
+    const blank = { res: "native", fs: false, mods: [], icons: true, camera: false };
+    try {
+      const raw = JSON.parse(localStorage.getItem("rallypoint.prefs") || "{}");
+      const p = { ...blank, ...raw };
+      if (!Array.isArray(raw.mods)) p.mods = raw.mod ? [raw.mod] : [];
+      return p;
+    } catch { return blank; }
   },
   set(patch) {
     try { localStorage.setItem("rallypoint.prefs", JSON.stringify({ ...prefs.get(), ...patch })); } catch { /* per-viewer convenience only */ }
@@ -71,7 +78,20 @@ async function loadMods() {
   notifyMods();
 }
 
-const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))];
+const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
+const selectedFolders = () => {
+  const have = new Set(installedMods().map((m) => m.folder));
+  return (prefs.get().mods || []).filter((f) => have.has(f));
+};
+function toggleMod(folder, on) {
+  const cur = selectedFolders().filter((f) => f !== folder);
+  prefs.set({ mods: on ? [...cur, folder] : cur });
+}
+function launchFolders() {
+  const folders = selectedFolders();
+  if (prefs.get().icons !== false && store.mods.other.some((o) => o.folder === ICON_FOLDER)) return [ICON_FOLDER, ...folders];
+  return folders;
+}
 
 // ---------------------------------------------------------------- updates
 function renderUpdate() {
@@ -342,7 +362,7 @@ function watchBanner() {
   const w = store.watch;
   if (!w) return null;
   return h("div", { class: "banner stack" },
-    h("div", {}, h("b", {}, `Download ${w.name} in your browser`), h("p", { class: "muted small" }, "When the download has finished, choose the file here. (If you picked an .exe installer, see the help below.)")),
+    h("div", {}, h("b", {}, `Download ${w.name} in your browser`), h("p", { class: "muted small" }, "When the download has finished, choose the file here. Shockwave's own Windows launcher is not started; Rallypoint unpacks the installer and loads the game archives.")),
     w.found ? h("div", { class: "row" }, h("span", { class: "small" }, "Found in Downloads: "), h("code", {}, w.found.name), h("button", { class: "btn small primary", onclick: () => installPath(w.found.path, w.id) }, "Install this file")) : null,
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => choose(w.id, false) }, "Choose downloaded file…"), h("button", { class: "btn", onclick: cancelWatch }, "Cancel")));
 }
@@ -351,12 +371,13 @@ function watchBanner() {
 function playPage() {
   const p = prefs.get();
   const nat = nativeRes();
-  const sel = h("select", { "aria-label": "Mod" });
+  const picks = h("div", { class: "picks", role: "group", "aria-label": "Mods" });
   const resSel = h("select", { "aria-label": "Resolution" });
   const cw = h("input", { type: "number", min: 640, value: nat.w, "aria-label": "Width" });
   const ch = h("input", { type: "number", min: 480, value: nat.h, "aria-label": "Height" });
   const custom = h("div", { class: "row", hidden: true }, cw, "×", ch);
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
+  const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
   const files = h("div", { class: "row between" });
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn big", onclick: () => launch(true) }, "Quick Skirmish");
@@ -369,11 +390,13 @@ function playPage() {
   const size = () => (resSel.value === "native" ? nat : resSel.value === "custom" ? { w: +cw.value, h: +ch.value } : (([w, hh]) => ({ w: +w, h: +hh }))(resSel.value.split("x")));
 
   function fillMods() {
-    const keep = sel.value || p.mod;
-    sel.replaceChildren(new Option("Vanilla (no mod)", ""), ...installedMods().map((m) => new Option(m.name, m.folder)));
-    sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "";
+    const mods = installedMods();
+    fill(picks, mods.length ? mods.map((m) => {
+      const on = selectedFolders().includes(m.folder);
+      const box = h("input", { type: "checkbox", checked: on, onchange: () => toggleMod(m.folder, box.checked) });
+      return h("label", { class: "pick" }, box, m.name);
+    }) : h("p", { class: "muted small" }, "No mods installed yet."));
   }
-  sel.addEventListener("change", () => prefs.set({ mod: sel.value }));
   refreshers.add(fillMods); fillMods();
 
   function fillFiles() {
@@ -388,7 +411,7 @@ function playPage() {
     const { w, h: hh } = size();
     play.disabled = sk.disabled = true;
     try {
-      await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolder: sel.value || null, width: w, height: hh, fullscreen: fs.checked, skirmish });
+      await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: fs.checked, skirmish, raisedCamera: !!prefs.get().camera });
       toast(skirmish ? "Starting a skirmish…" : "Starting the game…", "ok");
     } catch (e) { toast(errText(e), "bad"); }
     setTimeout(() => { play.disabled = sk.disabled = false; }, 2500);
@@ -403,11 +426,12 @@ function playPage() {
     h("div", { class: "card" },
       h("h3", {}, "Options"),
       h("div", { class: "grid2" },
-        h("label", { class: "field" }, h("span", {}, "Mod"), sel),
+        h("div", { class: "field" }, h("span", {}, "Mods"), picks),
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       custom,
       h("label", { class: "switch" }, fs, "Fullscreen"),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide: the camera and menus adapt instead of zooming in or stretching.")));
+      h("label", { class: "switch" }, cam, "Higher camera"),
+      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. Several mods load together; an add-on is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
@@ -422,11 +446,10 @@ function modsPage() {
     h("div", { class: "row" }, path, h("button", { class: "btn small", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install path")));
   const help = h("details", { class: "card help" },
     h("summary", {}, "A mod came as an .exe installer?"),
-    h("p", { class: "muted" }, "Rallypoint can unpack many installers without running them, if one of these free tools is installed (it tells you which if one is missing):"),
+    h("p", { class: "muted" }, "Rallypoint unpacks the game archives and does not run a mod's own Windows launcher. Shockwave is one of these: drop the installer (or the .zip it came in) here and the archives load with Rallypoint's engine, on macOS and Windows."),
     h("ol", {},
-      h("li", {}, "Install a tool: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows."),
-      h("li", {}, "Drop the .exe above. Rallypoint unpacks it and keeps the game files (.big)."),
-      h("li", {}, "If the mod also needs its own program (.exe) to run, that part can't work with this game engine; only the mod's game files are used."),
+      h("li", {}, "For Inno Setup installers, a tool helps: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows. Shockwave does not need one."),
+      h("li", {}, "Drop the .exe above. Rallypoint keeps the game files (.big and .gib) and skips the launcher program."),
       h("li", {}, "Many mods also offer a plain .zip or \"no installer\" download. Choose that when you can.")));
 
   function render() {
@@ -641,9 +664,26 @@ function openWizard() {
         new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...[[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([x]) => x < nat.w).map(([x, y]) => new Option(`${x} × ${y}`, `${x}x${y}`)));
       resSel.value = [...resSel.options].some((o) => o.value === p.res) ? p.res : "native";
       const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
+      const icons = h("input", { type: "checkbox", checked: p.icons !== false, onchange: () => { prefs.set({ icons: icons.checked }); if (icons.checked) downloadIcons(); } });
+      const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
+      const note = h("p", { class: "muted small" });
+      async function downloadIcons() {
+        if (prefs.get().icons === false || store.mods.other.some((o) => o.folder === ICON_FOLDER)) { note.textContent = ""; return; }
+        note.textContent = "Downloading sharp command-bar icons…";
+        try {
+          await invoke("icons_install");
+          await loadMods();
+          note.textContent = "Sharp icons installed. They load with the game.";
+        } catch (e) { note.textContent = errText(e); }
+      }
+      downloadIcons();
       return h("div", { class: "stack" }, h("h2", {}, "Display"),
         h("p", { class: "muted" }, "Rallypoint works at any resolution, including 4K and ultrawide. The camera keeps a normal view distance and the menus are scaled, not stretched."),
-        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel), h("label", { class: "switch" }, fs, "Fullscreen"));
+        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel),
+        h("label", { class: "switch" }, fs, "Fullscreen"),
+        h("label", { class: "switch" }, icons, "Sharp command-bar icons"),
+        h("label", { class: "switch" }, cam, "Higher camera"),
+        note);
     }
     if (step === 3) {
       const box = h("div", { class: "stack" });
@@ -662,8 +702,8 @@ function openWizard() {
     return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
-        h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed")),
-        h("dt", {}, "Mods"), h("dd", {}, installedMods().map((m) => m.name).join(", ") || "none"),
+        h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed") + (pr.icons !== false ? ", sharp icons" : "") + (pr.camera ? ", higher camera" : "")),
+        h("dt", {}, "Mods"), h("dd", {}, selectedFolders().map((f) => installedMods().find((m) => m.folder === f)?.name || f).join(", ") || "none"),
         h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added")),
       h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."),
       h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));

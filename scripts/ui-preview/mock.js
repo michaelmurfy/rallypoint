@@ -3,7 +3,7 @@
 const hash = location.hash;
 const state = {
   cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), check_updates: true, version: "0.1.0-alpha.3", os: "macos" },
-  mods: [{ id: "shockwave", name: "C&C: Shockwave", description: "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).", homepage: "https://www.moddb.com/mods/cc-shockwave", download_page: "https://www.moddb.com/mods/cc-shockwave/downloads", path: "Shockwave", detect: ["shockwave"], notes: "On the download page choose the full release. A .zip or \"no installer\" download installs automatically. If only the .exe installer is offered, see the help below.", args: [], installed: hash.includes("modinstalled") ? { folder: "Shockwave", bigs: 12, mb: 280 } : null },
+  mods: [{ id: "shockwave", name: "C&C: Shockwave", description: "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).", homepage: "https://www.moddb.com/mods/cc-shockwave", download_page: "https://www.moddb.com/mods/cc-shockwave/downloads", path: "Shockwave", detect: ["shockwave"], notes: "On the download page choose the full release. It arrives as a Windows installer, usually inside a .zip. Drop that file here. Rallypoint unpacks the game archives and does not start Shockwave's own launcher, so the same download works on macOS and Windows.", args: [], installed: hash.includes("modinstalled") ? { folder: "Shockwave", bigs: 12, mb: 280 } : null },
     { id: "shockwave-chaos", name: "C&C: Shockwave Chaos", description: "A deliberately over-the-top add-on for Shockwave with lots of new and reworked units, generals and abilities.", homepage: "https://www.moddb.com/mods/cc-shockwave-chaos", download_page: "https://www.moddb.com/mods/cc-shockwave-chaos/downloads", path: "ShockwaveChaos", detect: ["chaos"], addon_for: "shockwave", notes: "An add-on: C&C: Shockwave must be installed first. Rallypoint combines it with Shockwave when you launch.", args: [], installed: null }],
   other: hash.includes("modinstalled") ? [{ folder: "My Custom Mod", bigs: 2, mb: 14 }] : [],
   job: null, watch: false,
@@ -54,6 +54,7 @@ const handlers = {
   diagnose: () => ({ checks: [{ name: 'Game engine', ok: true, detail: 'engine.exe' }, { name: 'Zero Hour files', ok: true, detail: 'C:/Games/ZH' }, { name: 'Generals (base game)', ok: false, detail: 'Not found. Zero Hour also needs the original Generals installed or downloaded from Settings.' }], crash: 'Release Crash at Mon Oct 25\nException code: C0000005', data_dir: 'x' }), open_game_data_folder: () => {},
   open_mods_folder: () => {}, open_homepage: () => {},
   relay_status: () => "Offline", relay_connect: () => {}, relay_disconnect: () => {},
+  icons_install: () => { const row = { folder: "Control Bar HD", bigs: 2, mb: 7 }; if (!state.other.some((o) => o.folder === row.folder)) state.other.push(row); return row; },
   launch_game: () => {},
 };
 window.__TAURI__ = {
