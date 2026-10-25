@@ -10,11 +10,11 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 ## Features
 
-- **Launcher** with Steam detection, mod selection, resolution and fullscreen options.
-- **Get the game files from inside the launcher.** On macOS and Linux (where Steam can't install these games) it downloads them for you through Steam's own downloader; on Windows it finds your Steam install.
+- **A modern launcher** with a first-run setup wizard that walks you through game files, display, mods and online play.
+- **Get the game files from inside the launcher.** On macOS and Linux (where Steam can't install these games) it downloads them for you from your Steam account with a native downloader (no Rosetta needed); on Windows it finds your Steam install.
 - **Skirmish / single player.** The game engine is bundled in the app. **Play** opens the full game (Solo Play → Skirmish); **Quick Skirmish** jumps straight into a 1v1 against the AI.
 - **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide are supported. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, and the 2D UI is scaled uniformly and centred instead of stretched.
-- **Mods** (Shockwave, Chaos Mod) launched through the engine's `-mod` support.
+- **Mods made easy.** Press **Get** on a mod, download it in your browser, and Rallypoint installs it automatically. Or drop any mod archive, folder or installer onto the window.
 - **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet.
 
 ## What works in 0.1 Alpha
@@ -45,18 +45,24 @@ Download the installer for your platform from the [Releases](../../releases) pag
 Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 - **Windows:** Steam installs are found automatically.
-- **macOS / Linux:** open **Don't have the files on this computer?**, enter your Steam account name and password, and press **Download**. Rallypoint fetches Valve's `steamcmd`, signs in, and downloads Generals and Zero Hour (about 4 GB); if Steam Guard asks for a code you'll be prompted. Your password is used only for that sign-in and is never saved. The account must own the games. On Apple Silicon, Valve's downloader needs Apple's Rosetta 2; if it's missing the launcher offers to install it (macOS asks for your password).
-- Already have the files somewhere? Paste the folder into **game folder**.
+- **macOS / Linux:** the setup wizard (or **Settings**) has **Download from Steam**. Enter your Steam account name and password; Rallypoint fetches the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (checked against a pinned checksum), signs in, and downloads Generals and Zero Hour (about 4 GB). If Steam Guard asks for a code you'll be prompted. Your password is used only for that sign-in and is never saved. The account must own both games on Steam. It runs natively on Apple Silicon, so Rosetta isn't needed.
+- Already have the files somewhere? Choose that folder in the wizard or in **Settings → Game files**.
 
 ## Playing
 
-1. Pick your game install (or paste the folder).
-2. Choose a resolution (it defaults to your screen's native pixels) and whether to run fullscreen.
-3. **Play** for the full menu, or **Quick Skirmish (vs AI)** to drop straight into a match.
+The first time you open Rallypoint, a short **setup wizard** helps you find or download your game files, choose a display setting, and optionally add a mod or an online server. You can run it again from **Settings**.
+
+On the Play tab choose a mod (optional), a resolution (it defaults to your screen's native pixels) and fullscreen, then press **Play** for the full menu, or **Quick Skirmish** to drop straight into a match against the AI.
 
 ### Mods
 
-Put a mod's folder (or `.big`) in the `Mods` folder inside Rallypoint's data directory and it appears in the launcher's **Mod** list:
+Open the **Mods** tab.
+
+1. Press **Get** next to a mod. Your browser opens the mod's official download page; download it (choose the full release, ideally a `.zip` or "no installer" file). Rallypoint spots the finished file in your Downloads folder and installs it by itself.
+2. Or **drag and drop** a `.zip`, `.7z`, `.rar`, `.tar.gz`, a folder, or an installer `.exe` onto the window, or paste its path.
+3. Pick the mod from the **Mod** list on the Play tab.
+
+Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be removed from the Mods tab (**Open mods folder** shows you where).
 
 | OS | Data directory |
 |---|---|
@@ -64,7 +70,20 @@ Put a mod's folder (or `.big`) in the `Mods` folder inside Rallypoint's data dir
 | Windows | `%APPDATA%\GeneralsZH\` |
 | Linux | `~/.local/share/GeneralsZH/` |
 
-Known mods are listed in [`mods/mods.json`](mods/mods.json) (Shockwave in `Shockwave/`, Chaos Mod in `ChaosMod/`). Downloading them from inside the launcher isn't built yet; get them from the authors. Mods that rely on a patched `.exe` will not work on the ported engine.
+Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and picks the file up afterwards. Currently listed: **C&C: Shockwave**. Know another mod that should be? Open an issue with its ModDB link.
+
+Unpacking uses tools already on your computer. macOS and Windows can open `.zip` out of the box; for `.7z`, `.rar` and installer `.exe` files you may need `brew install sevenzip innoextract` (macOS), `sudo apt install p7zip-full innoextract unzip` (Linux) or [7-Zip](https://www.7-zip.org/) (Windows). Rallypoint tells you if one is missing. Archives are checked before anything is written, and ones that try to escape their folder are refused.
+
+#### Mods that come as an `.exe`
+
+Many mods ship a Windows installer (and some also a launcher program, or patch the game's own executable). Rallypoint runs a ported engine, so what matters is the mod's **game data** (`.big` files). Your options, best first:
+
+1. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build (Shockwave's ModDB page has one). Use that.
+2. **Drop the installer on the window.** If `innoextract` or 7-Zip is installed, Rallypoint unpacks the installer without running it and keeps the game files.
+3. **On Windows, run the installer normally**, then drag the folder it installed into onto the Mods tab. Rallypoint copies the game files into its own `Mods` folder.
+4. **Unpack it yourself** with `innoextract -d out Setup.exe` or `7z x Setup.exe -oout`, then drop the `out` folder on the window.
+
+What can't work: anything that needs the mod's own program (`.exe`) or a patched `generals.exe` / `game.dat`. The ported engine ignores those, so features that rely on them won't appear, but the mod's `.big` files still load. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
 
 ### Widescreen
 
@@ -130,4 +149,4 @@ Releases are built only when a version tag is pushed (`git tag v0.1.0-alpha.1 &&
 
 ## Credits and legal
 
-Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the [macOS port by dvcdsys](https://github.com/dvcdsys/GeneralsGameCode-macOS). The engine and our engine patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md`). This project is not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The launcher, relay server and scripts in this repository are MIT licensed (see [`LICENSE`](LICENSE)). The engine in `engine/` and our changes to it in `patches/` are GPL-3.0 with EA's additional terms ([`patches/LICENSE.md`](patches/LICENSE.md)); the launcher runs the engine as a separate program. Release downloads bundle the engine, and its complete source is `engine/` at the tagged commit plus `patches/`.
+Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the [macOS port by dvcdsys](https://github.com/dvcdsys/GeneralsGameCode-macOS). The engine and our engine patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md`). This project is not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The launcher, relay server and scripts in this repository are MIT licensed (see [`LICENSE`](LICENSE)). The engine in `engine/` and our changes to it in `patches/` are GPL-3.0 with EA's additional terms ([`patches/LICENSE.md`](patches/LICENSE.md)); the launcher runs the engine as a separate program. Steam downloads use the open-source (GPL-2.0) [DepotDownloader](https://github.com/SteamRE/DepotDownloader), fetched at runtime and not bundled. Release downloads bundle the engine, and its complete source is `engine/` at the tagged commit plus `patches/`.

@@ -1,46 +1,15 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rallypoint</title>
 <link rel="stylesheet" href="style.css">
-<header><img src="logo.png" alt="" width="48" height="48"><h1>Rallypoint</h1></header>
-
-<section>
-  <h2>Game files</h2>
-  <label>Game install <select id="game"></select></label>
-  <label>or game folder <input id="dir" placeholder="folder containing INIZH.big"></label>
-  <details id="steam">
-    <summary>Don't have the files on this computer? Get them from Steam</summary>
-    <label>Steam account name <input id="suser" autocomplete="username"></label>
-    <label>Steam password <input id="spass" type="password" autocomplete="current-password"></label>
-    <p class="hint">Used once to sign in through Steam's own downloader. Never saved. You must own the game on Steam.</p>
-    <button id="sget">Download</button> <button id="scancel" hidden>Cancel</button>
-    <div id="sneed" hidden>
-      <label id="sfield"><span id="sneedlabel"></span> <input id="sinput" autocomplete="one-time-code"></label>
-      <button id="ssubmit">Submit</button>
-    </div>
-    <progress id="sbar" max="100" value="0" hidden></progress>
-    <p id="smsg"></p>
-    <details><summary>Details</summary><pre id="slog"></pre></details>
-  </details>
-</section>
-
-<section>
-  <h2>Play</h2>
-  <label>Mod <select id="mod"><option value="">None (vanilla)</option></select></label>
-  <label>Resolution <input id="w" type="number" class="num"> x <input id="h" type="number" class="num"></label>
-  <label class="row"><input id="fs" type="checkbox"> Fullscreen</label>
-  <button id="go">Play</button> <button id="sk">Quick Skirmish (vs AI)</button>
-  <p id="msg"></p>
-</section>
-
-<section>
-  <h2>Online</h2>
-  <label>Server <input id="srv" placeholder="host:7777"></label>
-  <label>Room <input id="room" placeholder="any name"></label>
-  <label>Room password <input id="rpass" type="password" autocomplete="off"></label>
-  <p class="hint">Joining a room that doesn't exist creates it with this password. It disappears when everyone has left.</p>
-  <button id="net">Connect</button>
-  <p id="relay">Offline</p>
-</section>
-
+</head>
+<body>
+<div id="root"></div>
+<div id="toasts" role="status" aria-live="polite"></div>
+<noscript>Rallypoint needs JavaScript to run.</noscript>
 <script src="app.js"></script>
+</body>
+</html>

@@ -1,4 +1,12 @@
 [
-  { "id": "shockwave", "name": "Shockwave", "homepage": "https://www.moddb.com/mods/c-c-generals-zero-hour-shockwave", "path": "Shockwave" },
-  { "id": "chaos", "name": "Chaos Mod", "homepage": "https://www.moddb.com/mods/generals-chaos-mod", "path": "ChaosMod" }
+  {
+    "id": "shockwave",
+    "name": "C&C: Shockwave",
+    "description": "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).",
+    "homepage": "https://www.moddb.com/mods/cc-shockwave",
+    "download_page": "https://www.moddb.com/mods/cc-shockwave/downloads",
+    "path": "Shockwave",
+    "detect": ["shockwave"],
+    "notes": "On the download page choose the full release. A .zip or \"no installer\" download installs automatically. If only the .exe installer is offered, see the README section on mods that come as an .exe."
+  }
 ]

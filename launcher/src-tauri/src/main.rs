@@ -1,6 +1,7 @@
 use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, mods, steam};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 use tauri::Manager;
 
 const MODS_JSON: &str = include_str!("../../../mods/mods.json");
@@ -9,25 +10,125 @@ const MODS_JSON: &str = include_str!("../../../mods/mods.json");
 struct Relay(Mutex<Option<Agent>>);
 #[derive(Default)]
 struct Downloads(Mutex<Option<AssetJob>>);
+/// A mod the user is currently downloading in their browser: we watch their Downloads folder for it.
+struct Watch {
+    id: String,
+    since: SystemTime,
+}
+#[derive(Default)]
+struct ModWatch(Mutex<Option<Watch>>);
 
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
 }
+
+fn mods_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("Mods"))
+}
+
+fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("config.json"))
+}
+
+fn catalog() -> Result<Vec<mods::Mod>, String> {
+    mods::load_manifest(MODS_JSON).map_err(|e| e.to_string())
+}
+
+/// Open a catalog page in the user's browser. Only https URLs, and only ones from our own catalog.
+fn open_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("only https links can be opened".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = { let mut c = std::process::Command::new("rundll32"); c.arg("url.dll,FileProtocolHandler"); c };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    c.arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn open_folder(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    let mut c = std::process::Command::new("open");
+    #[cfg(windows)]
+    let mut c = std::process::Command::new("explorer");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut c = std::process::Command::new("xdg-open");
+    c.arg(path).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+// ---- game files ----------------------------------------------------------------------------------
 
 #[tauri::command]
 fn detect_games() -> Vec<steam::GameInstall> {
     steam::detect()
 }
 
-#[tauri::command]
-fn installed_mods(app: tauri::AppHandle) -> Result<Vec<mods::Mod>, String> {
-    let all = mods::load_manifest(MODS_JSON).map_err(|e| e.to_string())?;
-    Ok(mods::installed(&all, &base(&app)?.join("Mods")))
+#[derive(serde::Serialize)]
+struct GameCheck {
+    ok: bool,
+    message: String,
 }
 
-fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(base(app)?.join("config.json"))
+/// Is `path` a Zero Hour data folder?
+#[tauri::command]
+fn check_game_dir(path: String) -> GameCheck {
+    let p = Path::new(path.trim());
+    if path.trim().is_empty() {
+        GameCheck { ok: false, message: "Choose the folder that contains INIZH.big".into() }
+    } else if p.join("INIZH.big").is_file() {
+        GameCheck { ok: true, message: "Zero Hour found".into() }
+    } else if p.join("INI.big").is_file() {
+        GameCheck { ok: false, message: "That's the original Generals. Rallypoint needs Zero Hour's folder (it has INIZH.big)".into() }
+    } else {
+        GameCheck { ok: false, message: "No Zero Hour files in that folder (INIZH.big is missing)".into() }
+    }
 }
+
+#[tauri::command]
+fn assets_start(app: tauri::AppHandle, jobs: tauri::State<Downloads>, user: String, password: String) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.steam_user = user.trim().to_string();
+    let _ = c.save(&path);
+    let job = AssetJob::start(&base(&app)?, user.trim(), password).map_err(|e| e.to_string())?;
+    *jobs.0.lock().unwrap() = Some(job);
+    Ok(())
+}
+
+#[tauri::command]
+fn assets_status(app: tauri::AppHandle, jobs: tauri::State<Downloads>) -> assets::AssetState {
+    let state = jobs.0.lock().unwrap().as_ref().map(|j| j.state()).unwrap_or_default();
+    if state.phase == assets::Phase::Done {
+        // Point the launcher at the freshly downloaded files.
+        if let (Ok(path), Ok(root)) = (config_path(&app), base(&app)) {
+            let mut c = Config::load(&path);
+            let zh = assets::zero_hour_dir(&root).to_string_lossy().to_string();
+            if c.game_dir != zh {
+                c.game_dir = zh;
+                let _ = c.save(&path);
+            }
+        }
+    }
+    state
+}
+
+/// Answer the download's prompt: the password or the Steam Guard code.
+#[tauri::command]
+fn assets_submit(jobs: tauri::State<Downloads>, text: String) {
+    if let Some(j) = jobs.0.lock().unwrap().as_ref() {
+        j.submit(&text);
+    }
+}
+
+#[tauri::command]
+fn assets_cancel(jobs: tauri::State<Downloads>) {
+    *jobs.0.lock().unwrap() = None; // dropping the job stops it
+}
+
+// ---- config ---------------------------------------------------------------------------------------
 
 /// What the UI may see. The serial (a credential the user never handles) is deliberately not part of it.
 #[derive(serde::Serialize)]
@@ -36,12 +137,23 @@ struct ConfigView {
     room: String,
     game_dir: String,
     steam_user: String,
+    setup_done: bool,
+    version: &'static str,
+    os: &'static str,
 }
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
     let c = Config::load(&config_path(&app)?);
-    Ok(ConfigView { server: c.server, room: c.room, game_dir: c.game_dir, steam_user: c.steam_user })
+    Ok(ConfigView {
+        server: c.server,
+        room: c.room,
+        game_dir: c.game_dir,
+        steam_user: c.steam_user,
+        setup_done: c.setup_done,
+        version: env!("CARGO_PKG_VERSION"),
+        os: std::env::consts::OS,
+    })
 }
 
 #[tauri::command]
@@ -53,6 +165,24 @@ fn save_config(app: tauri::AppHandle, server: String, room: String, steam_user: 
     c.steam_user = steam_user.trim().to_string();
     c.save(&path).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+fn save_game_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let cfg = config_path(&app)?;
+    let mut c = Config::load(&cfg);
+    c.game_dir = path.trim().to_string();
+    c.save(&cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_setup_done(app: tauri::AppHandle, done: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.setup_done = done;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+// ---- online ---------------------------------------------------------------------------------------
 
 /// Joins `room` on the relay, creating it with `password` if nobody is in it. Signing up with the server is automatic.
 #[tauri::command]
@@ -104,51 +234,102 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
     }
 }
 
-/// Download the game files from Steam (macOS/Linux, or anywhere Steam isn't installed). `password` may be empty
-/// if steamcmd already has a cached login.
+// ---- mods -----------------------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct ModEntry {
+    #[serde(flatten)]
+    info: mods::Mod,
+    installed: Option<mods::Installed>,
+}
+
+#[derive(serde::Serialize)]
+struct ModList {
+    catalog: Vec<ModEntry>,
+    /// Installed folders that aren't in the catalog (added from a file or folder).
+    other: Vec<mods::Installed>,
+}
+
 #[tauri::command]
-fn assets_start(app: tauri::AppHandle, jobs: tauri::State<Downloads>, user: String, password: String) -> Result<(), String> {
-    let path = config_path(&app)?;
-    let mut c = Config::load(&path);
-    c.steam_user = user.trim().to_string();
-    let _ = c.save(&path);
-    let job = AssetJob::start(&base(&app)?, &user, password).map_err(|e| e.to_string())?;
-    *jobs.0.lock().unwrap() = Some(job);
+fn mods_list(app: tauri::AppHandle) -> Result<ModList, String> {
+    let installed = mods::list_installed(&mods_dir(&app)?);
+    let catalog = catalog()?;
+    let other = installed.iter().filter(|i| !catalog.iter().any(|m| m.path == i.folder)).cloned().collect();
+    let catalog = catalog.into_iter().map(|m| ModEntry { installed: installed.iter().find(|i| i.folder == m.path).cloned(), info: m }).collect();
+    Ok(ModList { catalog, other })
+}
+
+/// Open the mod's official download page and start watching the Downloads folder for the file.
+#[tauri::command]
+fn mods_get(watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
+    let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
+    open_url(&m.download_page)?;
+    *watch.0.lock().unwrap() = Some(Watch { id, since: SystemTime::now() });
     Ok(())
 }
 
-#[tauri::command]
-fn assets_status(app: tauri::AppHandle, jobs: tauri::State<Downloads>) -> assets::AssetState {
-    let state = jobs.0.lock().unwrap().as_ref().map(|j| j.state()).unwrap_or_default();
-    if state.phase == assets::Phase::Done {
-        // Point the launcher at the freshly downloaded files.
-        if let (Ok(path), Ok(root)) = (config_path(&app), base(&app)) {
-            let mut c = Config::load(&path);
-            let zh = assets::zero_hour_dir(&root).to_string_lossy().to_string();
-            if c.game_dir != zh {
-                c.game_dir = zh;
-                let _ = c.save(&path);
-            }
-        }
-    }
-    state
+#[derive(serde::Serialize, Default)]
+struct WatchStatus {
+    /// "idle", "waiting", "installed" or "error"
+    state: &'static str,
+    id: String,
+    message: String,
 }
 
-/// Answer steamcmd's prompt: the password or the Steam Guard code.
+/// Called every second by the UI while a download is expected. Installs the file as soon as it has finished.
 #[tauri::command]
-fn assets_submit(jobs: tauri::State<Downloads>, text: String) {
-    if let Some(j) = jobs.0.lock().unwrap().as_ref() {
-        j.submit(&text);
-    }
+async fn mods_poll(app: tauri::AppHandle, watch: tauri::State<'_, ModWatch>) -> Result<WatchStatus, String> {
+    let (id, since) = match watch.0.lock().unwrap().as_ref() {
+        Some(w) => (w.id.clone(), w.since),
+        None => return Ok(WatchStatus { state: "idle", ..Default::default() }),
+    };
+    let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
+    let Some(file) = mods::downloads_dir().and_then(|d| mods::find_download(&d, since, &m.detect)) else {
+        return Ok(WatchStatus { state: "waiting", id, message: "Waiting for your download to finish…".into() });
+    };
+    *watch.0.lock().unwrap() = None;
+    let dir = mods_dir(&app)?;
+    let name = m.name.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || mods::install(&file, &dir, &m.path)).await.map_err(|e| e.to_string())?;
+    Ok(match result {
+        Ok(i) => WatchStatus { state: "installed", id, message: format!("{name} installed ({} MB)", i.mb) },
+        Err(e) => WatchStatus { state: "error", id, message: e },
+    })
 }
 
 #[tauri::command]
-fn assets_cancel(jobs: tauri::State<Downloads>) {
-    *jobs.0.lock().unwrap() = None; // dropping the job stops steamcmd
+fn mods_cancel_watch(watch: tauri::State<ModWatch>) {
+    *watch.0.lock().unwrap() = None;
+}
+
+/// Install from a file or folder the user chose or dropped on the window.
+#[tauri::command]
+async fn mods_install(app: tauri::AppHandle, path: String) -> Result<mods::Installed, String> {
+    let src = PathBuf::from(path.trim());
+    let folder = mods::folder_for_archive(&src).ok_or("couldn't work out a name for that mod")?;
+    let dir = mods_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || mods::install(&src, &dir, &folder)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_id: Option<String>, width: u32, height: u32, fullscreen: bool, skirmish: bool) -> Result<(), String> {
+fn mods_remove(app: tauri::AppHandle, folder: String) -> Result<(), String> {
+    mods::remove(&mods_dir(&app)?, &folder)
+}
+
+#[tauri::command]
+fn open_mods_folder(app: tauri::AppHandle) -> Result<(), String> {
+    open_folder(&mods_dir(&app)?)
+}
+
+#[tauri::command]
+fn open_homepage(id: String) -> Result<(), String> {
+    open_url(&catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?.homepage)
+}
+
+// ---- launching ------------------------------------------------------------------------------------
+
+#[tauri::command]
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folder: Option<String>, width: u32, height: u32, fullscreen: bool, skirmish: bool) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
@@ -156,16 +337,20 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     if !game_dir.join("INIZH.big").is_file() {
         return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
     }
-    let m = match mod_id {
-        Some(id) => mods::load_manifest(MODS_JSON).map_err(|e| e.to_string())?.into_iter().find(|m| m.id == id),
-        None => None,
+    let (mod_path, mod_args) = match mod_folder.filter(|f| !f.is_empty()) {
+        Some(f) => {
+            let name = mods::sanitize_folder(&f).filter(|n| *n == f).ok_or("invalid mod")?;
+            let args = catalog()?.into_iter().find(|m| m.path == name).map(|m| m.args).unwrap_or_default();
+            (Some(mods_dir(&app)?.join(name).to_string_lossy().to_string()), args)
+        }
+        None => (None, vec![]),
     };
     let opts = launch::LaunchOptions {
         width,
         height,
         fullscreen,
-        mod_path: m.as_ref().map(|m| m.full_path(&base.join("Mods")).to_string_lossy().into()),
-        mod_args: m.map(|m| m.args).unwrap_or_default(),
+        mod_path,
+        mod_args,
         // Online only once the relay has accepted us; the engine needs our virtual IP.
         relay: match relay.0.lock().unwrap().as_ref() {
             Some(a) => match a.status() {
@@ -174,7 +359,6 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             },
             None => None,
         },
-        // Straight into a 1v1 skirmish against the AI; plain Play opens the full menu (Solo > Skirmish).
         env: {
             let mut env = vec![];
             if skirmish {
@@ -193,7 +377,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
         let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)); // bundles can lose the exec bit
     }
     launch::command(&exe, &game_dir, &opts).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
-    // Remember a manually chosen folder.
+    // Remember the folder that worked.
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     if c.game_dir != game_dir.to_string_lossy() {
@@ -207,7 +391,14 @@ fn main() {
     tauri::Builder::default()
         .manage(Relay::default())
         .manage(Downloads::default())
-        .invoke_handler(tauri::generate_handler![detect_games, installed_mods, launch_game, get_config, save_config, relay_connect, relay_disconnect, relay_status, assets_start, assets_status, assets_submit, assets_cancel])
+        .manage(ModWatch::default())
+        .invoke_handler(tauri::generate_handler![
+            detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_cancel,
+            get_config, save_config, save_game_dir, set_setup_done,
+            relay_connect, relay_disconnect, relay_status,
+            mods_list, mods_get, mods_poll, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
+            launch_game
+        ])
         .run(tauri::generate_context!())
         .expect("tauri");
 }

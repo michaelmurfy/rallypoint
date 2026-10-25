@@ -16,6 +16,9 @@ pub struct Config {
     /// Steam account name for downloading game files (the password is never stored).
     #[serde(default)]
     pub steam_user: String,
+    /// The first-run setup wizard has been completed (or skipped).
+    #[serde(default)]
+    pub setup_done: bool,
 }
 
 impl Config {
