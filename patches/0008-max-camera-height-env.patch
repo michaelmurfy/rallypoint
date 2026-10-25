@@ -1,0 +1,20 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 3afe908..4b13ab6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1239,6 +1239,15 @@ void GlobalData::parseGameDataDefinition( INI* ini )
+ 
+ 	TheWritableGlobalData->m_xResolution = xres;
+ 	TheWritableGlobalData->m_yResolution = yres;
++
++	// The launcher sets GEN_MAX_CAMERA_HEIGHT (retail is 300; the community graphics fix uses 510). Applied
++	// here so it wins over GameData.ini, mods included, without editing any game file.
++	if (const char *cam = getenv("GEN_MAX_CAMERA_HEIGHT"))
++	{
++		const Real height = (Real)atof(cam);
++		if (height >= 300.0f && height <= 1500.0f)
++			TheWritableGlobalData->m_maxCameraHeight = height;
++	}
+ }
+ 
+ void GlobalData::parseCustomDefinition()

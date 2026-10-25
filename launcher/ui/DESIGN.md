@@ -32,6 +32,7 @@ State colors stay off the red scale on purpose, so "installed", "waiting" and "f
 
 - **Status**: a dot and text (`.status`) for ambient state in the sidebar. A capsule (`.pill`) only for the state of one thing, such as a mod being installed, waiting for its download, or needing another mod.
 - **Buttons**: one `primary` per view. Labels name the action ("Use these game files", "Install this file", "Send code"), not "Next" or "Submit".
+- **Feedback**: it appears where the action happened. A button's result goes in `liveStatus()` right beside it (spinner while working, then the answer; good news clears itself, errors stay). Page-wide actions use `say()`, which writes to the line under the page title. Toasts are only the fallback inside the setup wizard.
 - **Lists**: map packs and similar rows are separated by hairlines, not boxed in cards.
 - **Copy**: sentence case, no arrow glyphs, no filler adjectives.
 - **Motion**: 120-180ms ease-out, no overshoot, nothing under `prefers-reduced-motion: reduce`.
