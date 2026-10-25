@@ -135,7 +135,7 @@ index abd4109..91deab7 100644
  	m_transport->reset();
  	retval = m_transport->init(m_localIP, lobbyPort);
 diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
-index 6806417..59eb616 100644
+index 6806417..8f7ce9d 100644
 --- a/Core/GameEngine/Source/GameNetwork/udp.cpp
 +++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
 @@ -34,6 +34,7 @@
@@ -215,7 +215,7 @@ index 6806417..59eb616 100644
 +  uint8_t buf[2048];
 +  for (;;)
 +  {
-+    int n = recvfrom(fd,(char *)buf,sizeof(buf),0,nullptr,nullptr);
++    int n = recvfrom(fd,(char *)buf,(UnsignedInt)sizeof(buf),0,nullptr,nullptr); // UnsignedInt: size_t is ambiguous with the macOS winsock shim
 +    if (n < 0)
 +    {
 +      #ifdef _WIN32
