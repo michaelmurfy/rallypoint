@@ -39,6 +39,8 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
         a.extend(["-mod".into(), m.clone()]);
     }
     a.extend(o.mod_args.iter().cloned());
+    // EA and Generals logo movies. The engine's own -nologo; the menu scene stays.
+    a.push("-nologo".into());
     a
 }
 
@@ -102,7 +104,7 @@ mod tests {
     #[test]
     fn builds_args_with_mod() {
         let o = LaunchOptions { width: 3840, height: 1600, mod_path: Some("/m/Shockwave".into()), mod_args: vec!["-noshellmap".into()], ..Default::default() };
-        assert_eq!(args(&o), ["-win", "-xres", "3840", "-yres", "1600", "-mod", "/m/Shockwave", "-noshellmap"]);
+        assert_eq!(args(&o), ["-win", "-xres", "3840", "-yres", "1600", "-mod", "/m/Shockwave", "-noshellmap", "-nologo"]);
     }
 
     #[test]
