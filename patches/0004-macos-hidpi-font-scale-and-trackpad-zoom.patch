@@ -1,0 +1,72 @@
+diff --git a/Core/GameEngine/Source/GameClient/GlobalLanguage.cpp b/Core/GameEngine/Source/GameClient/GlobalLanguage.cpp
+index a9bc586..1ee2fc1 100644
+--- a/Core/GameEngine/Source/GameClient/GlobalLanguage.cpp
++++ b/Core/GameEngine/Source/GameClient/GlobalLanguage.cpp
+@@ -60,6 +60,7 @@
+ 
+ #include "GameClient/Display.h"
+ #include "GameClient/GlobalLanguage.h"
++#include "Common/WideScreen.h"
+ 
+ //-----------------------------------------------------------------------------
+ // DEFINES ////////////////////////////////////////////////////////////////////
+@@ -203,6 +204,17 @@ Real GlobalLanguage::getResolutionFontSizeAdjustment() const
+ 		return m_resolutionFontSizeAdjustment;
+ }
+ 
++// Fonts follow the 2D UI scale: WideScreen scales the UI by display height (centred, not stretched),
++// so scaling text by width made it huge on wide and high-DPI displays. GEN_STRETCH=1 keeps the retail width scale.
++static Real uiBaseScale()
++{
++	const Real w = TheDisplay->getWidth() / (Real)DEFAULT_DISPLAY_WIDTH;
++	if (!WideScreen::enabled())
++		return w;
++	const Real h = TheDisplay->getHeight() / (Real)DEFAULT_DISPLAY_HEIGHT;
++	return w < h ? w : h;
++}
++
+ Real GlobalLanguage::getResolutionFontSizeScale(ResolutionFontSizeMethod method, Real scaler)
+ {
+ 	Real adjustFactor;
+@@ -214,7 +226,7 @@ Real GlobalLanguage::getResolutionFontSizeScale(ResolutionFontSizeMethod method,
+ 	{
+ 		// TheSuperHackers @info The original font scaling for this game.
+ 		// Useful for not breaking legacy Addons and Mods. Scales poorly with large resolutions.
+-		adjustFactor = TheDisplay->getWidth() / (Real)DEFAULT_DISPLAY_WIDTH;
++		adjustFactor = uiBaseScale();
+ 		adjustFactor = 1.0f + (adjustFactor - 1.0f) * scaler;
+ 		if (adjustFactor > 2.0f)
+ 			adjustFactor = 2.0f;
+@@ -224,7 +236,7 @@ Real GlobalLanguage::getResolutionFontSizeScale(ResolutionFontSizeMethod method,
+ 	{
+ 		// TheSuperHackers @feature The original font scaling, but without ceiling.
+ 		// Useful for not changing the original look of the game. Scales alright with large resolutions.
+-		adjustFactor = TheDisplay->getWidth() / (Real)DEFAULT_DISPLAY_WIDTH;
++		adjustFactor = uiBaseScale();
+ 		adjustFactor = 1.0f + (adjustFactor - 1.0f) * scaler;
+ 		break;
+ 	}
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 2b5f137..b9b859c 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -1046,9 +1046,16 @@ static void CaptureInputEvent(NSEvent* event)
+             MouseEv m; m.type = METAL_MOUSE_WHEEL;
+             if (!EventPoint(event, &m.x, &m.y)) break;
+             // One detent ~= 120 (WHEEL_DELTA). scrollingDeltaY is points; sign matters.
+-            double dy = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY;
+-            m.delta = (int)(dy * 120.0);
+-            if (m.delta == 0 && dy != 0.0) m.delta = (dy > 0 ? 120 : -120);
++            // Trackpads and Magic Mouse report pixels (tens per event), so 10 points count as one
++            // detent; a plain wheel reports lines. The result travels as a signed 16 bit value in
++            // wParam, so clamp it or a fast swipe wraps to the opposite sign.
++            bool precise = event.hasPreciseScrollingDeltas;
++            double dy = precise ? event.scrollingDeltaY : event.deltaY;
++            double d = dy * (precise ? 12.0 : 120.0);
++            if (d > 32000.0) d = 32000.0;
++            if (d < -32000.0) d = -32000.0;
++            m.delta = (int)d;
++            if (m.delta == 0 && dy != 0.0) m.delta = (dy > 0 ? 1 : -1);
+             g_mouseQ.push_back(m);
+             break;
+         }
