@@ -4,33 +4,37 @@
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
-> **0.1 Beta.** Everything described here is built, but parts have only been tested by the developer so far. See [What works](#what-works-in-01-beta) for an honest list of what is and isn't verified.
+> **0.1 Beta.** Single player works on macOS and Windows and has been played on both. Multiplayer through the relay is the main thing still to do. See [What works](#what-works-in-01-beta) for an honest list of what is and isn't done.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
 
 ## Features
 
 - **A modern launcher** with a first-run setup wizard that walks you through game files, display, mods and maps.
-- **Get the game files from inside the launcher.** On macOS and Linux (where Steam can't install these games) it downloads them for you from your Steam account with a native downloader (no Rosetta needed); on Windows it finds your Steam install.
+- **Get the game files from inside the launcher.** On macOS (where Steam can't install these games) it downloads them for you from your Steam account with a native downloader (no Rosetta needed); on Windows it finds your Steam install.
 - **Skirmish / single player.** The game engine is bundled in the app. **Play** opens the full game (Solo Play → Skirmish); **Quick Skirmish** jumps straight into a 1v1 against the AI.
-- **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide are supported. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, and the 2D UI is scaled uniformly and centred instead of stretched.
-- **Mods made easy.** Press **Get** on a mod, download it in your browser, and Rallypoint installs it automatically. Or drop any mod archive, folder or installer onto the window.
+- **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide work on macOS and Windows. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, the 2D UI (including the command bar and its icons) is scaled uniformly and centred instead of stretched, and text follows the same scale. Windowed and fullscreen both work, and Fullscreen off really gives you a window.
+- **Mods made easy.** Download a mod from its official page, then point Rallypoint at the file or folder. It unpacks Shockwave's Windows installer itself (no Windows needed) and never starts a mod's own launcher. Mods that are add-ons for another mod are listed as such and played together with it.
 - **Map packs.** One click installs GenTool's ranked 1v1, 2v2 and 3v3 maps (or all of them) into the right folder; you can add any other map archive or folder too.
 - **Stays up to date.** The launcher checks GitHub for a newer release when it starts and, if you agree, downloads and opens the installer for your OS.
-- **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet.
+- **Graphics options.** A camera distance setting (zoom out further than the original game allows) and one button for the community's high-quality settings (shadows, soft water, trees, particles) from the graphics fix, with your original `Options.ini` backed up.
+- **Help when something goes wrong.** *Settings → Troubleshooting* checks your game files and the original Generals, and shows the game's last crash report and what it printed. Results appear next to the button you pressed, not in pop-ups.
+- **Internet multiplayer through your own server (in progress).** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet. The relay, the encryption and the connection diagnostics are built; playing a full multiplayer game through it is still to do (see below).
 
 ## What works in 0.1 Beta
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
 | Launcher | ✅ | ✅ | build it yourself (see [Linux](#linux)) |
-| Download game files from Steam | ✅ | ✅ finds your Steam install | ⚠️ same downloader as macOS, not tried on Linux |
-| Engine / Skirmish | ✅ | ⚠️ builds from upstream source, untested here | ❌ not built yet |
-| Widescreen / HiDPI patch | ⚠️ written, not played yet | ⚠️ written, not played yet | – |
+| Download game files from Steam | ✅ tried with a real account | ✅ finds your Steam install | not used (no engine) |
+| Engine / Skirmish | ✅ | ✅ | ❌ no engine yet |
+| Widescreen / HiDPI (any resolution, ultrawide, command bar and text) | ✅ | ✅ | – |
+| Mods (Shockwave, Shockwave Chaos) | ✅ | ✅ | – |
 | Relay server | – | – | ✅ (Docker or binary) |
-| Multiplayer through the relay | ⚠️ protocol and launcher agent tested; engine patch **not yet tried in a real game** | same | – |
+| Encrypted relay traffic, server diagnostics | ✅ tested between the launcher and a real server | ✅ same code | – |
+| Multiplayer game through the relay | ⏳ still to do | ⏳ still to do | – |
 
-Legend: ✅ works / tested, ⚠️ implemented but not verified end to end, ❌ missing.
+Legend: ✅ works and has been played or tried, ⏳ built but not yet played end to end, ❌ missing.
 
 Intel Macs are not supported (the engine port is arm64 only).
 
@@ -47,7 +51,7 @@ Download the installer for your platform from the [Releases](../../releases) pag
 Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 - **Windows:** Steam installs are found automatically.
-- **macOS / Linux:** the setup wizard (or **Settings**) has **Download from Steam**. Enter your Steam account name and password; Rallypoint fetches the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (checked against a pinned checksum), signs in, and downloads Generals and Zero Hour (about 4 GB). If you use the Steam Mobile app, Steam sends a notification to approve the sign-in; just tap approve (or choose **Enter a code instead**). Email codes are asked for in the launcher. Your password is used only for that sign-in and is never saved. The account must own both games on Steam. It runs natively on Apple Silicon, so Rosetta isn't needed.
+- **macOS:** the setup wizard (or **Settings**) has **Download from Steam**. Enter your Steam account name and password; Rallypoint fetches the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (checked against a pinned checksum), signs in, and downloads Generals and Zero Hour (about 4 GB). If you use the Steam Mobile app, Steam sends a notification to approve the sign-in; just tap approve (or choose **Enter a code instead**). Email codes are asked for in the launcher. Your password is used only for that sign-in and is never saved. The account must own both games on Steam. It runs natively on Apple Silicon, so Rosetta isn't needed. This has been tried with a real account and works.
 - Already have the files somewhere? Choose that folder in the wizard or in **Settings → Game files**.
 
 ## Playing
@@ -60,8 +64,8 @@ On the Play tab choose a mod (optional), a resolution (it defaults to your scree
 
 Open the **Mods** tab.
 
-1. Press **Get** next to a mod. Your browser opens the mod's official download page; download it (choose the full release, ideally a `.zip` or "no installer" file). Rallypoint spots the finished file in your Downloads folder and installs it by itself.
-2. Or **drag and drop** a `.zip`, `.7z`, `.rar`, `.tar.gz`, a folder, or an installer `.exe` onto the window, or paste its path.
+1. Press **Open download page** on a mod. Your browser opens the mod's official page; download it (choose the full release).
+2. Back in Rallypoint press **Choose file…** (a `.zip`, `.7z`, `.rar`, `.tar.gz` or an installer `.exe`) or **Choose folder…** (for example the folder a Windows installer installed into). That card shows a spinner while it installs and flips to *Installed*. Nothing watches your Downloads folder and there is nothing to wait for. You can also drop a file or folder anywhere on the Mods page, or paste its path.
 3. Tick the mods you want on the Play tab. Several can load at once; an add-on is laid over the mod it needs.
 
 Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be removed from the Mods tab (**Open mods folder** shows you where).
@@ -72,7 +76,7 @@ Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be
 | Windows | `%APPDATA%\GeneralsZH\` |
 | Linux | `~/.local/share/GeneralsZH/` |
 
-Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and picks the file up afterwards. Currently listed: **C&C: Shockwave** and its add-on **C&C: Shockwave Chaos** (it needs Shockwave installed first; Rallypoint lays it over Shockwave when you launch, without changing your Shockwave folder). The add-on setup is untested in a real game. Know another mod that should be listed? Open an issue with its ModDB link.
+Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and you choose the file you downloaded. Currently listed: **C&C: Shockwave**, which plays on its own, and its add-on **C&C: Shockwave Chaos**, which needs Shockwave installed and is played together with it (Rallypoint lays it over Shockwave when you launch, without changing your Shockwave folder). Know another mod that should be listed? Open an issue with its ModDB link.
 
 Unpacking uses tools already on your computer. macOS and Windows can open `.zip` out of the box; for `.7z`, `.rar` and installer `.exe` files you may need `brew install sevenzip innoextract` (macOS), `sudo apt install p7zip-full innoextract unzip` (Linux) or [7-Zip](https://www.7-zip.org/) (Windows). Rallypoint tells you if one is missing. Archives are checked before anything is written, and ones that try to escape their folder are refused.
 
@@ -80,14 +84,14 @@ Unpacking uses tools already on your computer. macOS and Windows can open `.zip`
 
 Many mods ship a Windows installer (and some also a launcher program, or patch the game's own executable). Rallypoint runs a ported engine, so what matters is the mod's **game data** (`.big` files). Your options, best first:
 
-1. **Drop the installer on the window.** Shockwave's download is a Clickteam installer (often inside a `.zip`). Rallypoint unpacks the game archives itself and does not start Shockwave's Windows launcher, so the same file works on macOS and Windows. Shockwave Chaos is a plain `.zip` and installs directly. For other installers, `innoextract` or 7-Zip unpacks them the same way.
+1. **Choose the installer (or drop it on the window).** Shockwave's download is a Clickteam installer (often inside a `.zip`). Rallypoint unpacks the game archives itself and does not start Shockwave's Windows launcher, so the same file works on macOS and Windows. Shockwave Chaos is a plain `.zip` and installs directly. For other installers, `innoextract` or 7-Zip unpacks them the same way.
 2. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build.
 3. **On Windows, run the installer normally**, then drag the folder it installed into onto the Mods tab. Rallypoint copies the game files into its own `Mods` folder.
 4. **Unpack it yourself** with `innoextract -d out Setup.exe` or `7z x Setup.exe -oout`, then drop the `out` folder on the window.
 
 What can't work: a patched `generals.exe` / `game.dat`, or a feature that exists only inside the mod's own launcher program. Rallypoint's engine loads the mod's `.big` and `.gib` files. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
 
-Setup downloads GenTool's sharp command-bar icons (Control Bar HD) and loads them with the game. On ultrawide screens the command bar and its icons keep their proportions and sit in the middle of the screen with the rest of the interface. A higher camera is optional on the Play tab and stays off unless you turn it on.
+Setup downloads GenTool's sharp command-bar icons (Control Bar HD) and loads them with the game. On ultrawide screens the command bar and its icons keep their proportions and sit in the middle of the screen with the rest of the interface. A higher camera is optional on the Play tab and stays off unless you turn it on; *Settings → Graphics* has the camera distance and the high-quality options.
 
 ### Maps
 
@@ -97,11 +101,13 @@ Zero Hour looks for maps in `Documents/Command and Conquer Generals Zero Hour Da
 
 At start-up Rallypoint asks GitHub whether a newer release exists (turn this off in **Settings → Updates**). If there is one, a banner offers **Download and open installer**: it fetches the installer for your OS from this repository's release, checks it against the release's `SHA256SUMS`, and opens it. You finish the install yourself, so quit Rallypoint first.
 
-### Widescreen
+### Widescreen and HiDPI
 
-On by default. Set `GEN_STRETCH=1` in the environment to get the original stretched UI and fixed-horizontal-FOV camera back.
+On by default on macOS and Windows: any resolution, ultrawide, Retina. Menus, the command bar, its icons and text share one centred scale, the camera shows more of the map instead of zooming in, and the macOS trackpad zooms sensibly. Set `GEN_STRETCH=1` in the environment to get the original stretched UI and fixed-horizontal-FOV camera back.
 
 ## Multiplayer
+
+**Status: still to do.** The relay server, the encryption, the server key checks and the connection diagnostics are built and tested, and the game only ever sees the relay's own address range while you are connected. A full multiplayer game through it has not been played yet, so treat it as work in progress.
 
 Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
 
@@ -132,7 +138,7 @@ The image is also published as `ghcr.io/michaelmurfy/rallypoint-relay`, and the 
 
 ## Linux
 
-Releases don't include a Linux launcher, and there is no Linux game engine yet (only the relay server runs on Linux). If you want the launcher itself, build it:
+Releases don't include a Linux launcher, and there is no Linux game engine yet (only the relay server runs on Linux). Running the Windows engine through Proton or Wine is a possible way to get Linux players in the future, and is not started. If you want the launcher itself, build it:
 
 ```bash
 # Debian / Ubuntu build dependencies (other distros: the equivalent webkit2gtk 4.1 / GTK 3 dev packages)
@@ -166,17 +172,17 @@ Releases are built only when a version tag is pushed (`make release VERSION=0.1.
 | `launcher/` | Tauri 2 app: `core/` (all the logic, tested), `src-tauri/` (thin shell), `ui/` (plain HTML) |
 | `server/`, `shared/` | Relay server and the wire protocol crate |
 | `engine/` | Git submodule: the macOS/Windows engine port |
-| `patches/` | Our engine changes (widescreen, relay transport), applied with `patches/apply.sh` |
+| `patches/` | Our engine changes (widescreen and HiDPI, relay transport, macOS and Windows fixes, mod loading), applied with `patches/apply.sh` |
 | `mods/` | Mod manifest |
 
 ## Known limitations
 
-- The engine patches have not been played in a real game by the author yet; widescreen UI details and the relay transport are the most likely places to find bugs. Please file issues.
-- No Linux engine, no Intel Mac engine.
-- The Steam download has not been tried against a real account yet, and mods can't be downloaded from inside the launcher.
+- Multiplayer through the relay is still to do: it is built and tested piece by piece but a full game has not been played.
+- No Linux engine (Proton or Wine is a possible future route) and no Intel Mac engine.
+- Mods can't be downloaded from inside the launcher: you download from the mod's page and choose the file.
 - Planned but not started: saving and loading multiplayer games, controlling allied units, and co-op (sharing one player and its units).
-- Relay traffic is not encrypted, so someone on the network path could read or replay it; room passwords keep other players out, not eavesdroppers.
 - Game determinism between macOS and Windows (the classic Generals desync problem) has not been tackled yet.
+- The first time you connect to a relay you trust whoever answers (like SSH); after that its identity is checked. Compare the fingerprint to be sure.
 
 ## Credits and legal
 
