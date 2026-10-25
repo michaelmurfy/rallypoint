@@ -570,6 +570,7 @@ function connectionCard() {
       row("Latency", d.rtt_ms == null ? "measuring…" : `${d.rtt_ms} ms (average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0})`, lat),
       row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
       row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
+      d.server_identity ? row("Encryption", `on, server identity ${d.server_identity}${d.identity_saved ? " (checked against the saved one)" : " (saved now)"}`, "ok") : null,
       s ? [
         row("Server", `Rallypoint ${s.version}, up ${dur(s.uptime_secs)}`),
         row("Rooms in use", `${s.rooms} of ${s.max_rooms}`),
@@ -631,6 +632,13 @@ function onlinePage() {
     btn.textContent = on ? "Disconnect" : "Connect";
     btn.dataset.mode = on ? "disconnect" : "connect";
     status.replaceChildren(pill(s, s.startsWith("Connected as") ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
+    if (s === "This server's identity changed") {
+      status.append(h("button", { class: "btn small", onclick: async () => {
+        try { await invoke("relay_forget_key"); await invoke("relay_disconnect"); say("Forgotten. Press Connect to trust the server as it is now.", "ok"); } catch (e) { say(errText(e), "bad"); }
+        refresh();
+      } }, "Trust its new identity"));
+      status.append(h("span", { class: "muted small" }, "Expected if its owner reinstalled it. If not, someone may be pretending to be that server."));
+    }
   }
   refreshers.add(refresh); refresh();
   const el = h("div", { class: "page" },

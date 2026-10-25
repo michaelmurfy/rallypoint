@@ -261,9 +261,20 @@ fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, password: St
     if c.room.is_empty() {
         return Err("Enter a room name first".into());
     }
-    let agent = Agent::start(&c.server, &c.serial, &c.room, &password).map_err(|e| e.to_string())?;
+    let pinned = c.server_keys.get(&c.server.to_lowercase()).and_then(|k| generals_proto::secure::from_hex(k));
+    let agent = Agent::start(&c.server, &c.serial, &c.room, &password, pinned).map_err(|e| e.to_string())?;
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent leaves its room
     Ok(())
+}
+
+/// Forget the saved identity of the configured server, so the next connection trusts whatever answers (use after
+/// the server's owner says its key changed).
+#[tauri::command]
+fn relay_forget_key(app: tauri::AppHandle) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.server_keys.remove(&c.server.to_lowercase());
+    c.save(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -283,9 +294,16 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
     let guard = relay.0.lock().unwrap();
     // First connect: the server signed us up behind the scenes; keep the result for next time.
     if let (Some(a), Ok(path)) = (guard.as_ref(), config_path(&app)) {
-        if let Some(serial) = a.take_issued() {
+        let (serial, key) = (a.take_issued(), a.take_learned_key());
+        if serial.is_some() || key.is_some() {
             let mut c = Config::load(&path);
-            c.serial = serial;
+            if let Some(serial) = serial {
+                c.serial = serial;
+            }
+            // First visit to this server: remember who it is, so a different one answering later is caught.
+            if let Some(key) = key {
+                c.server_keys.insert(c.server.to_lowercase(), generals_proto::secure::to_hex(&key));
+            }
             let _ = c.save(&path);
         }
     }
@@ -297,6 +315,7 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
             x if x == WrongPassword as u8 => "Wrong room password",
             x if x == RoomFull as u8 => "That room is full",
             x if x == BadRoom as u8 => "Room names use letters, numbers, spaces, - _ . (max 32)",
+            x if x == ServerKeyChanged as u8 => "This server's identity changed",
             x if x == RateLimited as u8 => "Too many attempts, try again in a few minutes",
             x if x == Full as u8 => "Server is full",
             x if x == RegistrationClosed as u8 => "This server is private",
@@ -566,7 +585,7 @@ fn main() {
             get_config, save_config, set_camera_height, graphics_apply_high, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
-            relay_connect, relay_disconnect, relay_status, relay_diagnostics,
+            relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
             launch_game
         ])

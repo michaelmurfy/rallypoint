@@ -2,7 +2,8 @@
 //! signs up with the relay if needed, joins the room, and forwards datagrams both ways. Sign-up is invisible to
 //! the user: with no stored serial the agent registers and hands the issued serial back through `take_issued`.
 //! Engine sockets register with `Bind{port}` (or by sending), keyed by logical port (8086 lobby, 8088 game).
-use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip, GAME_PORTS, LOBBY_PORT};
+use generals_proto::secure::{self, ClientPending, Key, Session as Crypto};
+use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -53,6 +54,9 @@ pub struct Diagnostics {
     pub up_kbps: u32,
     pub down_kbps: u32,
     pub server: Option<ServerView>,
+    /// The relay's identity (short fingerprint) and whether it was already trusted from an earlier visit.
+    pub server_identity: Option<String>,
+    pub identity_saved: bool,
 }
 
 /// Rolling ping record. The ping has no id, so an answer is credited to the latest ping sent; a reply that
@@ -104,6 +108,8 @@ impl Health {
             up_kbps: self.up_kbps,
             down_kbps: self.down_kbps,
             server: self.server.clone(),
+            server_identity: None,
+            identity_saved: false,
         }
     }
 }
@@ -114,16 +120,31 @@ pub struct Agent {
     health: Arc<Mutex<Health>>,
     status: Arc<Mutex<Status>>,
     issued: Arc<Mutex<Option<String>>>,
-    token: Arc<AtomicU64>,
+    /// The relay's identity key: the one we pinned, or the one learned on first contact.
+    server_key: Arc<Mutex<Option<Key>>>,
+    learned: Arc<Mutex<Option<Key>>>,
+    pinned: bool,
+    crypto: Arc<Mutex<Option<Arc<Crypto>>>>,
     relay: UdpSocket,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
 
+/// Send `p` encrypted, if a session exists.
+fn send_sealed(relay: &UdpSocket, crypto: &Mutex<Option<Arc<Crypto>>>, p: &Packet) -> bool {
+    let Some(c) = crypto.lock().unwrap().clone() else { return false };
+    let _ = relay.send(&Wire::Transport { data: c.seal(p) }.encode());
+    true
+}
+
 impl Agent {
     /// Joins `room` (creating it with `password` if it does not exist). An empty `serial` makes the agent sign
     /// up first; the serial it is issued is available once from `take_issued` and should be stored.
-    pub fn start(server: &str, serial: &str, room: &str, password: &str) -> io::Result<Agent> {
+    ///
+    /// Everything after the first contact is encrypted. `pinned` is the relay's identity key from an earlier visit:
+    /// with it, only that relay can complete the join, and a different one is reported as `ServerKeyChanged`.
+    /// Without it (first visit) the key is fetched and offered through `take_learned_key` to be saved.
+    pub fn start(server: &str, serial: &str, room: &str, password: &str, pinned: Option<Key>) -> io::Result<Agent> {
         let server = server.to_socket_addrs()?.next().ok_or_else(|| io::Error::other("server address does not resolve"))?;
         let relay = UdpSocket::bind("0.0.0.0:0")?;
         relay.connect(server)?; // also makes the kernel drop datagrams from anyone else
@@ -135,7 +156,9 @@ impl Agent {
         let status = Arc::new(Mutex::new(Status::Connecting));
         let stop = Arc::new(AtomicBool::new(false));
         let issued: Arc<Mutex<Option<String>>> = Arc::default();
-        let token = Arc::new(AtomicU64::new(0));
+        let server_key: Arc<Mutex<Option<Key>>> = Arc::new(Mutex::new(pinned));
+        let learned: Arc<Mutex<Option<Key>>> = Arc::default();
+        let crypto: Arc<Mutex<Option<Arc<Crypto>>>> = Arc::default();
         let ports: Arc<Mutex<HashMap<u16, SocketAddr>>> = Arc::default();
         let health: Arc<Mutex<Health>> = Arc::default();
         // bytes to / from the relay, for the traffic rates
@@ -144,8 +167,8 @@ impl Agent {
 
         // local -> relay
         let l2r = {
-            let (relay, local, status, stop, ports, token, bytes) =
-                (relay.try_clone()?, local.try_clone()?, status.clone(), stop.clone(), ports.clone(), token.clone(), bytes.clone());
+            let (relay, local, status, stop, ports, crypto, bytes) =
+                (relay.try_clone()?, local.try_clone()?, status.clone(), stop.clone(), ports.clone(), crypto.clone(), bytes.clone());
             std::thread::spawn(move || {
                 let mut buf = [0u8; 2048];
                 while !stop.load(Ordering::Relaxed) {
@@ -166,10 +189,8 @@ impl Agent {
                                 continue;
                             }
                             ports.lock().unwrap().insert(src_port, from);
-                            if matches!(*status.lock().unwrap(), Status::Connected(_)) {
+                            if matches!(*status.lock().unwrap(), Status::Connected(_)) && send_sealed(&relay, &crypto, &p) {
                                 bytes[0].fetch_add(n as u64, Ordering::Relaxed);
-                                let signed = Packet::Signed { token: token.load(Ordering::Relaxed), inner: Box::new(p) };
-                                let _ = relay.send(&signed.encode());
                             }
                         }
                         _ => {}
@@ -180,64 +201,92 @@ impl Agent {
 
         // relay -> local, plus handshake and keepalive
         let r2l = {
-            let (relay, status, stop, issued, token, health, bytes) = (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), token.clone(), health.clone(), bytes.clone());
+            let (relay, status, stop, issued, health, bytes, server_key, learned, crypto) =
+                (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone());
             std::thread::spawn(move || {
-                let (mut serial, mut cookie): (String, Cookie) = (serial, [0; 16]);
-                // Handshake packet: sign-up while we have no serial, otherwise join the room.
-                let opener = |serial: &str, cookie: Cookie| {
-                    if serial.is_empty() { Packet::Register { cookie } } else { Packet::Hello { serial: serial.into(), room: room.clone(), verifier } }.encode()
-                };
+                let mut serial = serial;
+                let mut cookie: Cookie = [0; 16];
+                // The first handshake message, kept so a lost reply is answered by resending the same bytes.
+                let mut pending: Option<(Vec<u8>, ClientPending)> = None;
                 let mut buf = [0u8; 2048];
                 let (mut last_rx, mut last_ping, mut last_rate) = (Instant::now(), Instant::now(), (Instant::now(), 0u64, 0u64));
-                let _ = relay.send(&opener(&serial, cookie));
-                while !stop.load(Ordering::Relaxed) {
+                let mut attempts = 0u32;
+                let rejected = |r: u8| *status.lock().unwrap() = Status::Rejected(r);
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
                     if let Ok(n) = relay.recv(&mut buf) {
                         last_rx = Instant::now();
-                        match Packet::decode(&buf[..n]) {
-                            Some(Packet::Welcome { vip, token: t }) => {
-                                token.store(t, Ordering::Relaxed);
-                                *status.lock().unwrap() = Status::Connected(vip);
-                            }
-                            Some(Packet::Challenge { cookie: c }) if serial.is_empty() => {
-                                cookie = c;
-                                let _ = relay.send(&opener(&serial, cookie));
-                            }
-                            Some(Packet::Issued { serial: s }) if serial.is_empty() => {
-                                serial = s.clone();
-                                *issued.lock().unwrap() = Some(s);
-                                let _ = relay.send(&opener(&serial, cookie));
-                            }
-                            Some(Packet::Reject(Reason::NotAuthed)) => {
-                                // server forgot us (restart/timeout): handshake again
-                                *status.lock().unwrap() = Status::Connecting;
-                                let _ = relay.send(&opener(&serial, cookie));
-                            }
-                            Some(Packet::Reject(r)) => {
-                                *status.lock().unwrap() = Status::Rejected(r as u8);
-                                return;
-                            }
-                            Some(Packet::Ping) => health.lock().unwrap().pong(Instant::now()),
-                            Some(Packet::Stats(s)) => {
-                                health.lock().unwrap().server = Some(ServerView {
-                                    version: s.version,
-                                    uptime_secs: s.uptime_secs,
-                                    rooms: s.rooms,
-                                    players: s.players,
-                                    max_rooms: s.max_rooms,
-                                    max_players: s.max_players,
-                                    room_players: s.room_players,
-                                    load_pct: s.load_pct,
-                                    pps: s.pps,
-                                    kbps: s.kbps,
-                                });
-                            }
-                            // A relay (or anyone spoofing one) only gets to hand the engine game datagrams for its own two ports.
-                            Some(Packet::Bcast { dst_port, payload, .. } | Packet::Data { dst_port, payload, .. }) => {
-                                if GAME_PORTS.contains(&dst_port) && is_game_packet(&payload) {
-                                    if let Some(to) = ports.lock().unwrap().get(&dst_port) {
-                                        bytes[1].fetch_add(n as u64, Ordering::Relaxed);
-                                        let _ = local.send_to(&buf[..n], to);
+                        match Wire::decode(&buf[..n]) {
+                            Some(Wire::KeyReply { key }) => {
+                                let mut known = server_key.lock().unwrap();
+                                match *known {
+                                    // a different identity than the one we trust (saved earlier, or learned a moment ago)
+                                    Some(k) if k != key => {
+                                        rejected(Reason::ServerKeyChanged as u8);
+                                        return;
                                     }
+                                    None => {
+                                        *known = Some(key);
+                                        *learned.lock().unwrap() = Some(key);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Some(Wire::Challenge { cookie: c }) => cookie = c, // the next tick resends with it
+                            Some(Wire::Hs2 { msg }) => {
+                                if let Some((_, p)) = pending.take() {
+                                    match p.finish(&msg) {
+                                        Ok((Packet::Welcome { vip }, c)) => {
+                                            *crypto.lock().unwrap() = Some(Arc::new(c));
+                                            *status.lock().unwrap() = Status::Connected(vip);
+                                            attempts = 0;
+                                        }
+                                        Ok((Packet::Issued { serial: s }, _)) if serial.is_empty() => {
+                                            serial = s.clone();
+                                            *issued.lock().unwrap() = Some(s); // next tick: a new handshake that joins
+                                        }
+                                        Ok((Packet::Reject(r), _)) => {
+                                            rejected(r as u8);
+                                            return;
+                                        }
+                                        _ => {} // unreadable or unexpected: start over
+                                    }
+                                }
+                            }
+                            Some(Wire::Transport { data }) => {
+                                let session = crypto.lock().unwrap().clone();
+                                match session.and_then(|c| c.open(&data)) {
+                                    Some(Packet::Ping) => health.lock().unwrap().pong(Instant::now()),
+                                    Some(Packet::Stats(s)) => {
+                                        health.lock().unwrap().server = Some(ServerView {
+                                            version: s.version,
+                                            uptime_secs: s.uptime_secs,
+                                            rooms: s.rooms,
+                                            players: s.players,
+                                            max_rooms: s.max_rooms,
+                                            max_players: s.max_players,
+                                            room_players: s.room_players,
+                                            load_pct: s.load_pct,
+                                            pps: s.pps,
+                                            kbps: s.kbps,
+                                        });
+                                    }
+                                    // A relay (or anyone spoofing one) only gets to hand the engine game datagrams for its own two ports.
+                                    Some(p @ (Packet::Bcast { .. } | Packet::Data { .. })) => {
+                                        let (dst_port, payload) = match &p {
+                                            Packet::Bcast { dst_port, payload, .. } | Packet::Data { dst_port, payload, .. } => (*dst_port, payload),
+                                            _ => unreachable!(),
+                                        };
+                                        if GAME_PORTS.contains(&dst_port) && is_game_packet(payload) {
+                                            if let Some(to) = ports.lock().unwrap().get(&dst_port) {
+                                                bytes[1].fetch_add(n as u64, Ordering::Relaxed);
+                                                let _ = local.send_to(&p.encode(), to);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             _ => {}
@@ -246,15 +295,37 @@ impl Agent {
                     // periodic work (also runs after a read timeout)
                     let connected = matches!(*status.lock().unwrap(), Status::Connected(_));
                     if !connected {
-                        let _ = relay.send(&opener(&serial, cookie)); // retry until accepted
-                    } else if last_rx.elapsed() > SILENCE_LIMIT {
-                        *status.lock().unwrap() = Status::Connecting;
-                    } else if last_ping.elapsed() > PING_EVERY {
-                        let t = token.load(Ordering::Relaxed);
-                        health.lock().unwrap().ping_sent(Instant::now());
-                        for inner in [Packet::Ping, Packet::StatsRequest] {
-                            let _ = relay.send(&Packet::Signed { token: t, inner: Box::new(inner) }.encode());
+                        attempts += 1;
+                        let key = *server_key.lock().unwrap();
+                        match key {
+                            None => {
+                                let _ = relay.send(&Wire::KeyRequest.encode()); // first visit: learn who we are talking to
+                            }
+                            Some(k) => {
+                                if pending.is_none() {
+                                    let first = if serial.is_empty() { Packet::Register } else { Packet::Hello { serial: serial.clone(), room: room.clone(), verifier } };
+                                    if let Ok((msg, p)) = secure::client_start(&k, &first) {
+                                        pending = Some((msg, p));
+                                    }
+                                }
+                                if let Some((msg, _)) = &pending {
+                                    let _ = relay.send(&Wire::Hs1 { cookie, msg: msg.clone() }.encode());
+                                }
+                                // A pinned server that does not answer may be a different one: ask who it is.
+                                if pinned.is_some() && attempts % 4 == 0 {
+                                    let _ = relay.send(&Wire::KeyRequest.encode());
+                                }
+                            }
                         }
+                    } else if last_rx.elapsed() > SILENCE_LIMIT {
+                        // the relay forgot us (restart or timeout): join again from the start
+                        *status.lock().unwrap() = Status::Connecting;
+                        *crypto.lock().unwrap() = None;
+                        pending = None;
+                    } else if last_ping.elapsed() > PING_EVERY {
+                        health.lock().unwrap().ping_sent(Instant::now());
+                        send_sealed(&relay, &crypto, &Packet::Ping);
+                        send_sealed(&relay, &crypto, &Packet::StatsRequest);
                         last_ping = Instant::now();
                     }
                     // traffic rates, refreshed about once a second
@@ -270,12 +341,17 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, issued, token, relay, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, issued, server_key, learned, pinned: pinned.is_some(), crypto, relay, stop, threads: vec![l2r, r2l] })
     }
 
     /// The serial the server issued to us, once; the caller must store it.
     pub fn take_issued(&self) -> Option<String> {
         self.issued.lock().unwrap().take()
+    }
+
+    /// The relay's identity key if this was the first visit, once; the caller should save it so later visits are checked.
+    pub fn take_learned_key(&self) -> Option<Key> {
+        self.learned.lock().unwrap().take()
     }
 
     pub fn status(&self) -> Status {
@@ -284,7 +360,13 @@ impl Agent {
 
     /// Latency, loss, traffic and the relay's own numbers; `None` unless connected.
     pub fn diagnostics(&self) -> Option<Diagnostics> {
-        matches!(self.status(), Status::Connected(_)).then(|| self.health.lock().unwrap().view())
+        if !matches!(self.status(), Status::Connected(_)) {
+            return None;
+        }
+        let mut d = self.health.lock().unwrap().view();
+        d.server_identity = self.server_key.lock().unwrap().as_ref().map(secure::fingerprint);
+        d.identity_saved = self.pinned;
+        Some(d)
     }
 }
 
@@ -292,8 +374,7 @@ impl Drop for Agent {
     fn drop(&mut self) {
         // Tell the server now so an empty room disappears immediately instead of after the session timeout.
         if matches!(self.status(), Status::Connected(_)) {
-            let leave = Packet::Signed { token: self.token.load(Ordering::Relaxed), inner: Box::new(Packet::Leave) };
-            let _ = self.relay.send(&leave.encode());
+            send_sealed(&self.relay, &self.crypto, &Packet::Leave);
         }
         self.stop.store(true, Ordering::Relaxed);
         for t in self.threads.drain(..) {

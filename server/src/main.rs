@@ -1,7 +1,8 @@
-//! rallypoint-server [--serials FILE] [--bind ADDR] <run | issue [label] | revoke SERIAL | list>
+//! rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key>
 //! Settings come from the environment (see .env.example): ALLOWED_COUNTRIES, GEO_DIR, ALLOW_PRIVATE,
-//! GENERALS_SERIALS, GENERALS_BIND, GENERALS_REGISTRATION.
-use generals_proto::Packet;
+//! GENERALS_SERIALS, GENERALS_BIND, GENERALS_REGISTRATION, GENERALS_KEY.
+use generals_proto::secure::{self, Key};
+use generals_proto::Wire;
 use generals_server::{format_serial, geo, os_random, Serials, Server};
 use std::io::Write;
 use std::net::UdpSocket;
@@ -25,6 +26,28 @@ fn clean(label: &str) -> String {
     label.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string()
 }
 
+/// The server's identity: a key pair made on first start and kept (0600) next to the serials. Players pin the
+/// public half on their first connection, so keep this file; losing it makes every player see a changed identity.
+fn identity(path: &str) -> std::io::Result<(Key, Key)> {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        let mut parts = text.split_whitespace();
+        if let (Some(private), Some(public)) = (parts.next().and_then(secure::from_hex), parts.next().and_then(secure::from_hex)) {
+            return Ok((private, public));
+        }
+        return Err(std::io::Error::other(format!("{path} exists but is not a valid key file; fix or remove it")));
+    }
+    let (private, public) = secure::generate_keypair();
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    writeln!(f, "{} {}", secure::to_hex(&private), secure::to_hex(&public))?;
+    Ok((private, public))
+}
+
 fn main() -> std::io::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -40,6 +63,7 @@ fn main() -> std::io::Result<()> {
     };
     let file = take("--serials", &env("GENERALS_SERIALS", "serials.txt"));
     let bind = take("--bind", &env("GENERALS_BIND", "0.0.0.0:7777"));
+    let key_file = take("--key", &env("GENERALS_KEY", &format!("{}.key", file.trim_end_matches(".txt"))));
     let open = env("GENERALS_REGISTRATION", "open") != "closed";
 
     match args.first().map(String::as_str) {
@@ -66,18 +90,25 @@ fn main() -> std::io::Result<()> {
             std::fs::rename(&tmp, &file)?;
         }
         Some("list") => print!("{}", read(&file)),
-        Some("run") => run(&file, &bind, open)?,
-        _ => eprintln!("usage: rallypoint-server [--serials FILE] [--bind ADDR] <run | issue [label] | revoke SERIAL | list>"),
+        Some("key") => {
+            let (_, public) = identity(&key_file)?;
+            println!("identity {}\npublic key {}", secure::fingerprint(&public), secure::to_hex(&public));
+        }
+        Some("run") => run(&file, &bind, open, &key_file)?,
+        _ => eprintln!("usage: rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key>"),
     }
     Ok(())
 }
 
-fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
+fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()> {
     let sock = UdpSocket::bind(bind)?;
     sock.set_read_timeout(Some(Duration::from_secs(1)))?;
     let mut server = Server::new(Serials::parse(&read(file)));
     server.set_open(open);
     server.set_version(version());
+    let (private, public) = identity(key_file)?;
+    server.set_identity(private, public);
+    eprintln!("identity {} (players pin this the first time they connect; `rallypoint-server key` shows it)", secure::fingerprint(&public));
 
     // Optional country limit, e.g. ALLOWED_COUNTRIES=NZ,AU
     let countries: Vec<String> = env("ALLOWED_COUNTRIES", "").split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
@@ -112,14 +143,15 @@ fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
     loop {
         let now = start.elapsed().as_secs();
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
-            if let Some(p) = Packet::decode(&buf[..n]) {
-                if matches!(p, Packet::Hello { .. }) && last_hello_reload != now {
+            {
+                // A handshake may be a join with a serial issued a moment ago: look at the file first (once a second at most).
+                if matches!(Wire::decode(&buf[..n]), Some(Wire::Hs1 { .. })) && last_hello_reload != now {
                     last_hello_reload = now;
                     reload(&mut server);
                 }
-                for (to, out) in server.handle(from, p, now) {
+                for (to, out) in server.handle(from, &buf[..n], now) {
                     // A failed send (unreachable peer, full buffer) must never take the server down.
-                    let _ = sock.send_to(&out.encode(), to);
+                    let _ = sock.send_to(&out, to);
                 }
                 // Persist auto-issued serials right away so a restart keeps them (and the reload below sees them).
                 for s in server.take_new_serials() {
