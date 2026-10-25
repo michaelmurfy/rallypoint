@@ -55,8 +55,8 @@ fn save_config(app: tauri::AppHandle, server: String, serial: String) -> Result<
 #[tauri::command]
 fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>) -> Result<(), String> {
     let c = Config::load(&config_path(&app)?);
-    if c.server.is_empty() || c.serial.is_empty() {
-        return Err("Set the server and serial first".into());
+    if c.server.is_empty() {
+        return Err("Set the server first".into());
     }
     let agent = Agent::start(&c.server, &c.serial).map_err(|e| e.to_string())?;
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent stops it
@@ -69,9 +69,18 @@ fn relay_disconnect(relay: tauri::State<Relay>) {
 }
 
 #[tauri::command]
-fn relay_status(relay: tauri::State<Relay>) -> String {
+fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
     use generals_proto::Reason::*;
-    match relay.0.lock().unwrap().as_ref().map(|a| a.status()) {
+    let guard = relay.0.lock().unwrap();
+    // First connect without a serial: the server issued one, keep it for next time.
+    if let (Some(a), Ok(path)) = (guard.as_ref(), config_path(&app)) {
+        if let Some(serial) = a.take_issued() {
+            let mut c = Config::load(&path);
+            c.serial = serial;
+            let _ = c.save(&path);
+        }
+    }
+    match guard.as_ref().map(|a| a.status()) {
         None => "Offline".into(),
         Some(Status::Connecting) => "Connecting...".into(),
         Some(Status::Connected(v)) => format!("Connected as {}.{}.{}.{}", v[0], v[1], v[2], v[3]),
@@ -80,6 +89,8 @@ fn relay_status(relay: tauri::State<Relay>) -> String {
             x if x == Revoked as u8 => "This serial has been revoked",
             x if x == InUse as u8 => "This serial is already in use",
             x if x == Full as u8 => "Server is full",
+            x if x == RegistrationClosed as u8 => "Server needs an admin-issued serial",
+            x if x == RateLimited as u8 => "Too many sign-ups from your address, try later",
             _ => "Rejected by server",
         }
         .into(),

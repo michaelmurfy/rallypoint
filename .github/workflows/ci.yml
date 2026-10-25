@@ -30,6 +30,9 @@ jobs:
           sleep 1
           SERIAL=$(docker exec relay generals-server issue ci)
           python3 scripts/smoke_relay.py 127.0.0.1 7777 "$SERIAL"
+          echo "auto-registration:"
+          AUTO=$(python3 scripts/smoke_relay.py 127.0.0.1 7777)
+          docker exec relay generals-server list | grep "$AUTO"
 
   engine-math:
     runs-on: ubuntu-latest

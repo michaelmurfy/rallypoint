@@ -16,6 +16,7 @@
   <legend>Online (relay server)</legend>
   <label>Server <input id="srv" placeholder="host:7777"></label>
   <label>Serial <input id="ser" type="password" autocomplete="off"></label>
+  <small>Leave blank: the server issues one on first connect.</small>
   <button id="save">Save</button> <button id="net">Connect</button>
   <p id="relay">Offline</p>
 </fieldset>
@@ -30,15 +31,15 @@
       || "<option value=''>No Steam install found</option>";
   });
   invoke("installed_mods").then((m) => m.forEach((x) => $("mod").add(new Option(x.name, x.id))));
-  invoke("get_config").then((c) => { $("srv").value = c.server; $("ser").placeholder = c.serial_masked || "not set"; });
+  invoke("get_config").then((c) => { $("srv").value = c.server; $("ser").placeholder = c.serial_masked || "issued on first connect"; });
   $("save").onclick = () => invoke("save_config", { server: $("srv").value, serial: $("ser").value })
     .then(() => { $("ser").value = ""; return invoke("get_config"); })
-    .then((c) => $("ser").placeholder = c.serial_masked || "not set", (e) => $("relay").textContent = e);
+    .then((c) => $("ser").placeholder = c.serial_masked || "issued on first connect", (e) => $("relay").textContent = e);
   $("net").onclick = () => invoke($("net").textContent === "Connect" ? "relay_connect" : "relay_disconnect")
     .catch((e) => $("relay").textContent = e);
   setInterval(() => invoke("relay_status").then((s) => {
     $("relay").textContent = s;
-    $("net").textContent = s === "Offline" || s.startsWith("Server") || s.startsWith("This") || s === "Rejected by server" ? "Connect" : "Disconnect";
+    $("net").textContent = s === "Offline" || s.startsWith("Server") || s.startsWith("This") || s.startsWith("Too") || s === "Rejected by server" ? "Connect" : "Disconnect";
   }), 1000);
   $("go").onclick = () => invoke("launch_game", {
     gameDir: $("game").value, modId: $("mod").value || null,

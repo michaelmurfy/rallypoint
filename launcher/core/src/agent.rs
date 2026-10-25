@@ -25,11 +25,13 @@ pub struct Agent {
     /// Where the engine should send its traffic (loopback).
     pub local: SocketAddr,
     status: Arc<Mutex<Status>>,
+    issued: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
 
 impl Agent {
+    /// An empty `serial` asks the server to register us; the issued serial is available from `take_issued`.
     pub fn start(server: &str, serial: &str) -> io::Result<Agent> {
         let server = server.to_socket_addrs()?.next().ok_or_else(|| io::Error::other("server address does not resolve"))?;
         let relay = UdpSocket::bind("0.0.0.0:0")?;
@@ -41,6 +43,7 @@ impl Agent {
 
         let status = Arc::new(Mutex::new(Status::Connecting));
         let stop = Arc::new(AtomicBool::new(false));
+        let issued: Arc<Mutex<Option<String>>> = Arc::default();
         let ports: Arc<Mutex<HashMap<u16, SocketAddr>>> = Arc::default();
         let serial = serial.to_string();
 
@@ -69,22 +72,29 @@ impl Agent {
 
         // relay -> local, plus handshake and keepalive
         let r2l = {
-            let (status, stop) = (status.clone(), stop.clone());
+            let (status, stop, issued) = (status.clone(), stop.clone(), issued.clone());
             std::thread::spawn(move || {
-                let hello = Packet::Hello { serial }.encode();
+                let mut serial = serial;
+                // Handshake packet: Hello with our serial, or Register while we have none.
+                let opener = |serial: &str| if serial.is_empty() { Packet::Register } else { Packet::Hello { serial: serial.into() } }.encode();
                 let mut buf = [0u8; 2048];
                 let (mut last_rx, mut last_ping) = (Instant::now(), Instant::now());
-                let _ = relay.send(&hello);
+                let _ = relay.send(&opener(&serial));
                 while !stop.load(Ordering::Relaxed) {
                     match relay.recv(&mut buf) {
                         Ok(n) => {
                             last_rx = Instant::now();
                             match Packet::decode(&buf[..n]) {
                                 Some(Packet::Welcome { vip }) => *status.lock().unwrap() = Status::Connected(vip),
+                                Some(Packet::Issued { serial: s }) if serial.is_empty() => {
+                                    serial = s.clone();
+                                    *issued.lock().unwrap() = Some(s);
+                                    let _ = relay.send(&opener(&serial));
+                                }
                                 Some(Packet::Reject(Reason::NotAuthed)) => {
                                     // server forgot us (restart/timeout): handshake again
                                     *status.lock().unwrap() = Status::Connecting;
-                                    let _ = relay.send(&hello);
+                                    let _ = relay.send(&opener(&serial));
                                 }
                                 Some(Packet::Reject(r)) => {
                                     *status.lock().unwrap() = Status::Rejected(r as u8);
@@ -102,7 +112,7 @@ impl Agent {
                     }
                     let connected = matches!(*status.lock().unwrap(), Status::Connected(_));
                     if !connected {
-                        let _ = relay.send(&hello); // retry until accepted
+                        let _ = relay.send(&opener(&serial)); // retry until accepted
                     } else if last_rx.elapsed() > SILENCE_LIMIT {
                         *status.lock().unwrap() = Status::Connecting;
                     } else if last_ping.elapsed() > PING_EVERY {
@@ -113,7 +123,12 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, status, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, status, issued, stop, threads: vec![l2r, r2l] })
+    }
+
+    /// The serial the server issued to us, once; the caller must store it.
+    pub fn take_issued(&self) -> Option<String> {
+        self.issued.lock().unwrap().take()
     }
 
     pub fn status(&self) -> Status {

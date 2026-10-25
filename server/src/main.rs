@@ -1,7 +1,7 @@
-//! generals-server [--serials FILE] [--bind ADDR] <run | issue [label] | revoke SERIAL | list>
+//! generals-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>
 use generals_proto::Packet;
-use generals_server::{format_serial, Serials, Server};
-use std::io::{Read, Write};
+use generals_server::{format_serial, os_random, Serials, Server};
+use std::io::Write;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -22,12 +22,13 @@ fn main() -> std::io::Result<()> {
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let file = take("--serials", &env("GENERALS_SERIALS", "serials.txt"));
     let bind = take("--bind", &env("GENERALS_BIND", "0.0.0.0:7777"));
+    // Clients without a serial are issued one automatically unless --closed / GENERALS_REGISTRATION=closed.
+    let closed = args.iter().any(|a| a == "--closed") || env("GENERALS_REGISTRATION", "") == "closed";
+    args.retain(|a| a != "--closed");
 
     match args.first().map(String::as_str) {
         Some("issue") => {
-            let mut b = [0u8; 8];
-            std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?; // server is Linux-only
-            let serial = format_serial(b);
+            let serial = format_serial(os_random().ok_or_else(|| std::io::Error::other("no OS randomness"))?);
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
             writeln!(f, "{serial} {}", args[1..].join(" "))?;
             println!("{serial}");
@@ -46,21 +47,22 @@ fn main() -> std::io::Result<()> {
             std::fs::write(&file, out.join("\n") + "\n")?;
         }
         Some("list") => print!("{}", read(&file)),
-        Some("run") => run(&file, &bind)?,
-        _ => eprintln!("usage: generals-server [--serials FILE] [--bind ADDR] <run | issue [label] | revoke SERIAL | list>"),
+        Some("run") => run(&file, &bind, !closed)?,
+        _ => eprintln!("usage: generals-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>"),
     }
     Ok(())
 }
 
-fn run(file: &str, bind: &str) -> std::io::Result<()> {
+fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
     let sock = UdpSocket::bind(bind)?;
     sock.set_read_timeout(Some(Duration::from_secs(1)))?;
     let mut server = Server::new(Serials::parse(&read(file)));
+    server.set_open(open);
     let mtime = || std::fs::metadata(file).and_then(|m| m.modified()).ok();
     let mut seen: Option<SystemTime> = mtime();
     let start = Instant::now();
     let mut buf = [0u8; 2048];
-    eprintln!("listening on {bind}, serials from {file}");
+    eprintln!("listening on {bind}, serials from {file}, registration {}", if open { "open" } else { "closed" });
     // Reload when the file changed. Also done on every Hello, so a serial issued a moment ago works at once.
     let mut reload = |server: &mut Server| {
         let m = mtime();
@@ -78,6 +80,11 @@ fn run(file: &str, bind: &str) -> std::io::Result<()> {
                 }
                 for (to, out) in server.handle(from, p, now) {
                     sock.send_to(&out.encode(), to)?;
+                }
+                // Persist auto-issued serials right away so a restart keeps them (and the reload below sees them).
+                for s in server.take_new_serials() {
+                    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(file)?;
+                    writeln!(f, "{s} auto")?;
                 }
             }
         }

@@ -8,6 +8,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn spawn_relay(serials: &str) -> (String, Arc<AtomicBool>) {
+    spawn_relay_with(serials, true)
+}
+
+fn spawn_relay_with(serials: &str, open: bool) -> (String, Arc<AtomicBool>) {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     sock.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
     let addr = sock.local_addr().unwrap().to_string();
@@ -15,6 +19,12 @@ fn spawn_relay(serials: &str) -> (String, Arc<AtomicBool>) {
     let (s2, serials) = (stop.clone(), Serials::parse(serials));
     std::thread::spawn(move || {
         let mut server = Server::new(serials);
+        server.set_open(open);
+        let mut n = 0u8;
+        server.set_rng(Box::new(move || {
+            n += 1; // deterministic, so the test does not depend on OS randomness
+            Some([n; 8])
+        }));
         let start = Instant::now();
         let mut buf = [0u8; 2048];
         while !s2.load(Ordering::Relaxed) {
@@ -91,5 +101,34 @@ fn bad_and_duplicate_serials_are_rejected() {
     wait(&first, |s| matches!(s, Status::Connected(_)));
     let second = Agent::start(&server, "AAA").unwrap();
     assert_eq!(wait(&second, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn client_without_serial_gets_one_automatically() {
+    let (server, stop) = spawn_relay_with("", true);
+    let a = Agent::start(&server, "").unwrap();
+    assert!(matches!(wait(&a, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
+    let serial = a.take_issued().expect("serial issued");
+    assert_eq!(serial, "0101-0101-0101-0101");
+    assert_eq!(a.take_issued(), None); // handed out once
+
+    // The stored serial is what the next launch presents; the same serial cannot be used twice at once.
+    let again = Agent::start(&server, &serial).unwrap();
+    assert_eq!(wait(&again, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
+    drop(a);
+
+    // A second client gets a different serial.
+    let b = Agent::start(&server, "").unwrap();
+    wait(&b, |s| matches!(s, Status::Connected(_)));
+    assert_eq!(b.take_issued().as_deref(), Some("0202-0202-0202-0202"));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn closed_server_refuses_registration() {
+    let (server, stop) = spawn_relay_with("", false);
+    let a = Agent::start(&server, "").unwrap();
+    assert_eq!(wait(&a, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::RegistrationClosed as u8));
     stop.store(true, Ordering::Relaxed);
 }

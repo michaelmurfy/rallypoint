@@ -14,6 +14,10 @@ pub enum Reason {
     InUse = 3,
     Full = 4,
     NotAuthed = 5,
+    /// Server only accepts admin-issued serials.
+    RegistrationClosed = 6,
+    /// Too many auto-registrations from this address.
+    RateLimited = 7,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +34,17 @@ pub enum Packet {
     Data { vip: Vip, src_port: u16, dst_port: u16, payload: Vec<u8> },
     /// Keepalive, echoed by the server.
     Ping,
+    /// Client -> server: "I have no serial, issue me one" (when the server allows it).
+    Register,
+    /// Server -> client: the serial issued for a Register. The client must store it.
+    Issued { serial: String },
     /// Engine -> local agent only: "I own this logical port, send its traffic to me".
     Bind { port: u16 },
+}
+
+fn serial(b: &[u8]) -> Option<String> {
+    let (&n, s) = b.split_first()?;
+    (n as usize <= MAX_SERIAL && s.len() == n as usize).then(|| String::from_utf8(s.to_vec()).ok()).flatten()
 }
 
 fn data(tag: u8, vip: &Vip, src: u16, dst: u16, payload: &[u8]) -> Vec<u8> {
@@ -48,6 +61,8 @@ impl Packet {
             Packet::Data { vip, src_port, dst_port, payload } => data(5, vip, *src_port, *dst_port, payload),
             Packet::Ping => vec![6],
             Packet::Bind { port } => [&[7][..], &port.to_be_bytes()].concat(),
+            Packet::Register => vec![8],
+            Packet::Issued { serial } => [&[9, serial.len() as u8][..], serial.as_bytes()].concat(),
         }
     }
 
@@ -61,14 +76,9 @@ impl Packet {
             (p.len() <= MAX_PAYLOAD).then_some((v, src, dst, p))
         };
         Some(match tag {
-            1 => {
-                let (&n, s) = rest.split_first()?;
-                let n = n as usize;
-                if n > MAX_SERIAL || s.len() != n {
-                    return None;
-                }
-                Packet::Hello { serial: String::from_utf8(s.to_vec()).ok()? }
-            }
+            1 => Packet::Hello { serial: serial(rest)? },
+            9 => Packet::Issued { serial: serial(rest)? },
+            8 if rest.is_empty() => Packet::Register,
             2 => Packet::Welcome { vip: rest.try_into().ok()? },
             3 => Packet::Reject(match *rest.first()? {
                 1 => Reason::UnknownSerial,
@@ -76,6 +86,8 @@ impl Packet {
                 3 => Reason::InUse,
                 4 => Reason::Full,
                 5 => Reason::NotAuthed,
+                6 => Reason::RegistrationClosed,
+                7 => Reason::RateLimited,
                 _ => return None,
             }),
             4 => vip(rest).map(|(vip, src_port, dst_port, payload)| Packet::Bcast { vip, src_port, dst_port, payload })?,
@@ -100,6 +112,8 @@ mod tests {
             Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: vec![1, 2, 3] },
             Packet::Data { vip: [10, 77, 0, 9], src_port: 8088, dst_port: 8088, payload: vec![] },
             Packet::Bind { port: 8088 },
+            Packet::Register,
+            Packet::Issued { serial: "AAAA-BBBB-CCCC-DDDD".into() },
             Packet::Ping,
         ] {
             assert_eq!(Packet::decode(&p.encode()), Some(p));
