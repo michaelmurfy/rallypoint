@@ -1,10 +1,10 @@
 //! Relay state machine. No sockets or clocks in here: `handle` takes the sender and the time and returns
 //! the datagrams to send, so it is testable without a network.
 use generals_proto::secure::{self, Key, Session as Crypto};
-use generals_proto::{ct_eq, is_game_packet, sha256, Cookie, Packet, Reason, ServerStats, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT};
+use generals_proto::{ct_eq, is_game_packet, sha256, Cookie, Packet, Reason, ServerStats, SyncEntry, SyncVerdict, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_SYNC_PLAYERS};
 pub mod geo;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 
 pub const SESSION_TIMEOUT_SECS: u64 = 30;
@@ -81,6 +81,19 @@ struct Session {
 /// Datagrams to send, already encrypted.
 type Out = Vec<(SocketAddr, Vec<u8>)>;
 
+/// Frames of checksums kept per room while waiting for every player's report, and verdicts sent per room (a game that
+/// has diverged stays diverged; one clear report is enough).
+const SYNC_FRAMES_KEPT: usize = 16;
+const SYNC_VERDICTS_PER_ROOM: u8 = 3;
+
+/// What the players of one room have reported about their simulation.
+#[derive(Default)]
+struct RoomSync {
+    /// frame -> (player -> (checksum, claims to be the host))
+    frames: BTreeMap<u32, HashMap<Vip, (u32, bool)>>,
+    verdicts: u8,
+}
+
 /// Handshakes one address (or IPv6 /64) may start per minute; each costs the server a key exchange.
 const HANDSHAKES_PER_MIN: u32 = 30;
 /// A repeated first message within this long is answered from memory instead of starting another session.
@@ -104,6 +117,7 @@ pub struct Server {
     by_ip: HashMap<IpAddr, Vec<u64>>,
     bad_passwords: HashMap<IpAddr, (u64, u32)>,
     new_serials: Vec<String>,
+    sync: HashMap<String, RoomSync>,
     all_signups: Vec<u64>,
     bad_serials: HashMap<IpAddr, (u64, u32)>,
     version: String,
@@ -163,6 +177,7 @@ impl Server {
             by_ip: HashMap::new(),
             bad_passwords: HashMap::new(),
             new_serials: vec![],
+            sync: HashMap::new(),
             all_signups: vec![],
             bad_serials: HashMap::new(),
             version: String::new(),
@@ -286,6 +301,7 @@ impl Server {
     fn gc_rooms(&mut self) {
         let used: HashSet<&String> = self.sessions.values().map(|s| &s.room).collect();
         self.rooms.retain(|name, _| used.contains(name));
+        self.sync.retain(|name, _| used.contains(name));
     }
 
     fn cookie(&self, ip: IpAddr, bucket: u64) -> Cookie {
@@ -380,6 +396,7 @@ impl Server {
         let replies: Vec<(SocketAddr, Packet)> = match pkt {
             Packet::Ping => vec![(from, Packet::Ping)],
             Packet::StatsRequest => vec![(from, Packet::Stats(self.stats(now, &room)))],
+            Packet::Crc { frame, crc, host } => self.record_crc(&room, my_vip, frame, crc, host),
             Packet::Leave => {
                 self.sessions.remove(&from);
                 self.hs_cache.remove(&from);
@@ -412,6 +429,49 @@ impl Server {
             .into_iter()
             .filter_map(|(to, p)| self.sessions.get(&to).map(|s| (to, Wire::Transport { data: s.crypto.seal(&p) }.encode())))
             .collect()
+    }
+
+    /// One player's checksum for a frame. When every player in the room has reported that frame the checksums are
+    /// compared: all equal is the normal case and says nothing. Otherwise everyone in the room is told which frame
+    /// diverged and, if a strict majority agreed, which players are the odd ones out.
+    fn record_crc(&mut self, room: &str, vip: Vip, frame: u32, crc: u32, host: bool) -> Vec<(SocketAddr, Packet)> {
+        let members: Vec<(SocketAddr, Vip)> = self.sessions.iter().filter(|(_, s)| s.room == room).map(|(a, s)| (*a, s.vip)).collect();
+        let sync = self.sync.entry(room.to_string()).or_default();
+        if sync.verdicts >= SYNC_VERDICTS_PER_ROOM {
+            return vec![];
+        }
+        sync.frames.entry(frame).or_default().insert(vip, (crc, host));
+        while sync.frames.len() > SYNC_FRAMES_KEPT {
+            sync.frames.pop_first();
+        }
+        let reports = &sync.frames[&frame];
+        if reports.len() < members.len().max(2) || !members.iter().all(|(_, v)| reports.contains_key(v)) {
+            return vec![]; // still waiting for someone
+        }
+        let mut votes: HashMap<u32, usize> = HashMap::new();
+        for (_, v) in &members {
+            *votes.entry(reports[v].0).or_default() += 1;
+        }
+        if votes.len() == 1 {
+            sync.frames.remove(&frame);
+            return vec![]; // everyone agrees
+        }
+        // The host is the master: when exactly one player says it is the host, everyone else is measured against it.
+        // (Two players claiming to be the host cancel out, and the majority decides instead.)
+        let hosts: Vec<Vip> = members.iter().map(|(_, v)| *v).filter(|v| reports[v].1).collect();
+        let (master, host, certain) = match hosts.as_slice() {
+            [h] => (reports[h].0, Some(*h), true),
+            _ => {
+                let top = votes.iter().max_by_key(|(c, n)| (**n, std::cmp::Reverse(**c))).map(|(c, n)| (*c, *n)).unwrap();
+                (top.0, None, top.1 * 2 > members.len())
+            }
+        };
+        let mut players: Vec<SyncEntry> = members.iter().take(MAX_SYNC_PLAYERS).map(|(_, v)| SyncEntry { vip: *v, crc: reports[v].0, odd: certain && reports[v].0 != master }).collect();
+        players.sort_by_key(|e| e.vip);
+        sync.frames.remove(&frame);
+        sync.verdicts += 1;
+        let verdict = Packet::Desync(SyncVerdict { frame, certain, host, players });
+        members.into_iter().map(|(a, _)| (a, verdict.clone())).collect()
     }
 
     /// Sign-up (the cookie has already shown the sender can receive at its address).
@@ -950,5 +1010,95 @@ mod tests {
         assert_eq!(issued, REGISTRATIONS_PER_HOUR_TOTAL);
         // the hour passes
         assert!(matches!(w.handshake(addr_from("198.51.100.1", 4000), &Packet::Register, 3700).unwrap().0, Packet::Issued { .. }));
+    }
+
+    #[test]
+    fn checksums_are_compared_and_a_disagreement_is_reported_to_the_room() {
+        let mut w = World::standard();
+        let (a, b, c) = (addr(1), addr(2), addr(3));
+        w.quick(a, "AAA", "r", 0);
+        w.quick(b, "BBB", "r", 0);
+        // agreeing checksums say nothing at all
+        assert!(w.send(a, Packet::Crc { frame: 100, crc: 7, host: false }, 1).is_empty());
+        assert!(w.send(b, Packet::Crc { frame: 100, crc: 7, host: false }, 1).is_empty());
+        // two players who differ: told to both, but nobody can say who is right
+        assert!(w.send(a, Packet::Crc { frame: 200, crc: 1, host: false }, 2).is_empty(), "waits for the other player");
+        let out = w.send(b, Packet::Crc { frame: 200, crc: 2, host: false }, 2);
+        assert_eq!(out.iter().map(|o| o.0).collect::<Vec<_>>().len(), 2);
+        let Packet::Desync(v) = &out[0].1 else { panic!("{out:?}") };
+        assert_eq!((v.frame, v.certain, v.host), (200, false, None));
+        assert_eq!(v.players.iter().map(|e| (e.vip, e.crc, e.odd)).collect::<Vec<_>>(), [([10, 77, 0, 1], 1, false), ([10, 77, 0, 2], 2, false)]);
+        // three players: the one against two others is named
+        let mut w = World::standard();
+        w.quick(a, "AAA", "r", 0);
+        w.quick(b, "BBB", "r", 0);
+        w.quick(c, "DDD", "r", 0);
+        w.send(a, Packet::Crc { frame: 300, crc: 5, host: false }, 1);
+        w.send(c, Packet::Crc { frame: 300, crc: 5, host: false }, 1);
+        let out = w.send(b, Packet::Crc { frame: 300, crc: 9, host: false }, 1);
+        assert_eq!(out.len(), 3, "everyone in the room is told");
+        let Packet::Desync(v) = &out[0].1 else { panic!() };
+        assert!(v.certain);
+        assert_eq!(v.players.iter().filter(|e| e.odd).map(|e| e.vip).collect::<Vec<_>>(), [[10, 77, 0, 2]]);
+    }
+
+    #[test]
+    fn sync_reports_are_bounded_and_per_room() {
+        let mut w = World::standard();
+        w.quick(addr(1), "AAA", "r1", 0);
+        w.quick(addr(2), "BBB", "r2", 0);
+        // a lone player in a room never gets a verdict, and different rooms are not mixed
+        for f in 0..40 {
+            assert!(w.send(addr(1), Packet::Crc { frame: f, crc: 1, host: false }, 1).is_empty());
+            assert!(w.send(addr(2), Packet::Crc { frame: f, crc: 2, host: false }, 1).is_empty());
+        }
+        assert!(w.s.sync["r1"].frames.len() <= SYNC_FRAMES_KEPT);
+        // a diverged game gets a few verdicts, not an endless stream
+        let mut w = World::standard();
+        w.quick(addr(1), "AAA", "r", 0);
+        w.quick(addr(2), "BBB", "r", 0);
+        let mut sent = 0;
+        for f in 0..20 {
+            w.send(addr(1), Packet::Crc { frame: f, crc: 1, host: false }, 1);
+            sent += w.send(addr(2), Packet::Crc { frame: f, crc: 2, host: false }, 1).len();
+        }
+        assert_eq!(sent, 2 * SYNC_VERDICTS_PER_ROOM as usize);
+        // leaving a room clears what it had reported
+        w.send(addr(1), Packet::Leave, 2);
+        w.send(addr(2), Packet::Leave, 2);
+        assert!(w.s.sync.is_empty());
+    }
+
+    #[test]
+    fn the_host_is_the_master() {
+        let mut w = World::standard();
+        let (host, guest) = (addr(1), addr(2));
+        w.quick(host, "AAA", "r", 0);
+        w.quick(guest, "BBB", "r", 0);
+        // two players who differ: with the host flagged, the guest is the one out of sync, for certain
+        w.send(host, Packet::Crc { frame: 100, crc: 1, host: true }, 1);
+        let out = w.send(guest, Packet::Crc { frame: 100, crc: 2, host: false }, 1);
+        let Packet::Desync(v) = &out[0].1 else { panic!("{out:?}") };
+        assert!(v.certain);
+        assert_eq!(v.host, Some([10, 77, 0, 1]));
+        assert_eq!(v.players.iter().map(|e| (e.vip, e.odd)).collect::<Vec<_>>(), [([10, 77, 0, 1], false), ([10, 77, 0, 2], true)]);
+        // the host wins even against a majority: the master's simulation is the reference
+        let mut w = World::standard();
+        w.quick(host, "AAA", "r", 0);
+        w.quick(guest, "BBB", "r", 0);
+        w.quick(addr(3), "DDD", "r", 0);
+        w.send(guest, Packet::Crc { frame: 100, crc: 9, host: false }, 1);
+        w.send(addr(3), Packet::Crc { frame: 100, crc: 9, host: false }, 1);
+        let out = w.send(host, Packet::Crc { frame: 100, crc: 1, host: true }, 1);
+        let Packet::Desync(v) = &out[0].1 else { panic!() };
+        assert_eq!(v.players.iter().filter(|e| e.odd).count(), 2);
+        // two players both claiming to be the host cancel out: back to majority rules (a tie of two is not certain)
+        let mut w = World::standard();
+        w.quick(host, "AAA", "r", 0);
+        w.quick(guest, "BBB", "r", 0);
+        w.send(host, Packet::Crc { frame: 100, crc: 1, host: true }, 1);
+        let out = w.send(guest, Packet::Crc { frame: 100, crc: 2, host: true }, 1);
+        let Packet::Desync(v) = &out[0].1 else { panic!() };
+        assert_eq!((v.certain, v.host), (false, None));
     }
 }

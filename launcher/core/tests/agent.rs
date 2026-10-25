@@ -280,3 +280,32 @@ fn a_different_server_than_the_saved_one_is_refused() {
     stop1.store(true, Ordering::Relaxed);
     stop2.store(true, Ordering::Relaxed);
 }
+
+#[test]
+fn checksums_go_to_the_relay_and_a_disagreement_comes_back_to_both_engines() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = start(&server, "AAA");
+    let b = start(&server, "BBB");
+    wait(&a, |s| matches!(s, Status::Connected(_)));
+    wait(&b, |s| matches!(s, Status::Connected(_)));
+    let (ea, eb) = (engine_socket(&a, 8088), engine_socket(&b, 8088));
+    std::thread::sleep(Duration::from_millis(200));
+    // each engine reports its own checksum for frame 100 to its local agent; they differ
+    ea.send_to(&Packet::Crc { frame: 100, crc: 0x12C26F6A, host: true }.encode(), a.local).unwrap();
+    eb.send_to(&Packet::Crc { frame: 100, crc: 0xE67396AE, host: false }.encode(), b.local).unwrap();
+    let mut buf = [0u8; 256];
+    for (name, sock) in [("a", &ea), ("b", &eb)] {
+        let n = sock.recv(&mut buf).unwrap_or_else(|e| panic!("{name} got no verdict: {e}"));
+        let Some(Packet::Desync(v)) = Packet::decode(&buf[..n]) else { panic!("{name}: {:?}", &buf[..n]) };
+        assert_eq!((v.frame, v.certain, v.players.len()), (100, true, 2));
+        assert!(v.host.is_some());
+    }
+    // and the launcher can show it
+    let t = Instant::now();
+    while a.diagnostics().and_then(|d| d.desync).is_none() && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let d = a.diagnostics().unwrap().desync.expect("shown to the player");
+    assert_eq!((d.frame, d.players.len()), (100, 2));
+    stop.store(true, Ordering::Relaxed);
+}
