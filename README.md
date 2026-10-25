@@ -4,7 +4,7 @@
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
-> **0.1 Alpha.** Expect rough edges. See [What works](#what-works-in-01-alpha) for an honest list of what is and isn't tested.
+> **0.1 Beta.** Everything described here is built, but parts have only been tested by the developer so far. See [What works](#what-works-in-01-beta) for an honest list of what is and isn't verified.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
 
@@ -19,7 +19,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 - **Stays up to date.** The launcher checks GitHub for a newer release when it starts and, if you agree, downloads and opens the installer for your OS.
 - **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet.
 
-## What works in 0.1 Alpha
+## What works in 0.1 Beta
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
@@ -136,7 +136,7 @@ cd launcher/src-tauri && cargo tauri build                         # needs the e
 
 Building the engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --preset apple-arm64-release`, target `z_generals`; Windows: `cmake --preset win32`). Details for contributors and AI agents are in [`agent.md`](agent.md).
 
-Releases are built only when a version tag is pushed (`git tag v0.1.0-alpha.1 && git push --tags`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
+Releases are built only when a version tag is pushed (`make release VERSION=0.1.0-beta.1`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
 
 ### Layout
 
