@@ -1,0 +1,71 @@
+diff --git a/Core/GameEngine/Include/Common/CRCDebug.h b/Core/GameEngine/Include/Common/CRCDebug.h
+index 5fee31b..6f50b16 100644
+--- a/Core/GameEngine/Include/Common/CRCDebug.h
++++ b/Core/GameEngine/Include/Common/CRCDebug.h
+@@ -30,10 +30,10 @@
+ 
+ #include "Common/Debug.h"
+ 
++// Rallypoint: the per-frame sync log (-SaveDebugCRCPerFrame) is compiled into release builds too. It stays
++// off until the command line asks for it. Without this the flags were silently ignored and no log was written.
+ #ifndef NO_DEBUG_CRC
+-	#ifdef DEBUG_LOGGING
+-		#define DEBUG_CRC
+-	#endif
++	#define DEBUG_CRC
+ #endif
+ 
+ #ifdef DEBUG_CRC
+@@ -48,13 +48,13 @@
+ 	#define DUMPVEL DUMPCOORD3DNAMED(&m_vel, "m_vel")
+ 	#define DUMPACCEL DUMPCOORD3DNAMED(&m_accel, "m_accel")
+ 	#define DUMPVECTOR3(x) DUMPVECTOR3NAMED(x, #x)
+-	#define DUMPVECTOR3NAMED(x, y) dumpVector3(x, y, __FILE__, __LINE__)
++	#define DUMPVECTOR3NAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpVector3(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPCOORD3D(x) DUMPCOORD3DNAMED(x, #x)
+-	#define DUMPCOORD3DNAMED(x, y) dumpCoord3D(x, y, __FILE__, __LINE__)
++	#define DUMPCOORD3DNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpCoord3D(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPMATRIX3D(x) DUMPMATRIX3DNAMED(x, #x)
+-	#define DUMPMATRIX3DNAMED(x, y) dumpMatrix3D(x, y, __FILE__, __LINE__)
++	#define DUMPMATRIX3DNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpMatrix3D(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPREAL(x) DUMPREALNAMED(x, #x)
+-	#define DUMPREALNAMED(x, y) dumpReal(x, y, __FILE__, __LINE__)
++	#define DUMPREALNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpReal(x, y, __FILE__, __LINE__); } while (0)
+ 
+ 	extern Int TheCRCFirstFrameToLog;
+ 	extern UnsignedInt TheCRCLastFrameToLog;
+diff --git a/Core/GameEngine/Source/GameNetwork/Network.cpp b/Core/GameEngine/Source/GameNetwork/Network.cpp
+index 5afa4c6..462485e 100644
+--- a/Core/GameEngine/Source/GameNetwork/Network.cpp
++++ b/Core/GameEngine/Source/GameNetwork/Network.cpp
+@@ -53,7 +53,7 @@
+ #include "GameClient/MessageBox.h"
+ 
+ 
+-#if defined(DEBUG_CRC)
++#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
+ Int NET_CRC_INTERVAL = 1;
+ #else
+ Int NET_CRC_INTERVAL = 100;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index 082f31e..b32bfe2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -118,7 +118,7 @@
+ 
+ //-------------------------------------------------------------------------------------------------
+ 
+-#ifdef DEBUG_CRC
++#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
+ class DeepCRCSanityCheck : public SubsystemInterface
+ {
+ public:
+@@ -528,7 +528,7 @@ void GameEngine::init()
+ 	#endif/////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ 
+-#ifdef DEBUG_CRC
++#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
+ 		initSubsystem(TheDeepCRCSanityCheck, "TheDeepCRCSanityCheck", MSGNEW("GameEngineSubystem") DeepCRCSanityCheck, nullptr);
+ #endif // DEBUG_CRC
+ 		initSubsystem(TheGameText, "TheGameText", CreateGameTextInterface(), nullptr);
