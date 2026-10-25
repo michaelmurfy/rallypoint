@@ -135,7 +135,7 @@ index abd4109..91deab7 100644
  	m_transport->reset();
  	retval = m_transport->init(m_localIP, lobbyPort);
 diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
-index 6806417..8f7ce9d 100644
+index 6806417..7af0013 100644
 --- a/Core/GameEngine/Source/GameNetwork/udp.cpp
 +++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
 @@ -34,6 +34,7 @@
@@ -205,17 +205,21 @@ index 6806417..8f7ce9d 100644
    retval=sendto(fd,(const char *)msg,len,0,(struct sockaddr *)&to,sizeof(to));
    #ifdef _WIN32
    if (retval==SOCKET_ERROR)
-@@ -259,11 +298,44 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
+@@ -259,11 +298,50 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
    return(retval);
  }
  
 +// Receives from the relay agent: unwraps Bcast/Data and reports the sender as virtual-IP:logical-port.
++// Datagrams from anything other than the agent (another local process) are dropped.
 +Int UDP::ReadRelay(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
 +{
++  const RelayWire::Config &relay = RelayWire::config();
 +  uint8_t buf[2048];
 +  for (;;)
 +  {
-+    int n = recvfrom(fd,(char *)buf,(UnsignedInt)sizeof(buf),0,nullptr,nullptr); // UnsignedInt: size_t is ambiguous with the macOS winsock shim
++    sockaddr_in src;
++    int alen = sizeof(src);
++    int n = recvfrom(fd,(char *)buf,(UnsignedInt)sizeof(buf),0,(struct sockaddr *)&src,&alen); // UnsignedInt: size_t is ambiguous with the macOS winsock shim
 +    if (n < 0)
 +    {
 +      #ifdef _WIN32
@@ -224,6 +228,8 @@ index 6806417..8f7ce9d 100644
 +      return -1; // same as the direct path: callers see EAGAIN as "nothing to read"
 +      #endif
 +    }
++    if (ntohl(src.sin_addr.s_addr) != relay.agentIp || ntohs(src.sin_port) != relay.agentPort)
++      continue;
 +    uint32_t srcIp; uint16_t srcPort, dstPort; const uint8_t *payload; size_t payloadLen;
 +    if (!RelayWire::decode(buf, (size_t)n, srcIp, srcPort, dstPort, payload, payloadLen) || payloadLen > len)
 +      continue; // not for us, or too big for the caller's buffer

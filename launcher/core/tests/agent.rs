@@ -51,6 +51,10 @@ fn wait(a: &Agent, want: impl Fn(Status) -> bool) -> Status {
     a.status()
 }
 
+fn start(server: &str, serial: &str) -> Agent {
+    Agent::start(server, serial, "room", "pw").unwrap()
+}
+
 fn engine_socket(agent: &Agent, port: u16) -> UdpSocket {
     let s = UdpSocket::bind("127.0.0.1:0").unwrap();
     s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -61,8 +65,8 @@ fn engine_socket(agent: &Agent, port: u16) -> UdpSocket {
 #[test]
 fn handshake_and_relay_between_two_clients() {
     let (server, stop) = spawn_relay("AAA\nBBB\n!CCC\n");
-    let a = Agent::start(&server, "AAA").unwrap();
-    let b = Agent::start(&server, "BBB").unwrap();
+    let a = start(&server, "AAA");
+    let b = start(&server, "BBB");
     let va = match wait(&a, |s| matches!(s, Status::Connected(_))) {
         Status::Connected(v) => v,
         s => panic!("a: {s:?}"),
@@ -93,13 +97,13 @@ fn handshake_and_relay_between_two_clients() {
 #[test]
 fn bad_and_duplicate_serials_are_rejected() {
     let (server, stop) = spawn_relay("AAA\n!CCC\n");
-    let bad = Agent::start(&server, "nope").unwrap();
+    let bad = start(&server, "nope");
     assert_eq!(wait(&bad, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::UnknownSerial as u8));
-    let revoked = Agent::start(&server, "CCC").unwrap();
+    let revoked = start(&server, "CCC");
     assert_eq!(wait(&revoked, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::Revoked as u8));
-    let first = Agent::start(&server, "AAA").unwrap();
+    let first = start(&server, "AAA");
     wait(&first, |s| matches!(s, Status::Connected(_)));
-    let second = Agent::start(&server, "AAA").unwrap();
+    let second = start(&server, "AAA");
     assert_eq!(wait(&second, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
     stop.store(true, Ordering::Relaxed);
 }
@@ -107,28 +111,58 @@ fn bad_and_duplicate_serials_are_rejected() {
 #[test]
 fn client_without_serial_gets_one_automatically() {
     let (server, stop) = spawn_relay_with("", true);
-    let a = Agent::start(&server, "").unwrap();
+    let a = start(&server, "");
     assert!(matches!(wait(&a, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
     let serial = a.take_issued().expect("serial issued");
-    assert_eq!(serial, "0101-0101-0101-0101");
+    assert_eq!(serial.len(), 19); // XXXX-XXXX-XXXX-XXXX
     assert_eq!(a.take_issued(), None); // handed out once
 
     // The stored serial is what the next launch presents; the same serial cannot be used twice at once.
-    let again = Agent::start(&server, &serial).unwrap();
+    let again = start(&server, &serial);
     assert_eq!(wait(&again, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
     drop(a);
 
     // A second client gets a different serial.
-    let b = Agent::start(&server, "").unwrap();
+    let b = start(&server, "");
     wait(&b, |s| matches!(s, Status::Connected(_)));
-    assert_eq!(b.take_issued().as_deref(), Some("0202-0202-0202-0202"));
+    let second = b.take_issued().expect("second client issued a serial");
+    assert_ne!(second, serial);
     stop.store(true, Ordering::Relaxed);
 }
 
 #[test]
 fn closed_server_refuses_registration() {
     let (server, stop) = spawn_relay_with("", false);
-    let a = Agent::start(&server, "").unwrap();
+    let a = start(&server, "");
     assert_eq!(wait(&a, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::RegistrationClosed as u8));
+    stop.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn rooms_are_separate_and_passworded_and_vanish_when_empty() {
+    let (server, stop) = spawn_relay("AAA\nBBB\nDDD\nEEE\n");
+    let a = Agent::start(&server, "AAA", "alpha", "secret").unwrap();
+    wait(&a, |s| matches!(s, Status::Connected(_)));
+    // wrong password is refused, right password joins
+    let bad = Agent::start(&server, "BBB", "alpha", "wrong").unwrap();
+    assert_eq!(wait(&bad, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::WrongPassword as u8));
+    let b = Agent::start(&server, "DDD", "alpha", "secret").unwrap();
+    assert!(matches!(wait(&b, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
+    // a client in another room never sees alpha's broadcast
+    let other = Agent::start(&server, "EEE", "beta", "").unwrap();
+    wait(&other, |s| matches!(s, Status::Connected(_)));
+    let (a_lobby, b_lobby, o_lobby) = (engine_socket(&a, 8086), engine_socket(&b, 8086), engine_socket(&other, 8086));
+    std::thread::sleep(Duration::from_millis(200));
+    a_lobby.send_to(&Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: b"x".to_vec() }.encode(), a.local).unwrap();
+    let mut buf = [0u8; 2048];
+    assert!(b_lobby.recv(&mut buf).is_ok());
+    o_lobby.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+    assert!(o_lobby.recv(&mut buf).is_err());
+
+    // everyone leaves: the room is gone, so its name can be reused with a different password
+    drop((a, b));
+    std::thread::sleep(Duration::from_millis(300));
+    let reuse = Agent::start(&server, "AAA", "alpha", "brand new").unwrap();
+    assert!(matches!(wait(&reuse, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
     stop.store(true, Ordering::Relaxed);
 }

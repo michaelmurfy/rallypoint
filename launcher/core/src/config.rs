@@ -1,4 +1,4 @@
-//! Launcher settings. The serial is a credential: stored with 0600 perms on unix, never logged, only shown masked.
+//! Launcher settings. The serial is a credential the user never sees: stored with 0600 perms on unix and never logged.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -10,6 +10,12 @@ pub struct Config {
     /// Game data folder (the one with the `.big` files); empty = use whatever Steam detection finds.
     #[serde(default)]
     pub game_dir: String,
+    /// Room to join (remembered; the room password is never stored).
+    #[serde(default)]
+    pub room: String,
+    /// Steam account name for downloading game files (the password is never stored).
+    #[serde(default)]
+    pub steam_user: String,
 }
 
 impl Config {
@@ -18,26 +24,24 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600); // owner-only from the moment the file exists
+        }
+        let mut f = opts.open(path)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?; // also tightens a pre-existing file
         }
-        Ok(())
-    }
-
-    /// `****-****-****-A5E3`: last four characters only.
-    pub fn masked_serial(&self) -> String {
-        let n = self.serial.chars().count();
-        if n <= 4 {
-            return "*".repeat(n);
-        }
-        let tail: String = self.serial.chars().skip(n - 4).collect();
-        format!("****-****-****-{tail}")
+        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())
     }
 }
 
@@ -46,18 +50,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roundtrip_and_mask() {
+    fn roundtrip_and_permissions() {
         let p = std::env::temp_dir().join(format!("gen-cfg-{}/config.json", std::process::id()));
         assert!(Config::load(&p).serial.is_empty()); // missing file -> default
         let c = Config { server: "play.example:7777".into(), serial: "55BC-E547-64E4-5A53".into(), ..Default::default() };
         c.save(&p).unwrap();
         let back = Config::load(&p);
         assert_eq!((back.server.as_str(), back.serial.as_str()), ("play.example:7777", "55BC-E547-64E4-5A53"));
-        assert_eq!(back.masked_serial(), "****-****-****-5A53");
-        assert_eq!(Config { serial: "ab".into(), ..Default::default() }.masked_serial(), "**");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // an existing world-readable file is tightened on save
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            c.save(&p).unwrap();
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         }
         std::fs::remove_dir_all(p.parent().unwrap()).unwrap();

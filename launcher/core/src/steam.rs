@@ -71,6 +71,14 @@ fn read_dirs(p: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Zero Hour also reads the base game's files. Prefer the copy we downloaded, else any detected install.
+pub fn base_game_for(detected: &[GameInstall], downloaded: &Path) -> Option<PathBuf> {
+    if downloaded.join("INI.big").is_file() {
+        return Some(downloaded.to_path_buf());
+    }
+    detected.iter().find(|g| !g.zero_hour).map(|g| g.dir.clone())
+}
+
 pub fn detect() -> Vec<GameInstall> {
     steam_roots().iter().flat_map(|r| library_dirs(r)).flat_map(|l| find_in_library(&l)).collect()
 }
@@ -78,6 +86,18 @@ pub fn detect() -> Vec<GameInstall> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_game_prefers_downloaded_copy() {
+        let t = std::env::temp_dir().join(format!("gen-base-{}", std::process::id()));
+        std::fs::create_dir_all(&t).unwrap();
+        let steam = vec![GameInstall { dir: "/steam/gen".into(), zero_hour: false }, GameInstall { dir: "/steam/zh".into(), zero_hour: true }];
+        assert_eq!(base_game_for(&steam, &t), Some(PathBuf::from("/steam/gen")));
+        std::fs::write(t.join("INI.big"), "").unwrap();
+        assert_eq!(base_game_for(&steam, &t), Some(t.clone()));
+        assert_eq!(base_game_for(&[], Path::new("/nope")), None);
+        std::fs::remove_dir_all(t).unwrap();
+    }
 
     #[test]
     fn parses_vdf_paths() {

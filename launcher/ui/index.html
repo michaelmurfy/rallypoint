@@ -1,51 +1,45 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Generals Launcher</title>
-<style>
-  body { font: 15px system-ui; margin: 24px; max-width: 520px }
-  label { display: block; margin: 12px 0 4px }
-  button { margin-top: 20px; padding: 8px 20px }
-  fieldset { margin-top: 16px }
-</style>
-<h2>Generals Launcher</h2>
-<label>Game install <select id="game"></select></label>
-<label>or game folder <input id="dir" size="40" placeholder="folder containing INIZH.big"></label>
-<label>Mod <select id="mod"><option value="">None (vanilla)</option></select></label>
-<label>Resolution <input id="w" type="number" size="5"> x <input id="h" type="number" size="5"></label>
-<label><input id="fs" type="checkbox"> Fullscreen</label>
-<fieldset>
-  <legend>Online (relay server)</legend>
+<title>Rallypoint</title>
+<link rel="stylesheet" href="style.css">
+<h1>Rallypoint</h1>
+
+<section>
+  <h2>Game files</h2>
+  <label>Game install <select id="game"></select></label>
+  <label>or game folder <input id="dir" placeholder="folder containing INIZH.big"></label>
+  <details id="steam">
+    <summary>Don't have the files on this computer? Get them from Steam</summary>
+    <label>Steam account name <input id="suser" autocomplete="username"></label>
+    <label>Steam password <input id="spass" type="password" autocomplete="current-password"></label>
+    <p class="hint">Used once to sign in through Steam's own downloader. Never saved. You must own the game on Steam.</p>
+    <button id="sget">Download</button> <button id="scancel" hidden>Cancel</button>
+    <div id="sneed" hidden>
+      <label><span id="sneedlabel"></span> <input id="sinput" autocomplete="one-time-code"></label>
+      <button id="ssubmit">Submit</button>
+    </div>
+    <progress id="sbar" max="100" value="0" hidden></progress>
+    <p id="smsg"></p>
+  </details>
+</section>
+
+<section>
+  <h2>Play</h2>
+  <label>Mod <select id="mod"><option value="">None (vanilla)</option></select></label>
+  <label>Resolution <input id="w" type="number" class="num"> x <input id="h" type="number" class="num"></label>
+  <label class="row"><input id="fs" type="checkbox"> Fullscreen</label>
+  <button id="go">Play</button> <button id="sk">Quick Skirmish (vs AI)</button>
+  <p id="msg"></p>
+</section>
+
+<section>
+  <h2>Online</h2>
   <label>Server <input id="srv" placeholder="host:7777"></label>
-  <label>Serial <input id="ser" type="password" autocomplete="off"></label>
-  <small>Leave blank: the server issues one on first connect.</small>
-  <button id="save">Save</button> <button id="net">Connect</button>
+  <label>Room <input id="room" placeholder="any name"></label>
+  <label>Room password <input id="rpass" type="password" autocomplete="off"></label>
+  <p class="hint">Joining a room that doesn't exist creates it with this password. It disappears when everyone has left.</p>
+  <button id="net">Connect</button>
   <p id="relay">Offline</p>
-</fieldset>
-<button id="go">Play</button> <button id="sk">Quick Skirmish (vs AI)</button>
-<p id="msg"></p>
-<script>
-  const { invoke } = window.__TAURI__.core, $ = (i) => document.getElementById(i);
-  const dpr = devicePixelRatio;
-  $("w").value = Math.round(screen.width * dpr); $("h").value = Math.round(screen.height * dpr);
-  invoke("detect_games").then((g) => {
-    $("game").innerHTML = g.map((x) => `<option value="${x.dir}">${x.zero_hour ? "Zero Hour" : "Generals"} - ${x.dir}</option>`).join("")
-      || "<option value=''>No Steam install found</option>";
-  });
-  invoke("installed_mods").then((m) => m.forEach((x) => $("mod").add(new Option(x.name, x.id))));
-  invoke("get_config").then((c) => { $("dir").value = c.game_dir; $("srv").value = c.server; $("ser").placeholder = c.serial_masked || "issued on first connect"; });
-  $("save").onclick = () => invoke("save_config", { server: $("srv").value, serial: $("ser").value })
-    .then(() => { $("ser").value = ""; return invoke("get_config"); })
-    .then((c) => $("ser").placeholder = c.serial_masked || "issued on first connect", (e) => $("relay").textContent = e);
-  $("net").onclick = () => invoke($("net").textContent === "Connect" ? "relay_connect" : "relay_disconnect")
-    .catch((e) => $("relay").textContent = e);
-  setInterval(() => invoke("relay_status").then((s) => {
-    $("relay").textContent = s;
-    $("net").textContent = s === "Offline" || s.startsWith("Server") || s.startsWith("This") || s.startsWith("Too") || s === "Rejected by server" ? "Connect" : "Disconnect";
-  }), 1000);
-  const play = (skirmish) => invoke("launch_game", {
-    gameDir: $("dir").value.trim() || $("game").value, modId: $("mod").value || null,
-    width: +$("w").value, height: +$("h").value, fullscreen: $("fs").checked, skirmish,
-  }).then(() => $("msg").textContent = "Launched.", (e) => $("msg").textContent = e);
-  $("go").onclick = () => play(false);
-  $("sk").onclick = () => play(true);
-</script>
+</section>
+
+<script src="app.js"></script>

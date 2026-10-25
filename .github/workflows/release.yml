@@ -8,9 +8,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Least privilege: jobs that need more ask for it themselves.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -23,7 +23,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
       - run: brew install ninja
@@ -41,7 +41,7 @@ jobs:
           mkdir -p out/engine
           cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
           ls -la out/engine
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: engine-macos
           path: out/engine
@@ -52,12 +52,12 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: true
       - run: sh patches/apply.sh
         shell: bash
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x86
       - name: Configure and build
@@ -71,7 +71,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path out/engine | Out-Null
           Get-ChildItem engine/build/win32/Core/Release, engine/build/win32/GeneralsMD/Release -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -in '.exe', '.dll' } | Copy-Item -Destination out/engine -Verbose
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: engine-windows
           path: out/engine
@@ -91,7 +91,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Tag matches app version
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -100,7 +100,7 @@ jobs:
           app=$(python3 -c "import json;print(json.load(open('launcher/src-tauri/tauri.conf.json'))['version'])")
           [ "$core" = "$app" ] || { echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $app"; exit 1; }
       - if: matrix.engine != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: ${{ matrix.engine }}
           path: launcher/src-tauri/engine
@@ -109,7 +109,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
       - id: tauri-cli
-        uses: actions/cache@v4
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ~/.cargo/bin/cargo-tauri*
           key: tauri-cli-2.12.4-${{ runner.os }}
@@ -127,7 +127,7 @@ jobs:
           mkdir -p dist
           find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
           ls dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: dist-launcher-${{ matrix.os }}
           path: dist/*
@@ -137,8 +137,11 @@ jobs:
   server:
     name: Relay server
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push the image to GHCR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: Swatinem/rust-cache@v2
       - name: Binary
         run: |
@@ -148,22 +151,25 @@ jobs:
       - name: Docker image and smoke test
         run: |
           docker build -f server/Dockerfile -t rallypoint-relay .
-          docker run -d --name relay -p 7777:7777/udp rallypoint-relay
+          # same hardening as docker-compose.yml
+          docker run -d --name relay -p 7777:7777/udp --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges:true -v relay-data:/data rallypoint-relay
           sleep 1
-          SERIAL=$(docker exec relay rallypoint-server issue ci)
-          python3 scripts/smoke_relay.py 127.0.0.1 7777 "$SERIAL"
-          AUTO=$(python3 scripts/smoke_relay.py 127.0.0.1 7777)
-          docker exec relay rallypoint-server list | grep "$AUTO"
+          python3 scripts/smoke_relay.py 127.0.0.1 7777
+          docker exec relay rallypoint-server list | grep -q auto
       - name: Push image to GHCR
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rallypoint-relay"
           VERSION="${GITHUB_REF_NAME#v}"
           docker tag rallypoint-relay "$IMAGE:$VERSION"
           docker push "$IMAGE:$VERSION"
           case "$VERSION" in *-*) ;; *) docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest" ;; esac
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: dist-server
           path: dist/*
@@ -174,9 +180,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [launcher, server]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           pattern: dist-*
           merge-multiple: true

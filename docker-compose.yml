@@ -1,20 +1,26 @@
-# docker compose up -d
-# Clients get a serial automatically on first connect. For an invite-only server set
-# GENERALS_REGISTRATION=closed below and hand out serials yourself:
-# docker compose exec relay rallypoint-server issue alice
-# docker compose exec relay rallypoint-server revoke XXXX-XXXX-XXXX-XXXX
+# Use the Makefile (make up / down / update) rather than calling this directly.
 services:
   relay:
     build:
       context: .
       dockerfile: server/Dockerfile
     restart: unless-stopped
-    # environment:
-    #   GENERALS_REGISTRATION: closed
+    env_file: .env
+    environment:
+      GEO_DIR: /geo
     ports:
-      - "7777:7777/udp"
+      - "${PORT:-7777}:7777/udp"
     volumes:
       - relay-data:/data
+      - ./data/geo:/geo:ro
+    # The server needs nothing but its UDP socket and the /data volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   relay-data:

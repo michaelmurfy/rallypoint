@@ -1,42 +1,48 @@
 # Agent guide
 
-Rallypoint: cross-platform (macOS, Windows, Linux) launcher and multiplayer stack for C&C Generals / Zero Hour.
+Rallypoint: cross-platform (macOS, Windows, Linux) launcher and multiplayer stack for C&C Generals / Zero Hour. User-facing docs are in `README.md`; this file is for contributors and AI agents.
 
 ## Layout
-- `engine/` - git submodule: https://github.com/dvcdsys/GeneralsGameCode-macOS (fork of TheSuperHackers/GeneralsGameCode, itself from EA's GPL release). Don't edit in place; engine changes go in `patches/` (planned) or our own fork of it.
-- `launcher/core/` - GUI-free Rust crate: Steam detection (`steam.rs`), mod manifests (`mods.rs`), engine command line (`launch.rs`). All logic and tests live here.
-- `launcher/src-tauri/` - thin Tauri 2 shell exposing core as commands. `launcher/ui/` is plain HTML/JS, no build step.
-- `mods/mods.json` - mod manifest (Shockwave, Chaos Mod). A mod is a folder under `<app data>/GeneralsZH/Mods/` loaded with `-mod`.
-- `patches/` - engine changes as `*.patch` files; `sh patches/apply.sh` applies them to `engine/` (idempotent). Regenerate with `git -C engine add -N <new files> && git -C engine diff > patches/NNNN-name.patch`, then reset the engine tree. `0002-relay-transport.patch` = `UDP` class tunnels through the agent when `GEN_RELAY` is set, `LANAPI::SetLocalIP` uses the virtual IP (wire code in `RelayWire.h`, tested by `tests/relaywire_test.cpp` against the Rust golden bytes). `0001-widescreen.patch` = hor+ camera, uniform/centred 2D UI, terrain draw window on all platforms; `GEN_STRETCH=1` restores retail behaviour.
-- `tests/` - `sh tests/run.sh` applies patches and runs the standalone engine-math test (plain `c++`, no engine build).
-- `shared/` (`generals-proto`) - UDP wire protocol: Hello(serial)/Welcome(virtual IP)/Reject/Bcast/Data/Ping.
-- `server/` (`rallypoint-server`, Linux) - `Server` state machine in `lib.rs` (no sockets/clocks, all tests there); `main.rs` is the CLI + UDP loop. `rallypoint-server [--serials F] [--bind A] [--closed] run | issue [label] | revoke SERIAL | list`. Serial file is `SERIAL [label]` per line, `!` prefix = revoked, reloaded on change (revoking kicks live sessions). Never commit it (gitignored). Docker: `docker compose up -d` (image from `server/Dockerfile`, serials in the `relay-data` volume, UDP 7777); `docker compose exec relay rallypoint-server issue <label>`. Env defaults `GENERALS_SERIALS`, `GENERALS_BIND`. CI builds the image and smoke-tests it (`scripts/smoke_relay.py`); not yet verified locally (no Docker daemon was running).
-- `launcher/core/src/agent.rs` - tunnel agent (loopback UDP <-> relay, authenticates with the serial, routes by logical port). `config.rs` - `<app data>/GeneralsZH/config.json` (server + serial, 0600, UI only sees the masked serial). Tauri commands: `get_config`, `save_config`, `relay_connect`, `relay_disconnect`, `relay_status`; `launch_game` passes `GEN_RELAY`/`GEN_RELAY_VIP` once connected.
+- `engine/` - git submodule: https://github.com/dvcdsys/GeneralsGameCode-macOS (fork of TheSuperHackers/GeneralsGameCode, itself from EA's GPL release). Don't edit in place; engine changes are `patches/*.patch`.
+- `patches/` - `sh patches/apply.sh` applies them to `engine/` (idempotent). Regenerate: edit the engine tree, `git -C engine add -N <new files> && git -C engine diff -- <paths> > patches/NNNN-name.patch`, then `git -C engine reset` + checkout, and re-apply. `0001-widescreen.patch` = hor+ camera, uniform/centred 2D UI, terrain draw window on all platforms (`GEN_STRETCH=1` restores retail). `0002-relay-transport.patch` = the `UDP` class tunnels through the agent when `GEN_RELAY`/`GEN_RELAY_VIP` are set and drops datagrams not from the agent; `LANAPI::SetLocalIP` uses the virtual IP. Wire code is `RelayWire.h`. Both build in CI on macOS and Windows; neither has been played in a real game.
+- `tests/` - `sh tests/run.sh` applies patches and runs the standalone engine-math tests (plain `c++`, no engine build); `relaywire_test` checks the same golden bytes as the Rust protocol tests.
+- `launcher/core/` - GUI-free Rust crate, all logic and tests: `steam.rs` (find installs by `.big` files), `assets.rs` (steamcmd download of both games, prompt/progress parsing), `engine.rs` (find the bundled engine), `mods.rs`, `launch.rs` (engine command line/env), `config.rs` (`<app data>/GeneralsZH/config.json`, 0600), `agent.rs` (tunnel agent).
+- `launcher/src-tauri/` - thin Tauri 2 shell exposing core as commands; `launcher/ui/` is plain HTML/CSS/JS (`app.js`, strict CSP, no `innerHTML`). The engine is bundled from `launcher/src-tauri/engine/` (CI copies the built engine in).
+- `mods/mods.json` - mod manifest. A mod is a folder under `<app data>/GeneralsZH/Mods/` loaded with `-mod`.
+- `shared/` (`generals-proto`) - UDP wire protocol and `room_verifier`. `server/` (`rallypoint-server`, Linux) - `Server` state machine in `lib.rs` (no sockets or clocks; all tests there), `geo.rs` (country filter), `main.rs` (env config, CLI, UDP loop).
+- `Makefile`, `.env.example`, `docker-compose.yml`, `server/Dockerfile` - running the server. `scripts/smoke_relay.py` - full client handshake used by CI.
+- `.github/workflows/ci.yml` - fast tests only, on push/PR. `release.yml` - engine + launcher bundles + server image, only on `v*` tags or manual run (manual never publishes).
 
 ## Commands
-- `cargo test -p generals-core -p generals-proto -p rallypoint-server` - fast, run before every commit. CI runs it on Linux/macOS/Windows.
+- `make test` (= `cargo test -p generals-core -p generals-proto -p generals-server` + `sh tests/run.sh`) before every commit.
 - `cargo check -p generals-launcher` - needs webkit2gtk dev packages on Linux.
-- `cd launcher/src-tauri && cargo tauri build` - bundle the app.
-- Engine (macOS): see `engine/README.md`; `cmake --preset apple-arm64`, target `z_generals`.
+- `cd launcher/src-tauri && cargo tauri build` - needs the engine copied into `launcher/src-tauri/engine/`.
+- Release: `make release VERSION=0.1.0-alpha.1` (tag must match `tauri.conf.json` version's numeric core). Dry run: Actions > Release > Run workflow.
 - Clone with `git clone --recurse-submodules --depth 1`; the engine repo is large.
+- No cmake/Docker is assumed locally; engine builds are verified through the release workflow.
+
+## Server design
+- Handshake: [`Register`(zero cookie) -> `Challenge` -> `Register`(cookie) -> `Issued`] on first run, then `Hello{serial, room, verifier}` -> `Welcome{vip, token}`. After that every client packet is `Signed{token, ...}`. Unsigned or wrongly signed packets are ignored (wrong token gets no reply at all).
+- Serials are identities issued automatically and kept out of the UI. The challenge cookie (HMAC-like SHA-256 over a server secret + source IP + minute) stops spoofed sign-ups; the Challenge is no bigger than the request (no reflection). 5 sign-ups per IP per hour. `GENERALS_REGISTRATION=closed` makes the server admin-issue only (`rallypoint-server issue <label>`).
+- Rooms: created by the first `Hello` for a name with its `verifier` (iterated SHA-256 of room+password, so the password never travels or is stored), removed when empty (explicit `Leave`, timeout 30 s, serial revoked). Max 256 rooms x 8 players; 10 wrong passwords per IP per 10 minutes. Broadcast/unicast never cross rooms; each room has its own `10.77.0.x` space.
+- Country limit: `ALLOWED_COUNTRIES` + zone files in `GEO_DIR` (`make geo` downloads ipdeny.com aggregated lists). Fails closed (listed country without a file allows nobody); private ranges pass unless `ALLOW_PRIVATE=false`. Blocked sources get no reply.
+- Not encrypted: an on-path attacker can read/replay traffic and the verifier. Server->client packets are unsigned (off-path spoofing needs the client's ephemeral port). The agent's loopback socket trusts any local process (same-user threat model).
 
 ## Rules
-- Put logic in `launcher/core` with a test; keep the Tauri shell and UI thin.
-- Detect games by `.big` files (`INIZH.big` = Zero Hour, `INI.big` = Generals), never by Steam app ID.
-- Never redistribute EA assets, Miles or Bink. The user's own Steam copy supplies game data.
+- Put logic in `launcher/core` or `server` lib with a test; keep the Tauri shell and UI thin.
+- Detect games by `.big` files (`INIZH.big` = Zero Hour, `INI.big` = Generals). Steam app IDs (Generals 2229870, Zero Hour 2732960) are used only by the steamcmd download.
+- Never redistribute EA assets, Miles or Bink. The user's own Steam copy supplies game data. Never store or log the Steam password; it only goes to steamcmd's stdin.
 - Don't invent mod download URLs; manifests link to the mod's homepage only.
-- No new dependencies when std or serde does it.
+- UI: no `innerHTML` with backend data (folder names are attacker-controlled).
+- Server loop must never die on I/O errors (no `?` inside `run`'s loop).
+- No new dependencies when std or serde does it (sha2 is the exception: don't hand-roll crypto).
 
 ## Roadmap
-1. (done) Launcher MVP: detect, mod select, launch.
-2. (patch written, NOT compiled or run in game) Resolution/HiDPI, 2D UI scaling, zoom by aspect ratio. Upstream already accepts any `-xres/-yres` and drops the 4:3 filter; Windows is PerMonitorV2 DPI aware; macOS renders to a Metal drawable of the requested pixel size, so HiDPI = launcher passes native pixels. Still to do: build and eyeball on 16:9, 21:9, 4K; options-menu resolution list; screens that position by display width (ProcessAnimateWindow, control-bar extras); optional lobby cap on FOV.
-3. `server/` (Linux Rust): UDP relay emulating LAN broadcast + lobby; `shared/` protocol crate.
-   - Done: server, protocol, launcher agent + config + UI, engine patch 0002 (written, **never compiled or run in game**). Still missing: verifying 0002 in a real two-machine game (does the lobby find the game, does lockstep run over the relay, latency), rooms/lobby, spoof-resistant sessions.
-   - **Serial required to connect:** each client has a unique serial; the handshake carries it and the server rejects unknown, revoked or already-in-use serials. Decided: serials are issued automatically. A client with no serial sends `Register`; the server replies `Issued{serial}` (64 random bits from /dev/urandom, appended to the serial file as `SERIAL auto`) and the launcher stores it in its config. Limits: 5 sign-ups per source IP per hour, retries from one address get the same serial back. `--closed` / `GENERALS_REGISTRATION=closed` switches to admin-only serials (`rallypoint-server issue <label>`). A serial is an identity, not a secret gate, while registration is open; use `--closed` for a private server. Not bound to a machine. Store it in the launcher config; never log it in full.
-4. Determinism: `-ffp-contract=off`, deterministic trig, RNG audit; headless engine on the server as a per-frame CRC referee that pinpoints the first diverging object (incl. AI).
-5. Linux engine build, packaging, engine auto-install in the launcher.
-
-## Known gaps
-- Launcher expects the engine at `<app data>/GeneralsZH/runtime/generalszh` (the engine launcher's layout); no installer for it yet.
-- Steam ships Windows depots only; macOS/Linux users need the files via steamcmd (`+@sSteamCmdForcePlatformType windows`) or a manual path.
-- Mod `.exe`-patching mods will not work on the ported engine.
+1. Verify in a real game: widescreen/HiDPI (0001), two-machine play through the relay (0002), Steam download with a real account, Windows engine data lookup (cwd vs registry).
+2. Linux engine. GeneralsX (https://github.com/fbraz3/GeneralsX) already targets Linux x86_64 (DXVK/Vulkan, SDL3, OpenAL) from the same TheSuperHackers base; the likely route is basing the Linux build on it rather than porting our own renderer. It publishes no discrete fix list, so cherry-picking means reading its commit history for the specific area (macOS/net/rendering fixes) and porting by hand.
+3. Determinism (macOS arm64 vs Windows x86 desync): `-ffp-contract=off`, deterministic trig, RNG audit; headless engine on the server as a per-frame CRC referee.
+4. Gameplay features, all engine work in a lockstep game, none started:
+   - Save/load multiplayer: needs the save to be written identically on every client and a "load" handshake that restores all clients to the same frame (the game's save format is not network-aware).
+   - Controlling allied units: command validation (`Player`/`Object` ownership checks in command processing) needs an "allowed controller" relation that is identical on every client; AI-owned allies and shared vision/economy rules need decisions.
+   - Co-op / shared player: several humans issuing commands for one `Player` slot; commands from different clients for the same player must be ordered deterministically (the net layer already orders commands per frame), and the lobby needs a shared slot concept. Related to the item above.
+5. Mod downloads inside the launcher; the relay as a public server list.

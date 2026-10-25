@@ -1,6 +1,6 @@
 # Rallypoint
 
-A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet without Hamachi.
+A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
 > **0.1 Alpha.** Expect rough edges. See [What works](#what-works-in-01-alpha) for an honest list of what is and isn't tested.
 
@@ -9,17 +9,19 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 ## Features
 
 - **Launcher** with Steam detection, mod selection, resolution and fullscreen options.
+- **Get the game files from inside the launcher.** On macOS and Linux (where Steam can't install these games) it downloads them for you through Steam's own downloader; on Windows it finds your Steam install.
 - **Skirmish / single player.** The game engine is bundled in the app. **Play** opens the full game (Solo Play → Skirmish); **Quick Skirmish** jumps straight into a 1v1 against the AI.
 - **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide are supported. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, and the 2D UI is scaled uniformly and centred instead of stretched.
 - **Mods** (Shockwave, Chaos Mod) launched through the engine's `-mod` support.
-- **Internet "LAN" multiplayer** through a relay server you can run with Docker. Each player gets a unique, automatically issued serial number.
+- **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet.
 
 ## What works in 0.1 Alpha
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
 | Launcher | ✅ | ✅ | ✅ (no engine yet) |
-| Engine / Skirmish | ✅ upstream port | ⚠️ builds from upstream source, untested here | ❌ not built yet |
+| Download game files from Steam | ⚠️ written, not tried with a real account | ✅ finds your Steam install | ⚠️ same as macOS |
+| Engine / Skirmish | ⚠️ builds in CI; the upstream port reports Skirmish playable | ⚠️ builds from upstream source, untested here | ❌ not built yet |
 | Widescreen / HiDPI patch | ⚠️ written, not played yet | ⚠️ written, not played yet | – |
 | Relay server | – | – | ✅ (Docker or binary) |
 | Multiplayer through the relay | ⚠️ protocol and launcher agent tested; engine patch **not yet tried in a real game** | same | – |
@@ -41,9 +43,8 @@ Download the installer for your platform from the [Releases](../../releases) pag
 Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 - **Windows:** Steam installs are found automatically.
-- **macOS / Linux:** Steam does not ship these games natively, so there is nothing to detect. Download the Windows files with `steamcmd` (`+@sSteamCmdForcePlatformType windows +login <you> +app_update <appid> validate`) or copy them from a Windows install, then paste the folder into **game folder** in the launcher. It remembers it.
-
-Automatic Steam download on macOS/Linux is planned, not done.
+- **macOS / Linux:** open **Don't have the files on this computer?**, enter your Steam account name and password, and press **Download**. Rallypoint fetches Valve's `steamcmd`, signs in, and downloads Generals and Zero Hour (about 4 GB); if Steam Guard asks for a code you'll be prompted. Your password is used only for that sign-in and is never saved. The account must own the games. On Apple Silicon, `steamcmd` needs Rosetta (`softwareupdate --install-rosetta`).
+- Already have the files somewhere? Paste the folder into **game folder**.
 
 ## Playing
 
@@ -69,38 +70,27 @@ On by default. Set `GEN_STRETCH=1` in the environment to get the original stretc
 
 ## Multiplayer
 
-Multiplayer uses a relay server instead of Hamachi: each player's launcher connects to it, the server hands out virtual LAN addresses (`10.77.0.x`), and the game's LAN lobby traffic is tunnelled through it.
+Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
 
 ### Run a server
 
-Needs Docker and one open **UDP** port (7777 by default).
+Needs Docker, `make`, and one open **UDP** port (7777 by default).
 
 ```bash
 git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint
-docker compose up -d
+make up
 ```
 
-Or use the image `ghcr.io/michaelmurfy/rallypoint-relay` from the release, or the `rallypoint-server` binary from the release page (Linux).
+| Command | What it does |
+|---|---|
+| `make config COUNTRIES=NZ` | Create `.env`, optionally limiting the server to one or more countries (`NZ`, `NZ,AU`) |
+| `make up` / `make down` / `make restart` | Start, stop, or apply changed settings |
+| `make update` | Pull the latest version, refresh the country lists, restart |
+| `make logs` / `make status` | Watch the server |
 
-**Serials.** Every client needs a unique serial to connect. By default the server issues one automatically the first time a client connects (limited to 5 sign-ups per IP per hour), and the launcher stores it. For a private server, switch to admin-issued serials:
+Settings live in `.env` (see [`.env.example`](.env.example)): the port, and `ALLOWED_COUNTRIES` to only accept players from certain countries. The country lists are downloaded for you; local-network addresses are always let through unless you set `ALLOW_PRIVATE=false`.
 
-```yaml
-# docker-compose.yml
-environment:
-  GENERALS_REGISTRATION: closed
-```
-
-```bash
-docker compose exec relay rallypoint-server issue alice   # prints a serial to give to alice
-docker compose exec relay rallypoint-server revoke XXXX-XXXX-XXXX-XXXX
-docker compose exec relay rallypoint-server list
-```
-
-While registration is open, a serial identifies a client but doesn't keep strangers out; use closed mode if you want access control. Serials live in the `relay-data` volume (`serials.txt`); treat that file as a secret.
-
-### Join
-
-In the launcher's **Online** box enter the server (`host:7777`), leave the serial blank for a new one, press **Connect**, then **Play** and use the game's LAN lobby.
+The image is also published as `ghcr.io/michaelmurfy/rallypoint-relay`, and the release page has a plain Linux binary (`rallypoint-server`).
 
 ## Build from source
 
@@ -108,7 +98,7 @@ In the launcher's **Online** box enter the server (`host:7777`), leave the seria
 git clone --recurse-submodules --depth 1 https://github.com/michaelmurfy/rallypoint
 cd rallypoint
 cargo test -p generals-core -p generals-proto -p generals-server   # fast tests
-sh tests/run.sh                                                    # engine-patch math checks
+make test                                                          # everything, including engine-patch math checks
 cargo install tauri-cli --version "^2" --locked
 cd launcher/src-tauri && cargo tauri build                         # needs the engine copied into launcher/src-tauri/engine/
 ```
@@ -131,8 +121,9 @@ Releases are built only when a version tag is pushed (`git tag v0.1.0-alpha.1 &&
 
 - The engine patches have not been played in a real game by the author yet; widescreen UI details and the relay transport are the most likely places to find bugs. Please file issues.
 - No Linux engine, no Intel Mac engine.
-- Automatic Steam downloading and in-launcher mod downloads are not implemented.
-- The relay has one global room and identifies sessions by source address (a spoofed address could inject traffic).
+- The Steam download has not been tried against a real account yet, and mods can't be downloaded from inside the launcher.
+- Planned but not started: saving and loading multiplayer games, controlling allied units, and co-op (sharing one player and its units).
+- Relay traffic is not encrypted, so someone on the network path could read or replay it; room passwords keep other players out, not eavesdroppers.
 - Game determinism between macOS and Windows (the classic Generals desync problem) has not been tackled yet.
 
 ## Credits and legal
