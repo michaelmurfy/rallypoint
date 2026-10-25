@@ -7,7 +7,9 @@ Cross-platform (macOS, Windows, Linux) launcher and multiplayer stack for C&C Ge
 - `launcher/core/` - GUI-free Rust crate: Steam detection (`steam.rs`), mod manifests (`mods.rs`), engine command line (`launch.rs`). All logic and tests live here.
 - `launcher/src-tauri/` - thin Tauri 2 shell exposing core as commands. `launcher/ui/` is plain HTML/JS, no build step.
 - `mods/mods.json` - mod manifest (Shockwave, Chaos Mod). A mod is a folder under `<app data>/GeneralsZH/Mods/` loaded with `-mod`.
-- `server/`, `shared/`, `patches/` - not created yet (see roadmap).
+- `patches/` - engine changes as `*.patch` files; `sh patches/apply.sh` applies them to `engine/` (idempotent). Regenerate with `git -C engine add -N <new files> && git -C engine diff > patches/NNNN-name.patch`, then reset the engine tree. `0001-widescreen.patch` = hor+ camera, uniform/centred 2D UI, terrain draw window on all platforms; `GEN_STRETCH=1` restores retail behaviour.
+- `tests/` - `sh tests/run.sh` applies patches and runs the standalone engine-math test (plain `c++`, no engine build).
+- `server/`, `shared/` - not created yet (see roadmap).
 
 ## Commands
 - `cargo test -p generals-core` - fast, run before every commit. CI runs it on Linux/macOS/Windows.
@@ -25,13 +27,13 @@ Cross-platform (macOS, Windows, Linux) launcher and multiplayer stack for C&C Ge
 
 ## Roadmap
 1. (done) Launcher MVP: detect, mod select, launch.
-2. Engine patches: any resolution/HiDPI, 2D UI scaling, zoom by aspect ratio.
+2. (patch written, NOT compiled or run in game) Resolution/HiDPI, 2D UI scaling, zoom by aspect ratio. Upstream already accepts any `-xres/-yres` and drops the 4:3 filter; Windows is PerMonitorV2 DPI aware; macOS renders to a Metal drawable of the requested pixel size, so HiDPI = launcher passes native pixels. Still to do: build and eyeball on 16:9, 21:9, 4K; options-menu resolution list; screens that position by display width (ProcessAnimateWindow, control-bar extras); optional lobby cap on FOV.
 3. `server/` (Linux Rust): UDP relay emulating LAN broadcast + lobby; `shared/` protocol crate.
    - **Serial required to connect:** each client has a unique serial; the handshake carries it and the server rejects unknown, revoked or already-in-use serials. Decided: the server admin issues serials via a CLI, one per client, not bound to a machine. Store it in the launcher config; never log it in full.
 4. Determinism: `-ffp-contract=off`, deterministic trig, RNG audit; headless engine on the server as a per-frame CRC referee that pinpoints the first diverging object (incl. AI).
 5. Linux engine build, packaging, engine auto-install in the launcher.
 
 ## Known gaps
-- Launcher expects the engine at `<app data>/GeneralsZH/z_generals`; no installer for it yet.
+- Launcher expects the engine at `<app data>/GeneralsZH/runtime/generalszh` (the engine launcher's layout); no installer for it yet.
 - Steam ships Windows depots only; macOS/Linux users need the files via steamcmd (`+@sSteamCmdForcePlatformType windows`) or a manual path.
 - Mod `.exe`-patching mods will not work on the ported engine.

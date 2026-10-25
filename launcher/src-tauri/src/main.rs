@@ -33,7 +33,7 @@ fn launch_game(app: tauri::AppHandle, game_dir: PathBuf, mod_id: Option<String>,
         mod_path: m.as_ref().map(|m| m.full_path(&base.join("Mods")).to_string_lossy().into()),
         mod_args: m.map(|m| m.args).unwrap_or_default(),
     };
-    let exe = base.join(if cfg!(windows) { "z_generals.exe" } else { "z_generals" });
+    let exe = base.join("runtime").join(if cfg!(windows) { "generalszh.exe" } else { "generalszh" });
     launch::command(&exe, &game_dir, &opts).spawn().map(|_| ()).map_err(|e| format!("{}: {e}", exe.display()))
 }
 
