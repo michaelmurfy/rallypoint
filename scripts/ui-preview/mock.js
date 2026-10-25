@@ -31,7 +31,7 @@ const handlers = {
   maps_cancel: () => { state.mapJob = null; },
   maps_install_path: () => 3,
   set_check_updates: ({ on }) => { state.cfg.check_updates = on; },
-  update_check: () => (hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
+  update_check: async () => (await new Promise((r) => setTimeout(r, 1200)), hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
   update_install: async () => { await new Promise((r) => setTimeout(r, 1500)); return "The installer disk image is open. Quit Rallypoint, then drag the new Rallypoint onto Applications."; },
   open_release_page: () => {},
   detect_games: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Generals - Zero Hour", zero_hour: true }] : []),
