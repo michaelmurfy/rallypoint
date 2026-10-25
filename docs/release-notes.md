@@ -1,6 +1,12 @@
-## Rallypoint 0.1.0-beta.4
+## Rallypoint 0.1.0-beta.5
 
 Still a **prerelease**. A few pieces have only been tried by the developer (listed at the end), so please report what you hit.
+
+New since beta 4:
+- **Zero Hour starts.** The engine was remembering that Weather.ini was missing, then refusing to read it from INIZH.big. It now checks for that archive on disk and loads the Zero Hour folder when it is not already in the working directory. On Windows this reaches the game window.
+- **Mods.** Choose the finished download yourself. Standalone mods and add-ons are listed separately.
+- **Ultrawide control bar.** Frame art and command icons sit in the same centred 4:3 region as the rest of the UI.
+- **Online play hides your real network adapters.** The game only sees the relay's virtual address.
 
 New since beta 3:
 - **Zero Hour launches from the real game folder.** The engine is told where Weather.ini lives, and a nested base-game copy is no longer preferred over a sibling install.
