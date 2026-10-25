@@ -1,0 +1,34 @@
+[
+  {
+    "id": "gentool-all",
+    "name": "All ranked maps",
+    "description": "Every ranked 1v1, 2v2 and 3v3 map from GenTool's download page, in one pack.",
+    "homepage": "https://www.gentool.net/download/",
+    "zip_url": "https://www.gentool.net/download/Maps_All_Ranked_ZH.zip",
+    "size_mb": 56
+  },
+  {
+    "id": "gentool-1v1",
+    "name": "1v1 maps",
+    "description": "The ranked one-on-one maps.",
+    "homepage": "https://www.gentool.net/download/",
+    "zip_url": "https://www.gentool.net/download/Maps_1v1_ZH.zip",
+    "size_mb": 6
+  },
+  {
+    "id": "gentool-2v2",
+    "name": "2v2 maps",
+    "description": "The ranked two-on-two maps.",
+    "homepage": "https://www.gentool.net/download/",
+    "zip_url": "https://www.gentool.net/download/Maps_2v2_ZH.zip",
+    "size_mb": 4
+  },
+  {
+    "id": "gentool-3v3",
+    "name": "3v3 maps",
+    "description": "The ranked three-on-three maps.",
+    "homepage": "https://www.gentool.net/download/",
+    "zip_url": "https://www.gentool.net/download/Maps_3v3_ZH.zip",
+    "size_mb": 4
+  }
+]

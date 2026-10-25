@@ -52,7 +52,7 @@ function fill(el, ...kids) {
 const errText = (e) => (typeof e === "string" ? e : (e && e.message) || String(e));
 
 // ---------------------------------------------------------------- state
-const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "Offline", page: "play", watch: null, update: null, updateNote: "" };
+const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "Offline", page: "play", watch: null, update: null, updateNote: "", maps: null };
 const nativeRes = () => ({ w: Math.round(screen.width * devicePixelRatio), h: Math.round(screen.height * devicePixelRatio) });
 
 const prefs = {
@@ -150,6 +150,71 @@ async function choose(id, directory) {
     });
   } catch (e) { return toast("Couldn't open the file picker: " + errText(e), "bad"); }
   if (picked) await installPath(typeof picked === "string" ? picked : picked.path, id);
+}
+
+// ---------------------------------------------------------------- maps
+async function loadMaps() {
+  try { store.maps = await invoke("maps_info"); } catch (e) { toast(errText(e), "bad"); }
+  notifyMods();
+}
+/** Pick an archive or folder of maps, in the Downloads folder, and add it. */
+async function pickMaps(directory) {
+  let picked;
+  try {
+    const dl = await invoke("downloads_dir").catch(() => null);
+    picked = await tauri.dialog.open({
+      multiple: false, directory: !!directory, defaultPath: dl || undefined,
+      title: directory ? "Choose a folder of maps" : "Choose a maps archive",
+      filters: directory ? undefined : [{ name: "Map archives", extensions: ["zip", "7z", "rar", "gz", "tgz"] }],
+    });
+  } catch (e) { return toast("Couldn't open the file picker: " + errText(e), "bad"); }
+  if (!picked) return;
+  toast("Adding maps…");
+  try {
+    const n = await invoke("maps_install_path", { path: typeof picked === "string" ? picked : picked.path });
+    toast(`${n} map${n === 1 ? "" : "s"} added`, "ok");
+  } catch (e) { toast(errText(e), "bad"); }
+  loadMaps();
+}
+/** Map packs to install with one button, plus adding your own. Used on the Mods page and in the wizard. */
+function mapsCard() {
+  let timer = null;
+  const info = h("p", { class: "muted small" });
+  const list = h("div", { class: "stack" });
+  const progress = h("progress", { max: 100, value: 0, hidden: true });
+  const msg = h("div", { class: "msg muted", role: "status" });
+  const cancel = h("button", { class: "btn small", hidden: true, onclick: () => invoke("maps_cancel") }, "Cancel");
+  function render() {
+    const m = store.maps;
+    if (!m) return;
+    info.textContent = m.count ? `${m.count} map${m.count === 1 ? "" : "s"} installed in ${m.dir}` : "No extra maps installed yet.";
+    fill(list, m.packs.map((p) => h("div", { class: "mappack" },
+      h("div", {}, h("h3", {}, p.name), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
+      h("button", { class: "btn small", onclick: () => start(p) }, "Install"))));
+  }
+  async function start(p) {
+    try { await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { toast(errText(e), "bad"); }
+  }
+  function poll() {
+    clearInterval(timer);
+    timer = setInterval(async () => {
+      const s = await invoke("maps_status").catch(() => null);
+      if (!s) return;
+      const active = s.phase === "Downloading" || s.phase === "Installing";
+      progress.hidden = !active; progress.value = s.percent; cancel.hidden = !active;
+      msg.className = "msg " + (s.phase === "Failed" ? "bad" : s.phase === "Done" ? "ok" : "muted");
+      msg.textContent = s.phase === "Idle" ? "" : s.message;
+      list.querySelectorAll("button").forEach((b) => { b.disabled = active; });
+      if (s.phase === "Done" || s.phase === "Failed") { clearInterval(timer); loadMaps(); }
+    }, 600);
+  }
+  refreshers.add(render);
+  render();
+  const el = h("div", { class: "stack" }, info, list, progress, msg,
+    h("div", { class: "row" }, cancel,
+      h("button", { class: "btn small", onclick: () => pickMaps(false) }, "Add maps from a file…"),
+      h("button", { class: "btn small", onclick: () => pickMaps(true) }, "Add a folder of maps…")));
+  return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); } };
 }
 
 // ---------------------------------------------------------------- components
@@ -347,6 +412,7 @@ function playPage() {
 }
 
 function modsPage() {
+  const maps = mapsCard();
   const body = h("div", { class: "stack" });
   const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
   const drop = h("div", { class: "drop", id: "dropzone" },
@@ -382,8 +448,9 @@ function modsPage() {
   refreshers.add(render); render();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => toast(errText(e), "bad")) }, "Open mods folder")),
-    body, drop, help);
-  return { el, dispose: () => refreshers.delete(render) };
+    body, drop, help,
+    h("div", { class: "page-head" }, h("h1", {}, "Maps")), h("div", { class: "card" }, maps.el));
+  return { el, dispose: () => { refreshers.delete(render); maps.dispose(); } };
 }
 
 function onlinePage() {
@@ -473,7 +540,7 @@ function closeWizard() { wizardEl && wizardEl.remove(); wizardEl = null; }
 
 function openWizard() {
   closeWizard();
-  const steps = ["Welcome", "Game files", "Display", "Mods", "Online", "Ready"];
+  const steps = ["Welcome", "Game files", "Display", "Mods", "Maps", "Online", "Ready"];
   const w = { i: 0, filesOk: !!store.cfg.game_dir, dispose: null };
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Set up Rallypoint" });
   wizardEl = overlay;
@@ -495,7 +562,7 @@ function openWizard() {
       return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
         h("div", { class: "stack" }, h("h1", {}, "Set up Rallypoint"),
           h("p", { class: "muted" }, "Rallypoint runs Command & Conquer: Generals – Zero Hour on your Mac or PC, at any screen size. It needs your own copy of the game. This takes about two minutes and everything can be changed later."),
-          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods and an online server, if you want them"))));
+          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods, maps and an online server, if you want them"))));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); });
@@ -520,6 +587,12 @@ function openWizard() {
       return h("div", { class: "stack" }, h("h2", {}, "Mods (optional)"), h("p", { class: "muted" }, "Mods change the game. Get one now, or add any later from the Mods tab, where you can also drop in your own."), box);
     }
     if (step === 4) {
+      const panel = mapsCard();
+      w.dispose = panel.dispose;
+      return h("div", { class: "stack" }, h("h2", {}, "Maps (optional)"),
+        h("p", { class: "muted" }, "Zero Hour comes with a few maps. These packs from GenTool's download page add the ranked 1v1, 2v2 and 3v3 maps that most online players use. You can add more any time from the Mods tab."), panel.el);
+    }
+    if (step === 5) {
       const server = h("input", { type: "text", placeholder: "host:7777", value: store.cfg.server || "", "aria-label": "Server", onchange: save });
       const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room", onchange: save });
       function save() { store.cfg.server = server.value.trim(); store.cfg.room = room.value.trim(); invoke("save_config", { server: server.value, room: room.value, steamUser: store.cfg.steam_user || "" }); }
@@ -533,6 +606,7 @@ function openWizard() {
         h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
         h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed")),
         h("dt", {}, "Mods"), h("dd", {}, installedMods().map((m) => m.name).join(", ") || "none"),
+        h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added"),
         h("dt", {}, "Server"), h("dd", {}, store.cfg.server ? `${store.cfg.server}${store.cfg.room ? ", room " + store.cfg.room : ""}` : "none")),
       h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));
   }
@@ -541,7 +615,7 @@ function openWizard() {
   function nav() {
     if (!nextBtn) return;
     nextBtn.disabled = w.i === 1 && !w.filesOk;
-    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to mods", "Continue to online play", "Review"][w.i] || "Continue";
+    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to mods", "Continue to maps", "Continue to online play", "Review"][w.i] || "Continue";
     backBtn.hidden = w.i === 0;
   }
   function render() {
@@ -565,6 +639,7 @@ async function start() {
   store.games = await invoke("detect_games").catch(() => []);
   shell();
   await loadMods();
+  await loadMaps();
   go("play");
   setInterval(async () => {
     try { store.relay = await invoke("relay_status"); } catch { /* keep the last status */ }

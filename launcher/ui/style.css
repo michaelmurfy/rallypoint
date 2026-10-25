@@ -1,22 +1,23 @@
 /* Rallypoint launcher theme. See DESIGN.md for the token contract.
-   Ground and accent come from the app icon: deep teal and brass. Dark by default (a game launcher),
-   light when the system asks for it. */
+   Shades of red, as asked for: oxblood grounds and one signal red for the action. Dark by default (a game
+   launcher), light when the system asks. State colors (green, gold, coral) stay off the red so they still read. */
 /* avoid-ai-design-ignore: T1 -- a desktop app uses the platform's own UI font on purpose; hierarchy comes from size and weight. */
+/* avoid-ai-design-ignore: SD2 -- the brief asked for a red, dark Generals look; it is a tonal scale, not one neon on black. */
 :root {
   color-scheme: dark light;
-  --bg: #07191f;
-  --surface: #0d2630;
-  --surface-2: #143542;
-  --line: rgba(214, 232, 236, .12);
-  --text: #eaf3f5;
-  --muted: #94b6be;
-  --accent: #f2c94c;       /* primary action, and nothing else */
-  --accent-ink: #261d03;
-  --teal: #38b8b0;         /* secondary: links, switches, info */
+  --bg: #150808;
+  --surface: #200d0f;
+  --surface-2: #301318;
+  --line: rgba(255, 214, 214, .12);
+  --text: #f8eded;
+  --muted: #cba3a6;
+  --accent: #d4312f;        /* the primary action, and the live step in the wizard */
+  --accent-ink: #ffffff;
+  --rose: #f08f8a;          /* secondary: links, info */
   --warn-ink: #f2c94c;
-  --ok-ink: #5dd49a;
-  --bad-ink: #ff8a6e;
-  --shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  --ok-ink: #6fd8a0;
+  --bad-ink: #ffb0a4;
+  --shadow: 0 18px 48px rgba(0, 0, 0, .55);
   --r-field: 7px;
   --r-btn: 9px;
   --r-panel: 12px;
@@ -26,19 +27,19 @@
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #edf3f4;
+    --bg: #f7eeee;
     --surface: #ffffff;
-    --surface-2: #e1ecee;
-    --line: rgba(7, 25, 31, .14);
-    --text: #0a2128;
-    --muted: #46676f;
-    --accent: #c8921a;
-    --accent-ink: #1e1602;
-    --teal: #0f6f6a;
-    --warn-ink: #855a00;
+    --surface-2: #f0dcdc;
+    --line: rgba(43, 13, 15, .14);
+    --text: #2b0d0f;
+    --muted: #6e4a4d;
+    --accent: #b3201f;
+    --accent-ink: #ffffff;
+    --rose: #a3322f;
+    --warn-ink: #7a5300;
     --ok-ink: #0f6b3d;
-    --bad-ink: #a9341c;
-    --shadow: 0 14px 36px rgba(7, 25, 31, .18);
+    --bad-ink: #a12a15;
+    --shadow: 0 14px 36px rgba(43, 13, 15, .2);
   }
 }
 * { box-sizing: border-box; }
@@ -50,10 +51,10 @@ h2 { font-size: 16px; font-weight: 700; letter-spacing: -.005em; }
 h3 { font-size: 14px; font-weight: 700; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
-a { color: var(--teal); }
+a { color: var(--rose); }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-tabular, progress, .pct { font-variant-numeric: tabular-nums; }
+progress, .pct { font-variant-numeric: tabular-nums; }
 
 /* ---- shell ---- */
 .app { display: grid; grid-template-columns: 200px 1fr; height: 100vh; }
@@ -65,7 +66,7 @@ tabular, progress, .pct { font-variant-numeric: tabular-nums; }
 .nav svg { width: 18px; height: 18px; flex: none; }
 .nav:hover { background: var(--surface-2); color: var(--text); }
 .nav[aria-current="page"] { background: var(--surface-2); color: var(--text); }
-.nav[aria-current="page"] svg { color: var(--accent); }
+.nav[aria-current="page"] svg { color: var(--rose); }
 .sidebar .spacer { flex: 1; }
 .side-foot { padding: 8px 10px; display: grid; gap: 6px; }
 .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
@@ -111,7 +112,7 @@ input[type=number] { width: 7em; }
 .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
 .switch input { appearance: none; width: 38px; height: 22px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); position: relative; cursor: pointer; transition: background .15s var(--ease); }
 .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s var(--ease), background .15s var(--ease); }
-.switch input:checked { background: var(--teal); }
+.switch input:checked { background: var(--accent); }
 .switch input:checked::after { transform: translateX(16px); background: #fff; }
 progress { width: 100%; height: 8px; border-radius: 999px; overflow: hidden; border: 0; background: var(--surface-2); accent-color: var(--accent); }
 progress::-webkit-progress-bar { background: var(--surface-2); }
@@ -126,7 +127,7 @@ pre.log { white-space: pre-wrap; font: 11px/1.4 ui-monospace, Menlo, Consolas, m
 .mods-list > .card + .card { margin-top: 2px; }
 .drop { border: 1.5px dashed var(--line); border-radius: var(--r-panel); padding: 20px; color: var(--muted); display: grid; gap: 10px; justify-items: start; }
 .drop.over { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.banner { border-radius: var(--r-panel); padding: 14px 16px; background: color-mix(in srgb, var(--teal) 16%, var(--surface)); }
+.banner { border-radius: var(--r-panel); padding: 14px 16px; background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
 .banner.stack { display: grid; gap: 10px; }
 .help { padding: 14px 18px; }
 .help ol { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; }
@@ -134,6 +135,10 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 
 #updatehost { max-width: 720px; }
 #updatehost:not(:empty) { margin-bottom: 20px; }
+
+/* ---- maps ---- */
+.mappack { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.mappack:first-child { border-top: 0; padding-top: 2px; }
 
 /* ---- wizard ---- */
 .overlay { position: fixed; inset: 0; background: rgba(2, 10, 13, .72); display: grid; place-items: center; padding: 24px; z-index: 10; }
@@ -143,7 +148,7 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .chevs { display: flex; gap: 3px; }
 .chevs i { flex: 1; height: 12px; background: var(--surface-2); clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%, 7px 50%); }
 .chevs i:first-child { clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%); }
-.chevs i.done { background: var(--teal); }
+.chevs i.done { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
 .chevs i.now { background: var(--accent); }
 .wiz-body { padding: 20px 24px; overflow-y: auto; display: grid; gap: 14px; align-content: start; }
 .wiz-foot { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }

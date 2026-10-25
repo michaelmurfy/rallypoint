@@ -21,6 +21,15 @@ function advance() {
 setInterval(advance, 500);
 const handlers = {
   get_config: () => structuredClone(state.cfg),
+  maps_info: () => ({ dir: "/Users/me/Documents/Command and Conquer Generals Zero Hour Data/Maps", count: state.mapCount || 0, packs: [
+    { id: "gentool-all", name: "All ranked maps", description: "Every ranked 1v1, 2v2 and 3v3 map from GenTool's download page, in one pack.", size_mb: 56 },
+    { id: "gentool-1v1", name: "1v1 maps", description: "The ranked one-on-one maps.", size_mb: 6 },
+    { id: "gentool-2v2", name: "2v2 maps", description: "The ranked two-on-two maps.", size_mb: 4 },
+    { id: "gentool-3v3", name: "3v3 maps", description: "The ranked three-on-three maps.", size_mb: 4 }] }),
+  maps_install_pack: () => { state.mapJob = { tick: 0 }; },
+  maps_status: () => { const j = state.mapJob; if (!j) return { phase: "Idle", percent: 0, message: "", installed: 0 }; j.tick++; if (j.tick < 10) return { phase: "Downloading", percent: j.tick * 8, message: `Downloading All ranked maps (${j.tick * 5} MB so far)`, installed: 0 }; state.mapCount = 96; return { phase: "Done", percent: 100, message: "96 maps installed", installed: 96 }; },
+  maps_cancel: () => { state.mapJob = null; },
+  maps_install_path: () => 3,
   set_check_updates: ({ on }) => { state.cfg.check_updates = on; },
   update_check: () => (hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
   update_install: async () => { await new Promise((r) => setTimeout(r, 1500)); return "The installer disk image is open. Quit Rallypoint, then drag the new Rallypoint onto Applications."; },

@@ -15,6 +15,8 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 - **Skirmish / single player.** The game engine is bundled in the app. **Play** opens the full game (Solo Play → Skirmish); **Quick Skirmish** jumps straight into a 1v1 against the AI.
 - **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide are supported. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, and the 2D UI is scaled uniformly and centred instead of stretched.
 - **Mods made easy.** Press **Get** on a mod, download it in your browser, and Rallypoint installs it automatically. Or drop any mod archive, folder or installer onto the window.
+- **Map packs.** One click installs GenTool's ranked 1v1, 2v2 and 3v3 maps (or all of them) into the right folder; you can add any other map archive or folder too.
+- **Stays up to date.** The launcher checks GitHub for a newer release when it starts and, if you agree, downloads and opens the installer for your OS.
 - **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet.
 
 ## What works in 0.1 Alpha
@@ -84,6 +86,14 @@ Many mods ship a Windows installer (and some also a launcher program, or patch t
 4. **Unpack it yourself** with `innoextract -d out Setup.exe` or `7z x Setup.exe -oout`, then drop the `out` folder on the window.
 
 What can't work: anything that needs the mod's own program (`.exe`) or a patched `generals.exe` / `game.dat`. The ported engine ignores those, so features that rely on them won't appear, but the mod's `.big` files still load. Mods made only of loose files with no `.big` aren't installed automatically yet. Mods that need the 1.04 patch are fine on the Steam version, which already has it.
+
+### Maps
+
+Zero Hour looks for maps in `Documents/Command and Conquer Generals Zero Hour Data/Maps`. On the **Mods** tab (and in the setup wizard) the **Maps** section installs map packs from [GenTool's download page](https://www.gentool.net/download/): all ranked maps (56 MB), or just the 1v1, 2v2 or 3v3 sets. **Add maps from a file** or **Add a folder of maps** handles any other pack: Rallypoint finds the map folders inside and copies them over. GenTool itself is a Windows-only add-on and isn't needed or installed.
+
+### Updates
+
+At start-up Rallypoint asks GitHub whether a newer release exists (turn this off in **Settings → Updates**). If there is one, a banner offers **Download and open installer**: it fetches the installer for your OS from this repository's release, checks it against the release's `SHA256SUMS`, and opens it. You finish the install yourself, so quit Rallypoint first.
 
 ### Widescreen
 

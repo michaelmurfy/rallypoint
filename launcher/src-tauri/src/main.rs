@@ -1,13 +1,14 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 use tauri::Manager;
 
 const MODS_JSON: &str = include_str!("../../../mods/mods.json");
+const MAP_PACKS_JSON: &str = include_str!("../../../mods/mappacks.json");
 
 #[derive(Default)]
 struct Relay(Mutex<Option<Agent>>);
@@ -20,6 +21,8 @@ struct Watch {
 }
 #[derive(Default)]
 struct ModWatch(Mutex<Option<Watch>>);
+#[derive(Default)]
+struct MapJobs(Mutex<Option<maps::MapJob>>);
 /// The newest release found by the last update check.
 #[derive(Default)]
 struct Updates(Mutex<Option<update::UpdateInfo>>);
@@ -371,6 +374,53 @@ fn open_homepage(id: String) -> Result<(), String> {
     open_url(&catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?.homepage)
 }
 
+// ---- maps -----------------------------------------------------------------------------------------
+
+/// Where the game looks for maps: `<Documents>/Command and Conquer Generals Zero Hour Data/Maps`.
+fn maps_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF).join("Maps"))
+}
+
+#[derive(serde::Serialize)]
+struct MapsInfo {
+    dir: String,
+    count: usize,
+    packs: Vec<maps::MapPack>,
+}
+
+#[tauri::command]
+fn maps_info(app: tauri::AppHandle) -> Result<MapsInfo, String> {
+    let dir = maps_dir(&app)?;
+    let packs = maps::load_packs(MAP_PACKS_JSON).map_err(|e| e.to_string())?;
+    Ok(MapsInfo { count: maps::count_maps(&dir), dir: dir.to_string_lossy().into_owned(), packs })
+}
+
+#[tauri::command]
+fn maps_install_pack(app: tauri::AppHandle, jobs: tauri::State<MapJobs>, id: String) -> Result<(), String> {
+    let pack = maps::load_packs(MAP_PACKS_JSON).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == id).ok_or("unknown map pack")?;
+    let job = maps::MapJob::start(pack, maps_dir(&app)?, base(&app)?.join("tmp"));
+    *jobs.0.lock().unwrap() = Some(job);
+    Ok(())
+}
+
+#[tauri::command]
+fn maps_status(jobs: tauri::State<MapJobs>) -> maps::MapState {
+    jobs.0.lock().unwrap().as_ref().map(|j| j.state()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn maps_cancel(jobs: tauri::State<MapJobs>) {
+    *jobs.0.lock().unwrap() = None;
+}
+
+/// Add maps from an archive or folder the user chose or dropped.
+#[tauri::command]
+async fn maps_install_path(app: tauri::AppHandle, path: String) -> Result<usize, String> {
+    let (dir, work) = (maps_dir(&app)?, base(&app)?.join("tmp"));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || maps::install_from_path(&PathBuf::from(path.trim()), &dir, &work)).await.map_err(|e| e.to_string())?
+}
+
 // ---- updates --------------------------------------------------------------------------------------
 
 /// Ask GitHub for a newer release. `None` means up to date. Errors are for the Settings button; the startup check ignores them.
@@ -476,11 +526,13 @@ fn main() {
         .manage(Downloads::default())
         .manage(ModWatch::default())
         .manage(Updates::default())
+        .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_status,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
             launch_game

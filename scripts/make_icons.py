@@ -1,6 +1,6 @@
 """Generates the Rallypoint icon set from code: python3 scripts/make_icons.py
 Writes launcher/src-tauri/icons/* (png sizes, icon.ico, icon.icns on macOS) and launcher/ui/logo.png.
-Original artwork: a shield with a star and chevrons, and a rally pennant behind it."""
+Original artwork: a shield with a star and chevrons, and a rally pennant behind it. Palette: crimson tile, gold shield, ivory pennant."""
 import math, os, struct, subprocess, sys, tempfile
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
@@ -48,14 +48,14 @@ def chevron(cx, apex_y, half_w, rise, thick):
 def render(simple=False):
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     # background tile
-    bg = gradient(S, (18, 74, 84), (7, 30, 38)).convert("RGBA")
+    bg = gradient(S, (142, 24, 30), (46, 7, 11)).convert("RGBA")
     mask = Image.new("L", (S, S), 0)
     ImageDraw.Draw(mask).rounded_rectangle([p(24, 24), p(1000, 1000)], radius=S * 0.2, fill=255)
     # soft top highlight: a vertical alpha ramp, so there is no visible edge
     ramp = Image.new("L", (1, S))
     for y in range(S):
         ramp.putpixel((0, y), int(max(0.0, 1 - y / (S * 0.55)) ** 2 * 60))
-    glow = Image.new("RGBA", (S, S), (150, 215, 225, 0))
+    glow = Image.new("RGBA", (S, S), (255, 170, 170, 0))
     glow.putalpha(ramp.resize((S, S)))
     bg = Image.alpha_composite(bg, glow)
     img.paste(bg, (0, 0), mask)
@@ -66,8 +66,8 @@ def render(simple=False):
         # pennant on a pole, behind the shield
         d.rectangle([p(503, 120), p(521, 360)], fill=(214, 226, 230, 255))
         d.ellipse([p(497, 106), p(527, 136)], fill=(242, 201, 76, 255))
-        d.polygon([p(521, 150), p(700, 205), p(521, 262)], fill=(224, 87, 58, 255))
-        d.polygon([p(521, 150), p(700, 205), p(521, 176)], fill=(240, 130, 96, 255))
+        d.polygon([p(521, 150), p(700, 205), p(521, 262)], fill=(240, 228, 214, 255))
+        d.polygon([p(521, 150), p(700, 205), p(521, 176)], fill=(255, 250, 244, 255))
 
     # shield: soft shadow, silver rim, gold face
     sh = Image.new("RGBA", (S, S), (0, 0, 0, 0))
@@ -85,10 +85,10 @@ def render(simple=False):
     marks = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     md = ImageDraw.Draw(marks)
     cy = 520 if not simple else 565
-    md.polygon(star(512, cy, 132 if not simple else 185, 55 if not simple else 76), fill=(11, 52, 62, 255))
+    md.polygon(star(512, cy, 132 if not simple else 185, 55 if not simple else 76), fill=(78, 10, 15, 255))
     if not simple:
         for k in range(2):
-            md.polygon(chevron(512, 668 + k * 72, 138, 56, 32), fill=(11, 52, 62, 255))
+            md.polygon(chevron(512, 668 + k * 72, 138, 56, 32), fill=(78, 10, 15, 255))
     clip = Image.new("L", (S, S), 0)
     ImageDraw.Draw(clip).polygon(shield_points(0.9), fill=255)
     marks.putalpha(ImageChops.multiply(marks.getchannel("A"), clip))
