@@ -1,0 +1,16 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+index a897365..69dbfe0 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/CommandLine.cpp
+@@ -1166,6 +1166,11 @@ static CommandLineParam paramsForStartup[] =
+ // These Params are parsed during Engine Init before INI data is loaded
+ static CommandLineParam paramsForEngineInit[] =
+ {
++	// macOS: -win / -fullscreen were only honoured by the startup pass, which does not see the forwarded command line
++	// there, so the game always opened full screen. Read them here too, where -xres/-yres/-mod are already seen
++	// correctly, and before the display is created. Harmless on Windows (same result twice).
++	{ "-win", parseWin },
++	{ "-fullscreen", parseNoWin },
+ 	{ "-nologo", parseNoLogo }, // TheSuperHackers @tweak Is now available in Release builds.
+ 	{ "-noshellmap", parseNoShellMap },
+ 	{ "-noShellAnim", parseNoWindowAnimation }, // TheSuperHackers @tweak Is now available in Release builds.
