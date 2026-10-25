@@ -25,6 +25,9 @@ pub struct LaunchOptions {
     /// Where to write what the engine prints (its network and error lines); replaced on every launch.
     #[serde(default)]
     pub log: Option<std::path::PathBuf>,
+    /// Folder for the engine's per-frame simulation logs (see `syncdiff`). `None` = not recording.
+    #[serde(default)]
+    pub sync_logs: Option<std::path::PathBuf>,
 }
 
 pub fn args(o: &LaunchOptions) -> Vec<String> {
@@ -39,6 +42,10 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
         a.extend(["-mod".into(), m.clone()]);
     }
     a.extend(o.mod_args.iter().cloned());
+    // The first ten seconds of simulation, frame by frame: enough to see where two players' games first differ.
+    if let Some(dir) = &o.sync_logs {
+        a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "300".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
+    }
     // EA and Generals logo movies. The engine's own -nologo; the menu scene stays.
     a.push("-nologo".into());
     a
@@ -154,6 +161,16 @@ mod tests {
         let text = std::fs::read_to_string(&log).unwrap();
         assert_eq!(text.trim(), "[launcher] 1920x1080 fullscreen=false relay=agent 127.0.0.1:5000, virtual IP 10.77.0.2 splash=retail");
         let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn sync_logging_adds_the_engine_switches_only_when_asked() {
+        let off = args(&LaunchOptions { width: 1, height: 1, ..Default::default() });
+        assert!(!off.iter().any(|a| a.contains("CRC")));
+        let on = args(&LaunchOptions { width: 1, height: 1, sync_logs: Some("/data/sync logs".into()), ..Default::default() });
+        let i = on.iter().position(|a| a == "-SaveDebugCRCPerFrame").unwrap();
+        assert_eq!(on[i + 1], "/data/sync logs");
+        assert!(on.windows(2).any(|w| w[0] == "-DebugCRCFromFrame" && w[1] == "0"));
     }
 
     #[test]

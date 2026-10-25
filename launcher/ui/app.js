@@ -770,12 +770,43 @@ function graphicsCard() {
     h("p", { class: "muted small" }, "Turns on shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed."));
 }
 
+/** Settings card for finding out why a multiplayer game went out of sync. */
+function syncCard() {
+  const fb = liveStatus();
+  const result = h("div", {});
+  const on = h("input", { type: "checkbox", checked: !!store.cfg.sync_logs, onchange: async () => {
+    try { await invoke("set_sync_logs", { on: on.checked }); store.cfg.sync_logs = on.checked; fb.ok(on.checked ? "On. The next game you start records its first ten seconds." : "Off."); } catch (e) { fb.bad(errText(e)); }
+  } });
+  const compare = h("button", { class: "btn", onclick: async () => {
+    let picked;
+    try { picked = await tauri.dialog.open({ multiple: false, directory: false, title: "Choose the other player's sync logs (a .zip of their sync-logs folder)", filters: [{ name: "Zip", extensions: ["zip"] }] }); } catch (e) { return fb.bad(errText(e)); }
+    if (!picked) return;
+    compare.disabled = true; fb.busy("Comparing…"); fill(result);
+    try {
+      const r = await invoke("sync_compare", { other: typeof picked === "string" ? picked : picked.path });
+      if (r.kind === "Same") fb.ok(`The same for all ${r.frames} frames logged. These two games did not diverge.`);
+      else if (r.kind === "Nothing") fb.bad(r.why);
+      else {
+        fb.bad(`First difference at frame ${r.at.frame}, line ${r.at.line}.`);
+        fill(result, h("p", { class: "muted small" }, "Yours:"), h("pre", { class: "crash" }, r.at.mine), h("p", { class: "muted small" }, "Theirs:"), h("pre", { class: "crash" }, r.at.theirs), h("p", { class: "muted small" }, "Send this to the developer with both folders."));
+      }
+    } catch (e) { fb.bad(errText(e)); }
+    compare.disabled = false;
+  } }, "Compare with another player…");
+  return h("div", { class: "card" }, h("h2", {}, "Multiplayer sync logs"),
+    h("p", { class: "muted" }, "If a game says it went out of sync, both players record logs of the first ten seconds, then compare them to see exactly where they first differed."),
+    h("label", { class: "switch" }, on, "Record sync logs while I play"),
+    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open the logs folder"), compare, fb.el),
+    result);
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
     graphicsCard(),
+    syncCard(),
     h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel()),
     h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
     updatesCard(),

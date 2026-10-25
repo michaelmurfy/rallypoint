@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")/.."
 sh patches/apply.sh
-for t in widescreen relaywire lanwire; do
-  c++ -std=c++17 -Wall -Iengine/Core/GameEngine/Include tests/${t}_test.cpp -o /tmp/${t}_test
+for t in widescreen relaywire lanwire detmath; do
+  c++ -std=c++17 -Wall -ffp-contract=off -Iengine/Core/GameEngine/Include -Iengine/Core/Libraries/Source/WWVegas/WWLib tests/${t}_test.cpp -o /tmp/${t}_test
   /tmp/${t}_test && echo "${t}_test ok"
 done
