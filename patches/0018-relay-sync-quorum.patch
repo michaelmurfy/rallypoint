@@ -1,0 +1,218 @@
+diff --git a/Core/GameEngine/Include/GameNetwork/RelayWire.h b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+index 625da85..11b77ff 100644
+--- a/Core/GameEngine/Include/GameNetwork/RelayWire.h
++++ b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+@@ -11,7 +11,7 @@
+ namespace RelayWire
+ {
+ 
+-enum Tag : uint8_t { TagBcast = 4, TagData = 5, TagBind = 7 };
++enum Tag : uint8_t { TagBcast = 4, TagData = 5, TagBind = 7, TagCrc = 15, TagDesync = 16 };
+ static const size_t HEADER = 9; // tag + vip(4) + src port(2) + dst port(2)
+ 
+ struct Config
+@@ -89,4 +89,53 @@ inline bool decode(const uint8_t *in, size_t n, uint32_t &srcIp, uint16_t &srcPo
+ 	return true;
+ }
+ 
++// Engine -> agent: this machine's simulation checksum for a game frame. The relay compares every player's checksum.
++inline size_t encodeCrc(uint8_t *out, uint32_t frame, uint32_t crc)
++{
++	out[0] = TagCrc;
++	put32(out + 1, frame);
++	put32(out + 5, crc);
++	return 9;
++}
++
++inline uint32_t get32(const uint8_t *in) { return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) | ((uint32_t)in[2] << 8) | in[3]; }
++
++// Agent -> engine: the relay found that the players' checksums for `frame` differ. If `certain`, a strict majority
++// agreed and the entries marked `odd` are the players that diverged; otherwise nobody can say who is right.
++static const int MaxSyncPlayers = 8;
++struct Desync
++{
++	uint32_t frame;
++	bool certain;
++	int count;
++	uint32_t vip[MaxSyncPlayers]; // host order, same as the game's slot addresses
++	uint32_t crc[MaxSyncPlayers];
++	bool odd[MaxSyncPlayers];
++};
++
++inline bool decodeDesync(const uint8_t *in, size_t n, Desync &d)
++{
++	// tag, frame (4), certain (1), count (1), then count * (virtual address 4, checksum 4, odd 1)
++	if (n < 7 || in[0] != TagDesync)
++		return false;
++	const int count = in[6];
++	if (count > MaxSyncPlayers || n != (size_t)(7 + count * 9))
++		return false;
++	d.frame = get32(in + 1);
++	d.certain = in[5] != 0;
++	d.count = count;
++	for (int i = 0; i < count; ++i)
++	{
++		const uint8_t *e = in + 7 + i * 9;
++		d.vip[i] = get32(e);
++		d.crc[i] = get32(e + 4);
++		d.odd[i] = e[8] != 0;
++	}
++	return true;
++}
++
+ }
++
++// Implemented in udp.cpp (the engine target): send our checksum to the agent; take the relay's latest verdict, if any.
++void RelayWire_ReportCrc(uint32_t frame, uint32_t crc);
++bool RelayWire_TakeDesync(RelayWire::Desync &out);
+diff --git a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
+index 2369f35..cee1e1e 100644
+--- a/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
++++ b/Core/GameEngine/Source/GameLogic/System/GameLogicDispatch.cpp
+@@ -52,6 +52,7 @@
+ 
+ #include "GameLogic/AIPathfind.h"
+ #include "GameLogic/GameLogic.h"
++#include "GameNetwork/RelayWire.h"
+ #include "GameLogic/Locomotor.h"
+ #include "GameLogic/Object.h"
+ #include "GameLogic/ObjectCreationList.h"
+@@ -2142,6 +2143,9 @@ void GameLogic::logicMessageDispatcher( GameMessage *msg, void *userData )
+ 				}
+ 
+ 				UnsignedInt newCRC = msg->getArgument(0)->integer;
++				// Playing through a Rallypoint relay: give it our checksum so it can compare it with the other players'.
++				if (msgPlayer->isLocalPlayer())
++					RelayWire_ReportCrc(getFrame(), newCRC);
+ 				//DEBUG_LOG(("Received CRC of %8.8X from %ls on frame %d", newCRC,
+ 					//msgPlayer->getPlayerDisplayName().str(), m_frame));
+ 				m_cachedCRCs[msgPlayer->getPlayerIndex()] = newCRC;
+diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
+index 8368fec..dd21879 100644
+--- a/Core/GameEngine/Source/GameNetwork/udp.cpp
++++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
+@@ -302,6 +302,40 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
+   return(retval);
+ }
+ 
++// The relay's latest sync verdict, kept until the game loop picks it up (GameLogic::update).
++static RelayWire::Desync s_desync;
++static bool s_desyncPending = false;
++
++bool RelayWire_TakeDesync(RelayWire::Desync &out)
++{
++  if (!s_desyncPending)
++    return false;
++  out = s_desync;
++  s_desyncPending = false;
++  return true;
++}
++
++// Tell the agent our simulation checksum for a frame; it passes it to the relay, which compares all players'.
++void RelayWire_ReportCrc(uint32_t frame, uint32_t crc)
++{
++  const RelayWire::Config &relay = RelayWire::config();
++  if (!relay.on)
++    return;
++  static int fd = -2;
++  if (fd == -2)
++    fd = (int)socket(AF_INET, SOCK_DGRAM, DEFAULT_PROTOCOL);
++  if (fd < 0)
++    return;
++  uint8_t pkt[16];
++  const size_t n = RelayWire::encodeCrc(pkt, frame, crc);
++  sockaddr_in to;
++  memset(&to, 0, sizeof(to));
++  to.sin_family = AF_INET;
++  to.sin_addr.s_addr = htonl(relay.agentIp);
++  to.sin_port = htons(relay.agentPort);
++  sendto(fd, (const char *)pkt, (int)n, 0, (struct sockaddr *)&to, sizeof(to));
++}
++
+ // Receives from the relay agent: unwraps Bcast/Data and reports the sender as virtual-IP:logical-port.
+ // Datagrams from anything other than the agent (another local process) are dropped.
+ Int UDP::ReadRelay(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
+@@ -323,6 +357,16 @@ Int UDP::ReadRelay(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
+     }
+     if (ntohl(src.sin_addr.s_addr) != relay.agentIp || ntohs(src.sin_port) != relay.agentPort)
+       continue;
++    if (n >= 1 && buf[0] == RelayWire::TagDesync)
++    {
++      RelayWire::Desync d;
++      if (RelayWire::decodeDesync(buf, (size_t)n, d))
++      {
++        s_desync = d;
++        s_desyncPending = true;
++      }
++      continue; // not game traffic
++    }
+     uint32_t srcIp; uint16_t srcPort, dstPort; const uint8_t *payload; size_t payloadLen;
+     if (!RelayWire::decode(buf, (size_t)n, srcIp, srcPort, dstPort, payload, payloadLen) || payloadLen > len)
+       continue; // not for us, or too big for the caller's buffer
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 2de32a7..4b6a248 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -69,6 +69,7 @@
+ #include "GameClient/GameText.h"
+ #include "GameClient/GUICallbacks.h"
+ #include "GameClient/InGameUI.h"
++#include "GameNetwork/RelayWire.h"
+ #include "GameClient/LoadScreen.h"
+ #include "GameClient/MapUtil.h"
+ #include "GameClient/Mouse.h"
+@@ -3678,6 +3679,41 @@ extern __int64 Total_Load_3D_Assets;
+ // ------------------------------------------------------------------------------------------------
+ /** Update all objects in the world by invoking their update() methods. */
+ // ------------------------------------------------------------------------------------------------
++// Rallypoint: the relay compared every player's simulation checksum and they were not all equal. Say so in the game, naming
++// the players (the relay identifies them by their virtual address, which is also the game's slot address).
++static void reportRelayDesync(const RelayWire::Desync &d)
++{
++	UnicodeString who;
++	for (int i = 0; i < d.count; ++i)
++	{
++		DEBUG_LOG(("Relay sync check, frame %u: %u.%u.%u.%u has checksum %8.8X%s", d.frame, (d.vip[i] >> 24) & 255, (d.vip[i] >> 16) & 255, (d.vip[i] >> 8) & 255, d.vip[i] & 255, d.crc[i], d.odd[i] ? " (differs from the majority)" : ""));
++		if (d.certain && !d.odd[i])
++			continue;
++		UnicodeString name = L"?";
++		if (TheGameInfo)
++		{
++			for (Int s = 0; s < MAX_SLOTS; ++s)
++			{
++				const GameSlot *slot = TheGameInfo->getConstSlot(s);
++				if (slot && slot->isHuman() && slot->getIP() == d.vip[i])
++				{
++					name = slot->getName();
++					break;
++				}
++			}
++		}
++		if (!who.isEmpty())
++			who.concat(L", ");
++		who.concat(name);
++	}
++	UnicodeString msg;
++	if (d.certain)
++		msg.format(L"Rallypoint: the game went out of sync at frame %u. Out of step with the others: %ls.", d.frame, who.str());
++	else
++		msg.format(L"Rallypoint: the game went out of sync at frame %u. The server cannot tell who is right (%ls).", d.frame, who.str());
++	TheInGameUI->messageNoFormat(msg);
++}
++
+ void GameLogic::update()
+ {
+ 	USE_PERF_TIMER(GameLogic_update)
+@@ -3728,6 +3764,12 @@ void GameLogic::update()
+ 	UnsignedInt now = getFrame();
+ 	TheGameClient->setFrame(now);
+ 
++	{
++		RelayWire::Desync desync;
++		if (RelayWire_TakeDesync(desync))
++			reportRelayDesync(desync);
++	}
++
+ 	PROFILER_PLOT("LogicFrame", static_cast<int64_t>(now));
+ 
+ 	// update (execute) scripts

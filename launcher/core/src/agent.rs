@@ -57,6 +57,23 @@ pub struct Diagnostics {
     /// The relay's identity (short fingerprint) and whether it was already trusted from an earlier visit.
     pub server_identity: Option<String>,
     pub identity_saved: bool,
+    /// The relay's last verdict that the players' simulations differed (see `Packet::Desync`).
+    pub desync: Option<DesyncView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DesyncView {
+    pub frame: u32,
+    pub certain: bool,
+    pub players: Vec<DesyncPlayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DesyncPlayer {
+    /// Virtual address, e.g. `10.77.0.2`.
+    pub vip: String,
+    pub crc: String,
+    pub odd: bool,
 }
 
 /// Rolling ping record. The ping has no id, so an answer is credited to the latest ping sent; a reply that
@@ -69,6 +86,7 @@ struct Health {
     up_kbps: u32,
     down_kbps: u32,
     server: Option<ServerView>,
+    desync: Option<DesyncView>,
 }
 
 impl Health {
@@ -110,6 +128,7 @@ impl Health {
             server: self.server.clone(),
             server_identity: None,
             identity_saved: false,
+            desync: self.desync.clone(),
         }
     }
 }
@@ -177,6 +196,12 @@ impl Agent {
                         // The tunnel is for the game only: its two ports and datagrams the engine made.
                         Some(Packet::Bind { port }) if GAME_PORTS.contains(&port) => {
                             ports.lock().unwrap().insert(port, from);
+                        }
+                        // The engine's own simulation checksum, for the relay to compare with the other players'.
+                        Some(p @ Packet::Crc { .. }) => {
+                            if matches!(*status.lock().unwrap(), Status::Connected(_)) {
+                                send_sealed(&relay, &crypto, &p);
+                            }
                         }
                         Some(p @ (Packet::Bcast { .. } | Packet::Data { .. })) => {
                             let (src_port, dst_port, payload, bcast) = match &p {
@@ -272,6 +297,20 @@ impl Agent {
                                             pps: s.pps,
                                             kbps: s.kbps,
                                         });
+                                    }
+                                    Some(p @ Packet::Desync(_)) => {
+                                        if let Packet::Desync(v) = &p {
+                                            health.lock().unwrap().desync = Some(DesyncView {
+                                                frame: v.frame,
+                                                certain: v.certain,
+                                                players: v.players.iter().map(|e| DesyncPlayer { vip: format!("{}.{}.{}.{}", e.vip[0], e.vip[1], e.vip[2], e.vip[3]), crc: format!("{:08X}", e.crc), odd: e.odd }).collect(),
+                                            });
+                                        }
+                                        // The engine tells the player in the game: hand it to whichever of its sockets is bound.
+                                        let to = { let ports = ports.lock().unwrap(); GAME_PORTS.iter().rev().find_map(|g| ports.get(g).copied()) };
+                                        if let Some(to) = to {
+                                            let _ = local.send_to(&p.encode(), to);
+                                        }
                                     }
                                     // A relay (or anyone spoofing one) only gets to hand the engine game datagrams for its own two ports.
                                     Some(p @ (Packet::Bcast { .. } | Packet::Data { .. })) => {

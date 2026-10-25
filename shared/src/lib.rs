@@ -70,7 +70,32 @@ pub enum Packet {
     StatsRequest,
     /// Server -> client: the answer to `StatsRequest`. Aggregates only; nothing about other rooms.
     Stats(ServerStats),
+    /// Engine -> agent -> server: "my simulation's checksum at this game frame is `crc`". Every player reports its own;
+    /// the server compares them (see `SyncVerdict`).
+    Crc { frame: u32, crc: u32 },
+    /// Server -> agent -> engine: the checksums of a frame did not all agree.
+    Desync(SyncVerdict),
 }
+
+/// The relay's judgement of one game frame whose players' checksums differed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncVerdict {
+    pub frame: u32,
+    /// `true` when a strict majority agreed, so the entries marked `odd` are the ones that diverged. With two players
+    /// (or a tie) nobody can say who is right: `false`, and no entry is marked.
+    pub certain: bool,
+    pub players: Vec<SyncEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncEntry {
+    pub vip: Vip,
+    pub crc: u32,
+    pub odd: bool,
+}
+
+/// A game has at most this many players.
+pub const MAX_SYNC_PLAYERS: usize = 8;
 
 /// What a relay reports about itself to a connected client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +146,19 @@ impl Packet {
             Packet::Issued { serial } => [&[9, serial.len() as u8][..], serial.as_bytes()].concat(),
             Packet::Leave => vec![10],
             Packet::StatsRequest => vec![13],
+            Packet::Crc { frame, crc } => [&[15][..], &frame.to_be_bytes(), &crc.to_be_bytes()].concat(),
+            Packet::Desync(v) => {
+                let mut b = vec![16];
+                b.extend_from_slice(&v.frame.to_be_bytes());
+                b.push(v.certain as u8);
+                b.push(v.players.len().min(MAX_SYNC_PLAYERS) as u8);
+                for e in v.players.iter().take(MAX_SYNC_PLAYERS) {
+                    b.extend_from_slice(&e.vip);
+                    b.extend_from_slice(&e.crc.to_be_bytes());
+                    b.push(e.odd as u8);
+                }
+                b
+            }
             Packet::Stats(s) => [
                 &[14][..],
                 &s.uptime_secs.to_be_bytes(),
@@ -179,6 +217,20 @@ impl Packet {
             }
             10 if rest.is_empty() => Packet::Leave,
             13 if rest.is_empty() => Packet::StatsRequest,
+            15 if rest.len() == 8 => Packet::Crc { frame: u32::from_be_bytes(rest[..4].try_into().ok()?), crc: u32::from_be_bytes(rest[4..].try_into().ok()?) },
+            16 if rest.len() >= 6 => {
+                let n = rest[5] as usize;
+                if n > MAX_SYNC_PLAYERS || rest.len() != 6 + n * 9 {
+                    return None;
+                }
+                let players = (0..n)
+                    .map(|i| {
+                        let e = &rest[6 + i * 9..6 + (i + 1) * 9];
+                        SyncEntry { vip: e[..4].try_into().unwrap(), crc: u32::from_be_bytes(e[4..8].try_into().unwrap()), odd: e[8] != 0 }
+                    })
+                    .collect();
+                Packet::Desync(SyncVerdict { frame: u32::from_be_bytes(rest[..4].try_into().ok()?), certain: rest[4] != 0, players })
+            }
             14 if rest.len() >= 23 => {
                 let u32_at = |i: usize| u32::from_be_bytes(rest[i..i + 4].try_into().unwrap());
                 let u16_at = |i: usize| u16::from_be_bytes(rest[i..i + 2].try_into().unwrap());
@@ -335,6 +387,8 @@ mod tests {
             Packet::Ping,
             Packet::Leave,
             Packet::StatsRequest,
+            Packet::Crc { frame: 100, crc: 0xDEADBEEF },
+            Packet::Desync(SyncVerdict { frame: 100, certain: true, players: vec![SyncEntry { vip: [10, 77, 0, 1], crc: 1, odd: false }, SyncEntry { vip: [10, 77, 0, 2], crc: 2, odd: true }] }),
             Packet::Stats(ServerStats { uptime_secs: 86_400, rooms: 3, players: 9, max_rooms: 256, max_players: 2048, room_players: 4, load_pct: 12, pps: 1500, kbps: 800, version: "0.1.0-beta.4".into() }),
         ] {
             assert_eq!(Packet::decode(&p.encode()), Some(p));
@@ -342,6 +396,18 @@ mod tests {
     }
 
     /// Golden bytes; the engine's RelayWire.h test checks the same layout.
+    #[test]
+    fn sync_packets_layout_and_limits() {
+        assert_eq!(Packet::Crc { frame: 100, crc: 0x12C26F6A }.encode(), [15, 0, 0, 0, 100, 0x12, 0xC2, 0x6F, 0x6A], "the engine's RelayWire.h checks the same bytes");
+        let v = Packet::Desync(SyncVerdict { frame: 7, certain: false, players: vec![SyncEntry { vip: [10, 77, 0, 3], crc: 0xAABBCCDD, odd: false }] }).encode();
+        assert_eq!(v, [16, 0, 0, 0, 7, 0, 1, 10, 77, 0, 3, 0xAA, 0xBB, 0xCC, 0xDD, 0]);
+        assert_eq!(Packet::decode(&[15, 0, 0, 0, 1]), None);
+        assert_eq!(Packet::decode(&[16, 0, 0, 0, 7, 0, 2, 10, 77, 0, 3, 0, 0, 0, 0, 0]), None, "count and length must agree");
+        let mut nine = vec![16, 0, 0, 0, 1, 1, 9];
+        nine.extend(vec![0u8; 81]);
+        assert_eq!(Packet::decode(&nine), None, "more than eight players");
+    }
+
     #[test]
     fn wire_layout() {
         let p = Packet::Data { vip: [10, 77, 0, 1], src_port: 8088, dst_port: 8086, payload: vec![0xAA] };

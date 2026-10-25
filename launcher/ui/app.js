@@ -640,6 +640,9 @@ function connectionCard() {
       row("Latency", d.rtt_ms == null ? "measuring…" : `${d.rtt_ms} ms (average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0})`, lat),
       row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
       row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
+      d.desync ? row("Sync check", d.desync.certain
+        ? `Out of sync at frame ${d.desync.frame}: ${d.desync.players.filter((p) => p.odd).map((p) => p.vip).join(", ")} differ from the others`
+        : `Out of sync at frame ${d.desync.frame}: the players disagree and the server cannot tell who is right`, "bad") : row("Sync check", "all players agree so far", "ok"),
       d.server_identity ? row("Encryption", `on, server identity ${d.server_identity}${d.identity_saved ? " (checked against the saved one)" : " (saved now)"}`, "ok") : null,
       s ? [
         row("Server", `Rallypoint ${s.version}, up ${dur(s.uptime_secs)}`),
