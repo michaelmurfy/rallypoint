@@ -57,9 +57,18 @@ jobs:
           submodules: true
       - run: sh patches/apply.sh
         shell: bash
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: x86
+      # The 32-bit Visual Studio build environment, set up directly: the third-party action that did this still runs on
+      # Node.js 20, which GitHub is retiring, and it is no longer updated.
+      - name: Visual Studio x86 environment
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools was not found" }
+          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          # Run vcvarsall for x86, then hand every variable it set (PATH, INCLUDE, LIB, VCToolsRedistDir, ...) to the later steps.
+          cmd /c "`"$bat`" x86 > nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Add-Content -Path $env:GITHUB_ENV -Value "$($Matches[1])=$($Matches[2])" -Encoding utf8 }
+          }
       - name: Configure and build
         working-directory: engine
         run: |
