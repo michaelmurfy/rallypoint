@@ -468,6 +468,16 @@ function joinServer(host, port) {
   return { ok, text: `${h}:${p}`, host: h, port: p };
 }
 
+/** Saved servers live in this launcher's own storage (never the room password). */
+function loadServers() {
+  try { const v = JSON.parse(localStorage.getItem("servers") || "[]"); return Array.isArray(v) ? v.filter((x) => x && typeof x.server === "string") : []; }
+  catch { return []; }
+}
+function storeServers(list) { try { localStorage.setItem("servers", JSON.stringify(list)); } catch { /* storage unavailable */ } }
+
+// Right-click does nothing in the launcher.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 function onlinePage() {
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
@@ -475,6 +485,26 @@ function onlinePage() {
   const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room" });
   const pw = h("input", { type: "password", autocomplete: "off", "aria-label": "Room password" });
   const status = h("div", { class: "row" });
+  const saved$ = h("div", {});
+  function drawServers() {
+    const list = loadServers();
+    fill(saved$, list.length ? [h("h2", {}, "Saved servers"), ...list.map((x, i) => {
+      const sp = splitServer(x.server);
+      return h("div", { class: "mappack" },
+        h("div", {}, h("strong", {}, x.server), x.room ? h("span", { class: "muted small" }, `  room ${x.room}`) : null),
+        h("div", { class: "row" },
+          h("button", { class: "btn small", onclick: () => { server.value = sp.host; port.value = sp.port; room.value = x.room || ""; pw.focus(); } }, "Use"),
+          h("button", { class: "btn small ghost danger", onclick: () => { const l = loadServers(); l.splice(i, 1); storeServers(l); drawServers(); } }, "Remove")));
+    })] : []);
+  }
+  const save = h("button", { class: "btn", onclick: () => {
+    const s = joinServer(server.value, port.value);
+    if (!s.ok) return toast(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first", "bad");
+    const l = loadServers().filter((x) => !(x.server === s.text && (x.room || "") === room.value.trim()));
+    l.push({ server: s.text, room: room.value.trim() });
+    storeServers(l); drawServers(); toast("Server saved");
+  } }, "Save server");
+  drawServers();
   const btn = h("button", { class: "btn primary", onclick: async () => {
     try {
       if (btn.dataset.mode === "disconnect") await invoke("relay_disconnect");
@@ -504,7 +534,8 @@ function onlinePage() {
       h("div", { class: "hostport" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Port"), port)),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
       h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left."),
-      h("div", { class: "row" }, btn, status)));
+      h("div", { class: "row" }, btn, save, status)),
+    h("div", { class: "card" }, saved$));
   return { el, dispose: () => refreshers.delete(refresh) };
 }
 
