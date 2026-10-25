@@ -143,6 +143,7 @@ function gameFilesPanel(onChange) {
     try { await invoke("assets_start", { user: user.value, password: pass.value }); pass.value = ""; } catch (e) { smsg.textContent = errText(e); }
   } }, "Download from Steam");
   const cancel = h("button", { class: "btn", hidden: true, onclick: () => invoke("assets_cancel") }, "Cancel");
+  const codeBtn = h("button", { class: "btn", hidden: true, onclick: () => invoke("assets_use_code") }, "Enter a code instead");
   const needLabel = h("span");
   const needInput = h("input", { type: "text", autocomplete: "one-time-code" });
   const needBtn = h("button", { class: "btn primary", onclick: () => { invoke("assets_submit", { text: needInput.value }); needInput.value = ""; } }, "Submit");
@@ -154,11 +155,11 @@ function gameFilesPanel(onChange) {
   timers.push(setInterval(async () => {
     const s = await invoke("assets_status");
     const active = ["Preparing", "LoggingIn", "Downloading"].includes(s.phase);
-    go.hidden = active; cancel.hidden = !active;
+    go.hidden = active; cancel.hidden = !active; codeBtn.hidden = !s.phone;
     bar.hidden = s.phase !== "Downloading"; bar.value = s.percent;
     need.hidden = !s.need;
     if (s.need) { needLabel.textContent = s.need === "Guard" ? "Steam Guard code" : "Steam password"; needInput.type = s.need === "Guard" ? "text" : "password"; }
-    smsg.className = "msg " + (s.phase === "Failed" ? "bad" : s.phase === "Done" ? "ok" : "muted");
+    smsg.className = s.phone ? "banner" : "msg " + (s.phase === "Failed" ? "bad" : s.phase === "Done" ? "ok" : "muted");
     smsg.textContent = s.phase === "Idle" ? "" : s.message + (s.phase === "Downloading" ? ` ${s.percent.toFixed(0)}%` : "");
     if (s.log) log.textContent = s.log;
     if (s.phase === "Done" && !wasDone) {
@@ -174,7 +175,7 @@ function gameFilesPanel(onChange) {
     h("div", { class: "stack" },
       h("p", { class: "muted small" }, "Downloads Generals and Zero Hour (about 4 GB) through Steam. You must own both on Steam. Your password is used only to sign in and is never saved."),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Steam account name"), user), h("label", { class: "field" }, h("span", {}, "Steam password"), pass)),
-      h("div", { class: "row" }, go, cancel), need, bar, smsg,
+      h("div", { class: "row" }, go, cancel, codeBtn), need, bar, smsg,
       h("details", {}, h("summary", { class: "small muted" }, "Details"), log)));
 
   const el = h("div", { class: "stack" },

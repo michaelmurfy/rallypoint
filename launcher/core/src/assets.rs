@@ -64,6 +64,8 @@ pub struct AssetState {
     pub message: String,
     /// Set while waiting for the user: a password or a Steam Guard code (see `AssetJob::submit`).
     pub need: Option<Need>,
+    /// Waiting for the user to approve the sign-in in the Steam Mobile app (push notification). A code can be used instead.
+    pub phone: bool,
     /// Recent tool output with secrets removed, for the "details" panel and bug reports.
     pub log: String,
 }
@@ -83,9 +85,15 @@ fn tool_exe(dir: &Path) -> PathBuf {
 }
 
 /// Arguments for one app. No password: it comes in on stdin if the tool asks.
-pub fn dd_args(user: &str, app: u32, dir: &Path) -> Vec<String> {
+pub fn dd_args(user: &str, app: u32, dir: &Path, no_mobile: bool) -> Vec<String> {
     let s = |x: &str| x.to_string();
-    vec![s("-app"), app.to_string(), s("-os"), s("windows"), s("-dir"), dir.display().to_string(), s("-username"), user.to_string(), s("-remember-password"), s("-no-mobile"), s("-validate")]
+    let mut a = vec![s("-app"), app.to_string(), s("-os"), s("windows"), s("-dir"), dir.display().to_string(), s("-username"), user.to_string(), s("-remember-password")];
+    // By default Steam sends a push notification to approve in the Steam Mobile app. `-no-mobile` asks for a code instead.
+    if no_mobile {
+        a.push(s("-no-mobile"));
+    }
+    a.push(s("-validate"));
+    a
 }
 
 /// Account names go to the tool as an argument, so keep them boring.
@@ -101,6 +109,8 @@ pub enum Seen {
     Failure(String),
     /// A generic error line that usually follows the specific one; only used if nothing better was seen.
     Generic(String),
+    /// The tool is waiting for approval in the Steam Mobile app.
+    Approve,
     /// A prompt for the user (no trailing newline).
     Prompt(Need, /* previous code was wrong */ bool),
     Nothing,
@@ -115,6 +125,9 @@ pub fn scan_line(line: &str) -> Seen {
         }
     }
     let low = l.to_ascii_lowercase();
+    if low.contains("steam mobile app") || low.contains("confirm your sign in") || low.contains("confirm the login") {
+        return Seen::Approve;
+    }
     if low.contains("invalidpassword") {
         return Seen::Failure("Steam rejected the username or password".into());
     }
@@ -156,19 +169,33 @@ pub struct AssetJob {
     input: Mutex<Option<Sender<String>>>,
     child: Shared<Option<Child>>,
     cancelled: Arc<AtomicBool>,
+    use_code: Arc<AtomicBool>,
 }
 
 struct Ctx {
     state: Shared<AssetState>,
     child: Shared<Option<Child>>,
     cancelled: Arc<AtomicBool>,
+    use_code: Arc<AtomicBool>,
     log: Vec<String>,
 }
 
 impl Ctx {
     fn set(&mut self, phase: Phase, percent: f32, message: &str, need: Option<Need>) {
         let log = self.log.join("\n");
-        *self.state.lock().unwrap() = AssetState { phase, percent, message: message.into(), need, log };
+        *self.state.lock().unwrap() = AssetState { phase, percent, message: message.into(), need, phone: false, log };
+    }
+
+    fn set_phone(&mut self, percent: f32) {
+        let log = self.log.join("\n");
+        *self.state.lock().unwrap() = AssetState {
+            phase: Phase::LoggingIn,
+            percent,
+            message: "Approve this sign-in in the Steam Mobile app on your phone".into(),
+            need: None,
+            phone: true,
+            log,
+        };
     }
 
     fn keep(&mut self, text: &str) {
@@ -235,13 +262,15 @@ fn write_line(stdin: &mut Option<ChildStdin>, text: &str) {
 enum Run {
     Finished(bool),
     Stopped,
+    /// The user chose to type a Steam Guard code instead of approving on their phone.
+    SwitchToCode,
 }
 
 /// One DepotDownloader run for one app. Handles its prompts: the password from `password` (once), otherwise the
 /// user is asked through the job state and the answer arrives on `inbox`.
-fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32) -> Result<(Run, Option<String>), String> {
+fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32, no_mobile: bool) -> Result<(Run, Option<String>), String> {
     let mut child = Command::new(exe)
-        .args(dd_args(user, app, dir))
+        .args(dd_args(user, app, dir, no_mobile))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -264,6 +293,7 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
     *ctx.child.lock().unwrap() = Some(child);
 
     let (mut partial, mut failure, mut waiting, mut code_rejected) = (String::new(), None::<String>, None::<Need>, false);
+    let (started, mut saw_progress, mut phone, mut switch) = (std::time::Instant::now(), false, false, false);
     ctx.set(Phase::LoggingIn, base, "Signing in to Steam…", None);
     let mut stopped = false;
     loop {
@@ -283,7 +313,15 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
                         }
                     }
                     match scan_line(&line) {
-                        Seen::Progress(p) => ctx.set(Phase::Downloading, base + p / 2.0, &format!("Downloading {label}…"), None),
+                        Seen::Progress(p) => {
+                            saw_progress = true;
+                            phone = false;
+                            ctx.set(Phase::Downloading, base + p / 2.0, &format!("Downloading {label}…"), None)
+                        }
+                        Seen::Approve if !no_mobile => {
+                            phone = true;
+                            ctx.set_phone(base);
+                        }
                         Seen::Failure(m) => failure = Some(m),
                         Seen::Generic(m) => failure = failure.take().or(Some(m)), // the specific reason comes first and wins
                         _ => {}
@@ -303,6 +341,7 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
                                 (Need::Guard, false) if partial.to_ascii_lowercase().contains("email") => "Steam emailed you a code. Enter it",
                                 (Need::Guard, false) => "Enter the Steam Guard code from your authenticator app",
                             };
+                            phone = false;
                             ctx.set(Phase::LoggingIn, base, msg, Some(need));
                             waiting = Some(need);
                             partial.clear();
@@ -313,6 +352,19 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break, // both pipes closed: the process is done
+        }
+        // The tool's wording for the push notice may differ from what we match, so after a few quiet seconds of
+        // signing in, say what is probably happening.
+        if !no_mobile && !phone && !saw_progress && waiting.is_none() && started.elapsed() > Duration::from_secs(6) {
+            phone = true;
+            ctx.set_phone(base);
+        }
+        if phone && ctx.use_code.swap(false, Ordering::Relaxed) {
+            switch = true;
+            if let Some(c) = ctx.child.lock().unwrap().as_mut() {
+                let _ = c.kill();
+            }
+            break;
         }
         if ctx.cancelled.load(Ordering::Relaxed) {
             stopped = true;
@@ -346,6 +398,9 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
         }
         c.wait()
     });
+    if switch {
+        return Ok((Run::SwitchToCode, failure));
+    }
     if stopped {
         return Ok((Run::Stopped, failure));
     }
@@ -362,15 +417,25 @@ fn worker(root: PathBuf, user: String, password: String, rx: Receiver<String>, m
     if std::fs::create_dir_all(&gen).and(std::fs::create_dir_all(&zh)).is_err() {
         return ctx.fail("Couldn't create the game folder");
     }
-    let mut password = Some(password).filter(|p| !p.is_empty());
+    let original = Some(password).filter(|p| !p.is_empty()); // kept in memory so switching to a code can sign in again
+    let mut password = original.clone();
     let mut code = String::new();
+    let mut no_mobile = false;
     for (i, (app, dir, label, marker)) in [(GENERALS_APP, &gen, "Generals", "INI.big"), (ZERO_HOUR_APP, &zh, "Zero Hour", "INIZH.big")].into_iter().enumerate() {
-        match run_app(&mut ctx, &exe, &user, app, dir, &mut password, &mut code, &rx, label, i as f32 * 50.0) {
-            Err(m) => return ctx.fail(&m),
-            Ok((Run::Stopped, _)) => return,
-            Ok((Run::Finished(ok), failure)) => {
-                if !(ok && dir.join(marker).is_file()) {
-                    return ctx.fail(&failure.unwrap_or_else(|| format!("Steam didn't finish downloading {label}")));
+        loop {
+            match run_app(&mut ctx, &exe, &user, app, dir, &mut password, &mut code, &rx, label, i as f32 * 50.0, no_mobile) {
+                Err(m) => return ctx.fail(&m),
+                Ok((Run::Stopped, _)) => return,
+                Ok((Run::SwitchToCode, _)) => {
+                    no_mobile = true; // from now on ask for a code
+                    password = original.clone(); // the interrupted sign-in used it up
+                    continue;
+                }
+                Ok((Run::Finished(ok), failure)) => {
+                    if !(ok && dir.join(marker).is_file()) {
+                        return ctx.fail(&failure.unwrap_or_else(|| format!("Steam didn't finish downloading {label}")));
+                    }
+                    break;
                 }
             }
         }
@@ -384,12 +449,12 @@ impl AssetJob {
         if !valid_user(user) {
             return Err(io::Error::other("enter your Steam account name"));
         }
-        let (state, child, cancelled): (Shared<AssetState>, Shared<Option<Child>>, Arc<AtomicBool>) = Default::default();
+        let (state, child, cancelled, use_code): (Shared<AssetState>, Shared<Option<Child>>, Arc<AtomicBool>, Arc<AtomicBool>) = Default::default();
         let (tx, rx) = mpsc::channel();
-        let ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), log: vec![] };
+        let ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), use_code: use_code.clone(), log: vec![] };
         let (root, user) = (root.to_path_buf(), user.to_string());
         std::thread::spawn(move || worker(root, user, password, rx, ctx));
-        Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled })
+        Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled, use_code })
     }
 
     pub fn state(&self) -> AssetState {
@@ -403,6 +468,11 @@ impl AssetJob {
                 let _ = tx.send(text.to_string());
             }
         }
+    }
+
+    /// While waiting for phone approval: type a Steam Guard code instead.
+    pub fn use_code(&self) {
+        self.use_code.store(true, Ordering::Relaxed);
     }
 
     pub fn cancel(&self) {
@@ -426,9 +496,11 @@ mod tests {
 
     #[test]
     fn args_never_carry_a_password() {
-        let a = dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH")).join(" ");
-        assert!(a.contains("-app 2732960 -os windows -dir /g/ZH -username alice -remember-password -no-mobile -validate"));
-        assert!(!dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH")).iter().any(|x| x == "-password"));
+        let a = dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), false).join(" ");
+        assert!(a.contains("-app 2732960 -os windows -dir /g/ZH -username alice -remember-password -validate"));
+        assert!(!a.contains("-no-mobile"), "phone approval is the default");
+        assert!(dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).contains(&"-no-mobile".to_string()));
+        assert!(!dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).iter().any(|x| x == "-password"));
     }
 
     #[test]
@@ -450,6 +522,7 @@ mod tests {
         assert!(matches!(scan_line("App 2732960 (Zero Hour) is not available from this account."), Seen::Failure(m) if m.contains("doesn't own")));
         assert!(matches!(scan_line("Authentication failed with result RateLimitExceeded"), Seen::Failure(m) if m.contains("rate")));
         assert_eq!(scan_line("Connecting to Steam3... Done!"), Seen::Nothing);
+        assert_eq!(scan_line("STEAM GUARD! Use the Steam Mobile App to confirm your sign in..."), Seen::Approve);
         // the generic lines the real tool prints after the specific reason
         assert!(matches!(scan_line("Unable to get steam3 credentials."), Seen::Generic(_)));
         assert!(matches!(scan_line("Error: InitializeSteam failed"), Seen::Generic(_)));
@@ -519,7 +592,7 @@ mod tests {
         const FAKE: &str = r#"#!/bin/sh
 app=""; dir=""; user=""
 while [ $# -gt 0 ]; do
-  case "$1" in -app) app="$2"; shift;; -dir) dir="$2"; shift;; -username) user="$2"; shift;; esac
+  case "$1" in -app) app="$2"; shift;; -dir) dir="$2"; shift;; -username) user="$2"; shift;; -no-mobile) nomobile=1;; esac
   shift
 done
 marker="$(dirname "$0")/logged-in-$user"
@@ -539,6 +612,13 @@ if [ ! -f "$marker" ] && [ "$user" != "cached" ]; then
       printf 'STEAM GUARD! Please enter your 2 factor auth code from your authenticator app: '
       read code; echo
     done
+  fi
+  if [ "$user" = "phone" ]; then echo "STEAM GUARD! Use the Steam Mobile App to confirm your sign in..." >&2; sleep 1; fi
+  if [ "$user" = "phonecode" ]; then
+    if [ -z "$nomobile" ]; then echo "STEAM GUARD! Use the Steam Mobile App to confirm your sign in..." >&2; exec sleep 30; fi
+    printf 'STEAM GUARD! Please enter your 2 factor auth code from your authenticator app: '
+    read code; echo
+    [ "$code" = "12345" ] || exit 1
   fi
   touch "$marker"
 fi
@@ -595,6 +675,34 @@ exit 0
             let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
             assert_eq!(s.phase, Phase::Done, "{s:?}");
             assert!(!s.log.contains("secret") && !s.log.contains("12345"));
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn phone_approval_is_shown_and_the_download_continues_once_approved() {
+            let r = root("phone");
+            let job = AssetJob::start(&r, "phone", "secret12".into()).unwrap();
+            let s = until(&job, |s| s.phone || s.phase == Phase::Done);
+            assert!(s.phone && s.need.is_none(), "{s:?}");
+            assert!(s.message.contains("Steam Mobile app"));
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
+            assert!(!s.phone);
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn a_code_can_be_typed_instead_of_approving_on_the_phone() {
+            let r = root("phonecode");
+            let job = AssetJob::start(&r, "phonecode", "secret12".into()).unwrap();
+            until(&job, |s| s.phone);
+            job.use_code();
+            let s = until(&job, |s| s.need.is_some());
+            assert_eq!(s.need, Some(Need::Guard), "{s:?}");
+            assert!(!s.phone);
+            job.submit("12345");
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
             std::fs::remove_dir_all(r).unwrap();
         }
 

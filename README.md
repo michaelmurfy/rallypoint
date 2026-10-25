@@ -45,7 +45,7 @@ Download the installer for your platform from the [Releases](../../releases) pag
 Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 - **Windows:** Steam installs are found automatically.
-- **macOS / Linux:** the setup wizard (or **Settings**) has **Download from Steam**. Enter your Steam account name and password; Rallypoint fetches the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (checked against a pinned checksum), signs in, and downloads Generals and Zero Hour (about 4 GB). If Steam Guard asks for a code you'll be prompted. Your password is used only for that sign-in and is never saved. The account must own both games on Steam. It runs natively on Apple Silicon, so Rosetta isn't needed.
+- **macOS / Linux:** the setup wizard (or **Settings**) has **Download from Steam**. Enter your Steam account name and password; Rallypoint fetches the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader) (checked against a pinned checksum), signs in, and downloads Generals and Zero Hour (about 4 GB). If you use the Steam Mobile app, Steam sends a notification to approve the sign-in; just tap approve (or choose **Enter a code instead**). Email codes are asked for in the launcher. Your password is used only for that sign-in and is never saved. The account must own both games on Steam. It runs natively on Apple Silicon, so Rosetta isn't needed.
 - Already have the files somewhere? Choose that folder in the wizard or in **Settings → Game files**.
 
 ## Playing

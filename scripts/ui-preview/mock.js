@@ -11,10 +11,12 @@ const state = {
 function advance() {
   const j = state.job; if (!j) return;
   j.tick++;
-  if (j.tick === 3) { j.s = { phase: "LoggingIn", percent: 0, message: "Enter the Steam Guard code from your authenticator app", need: "Guard", log: "Connecting to Steam3... Done!\nSTEAM GUARD! Please enter your 2 factor auth code from your authenticator app:" }; }
-  if (j.s.need) return;
-  if (j.tick > 3 && j.tick < 30) { const p = (j.tick - 3) * 3.7; j.s = { phase: "Downloading", percent: p, message: "Downloading Zero Hour…", need: null, log: j.s.log }; }
-  if (j.tick >= 30) { j.s = { phase: "Done", percent: 100, message: "Game files are ready", need: null, log: j.s.log }; state.cfg.game_dir = "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour"; }
+  if (j.tick < 8 && !j.codeMode) { j.s = { phase: "LoggingIn", percent: 0, message: "Approve this sign-in in the Steam Mobile app on your phone", need: null, phone: true, log: "STEAM GUARD! Use the Steam Mobile App to confirm your sign in..." }; return; }
+  if (j.codeMode && !j.coded) { if (!j.s.need) j.s = { phase: "LoggingIn", percent: 0, message: "Enter the Steam Guard code from your authenticator app", need: "Guard", phone: false, log: j.s.log }; return; }
+  const t = j.tick - 8;
+  if (t < 30) { j.s = { phase: "Downloading", percent: t * 3.4, message: "Downloading Zero Hour…", need: null, phone: false, log: j.s.log }; return; }
+  j.s = { phase: "Done", percent: 100, message: "Game files are ready", need: null, phone: false, log: j.s.log };
+  state.cfg.game_dir = "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour";
 }
 setInterval(advance, 500);
 const handlers = {
@@ -24,9 +26,10 @@ const handlers = {
   save_game_dir: ({ path }) => { state.cfg.game_dir = path.trim(); },
   save_config: ({ server, room, steamUser }) => { Object.assign(state.cfg, { server, room, steam_user: steamUser }); },
   set_setup_done: ({ done }) => { state.cfg.setup_done = done; },
-  assets_start: ({ user }) => { state.cfg.steam_user = user; state.job = { tick: 0, s: { phase: "LoggingIn", percent: 0, message: "Signing in to Steam…", need: null, log: "" } }; },
-  assets_status: () => (state.job ? state.job.s : { phase: "Idle", percent: 0, message: "", need: null, log: "" }),
-  assets_submit: () => { if (state.job) state.job.s = { ...state.job.s, need: null, message: "Signing in to Steam…" }; },
+  assets_start: ({ user }) => { state.cfg.steam_user = user; state.job = { tick: 0, s: { phase: "LoggingIn", percent: 0, message: "Signing in to Steam…", need: null, phone: false, log: "" } }; },
+  assets_status: () => (state.job ? state.job.s : { phase: "Idle", percent: 0, message: "", need: null, phone: false, log: "" }),
+  assets_use_code: () => { if (state.job) state.job.codeMode = true; },
+  assets_submit: () => { if (state.job) { state.job.coded = true; state.job.tick = 8; state.job.s = { ...state.job.s, need: null, message: "Signing in to Steam…" }; } },
   assets_cancel: () => { state.job = null; },
   mods_list: () => ({ catalog: state.mods, other: state.other }),
   mods_get: () => { state.watch = true; setTimeout(() => { state.mods[0].installed = { folder: "Shockwave", bigs: 12, mb: 280 }; state.watch = false; }, 4000); },

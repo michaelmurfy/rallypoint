@@ -123,6 +123,14 @@ fn assets_submit(jobs: tauri::State<Downloads>, text: String) {
     }
 }
 
+/// While the download waits for approval in the Steam Mobile app: ask for a code instead.
+#[tauri::command]
+fn assets_use_code(jobs: tauri::State<Downloads>) {
+    if let Some(j) = jobs.0.lock().unwrap().as_ref() {
+        j.use_code();
+    }
+}
+
 #[tauri::command]
 fn assets_cancel(jobs: tauri::State<Downloads>) {
     *jobs.0.lock().unwrap() = None; // dropping the job stops it
@@ -410,7 +418,7 @@ fn main() {
         .manage(Downloads::default())
         .manage(ModWatch::default())
         .invoke_handler(tauri::generate_handler![
-            detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_cancel,
+            detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, save_game_dir, set_setup_done,
             relay_connect, relay_disconnect, relay_status,
             mods_list, mods_get, mods_poll, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
