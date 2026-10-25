@@ -24,8 +24,8 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
 | Launcher | ✅ | ✅ | build it yourself (see [Linux](#linux)) |
-| Download game files from Steam | ⚠️ written, not tried with a real account | ✅ finds your Steam install | ⚠️ same as macOS |
-| Engine / Skirmish | ⚠️ builds in CI; the upstream port reports Skirmish playable | ⚠️ builds from upstream source, untested here | ❌ not built yet |
+| Download game files from Steam | ✅ | ✅ finds your Steam install | ⚠️ same downloader as macOS, not tried on Linux |
+| Engine / Skirmish | ✅ | ⚠️ builds from upstream source, untested here | ❌ not built yet |
 | Widescreen / HiDPI patch | ⚠️ written, not played yet | ⚠️ written, not played yet | – |
 | Relay server | – | – | ✅ (Docker or binary) |
 | Multiplayer through the relay | ⚠️ protocol and launcher agent tested; engine patch **not yet tried in a real game** | same | – |
