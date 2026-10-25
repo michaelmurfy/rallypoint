@@ -539,12 +539,27 @@ function onlinePage() {
   return { el, dispose: () => refreshers.delete(refresh) };
 }
 
+function diagnosePanel() {
+  const out = h("div", {});
+  const run = h("button", { class: "btn", onclick: async () => {
+    try {
+      const r = await invoke("diagnose", { gameDir: store.cfg.game_dir || "" });
+      fill(out,
+        r.checks.map((c) => h("div", { class: "mappack" }, h("div", {}, h("strong", {}, c.name), h("div", { class: "muted small" }, c.detail)), pill(c.ok ? "OK" : "Problem", c.ok ? "ok" : "bad"))),
+        r.crash ? [h("p", { class: "muted small" }, "The game's last crash report (ReleaseCrashInfo.txt):"), h("pre", { class: "crash" }, r.crash)] : h("p", { class: "muted small" }, "The game has not written a crash report."),
+        h("div", { class: "row" }, h("button", { class: "btn small", onclick: () => invoke("open_game_data_folder").catch((e) => toast(errText(e), "bad")) }, "Open the game's data folder")));
+    } catch (e) { toast(errText(e), "bad"); }
+  } }, "Check my install");
+  return h("div", {}, h("p", { class: "muted" }, "If the game stops with \u201cYou have encountered a serious error\u201d, this checks the usual causes: missing game files and a missing original Generals."), h("div", { class: "row" }, run), out);
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
+    h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel()),
     h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
     h("div", { class: "card" }, h("h2", {}, "Updates"),
       h("p", { class: "muted" }, `You have Rallypoint ${store.cfg.version}. When it starts, Rallypoint can ask GitHub (github.com/michaelmurfy/rallypoint) whether a newer release exists. Nothing is downloaded until you choose to.`),
