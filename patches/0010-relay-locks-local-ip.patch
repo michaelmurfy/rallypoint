@@ -1,0 +1,23 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+index 91deab7..bb9da79 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+@@ -78,7 +78,8 @@ LANAPI::LANAPI() : m_transport(nullptr)
+ 	m_name = L""; // safe default?
+ 	m_pendingAction = ACT_NONE;
+ 	m_expiration = 0;
+-	m_localIP = 0;
++	// Relay mode: the only address this game has is the virtual IP the relay gave this client.
++	m_localIP = RelayWire::config().on ? RelayWire::config().vip : 0;
+ 	m_inLobby = true;
+ 	m_isInLANMenu = TRUE;
+ 	m_currentGame = nullptr;
+@@ -100,6 +101,8 @@ void LANAPI::init()
+ {
+ 	m_gameStartTime = 0;
+ 	m_gameStartSeconds = 0;
++	if (RelayWire::config().on)
++		m_localIP = RelayWire::config().vip; // never an adapter address, even before the lobby picks one
+ 	m_transport->reset();
+ 	m_transport->init(m_localIP, lobbyPort);
+ 	m_transport->allowBroadcasts(true);

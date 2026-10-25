@@ -19,6 +19,9 @@ pub struct LaunchOptions {
     /// Extra environment for the engine (e.g. `GEN_AUTO_SKIRMISH=1`).
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// Where to write what the engine prints (its network and error lines); replaced on every launch.
+    #[serde(default)]
+    pub log: Option<std::path::PathBuf>,
 }
 
 pub fn args(o: &LaunchOptions) -> Vec<String> {
@@ -36,6 +39,19 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
     a
 }
 
+/// Is the network ready for the game? No relay at all means offline play, which is fine. A relay that has
+/// not accepted us yet would start the game on the wrong network (and fail with a socket error in the LAN
+/// lobby), so that is refused. Returns the agent address and our virtual IP to hand to the engine.
+pub fn relay_for_launch(agent: Option<(String, crate::agent::Status)>) -> Result<Option<(String, String)>, String> {
+    use crate::agent::Status;
+    match agent {
+        None => Ok(None),
+        Some((local, Status::Connected(v))) => Ok(Some((local, format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3])))),
+        Some((_, Status::Connecting)) => Err("Still connecting to the server. Try again in a moment.".into()),
+        Some((_, Status::Rejected(_))) => Err("You are not connected to the server (see the Online tab). Fix that, or disconnect to play offline.".into()),
+    }
+}
+
 /// Runs the engine from the game dir so it finds the `.big` files.
 pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     let mut c = Command::new(engine);
@@ -49,7 +65,24 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     if let Some((agent, vip)) = &o.relay {
         c.env("GEN_RELAY", agent).env("GEN_RELAY_VIP", vip);
     }
+    if let Some(f) = o.log.as_ref().and_then(|p| open_log(p, o)) {
+        if let Ok(g) = f.try_clone() {
+            c.stdout(g);
+        }
+        c.stderr(f);
+    }
     c
+}
+
+/// Fresh log file with a first line saying how the engine was started (never the room password or serial).
+fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
+    use std::io::Write;
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d).ok()?;
+    }
+    let mut f = std::fs::File::create(path).ok()?;
+    let _ = writeln!(f, "[launcher] {}x{} fullscreen={} relay={}", o.width, o.height, o.fullscreen, o.relay.as_ref().map(|(a, v)| format!("agent {a}, virtual IP {v}")).unwrap_or_else(|| "off".into()));
+    Some(f)
 }
 
 #[cfg(test)]
@@ -78,6 +111,27 @@ mod tests {
         // nonsense sizes are not advertised
         let c = command(Path::new("e"), Path::new("."), &LaunchOptions { width: 10, height: 10, ..Default::default() });
         assert!(!c.get_envs().any(|(k, _)| k == "GEN_EXTRA_RES"));
+    }
+
+    #[test]
+    fn engine_output_goes_to_the_log_with_a_header() {
+        let t = std::env::temp_dir().join(format!("gen-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let log = t.join("sub").join("engine.log");
+        let o = LaunchOptions { width: 1920, height: 1080, relay: Some(("127.0.0.1:5000".into(), "10.77.0.2".into())), log: Some(log.clone()), ..Default::default() };
+        let _ = command(Path::new("e"), Path::new("."), &o);
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(text.trim(), "[launcher] 1920x1080 fullscreen=false relay=agent 127.0.0.1:5000, virtual IP 10.77.0.2");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn game_only_starts_on_a_ready_network() {
+        use crate::agent::Status;
+        assert_eq!(relay_for_launch(None), Ok(None));
+        assert_eq!(relay_for_launch(Some(("127.0.0.1:9".into(), Status::Connected([10, 77, 0, 2])))), Ok(Some(("127.0.0.1:9".into(), "10.77.0.2".into()))));
+        assert!(relay_for_launch(Some(("x".into(), Status::Connecting))).unwrap_err().contains("Still connecting"));
+        assert!(relay_for_launch(Some(("x".into(), Status::Rejected(3)))).unwrap_err().contains("not connected"));
     }
 
     #[test]

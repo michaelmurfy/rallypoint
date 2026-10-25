@@ -613,6 +613,7 @@ function diagnosePanel() {
       fill(out,
         r.checks.map((c) => h("div", { class: "mappack" }, h("div", {}, h("strong", {}, c.name), h("div", { class: "muted small" }, c.detail)), pill(c.ok ? "OK" : "Problem", c.ok ? "ok" : "bad"))),
         r.crash ? [h("p", { class: "muted small" }, "The game's last crash report (ReleaseCrashInfo.txt):"), h("pre", { class: "crash" }, r.crash)] : h("p", { class: "muted small" }, "The game has not written a crash report."),
+        r.engine_log ? [h("p", { class: "muted small" }, "What the game printed on its last run:"), h("pre", { class: "crash" }, r.engine_log)] : null,
         h("div", { class: "row" }, h("button", { class: "btn small", onclick: () => invoke("open_game_data_folder").catch((e) => fb.bad(errText(e))) }, "Open the game's data folder")));
       const bad = r.checks.filter((c) => !c.ok).length;
       fb.set(bad ? `${bad} problem${bad === 1 ? "" : "s"} found` : "No problems found", bad ? "bad" : "ok");

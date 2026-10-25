@@ -31,6 +31,11 @@ fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
 }
 
+/// What the engine printed on its last run.
+fn engine_log(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("engine.log"))
+}
+
 fn mods_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base(app)?.join("Mods"))
 }
@@ -104,7 +109,7 @@ fn diagnose(app: tauri::AppHandle, game_dir: String) -> Result<diagnose::Report,
     let engine = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data);
     let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base));
     let docs = app.path().document_dir().map_err(|e| e.to_string())?;
-    Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs))
+    Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs, Some(&engine_log(&app)?)))
 }
 
 #[tauri::command]
@@ -503,20 +508,16 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
         }
         None => (None, vec![]),
     };
+    // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
+    let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let opts = launch::LaunchOptions {
+        log: engine_log(&app).ok(),
         width,
         height,
         fullscreen,
         mod_path,
         mod_args,
-        // Online only once the relay has accepted us; the engine needs our virtual IP.
-        relay: match relay.0.lock().unwrap().as_ref() {
-            Some(a) => match a.status() {
-                Status::Connected(v) => Some((a.local.to_string(), format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3]))),
-                _ => None,
-            },
-            None => None,
-        },
+        relay: relay_cfg,
         env: {
             let mut env = vec![];
             if skirmish {
