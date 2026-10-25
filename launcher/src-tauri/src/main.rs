@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, icons, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -510,7 +510,14 @@ fn open_release_page(updates: tauri::State<Updates>) -> Result<(), String> {
 // ---- launching ------------------------------------------------------------------------------------
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folder: Option<String>, width: u32, height: u32, fullscreen: bool, skirmish: bool) -> Result<(), String> {
+async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String> {
+    let dir = mods_dir(&app)?;
+    let work = base(&app)?.join("tmp");
+    tauri::async_runtime::spawn_blocking(move || icons::install(&dir, &work)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
@@ -518,21 +525,15 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     if !game_dir.join("INIZH.big").is_file() {
         return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
     }
-    let (mod_path, mod_args) = match mod_folder.filter(|f| !f.is_empty()) {
-        Some(f) => {
-            let name = mods::sanitize_folder(&f).filter(|n| *n == f).ok_or("invalid mod")?;
-            let cat = catalog()?;
-            let this = cat.iter().find(|m| m.path == name);
-            let args = this.map(|m| m.args.clone()).unwrap_or_default();
-            // An add-on is launched together with the mod it extends.
-            let folder = match this.and_then(|m| m.addon_for.as_ref()).and_then(|id| cat.iter().find(|b| &b.id == id)) {
-                Some(base) => mods::compose(&mods_dir(&app)?, &base.path, &name)?,
-                None => mods_dir(&app)?.join(&name),
-            };
-            (Some(folder.to_string_lossy().to_string()), args)
+    let cat = catalog()?;
+    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    let mut mod_args = vec![];
+    for name in &ordered {
+        if let Some(m) = cat.iter().find(|m| &m.path == name) {
+            mod_args.extend(m.args.iter().cloned());
         }
-        None => (None, vec![]),
-    };
+    }
+    let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let opts = launch::LaunchOptions {
@@ -555,6 +556,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             }
             env
         },
+        raised_camera: raised_camera.unwrap_or(false),
     };
     #[cfg(unix)]
     {
@@ -586,7 +588,7 @@ fn main() {
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
-            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
+            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, icons_install,
             launch_game
         ])
         .run(tauri::generate_context!())

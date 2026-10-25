@@ -71,12 +71,16 @@ fn read_dirs(p: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Zero Hour also reads the base game's files. Prefer the copy we downloaded, else any detected install.
+/// Zero Hour also reads the base game's files. Prefer the copy we downloaded. Otherwise prefer a base game
+/// that is not sitting inside a Zero Hour folder (Steam's Ultimate Collection nests `ZH_Generals` there, and
+/// that copy is not the full base game). If the only copy is nested, use it.
 pub fn base_game_for(detected: &[GameInstall], downloaded: &Path) -> Option<PathBuf> {
     if downloaded.join("INI.big").is_file() {
         return Some(downloaded.to_path_buf());
     }
-    detected.iter().find(|g| !g.zero_hour).map(|g| g.dir.clone())
+    let bases: Vec<_> = detected.iter().filter(|g| !g.zero_hour).collect();
+    let zh: Vec<_> = detected.iter().filter(|g| g.zero_hour).map(|g| &g.dir).collect();
+    bases.iter().find(|g| !zh.iter().any(|z| g.dir.starts_with(*z))).map(|g| g.dir.clone()).or_else(|| bases.first().map(|g| g.dir.clone()))
 }
 
 pub fn detect() -> Vec<GameInstall> {
@@ -96,6 +100,16 @@ mod tests {
         std::fs::write(t.join("INI.big"), "").unwrap();
         assert_eq!(base_game_for(&steam, &t), Some(t.clone()));
         assert_eq!(base_game_for(&[], Path::new("/nope")), None);
+        let nested = PathBuf::from("/zh/ZH_Generals");
+        let sibling = PathBuf::from("/gen");
+        let both = vec![
+            GameInstall { dir: nested.clone(), zero_hour: false },
+            GameInstall { dir: "/zh".into(), zero_hour: true },
+            GameInstall { dir: sibling.clone(), zero_hour: false },
+        ];
+        assert_eq!(base_game_for(&both, Path::new("/nope")), Some(sibling));
+        let only_nested = vec![GameInstall { dir: nested.clone(), zero_hour: false }, GameInstall { dir: "/zh".into(), zero_hour: true }];
+        assert_eq!(base_game_for(&only_nested, Path::new("/nope")), Some(nested));
         std::fs::remove_dir_all(t).unwrap();
     }
 

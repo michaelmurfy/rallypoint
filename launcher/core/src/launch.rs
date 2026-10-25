@@ -19,6 +19,9 @@ pub struct LaunchOptions {
     /// Extra environment for the engine (e.g. `GEN_AUTO_SKIRMISH=1`).
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// GenTool-style higher camera. Off unless the user asks, so online games keep the retail view.
+    #[serde(default)]
+    pub raised_camera: bool,
     /// Where to write what the engine prints (its network and error lines); replaced on every launch.
     #[serde(default)]
     pub log: Option<std::path::PathBuf>,
@@ -64,6 +67,13 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     }
     if let Some((agent, vip)) = &o.relay {
         c.env("GEN_RELAY", agent).env("GEN_RELAY_VIP", vip);
+    }
+    // Weather.ini is only in Zero Hour's archives. If the process is not started in that folder, the engine
+    // reads this and loads them. A trailing separator is added on the engine side.
+    c.env("GEN_ZH_PATH", game_dir);
+    if o.raised_camera {
+        c.env("GEN_MAX_CAMERA_HEIGHT", "600");
+        c.env("GEN_CAMERA_PITCH", "37");
     }
     if let Some(f) = o.log.as_ref().and_then(|p| open_log(p, o)) {
         if let Ok(g) = f.try_clone() {
@@ -138,7 +148,17 @@ mod tests {
     fn relay_sets_env() {
         let o = LaunchOptions { width: 1, height: 1, relay: Some(("127.0.0.1:5000".into(), "10.77.0.2".into())), ..Default::default() };
         let c = command(Path::new("e"), Path::new("."), &o);
-        let envs: Vec<_> = c.get_envs().map(|(k, v)| (k.to_str().unwrap().to_string(), v.unwrap().to_str().unwrap().to_string())).collect();
-        assert_eq!(envs, [("GEN_RELAY".to_string(), "127.0.0.1:5000".to_string()), ("GEN_RELAY_VIP".to_string(), "10.77.0.2".to_string())]);
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_RELAY" && v == Some("127.0.0.1:5000".as_ref())));
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_RELAY_VIP" && v == Some("10.77.0.2".as_ref())));
+    }
+
+    #[test]
+    fn names_the_zero_hour_folder_and_raises_the_camera_only_when_asked() {
+        let c = command(Path::new("e"), Path::new("/games/zh"), &LaunchOptions::default());
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_ZH_PATH" && v == Some("/games/zh".as_ref())));
+        assert!(!c.get_envs().any(|(k, _)| k == "GEN_MAX_CAMERA_HEIGHT"));
+        let c = command(Path::new("e"), Path::new("/games/zh"), &LaunchOptions { raised_camera: true, ..Default::default() });
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_MAX_CAMERA_HEIGHT" && v == Some("600".as_ref())));
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_CAMERA_PITCH" && v == Some("37".as_ref())));
     }
 }
