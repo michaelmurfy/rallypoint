@@ -5,5 +5,5 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
 snow = "0.10"
