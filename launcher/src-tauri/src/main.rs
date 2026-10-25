@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, icons, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -179,6 +179,7 @@ struct ConfigView {
     steam_user: String,
     setup_done: bool,
     check_updates: bool,
+    sync_logs: bool,
     camera_height: u32,
     version: &'static str,
     os: &'static str,
@@ -195,6 +196,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         steam_user: c.steam_user,
         setup_done: c.setup_done,
         check_updates: !c.skip_update_check,
+        sync_logs: c.sync_logs,
         camera_height,
         version: update::current_version(),
         os: std::env::consts::OS,
@@ -225,6 +227,33 @@ fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let mut c = Config::load(&path);
     c.skip_update_check = !on;
     c.save(&path).map_err(|e| e.to_string())
+}
+
+/// Where the engine writes its per-frame sync logs while recording is on.
+fn sync_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("sync-logs"))
+}
+
+#[tauri::command]
+fn set_sync_logs(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.sync_logs = on;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_sync_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let d = sync_logs_dir(&app)?;
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    open_folder(&d)
+}
+
+/// Compare this machine's sync logs with another player's (a folder, or a zip of one): where did the games first differ?
+#[tauri::command]
+async fn sync_compare(app: tauri::AppHandle, other: String) -> Result<syncdiff::Outcome, String> {
+    let (mine, work) = (sync_logs_dir(&app)?, base(&app)?.join("tmp").join("sync-compare"));
+    tauri::async_runtime::spawn_blocking(move || syncdiff::compare(&mine, Path::new(other.trim()), &work)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -545,6 +574,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
+        sync_logs: if Config::load(&config_path(&app)?).sync_logs { Some(sync_logs_dir(&app)?) } else { None },
         width,
         height,
         fullscreen,
@@ -591,7 +621,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, set_camera_height, graphics_apply_high, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
