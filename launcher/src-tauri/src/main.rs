@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -94,6 +94,24 @@ fn check_game_dir(path: String) -> GameCheck {
     } else {
         GameCheck { ok: false, message: "No Zero Hour files in that folder (INIZH.big is missing)".into() }
     }
+}
+
+/// Checks behind "You have encountered a serious error": game files, base game, last crash report.
+#[tauri::command]
+fn diagnose(app: tauri::AppHandle, game_dir: String) -> Result<diagnose::Report, String> {
+    let base = base(&app)?;
+    let data = app.path().data_dir().map_err(|e| e.to_string())?;
+    let engine = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data);
+    let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base));
+    let docs = app.path().document_dir().map_err(|e| e.to_string())?;
+    Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs))
+}
+
+#[tauri::command]
+fn open_game_data_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let d = app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF);
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    open_folder(&d)
 }
 
 #[tauri::command]
@@ -529,7 +547,7 @@ fn main() {
         .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
+            detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,

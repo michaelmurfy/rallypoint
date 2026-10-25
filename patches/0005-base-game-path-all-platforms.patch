@@ -1,0 +1,38 @@
+diff --git a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+index dfceee6..b0d7db4 100644
+--- a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+@@ -65,6 +65,19 @@ void Win32BIGFileSystem::init() {
+     GetStringFromGeneralsRegistry("", "InstallPath", installPath );
+     //@todo this will need to be ramped up to a crash for release
+     DEBUG_ASSERTCRASH(!installPath.isEmpty(), ("Be 1337! Go install Generals!"));
++    // Steam installs do not write the EA registry key, so the launcher names the base game with
++    // GEN_GENERALS_PATH. Honoured on every platform; without it Zero Hour starts without the base
++    // game's data and ends in the "serious error" box.
++    if (installPath.isEmpty()) {
++        const char* envPath = ::getenv("GEN_GENERALS_PATH");
++        if (envPath && *envPath) {
++            installPath = envPath;
++            const char last = envPath[strlen(envPath) - 1];
++            if (last != '/' && last != '\\')
++                installPath.concat('/');
++            DEBUG_LOG(("Generals install path: env GEN_GENERALS_PATH=%s", envPath));
++        }
++    }
+ #if defined(__APPLE__)
+     // TheSuperHackers @port macOS-port: registry stub doesn't auto-populate the
+     // Generals install path, so the engine ends up running with only the ZH BIGs.
+@@ -74,13 +87,6 @@ void Win32BIGFileSystem::init() {
+     // renders pitch black with only props/units visible. Hunt a sibling
+     // "Command and Conquer Generals" directory automatically + honor a
+     // GEN_GENERALS_PATH env-var override.
+-    if (installPath.isEmpty()) {
+-        const char* envPath = ::getenv("GEN_GENERALS_PATH");
+-        if (envPath && *envPath) {
+-            installPath = envPath;
+-            DEBUG_LOG(("Generals install path: env GEN_GENERALS_PATH=%s", envPath));
+-        }
+-    }
+     if (installPath.isEmpty()) {
+         // Try a sibling directory of the ZH install (most common layout: both
+         // ".../Command and Conquer Generals Zero Hour" and ".../Command and
