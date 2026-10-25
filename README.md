@@ -131,9 +131,8 @@ Releases don't include a Linux launcher, and there is no Linux game engine yet (
 # Debian / Ubuntu build dependencies (other distros: the equivalent webkit2gtk 4.1 / GTK 3 dev packages)
 sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 git clone --depth 1 https://github.com/michaelmurfy/rallypoint
-cd rallypoint/launcher/src-tauri
-cargo install tauri-cli --version "^2" --locked
-cargo tauri build            # .deb, .rpm and .AppImage in ../../target/release/bundle/
+cd rallypoint
+make linux-client            # .deb, .rpm and .AppImage in target/release/bundle/
 ```
 
 The launcher opens and manages mods, maps and relay rooms, but has no engine to start on Linux.

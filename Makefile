@@ -3,7 +3,7 @@ COMPOSE ?= docker compose
 .DEFAULT_GOAL := help
 -include .env
 
-.PHONY: help config geo up down restart logs status update test release
+.PHONY: help config geo up down restart logs status update test release linux-client
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  \033[1mmake %-9s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -50,6 +50,13 @@ update: ## Get the latest version, refresh country lists, restart
 test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server
 	sh tests/run.sh
+
+linux-client: ## Build the Linux launcher (.deb, .rpm, .AppImage); no engine on Linux yet
+	@[ "$$(uname -s)" = Linux ] || { echo "linux-client builds on Linux only"; exit 1; }
+	@pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo "missing build libraries; on Debian/Ubuntu: sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev"; exit 1; }
+	@cargo tauri --version >/dev/null 2>&1 || cargo install tauri-cli --version "^2" --locked
+	cd launcher/src-tauri && cargo tauri build
+	@echo "built: target/release/bundle/"
 
 release: ## Tag and publish a release: make release VERSION=0.1.0-alpha.1
 	@[ -n "$(VERSION)" ] || { echo "usage: make release VERSION=0.1.0-alpha.1"; exit 1; }
