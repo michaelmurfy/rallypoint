@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -174,6 +174,7 @@ struct ConfigView {
     steam_user: String,
     setup_done: bool,
     check_updates: bool,
+    camera_height: u32,
     version: &'static str,
     os: &'static str,
 }
@@ -181,6 +182,7 @@ struct ConfigView {
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
     let c = Config::load(&config_path(&app)?);
+    let camera_height = c.camera();
     Ok(ConfigView {
         server: c.server,
         room: c.room,
@@ -188,6 +190,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         steam_user: c.steam_user,
         setup_done: c.setup_done,
         check_updates: !c.skip_update_check,
+        camera_height,
         version: update::current_version(),
         os: std::env::consts::OS,
     })
@@ -217,6 +220,20 @@ fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let mut c = Config::load(&path);
     c.skip_update_check = !on;
     c.save(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_camera_height(app: tauri::AppHandle, height: u32) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.camera_height = height.clamp(graphics::STANDARD_CAMERA, graphics::MAX_CAMERA);
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// Put the graphics fix's quality settings into the game's `Options.ini` (the original is kept once).
+#[tauri::command]
+fn graphics_apply_high(app: tauri::AppHandle) -> Result<(), String> {
+    graphics::apply_high_quality(&app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF))
 }
 
 #[tauri::command]
@@ -505,6 +522,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             if skirmish {
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
             }
+            env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             // Zero Hour also reads the base game's files.
             if let Some(b) = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base)) {
                 env.push(("GEN_GENERALS_PATH".to_string(), b.to_string_lossy().to_string()));
@@ -538,7 +556,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_camera_height, graphics_apply_high, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_status,

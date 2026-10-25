@@ -52,6 +52,7 @@ const handlers = {
   mods_install: ({ path, id }) => { state.watch = false; if (id) { const m = state.mods.find((x) => x.id === id); m.installed = { folder: m.path, bigs: 12, mb: 280 }; return m.installed; } return { folder: path.split("/").pop().replace(/\.\w+$/, ""), bigs: 3, mb: 20 }; },
   mods_remove: ({ folder }) => { if (folder === "Shockwave") state.mods[0].installed = null; state.other = state.other.filter((o) => o.folder !== folder); },
   diagnose: () => ({ checks: [{ name: 'Game engine', ok: true, detail: 'engine.exe' }, { name: 'Zero Hour files', ok: true, detail: 'C:/Games/ZH' }, { name: 'Generals (base game)', ok: false, detail: 'Not found. Zero Hour also needs the original Generals installed or downloaded from Settings.' }], crash: 'Release Crash at Mon Oct 25\nException code: C0000005', data_dir: 'x' }), open_game_data_folder: () => {},
+  set_camera_height: () => {}, graphics_apply_high: async () => { await new Promise((r) => setTimeout(r, 600)); },
   open_mods_folder: () => {}, open_homepage: () => {},
   relay_status: () => "Offline", relay_connect: () => {}, relay_disconnect: () => {},
   launch_game: () => {},

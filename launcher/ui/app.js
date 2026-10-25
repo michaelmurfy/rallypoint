@@ -622,11 +622,37 @@ function diagnosePanel() {
   return h("div", {}, h("p", { class: "muted" }, "If the game stops with \u201cYou have encountered a serious error\u201d, this checks for missing game files and a missing original Generals."), h("div", { class: "row" }, run, fb.el), out);
 }
 
+/** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
+function graphicsCard() {
+  const fb = liveStatus();
+  const choices = [[300, "Standard (original game)"], [510, "Far (recommended)"], [1000, "Very far"]];
+  const cur = store.cfg.camera_height || 510;
+  const camera = h("select", { "aria-label": "Camera distance", onchange: async () => {
+    try {
+      await invoke("set_camera_height", { height: +camera.value });
+      store.cfg.camera_height = +camera.value;
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
+  } }, choices.map(([v, label]) => h("option", { value: String(v), selected: v === cur }, label)));
+  const apply = h("button", { class: "btn", onclick: async () => {
+    apply.disabled = true;
+    fb.busy("Applying…");
+    try { await invoke("graphics_apply_high"); fb.ok("Applied. Your original Options.ini is kept as Options.ini.rallypoint-backup."); } catch (e) { fb.bad(errText(e)); }
+    apply.disabled = false;
+  } }, "Use high-quality settings");
+  return h("div", { class: "card" }, h("h2", {}, "Graphics"),
+    h("label", { class: "field" }, h("span", {}, "Camera distance"), camera),
+    h("p", { class: "muted small" }, "How far out you can zoom. The original game stops at 300."),
+    h("div", { class: "row" }, apply, fb.el),
+    h("p", { class: "muted small" }, "Turns on shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed."));
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
+    graphicsCard(),
     h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel()),
     h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
     updatesCard(),
