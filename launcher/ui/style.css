@@ -192,3 +192,5 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .diag dt { color: var(--muted); }
 .diag dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .diag dd.ok { color: var(--ok-ink); } .diag dd.warn { color: var(--warn-ink); } .diag dd.bad { color: var(--bad-ink); }
+.addons { margin-left: 28px; }
+.warn-text { color: var(--warn-ink); }

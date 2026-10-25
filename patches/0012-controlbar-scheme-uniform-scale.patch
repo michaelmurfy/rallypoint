@@ -1,0 +1,280 @@
+diff --git a/Core/GameEngine/Include/Common/WideScreen.h b/Core/GameEngine/Include/Common/WideScreen.h
+index e570565..baf018b 100644
+--- a/Core/GameEngine/Include/Common/WideScreen.h
++++ b/Core/GameEngine/Include/Common/WideScreen.h
+@@ -43,4 +43,15 @@ inline UiScale uiScale(int dispW, int dispH, int createW, int createH, bool cove
+ 	return s;
+ }
+ 
++
++// The control bar scheme (frame art, command-bar buttons) is laid out in its own creation resolution. The retail
++// code stretched it over the display (display / creation res). The windows get a uniform, centred 4:3 region
++// instead (see uiScale), so the scheme must be mapped into that same region or its art and icons land far from
++// the windows on a wide display. Returns the x and y multipliers and the left offset, in display pixels.
++inline UiScale schemeScale(int dispW, int dispH, int createW, int createH)
++{
++	const UiScale w = uiScale(dispW, dispH, 800, 600, false); // the region the windows use (800x600 is the UI base size)
++	return { w.x * 800.0f / (float)createW, w.y * 600.0f / (float)createH, w.xOffset };
++}
++
+ }
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBarScheme.h b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBarScheme.h
+index 9e002bb..0c50f83 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBarScheme.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameClient/ControlBarScheme.h
+@@ -273,6 +273,7 @@ public:
+ private:
+ 	ControlBarScheme *m_currentScheme;													///< the current scheme that everythign uses
+ 	Coord2D m_multiplier;
++	Int m_xOffset = 0; ///< left edge of the (centred) control bar region on a wide display
+ 
+ 	typedef std::list< ControlBarScheme* > ControlBarSchemeList;			///< list of control bar schemes
+ 	ControlBarSchemeList m_schemeList;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarResizer.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarResizer.cpp
+index e0b1aa5..870d4dc 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarResizer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarResizer.cpp
+@@ -55,6 +55,7 @@
+ #include "GameClient/GameWindow.h"
+ #include "GameClient/GameWindowManager.h"
+ #include "GameClient/Display.h"
++#include "Common/WideScreen.h"
+ //-----------------------------------------------------------------------------
+ // DEFINES ////////////////////////////////////////////////////////////////////
+ //-----------------------------------------------------------------------------
+@@ -180,8 +181,10 @@ void ControlBarResizer::sizeWindowsAlt()
+ {
+ 	ResizerWindowList::iterator it = m_resizerWindowsList.begin();
+ 	GameWindow *win = nullptr;
+-	Real x = (Real)TheDisplay->getWidth() / DEFAULT_DISPLAY_WIDTH;
+-	Real y = (Real)TheDisplay->getHeight() / DEFAULT_DISPLAY_HEIGHT;
++	// Same centred, uniform region the control bar windows get (see WideScreen::uiScale), not a stretch across the display.
++	const WideScreen::UiScale ui = WideScreen::uiScale(TheDisplay->getWidth(), TheDisplay->getHeight(), DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT, false);
++	Real x = ui.x;
++	Real y = ui.y;
+ 	while (it != m_resizerWindowsList.end())
+ 	{
+ 		ResizerWindow *rWin = *it;
+@@ -198,7 +201,7 @@ void ControlBarResizer::sizeWindowsAlt()
+ 			continue;
+ 		}
+ 
+-		win->winSetPosition(rWin->m_altPos.x * x, rWin->m_altPos.y * y);
++		win->winSetPosition(rWin->m_altPos.x * x + (win->winGetParent() ? 0 : ui.xOffset), rWin->m_altPos.y * y);
+ 		if(rWin->m_altSize.x >0 || rWin->m_altSize.y > 0)
+ 			win->winSetSize(rWin->m_altSize.x *x, rWin->m_altSize.y *y);
+ 		DEBUG_LOG(("sizeWindowsAlt:%s pos X:%d pos Y: %d size X:%d sizeY: %d",rWin->m_name.str(), rWin->m_altPos.x*x, rWin->m_altPos.y*y,rWin->m_altSize.x*x, rWin->m_altSize.y *y));
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
+index 465fabb..597188f 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
+@@ -57,6 +57,7 @@
+ #include "Common/PlayerTemplate.h"
+ #include "Common/Recorder.h"
+ #include "GameClient/ControlBarScheme.h"
++#include "Common/WideScreen.h"
+ #include "GameClient/Display.h"
+ #include "GameClient/ControlBar.h"
+ #include "GameClient/Image.h"
+@@ -418,8 +419,10 @@ void ControlBarScheme::init()
+ 	}
+ 	GameWindow *win = nullptr;
+ 	Coord2D resMultiplier;
+-	resMultiplier.x = TheDisplay->getWidth()/INT_TO_REAL(m_ScreenCreationRes.x) ;
+-	resMultiplier.y = TheDisplay->getHeight()/INT_TO_REAL(m_ScreenCreationRes.y);
++	const WideScreen::UiScale schemeUi = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), m_ScreenCreationRes.x, m_ScreenCreationRes.y);
++	resMultiplier.x = schemeUi.x;
++	resMultiplier.y = schemeUi.y;
++	const Int xOff = schemeUi.xOffset;
+ 
+ 	win= TheWindowManager->winGetWindowFromId( nullptr, TheNameKeyGenerator->nameToKey( "ControlBar.wnd:PopupCommunicator" ) );
+ 	if(win)
+@@ -438,12 +441,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_chatUL.x * resMultiplier.x - parX;
++			x = m_chatUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_chatUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_chatUL.x * resMultiplier.x;
++			x = m_chatUL.x * resMultiplier.x + xOff;
+ 			y = m_chatUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -463,12 +466,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_workerUL.x * resMultiplier.x - parX;
++			x = m_workerUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_workerUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_workerUL.x * resMultiplier.x;
++			x = m_workerUL.x * resMultiplier.x + xOff;
+ 			y = m_workerUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -494,12 +497,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_optionsUL.x * resMultiplier.x - parX;
++			x = m_optionsUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_optionsUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_optionsUL.x * resMultiplier.x;
++			x = m_optionsUL.x * resMultiplier.x + xOff;
+ 			y = m_optionsUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -519,12 +522,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_beaconUL.x * resMultiplier.x - parX;
++			x = m_beaconUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_beaconUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_beaconUL.x * resMultiplier.x;
++			x = m_beaconUL.x * resMultiplier.x + xOff;
+ 			y = m_beaconUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -541,12 +544,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_moneyUL.x * resMultiplier.x - parX;
++			x = m_moneyUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_moneyUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_moneyUL.x * resMultiplier.x;
++			x = m_moneyUL.x * resMultiplier.x + xOff;
+ 			y = m_moneyUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -563,12 +566,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_powerBarUL.x * resMultiplier.x - parX;
++			x = m_powerBarUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_powerBarUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_powerBarUL.x * resMultiplier.x;
++			x = m_powerBarUL.x * resMultiplier.x + xOff;
+ 			y = m_powerBarUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -591,12 +594,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_generalUL.x * resMultiplier.x - parX;
++			x = m_generalUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_generalUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_generalUL.x * resMultiplier.x;
++			x = m_generalUL.x * resMultiplier.x + xOff;
+ 			y = m_generalUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -617,12 +620,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_minMaxUL.x * resMultiplier.x - parX;
++			x = m_minMaxUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_minMaxUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_minMaxUL.x * resMultiplier.x;
++			x = m_minMaxUL.x * resMultiplier.x + xOff;
+ 			y = m_minMaxUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -641,12 +644,12 @@ void ControlBarScheme::init()
+ 		{
+ 			Int parX, parY;
+ 			parent->winGetScreenPosition(&parX, &parY);
+-			x = m_uAttackUL.x * resMultiplier.x - parX;
++			x = m_uAttackUL.x * resMultiplier.x + xOff - parX;
+ 			y = m_uAttackUL.y * resMultiplier.y - parY;
+ 		}
+ 		else
+ 		{
+-			x = m_uAttackUL.x * resMultiplier.x;
++			x = m_uAttackUL.x * resMultiplier.x + xOff;
+ 			y = m_uAttackUL.y * resMultiplier.y;
+ 		}
+ 		win->winSetPosition(x,y );
+@@ -1040,8 +1043,10 @@ void ControlBarSchemeManager::setControlBarScheme(AsciiString schemeName)
+ 	if(tempScheme)
+ 	{
+ 		// setup the multiplier value
+-		m_multiplier.x = TheDisplay->getWidth() / tempScheme->m_ScreenCreationRes.x;
+-		m_multiplier.y = TheDisplay->getHeight() / tempScheme->m_ScreenCreationRes.y;
++		const WideScreen::UiScale ui = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), tempScheme->m_ScreenCreationRes.x, tempScheme->m_ScreenCreationRes.y);
++		m_multiplier.x = ui.x;
++		m_multiplier.y = ui.y;
++		m_xOffset = ui.xOffset;
+ 		m_currentScheme = tempScheme;
+ 	}
+ 	else
+@@ -1066,12 +1071,14 @@ void ControlBarSchemeManager::update()
+ void ControlBarSchemeManager::drawForeground( ICoord2D offset )
+ {
+ 	if(m_currentScheme)
++		offset.x += m_xOffset;
+ 		m_currentScheme->drawForeground( m_multiplier, offset);
+ }
+ //-----------------------------------------------------------------------------
+ void ControlBarSchemeManager::drawBackground( ICoord2D offset )
+ {
+ 	if(m_currentScheme)
++		offset.x += m_xOffset;
+ 		m_currentScheme->drawBackground( m_multiplier, offset );
+ }
+ 
+@@ -1122,8 +1129,10 @@ void ControlBarSchemeManager::setControlBarSchemeByPlayerTemplate( const PlayerT
+ 	if(tempScheme)
+ 	{
+ 		// setup the multiplier value
+-		m_multiplier.x = TheDisplay->getWidth() / (Real)tempScheme->m_ScreenCreationRes.x;
+-		m_multiplier.y = TheDisplay->getHeight() / (Real)tempScheme->m_ScreenCreationRes.y;
++		const WideScreen::UiScale ui = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), tempScheme->m_ScreenCreationRes.x, tempScheme->m_ScreenCreationRes.y);
++		m_multiplier.x = ui.x;
++		m_multiplier.y = ui.y;
++		m_xOffset = ui.xOffset;
+ 		m_currentScheme = tempScheme;
+ 	}
+ 	else
+@@ -1190,8 +1199,10 @@ void ControlBarSchemeManager::setControlBarSchemeByPlayer(Player *p)
+ 	if(tempScheme)
+ 	{
+ 		// setup the multiplier value
+-		m_multiplier.x = TheDisplay->getWidth() / (Real)tempScheme->m_ScreenCreationRes.x;
+-		m_multiplier.y = TheDisplay->getHeight() / (Real)tempScheme->m_ScreenCreationRes.y;
++		const WideScreen::UiScale ui = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), tempScheme->m_ScreenCreationRes.x, tempScheme->m_ScreenCreationRes.y);
++		m_multiplier.x = ui.x;
++		m_multiplier.y = ui.y;
++		m_xOffset = ui.xOffset;
+ 		m_currentScheme = tempScheme;
+ 	}
+ 	else
