@@ -1,0 +1,30 @@
+diff --git a/Core/GameEngine/Source/Common/INI/INI.cpp b/Core/GameEngine/Source/Common/INI/INI.cpp
+index 434e36e..459f7d1 100644
+--- a/Core/GameEngine/Source/Common/INI/INI.cpp
++++ b/Core/GameEngine/Source/Common/INI/INI.cpp
+@@ -70,6 +70,7 @@
+ 
+ #if USE_STD_FROM_CHARS_PARSING
+ #include <charconv>
++#include <limits>
+ #include <string_view>
+ #include <type_traits>
+ #endif
+@@ -1620,6 +1621,17 @@ Type scanType(std::string_view token)
+ 	std::conditional_t<std::is_integral_v<Type>, Int64, Type> result{};
+ 	const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), result);
+ 
++	// A value such as 9999999999999999999 (Shockwave writes this for "forever") does not fit.
++	// Keep the largest magnitude the field can store instead of rejecting the whole file.
++	if (ec == std::errc::result_out_of_range)
++	{
++		const bool negative = !token.empty() && token[0] == '-';
++		if constexpr (std::is_floating_point_v<Type>)
++			return negative ? -std::numeric_limits<Type>::max() : std::numeric_limits<Type>::max();
++		else
++			return negative ? std::numeric_limits<Type>::min() : std::numeric_limits<Type>::max();
++	}
++
+ 	if (ec != std::errc{})
+ 	{
+ 		throw INI_INVALID_DATA;
