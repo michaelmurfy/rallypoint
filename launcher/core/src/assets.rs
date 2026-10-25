@@ -1,11 +1,17 @@
 //! Downloading the game files from Steam with `steamcmd`, Valve's own command-line client (fetched on demand).
 //! Steam only publishes Windows depots for these games, so we ask for the Windows platform on every OS.
-//! The user's Steam password is only held in memory for the job, answered to steamcmd's prompt on stdin
-//! (never on a command line), and never logged.
+//!
+//! Sign-in never relies on steamcmd's interactive prompts (they depend on terminal behaviour). Instead it is a
+//! short non-interactive run whose output we classify; if Steam wants a Steam Guard code we ask the user and run it
+//! again with `set_steam_guard_code`. Secrets only ever live in a 0600 script file that is deleted as soon as that
+//! short run ends; the long download then reuses steamcmd's cached login and carries no secrets.
 use serde::Serialize;
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 pub const GENERALS_APP: u32 = 2229870;
@@ -35,6 +41,8 @@ pub struct AssetState {
     pub message: String,
     /// Set while steamcmd is waiting for the user: a password or a Steam Guard code (see `AssetJob::submit`).
     pub need: Option<Need>,
+    /// Recent steamcmd output with secrets removed, for the "details" panel and bug reports.
+    pub log: String,
 }
 
 /// Where steamcmd and the games live under `root` (the launcher's data directory).
@@ -63,11 +71,12 @@ pub fn download_url() -> &'static str {
     }
 }
 
-/// Arguments for one steamcmd session that logs in once and installs both games.
+/// Arguments for the download run. It signs in with the login steamcmd cached during sign-in, so there is no secret here.
 pub fn steamcmd_args(user: &str, generals: &Path, zero_hour: &Path) -> Vec<String> {
     let s = |x: &str| x.to_string();
     vec![
         s("+@ShutdownOnFailedCommand"), s("1"),
+        s("+@NoPromptForPassword"), s("1"),
         s("+@sSteamCmdForcePlatformType"), s("windows"),
         s("+login"), user.to_string(),
         s("+force_install_dir"), generals.display().to_string(),
@@ -78,10 +87,68 @@ pub fn steamcmd_args(user: &str, generals: &Path, zero_hour: &Path) -> Vec<Strin
     ]
 }
 
-/// What a piece of steamcmd output means.
+/// Contents of the one-off sign-in script. Everything interpolated is validated first, because the file is
+/// parsed as commands. Empty `password` = rely on a cached login; empty `code` = no Steam Guard code yet.
+pub fn signin_script(user: &str, password: &str, code: &str) -> Result<String, String> {
+    if user.is_empty() || user.starts_with(['+', '-', '@']) || user.chars().any(|c| c.is_control() || c.is_whitespace() || c == '"') {
+        return Err("That Steam account name isn't valid".into());
+    }
+    if password.chars().any(|c| c.is_control() || c == '"') {
+        return Err("Passwords containing a double quote aren't supported here; sign in once with steamcmd in a terminal instead".into());
+    }
+    if !code.is_empty() && !(code.len() >= 4 && code.len() <= 10 && code.chars().all(|c| c.is_ascii_alphanumeric())) {
+        return Err("A Steam Guard code is letters and numbers only".into());
+    }
+    let mut s = String::from("@ShutdownOnFailedCommand 1\n@NoPromptForPassword 1\n@sSteamCmdForcePlatformType windows\n");
+    if !code.is_empty() {
+        s += &format!("set_steam_guard_code {code}\n");
+    }
+    s += &if password.is_empty() { format!("login {user}\n") } else { format!("login {user} \"{password}\"\n") };
+    s += "quit\n";
+    Ok(s)
+}
+
+/// How a sign-in run ended.
+#[derive(Debug, PartialEq)]
+pub enum SignIn {
+    Ok,
+    NeedPassword,
+    /// Steam wants a Steam Guard code; `wrong` = we sent one and it was refused.
+    NeedGuard { wrong: bool },
+    Failed(String),
+}
+
+/// Classify the full output of a sign-in run (stdin was closed, so any prompt shows up as text followed by exit).
+pub fn classify_signin(output: &str, gave_password: bool) -> SignIn {
+    let low = output.to_ascii_lowercase();
+    if low.contains("waiting for user info...ok") || low.contains("logged in ok") {
+        return SignIn::Ok;
+    }
+    if low.contains("rate limit exceeded") {
+        return SignIn::Failed("Steam is rate limiting logins, try again later".into());
+    }
+    if low.contains("code mismatch") || low.contains("invalid login auth code") || low.contains("invalidloginauthcode") || low.contains("twofactorcodemismatch") {
+        return SignIn::NeedGuard { wrong: true };
+    }
+    if low.contains("invalid password") || low.contains("invalidpassword") {
+        return SignIn::Failed("Steam rejected the username or password".into());
+    }
+    if low.contains("steam guard") || low.contains("two-factor") || low.contains("logon denied") || low.contains("authentication code") {
+        return SignIn::NeedGuard { wrong: false };
+    }
+    if !gave_password && (low.contains("password:") || low.contains("no cached credentials") || low.contains("login failure")) {
+        return SignIn::NeedPassword;
+    }
+    SignIn::Failed(output.lines().rev().map(str::trim).find(|l| !l.is_empty()).map(|l| format!("Steam said: {l}")).unwrap_or_else(|| "Steam didn't accept the sign-in".into()))
+}
+
+pub fn scrub(text: &str, secrets: &[&str]) -> String {
+    secrets.iter().filter(|s| !s.is_empty()).fold(text.to_string(), |t, s| t.replace(s, "***"))
+}
+
+/// What a line of download output means.
 #[derive(Debug, PartialEq)]
 pub enum Seen {
-    Prompt(Need),
     Progress(f32),
     /// steamcmd is waiting for the user to approve the sign-in in the Steam Mobile app (no code to type).
     ApproveOnPhone,
@@ -89,7 +156,6 @@ pub enum Seen {
     Nothing,
 }
 
-/// A complete line of output.
 pub fn scan_line(line: &str) -> Seen {
     let l = line.trim();
     if let Some(i) = l.find("progress: ") {
@@ -101,14 +167,14 @@ pub fn scan_line(line: &str) -> Seen {
     if low.contains("confirm the login in the steam mobile app") || low.contains("waiting for confirmation") {
         return Seen::ApproveOnPhone;
     }
-    if low.contains("invalid password") || low.contains("login failure") {
-        return Seen::Failure("Steam rejected the username or password".into());
-    }
     if low.contains("no subscription") || low.contains("not owned") {
         return Seen::Failure("This Steam account doesn't own the game".into());
     }
     if low.contains("rate limit exceeded") {
         return Seen::Failure("Steam is rate limiting logins, try again later".into());
+    }
+    if low.contains("invalid password") || low.contains("login failure") {
+        return Seen::Failure("Steam signed you out; try again".into());
     }
     if low.starts_with("error!") {
         return Seen::Failure(l.to_string());
@@ -116,117 +182,222 @@ pub fn scan_line(line: &str) -> Seen {
     Seen::Nothing
 }
 
-/// The unfinished last line of output: steamcmd prompts without a trailing newline.
-pub fn scan_prompt(partial: &str) -> Option<Need> {
-    let low = partial.trim_end().to_ascii_lowercase();
-    if !low.ends_with(':') {
-        return None;
+type Shared<T> = Arc<Mutex<T>>;
+
+pub struct AssetJob {
+    state: Shared<AssetState>,
+    input: Mutex<Option<Sender<String>>>,
+    child: Shared<Option<Child>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct Ctx {
+    state: Shared<AssetState>,
+    child: Shared<Option<Child>>,
+    cancelled: Arc<AtomicBool>,
+    log: Vec<String>,
+}
+
+impl Ctx {
+    fn set(&mut self, phase: Phase, percent: f32, message: &str, need: Option<Need>) {
+        let log = self.log.join("\n");
+        *self.state.lock().unwrap() = AssetState { phase, percent, message: message.into(), need, log };
     }
-    if low.ends_with("password:") {
-        Some(Need::Password)
-    } else if low.contains("guard code") || low.contains("two-factor code") || low.contains("authentication code") {
-        Some(Need::Guard)
-    } else {
-        None
+
+    fn keep(&mut self, text: &str) {
+        self.log.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
+        let n = self.log.len().saturating_sub(40);
+        self.log.drain(..n);
     }
 }
 
-pub struct AssetJob {
-    state: Arc<Mutex<AssetState>>,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
-    child: Arc<Mutex<Option<Child>>>,
+/// Run `cmd` with no stdin, merging stdout and stderr, calling `on_line` for each line as it arrives.
+/// Returns the full output and whether it was stopped (timeout or cancel).
+fn run_collect(mut cmd: Command, timeout: Duration, ctx: &Ctx, mut on_line: impl FnMut(&str)) -> io::Result<(String, bool)> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (tx, rx) = mpsc::channel::<String>();
+    let pipe = |r: Box<dyn Read + Send>, tx: Sender<String>| {
+        std::thread::spawn(move || {
+            let (mut r, mut buf) = (r, [0u8; 4096]);
+            while let Ok(n) = r.read(&mut buf) {
+                if n == 0 || tx.send(String::from_utf8_lossy(&buf[..n]).into_owned()).is_err() {
+                    break;
+                }
+            }
+        });
+    };
+    pipe(Box::new(child.stdout.take().unwrap()), tx.clone());
+    pipe(Box::new(child.stderr.take().unwrap()), tx);
+    *ctx.child.lock().unwrap() = Some(child);
+
+    let (mut all, mut partial, start, mut stopped) = (String::new(), String::new(), Instant::now(), false);
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => {
+                all.push_str(&chunk);
+                partial.push_str(&chunk);
+                while let Some(i) = partial.find(['\n', '\r']) {
+                    let line: String = partial.drain(..=i).collect();
+                    on_line(&line);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if ctx.cancelled.load(Ordering::Relaxed) || start.elapsed() > timeout {
+                    stopped = true;
+                    if let Some(c) = ctx.child.lock().unwrap().as_mut() {
+                        let _ = c.kill();
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break, // both pipes closed: the process is done
+        }
+    }
+    if !partial.is_empty() {
+        on_line(&partial);
+    }
+    if let Some(mut c) = ctx.child.lock().unwrap().take() {
+        let _ = c.wait();
+    }
+    Ok((all, stopped))
+}
+
+fn steamcmd_command(dir: &Path) -> Command {
+    let mut c = if cfg!(windows) { Command::new(steamcmd_exe(dir)) } else { let mut c = Command::new("sh"); c.arg(steamcmd_exe(dir)); c };
+    c.current_dir(dir);
+    c
+}
+
+/// Removes the sign-in script (which may hold the password) when dropped, whatever happens.
+struct ScriptFile(PathBuf);
+impl Drop for ScriptFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)?.write_all(contents.as_bytes())
+}
+
+fn sign_in(ctx: &mut Ctx, dir: &Path, user: &str, password: &str, code: &str) -> Result<SignIn, String> {
+    let script = signin_script(user, password, code)?;
+    let path = dir.join("rallypoint-signin.txt");
+    write_private(&path, &script).map_err(|e| format!("Couldn't prepare the sign-in: {e}"))?;
+    let _guard = ScriptFile(path.clone());
+    let mut cmd = steamcmd_command(dir);
+    cmd.arg("+runscript").arg(&path);
+    let mut phone = false;
+    let (out, stopped) = run_collect(cmd, Duration::from_secs(180), ctx, |l| phone |= scan_line(l) == Seen::ApproveOnPhone)
+        .map_err(|e| format!("Couldn't start steamcmd ({e}). On Apple Silicon it needs Rosetta: softwareupdate --install-rosetta"))?;
+    let out = scrub(&out, &[password, code]);
+    ctx.keep(&out);
+    if stopped {
+        return Ok(SignIn::Failed(if phone { "Timed out waiting for you to approve the sign-in on your phone" } else { "Signing in to Steam timed out" }.into()));
+    }
+    Ok(classify_signin(&out, !password.is_empty()))
+}
+
+fn download(ctx: &mut Ctx, dir: &Path, user: &str, root: &Path) -> Result<(), String> {
+    let (gen, zh) = (generals_dir(root), zero_hour_dir(root));
+    let mut cmd = steamcmd_command(dir);
+    cmd.args(steamcmd_args(user, &gen, &zh));
+    let (mut failure, state) = (None::<String>, ctx.state.clone());
+    let (out, _) = run_collect(cmd, Duration::from_secs(6 * 3600), ctx, |l| match scan_line(l) {
+        Seen::Progress(p) => {
+            *state.lock().unwrap() = AssetState { phase: Phase::Downloading, percent: p, message: "Downloading game files…".into(), need: None, log: String::new() };
+        }
+        Seen::Failure(m) => failure = Some(m),
+        _ => {}
+    })
+    .map_err(|e| format!("Couldn't start steamcmd: {e}"))?;
+    ctx.keep(&out);
+    if zh.join("INIZH.big").is_file() && gen.join("INI.big").is_file() {
+        Ok(())
+    } else {
+        Err(failure.unwrap_or_else(|| "Steam didn't finish the download".into()))
+    }
+}
+
+fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String>, mut ctx: Ctx) {
+    let dir = steamcmd_dir(&root);
+    let _ = std::fs::remove_file(dir.join("rallypoint-signin.txt")); // stale file from a crash
+    if let Err(e) = ensure_steamcmd(&dir) {
+        return ctx.set(Phase::Failed, 0.0, &format!("Couldn't get steamcmd: {e}"), None);
+    }
+    if std::fs::create_dir_all(zero_hour_dir(&root)).and(std::fs::create_dir_all(generals_dir(&root))).is_err() {
+        return ctx.set(Phase::Failed, 0.0, "Couldn't create the game folder", None);
+    }
+    let mut code = String::new();
+    for _attempt in 0..6 {
+        ctx.set(Phase::LoggingIn, 0.0, "Signing in to Steam… (if you use the Steam Mobile app, approve the sign-in there)", None);
+        let result = match sign_in(&mut ctx, &dir, &user, &password, &code) {
+            Ok(r) => r,
+            Err(m) => return ctx.set(Phase::Failed, 0.0, &m, None),
+        };
+        if ctx.cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        let (need, message) = match result {
+            SignIn::Ok => {
+                return match download(&mut ctx, &dir, &user, &root) {
+                    Ok(()) => ctx.set(Phase::Done, 100.0, "Game files are ready", None),
+                    Err(m) => ctx.set(Phase::Failed, 0.0, &m, None),
+                };
+            }
+            SignIn::Failed(m) => return ctx.set(Phase::Failed, 0.0, &m, None),
+            SignIn::NeedPassword => (Need::Password, "Enter your Steam password"),
+            SignIn::NeedGuard { wrong: false } => (Need::Guard, "Enter your Steam Guard code (check your email or the Steam Mobile app)"),
+            SignIn::NeedGuard { wrong: true } => (Need::Guard, "That code didn't work. Enter the newest Steam Guard code"),
+        };
+        ctx.set(Phase::LoggingIn, 0.0, message, Some(need));
+        match rx.recv() {
+            Ok(text) if need == Need::Password => password = text,
+            Ok(text) => code = text.trim().to_string(),
+            Err(_) => return, // cancelled
+        }
+    }
+    ctx.set(Phase::Failed, 0.0, "Too many attempts. Wait a few minutes and try again", None);
 }
 
 impl AssetJob {
     /// Starts the download in the background. `password` may be empty if steamcmd already has a cached login.
     pub fn start(root: &Path, user: &str, password: String) -> io::Result<AssetJob> {
-        // A name starting with + or - would be read by steamcmd as a command or option.
-        if user.trim().is_empty() || user.starts_with(['+', '-']) || user.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        // Names are checked again when the sign-in script is built; this gives the user an immediate answer.
+        if signin_script(user, "", "").is_err() {
             return Err(io::Error::other("enter your Steam account name"));
         }
-        let job = AssetJob { state: Arc::default(), stdin: Arc::default(), child: Arc::default() };
-        job.set(Phase::Preparing, 0.0, "Getting Steam's downloader…", None);
-        let (state, stdin, child, root, user) = (job.state.clone(), job.stdin.clone(), job.child.clone(), root.to_path_buf(), user.to_string());
-        std::thread::spawn(move || {
-            let fail = |m: String| *state.lock().unwrap() = AssetState { phase: Phase::Failed, percent: 0.0, message: m, need: None };
-            let dir = steamcmd_dir(&root);
-            if let Err(e) = ensure_steamcmd(&dir) {
-                return fail(format!("Couldn't get steamcmd: {e}"));
-            }
-            let (zh, gen) = (zero_hour_dir(&root), generals_dir(&root));
-            if std::fs::create_dir_all(&zh).and(std::fs::create_dir_all(&gen)).is_err() {
-                return fail("Couldn't create the game folder".into());
-            }
-            let mut cmd = if cfg!(windows) { Command::new(steamcmd_exe(&dir)) } else { let mut c = Command::new("sh"); c.arg(steamcmd_exe(&dir)); c };
-            let spawned = cmd.args(steamcmd_args(&user, &gen, &zh)).current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
-            let mut c = match spawned {
-                Ok(c) => c,
-                Err(e) => return fail(format!("Couldn't start steamcmd ({e}). On Apple Silicon it needs Rosetta: softwareupdate --install-rosetta")),
-            };
-            let mut out = c.stdout.take().unwrap();
-            *stdin.lock().unwrap() = c.stdin.take();
-            *child.lock().unwrap() = Some(c);
-            *state.lock().unwrap() = AssetState { phase: Phase::LoggingIn, percent: 0.0, message: "Signing in to Steam…".into(), need: None };
-
-            let (mut pending, mut buf, mut password, mut failure) = (String::new(), [0u8; 4096], Some(password).filter(|p| !p.is_empty()), None::<String>);
-            loop {
-                let n = match out.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                pending.push_str(&String::from_utf8_lossy(&buf[..n]));
-                // complete lines first, then look at the unfinished tail for a prompt
-                while let Some(i) = pending.find(['\n', '\r']) {
-                    let line: String = pending.drain(..=i).collect();
-                    match scan_line(&line) {
-                        Seen::Progress(p) => *state.lock().unwrap() = AssetState { phase: Phase::Downloading, percent: p, message: "Downloading game files…".into(), need: None },
-                        Seen::Failure(m) => failure = Some(m),
-                        Seen::ApproveOnPhone => *state.lock().unwrap() = AssetState { phase: Phase::LoggingIn, percent: 0.0, message: "Approve this sign-in in the Steam Mobile app on your phone".into(), need: None },
-                        _ => {}
-                    }
-                }
-                match scan_prompt(&pending) {
-                    Some(Need::Password) if password.is_some() => {
-                        write_line(&stdin, &password.take().unwrap());
-                        pending.clear();
-                    }
-                    Some(need) => {
-                        *state.lock().unwrap() = AssetState { phase: Phase::LoggingIn, percent: 0.0, message: if need == Need::Guard { "Enter your Steam Guard code".into() } else { "Enter your Steam password".into() }, need: Some(need) };
-                        pending.clear();
-                    }
-                    None => {}
-                }
-            }
-            if let Some(mut c) = child.lock().unwrap().take() {
-                let _ = c.wait();
-            }
-            *stdin.lock().unwrap() = None;
-            let done = zh.join("INIZH.big").is_file();
-            *state.lock().unwrap() = if done {
-                AssetState { phase: Phase::Done, percent: 100.0, message: "Game files are ready".into(), need: None }
-            } else {
-                AssetState { phase: Phase::Failed, percent: 0.0, message: failure.unwrap_or_else(|| "Steam didn't finish the download".into()), need: None }
-            };
-        });
-        Ok(job)
-    }
-
-    fn set(&self, phase: Phase, percent: f32, message: &str, need: Option<Need>) {
-        *self.state.lock().unwrap() = AssetState { phase, percent, message: message.into(), need };
+        let (state, child, cancelled): (Shared<AssetState>, Shared<Option<Child>>, Arc<AtomicBool>) = Default::default();
+        let (tx, rx) = mpsc::channel();
+        let mut ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), log: vec![] };
+        ctx.set(Phase::Preparing, 0.0, "Getting Steam's downloader…", None);
+        let (root, user) = (root.to_path_buf(), user.to_string());
+        std::thread::spawn(move || worker(root, user, password, rx, ctx));
+        Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled })
     }
 
     pub fn state(&self) -> AssetState {
         self.state.lock().unwrap().clone()
     }
 
-    /// Answer steamcmd's current prompt (the password or the Steam Guard code).
+    /// Answer what the job is waiting for (the password or the Steam Guard code).
     pub fn submit(&self, text: &str) {
         if self.state.lock().unwrap().need.take().is_some() {
-            write_line(&self.stdin, text.trim());
+            if let Some(tx) = self.input.lock().unwrap().as_ref() {
+                let _ = tx.send(text.to_string());
+            }
         }
     }
 
     pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        *self.input.lock().unwrap() = None; // wakes a worker that is waiting for input
         if let Some(c) = self.child.lock().unwrap().as_mut() {
             let _ = c.kill();
         }
@@ -236,13 +407,6 @@ impl AssetJob {
 impl Drop for AssetJob {
     fn drop(&mut self) {
         self.cancel();
-    }
-}
-
-fn write_line(stdin: &Arc<Mutex<Option<ChildStdin>>>, text: &str) {
-    if let Some(s) = stdin.lock().unwrap().as_mut() {
-        let _ = writeln!(s, "{text}");
-        let _ = s.flush();
     }
 }
 
@@ -266,35 +430,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn args_install_both_games_for_windows_platform() {
-        let a = steamcmd_args("alice", Path::new("/g/Generals"), Path::new("/g/ZeroHour"));
-        let s = a.join(" ");
+    fn download_args_carry_no_secrets_and_install_both_games() {
+        let s = steamcmd_args("alice", Path::new("/g/Generals"), Path::new("/g/ZeroHour")).join(" ");
         assert!(s.contains("+@sSteamCmdForcePlatformType windows"));
         assert!(s.contains("+login alice +force_install_dir /g/Generals +app_update 2229870 validate"));
         assert!(s.contains("+force_install_dir /g/ZeroHour +app_update 2732960 validate +quit"));
-        assert!(!s.to_lowercase().contains("password"), "never put a password on the command line");
+        assert!(!s.contains("set_steam_guard_code"));
     }
 
     #[test]
-    fn reads_progress_and_failures() {
-        let l = " Update state (0x61) downloading, progress: 12.34 (123456 / 1000000)";
-        assert_eq!(scan_line(l), Seen::Progress(12.34));
-        assert_eq!(scan_line("Update state (0x5) verifying install, progress: 100.00 (1 / 1)"), Seen::Progress(100.0));
-        assert!(matches!(scan_line("FAILED (Invalid Password)"), Seen::Failure(m) if m.contains("password")));
-        assert!(matches!(scan_line("ERROR! Failed to install app '2732960' (No subscription)"), Seen::Failure(m) if m.contains("doesn't own")));
-        assert!(matches!(scan_line("ERROR! something else"), Seen::Failure(_)));
-        assert_eq!(scan_line("Logging in user 'alice' to Steam Public...OK"), Seen::Nothing);
+    fn signin_script_is_validated_because_it_is_parsed_as_commands() {
+        assert_eq!(signin_script("alice", "pw d", "AB12C").unwrap(), "@ShutdownOnFailedCommand 1\n@NoPromptForPassword 1\n@sSteamCmdForcePlatformType windows\nset_steam_guard_code AB12C\nlogin alice \"pw d\"\nquit\n");
+        assert!(signin_script("alice", "", "").unwrap().contains("\nlogin alice\nquit"), "empty password = cached login");
+        for bad_user in ["", "a b", "+quit", "-x", "@x", "a\"b", "a\nquit"] {
+            assert!(signin_script(bad_user, "", "").is_err(), "{bad_user:?}");
+        }
+        assert!(signin_script("a", "p\"q", "").is_err());
+        assert!(signin_script("a", "p\nquit", "").is_err(), "no command injection through the password");
+        for bad_code in ["12", "12 34", "ab\nquit", "ab\"cd", "waytoolongcode123"] {
+            assert!(signin_script("a", "", bad_code).is_err(), "{bad_code:?}");
+        }
+    }
+
+    #[test]
+    fn classifies_signin_output() {
+        use SignIn::*;
+        assert_eq!(classify_signin("Logging in user 'a' to Steam Public...OK\nWaiting for client config...OK\nWaiting for user info...OK\n", true), Ok);
+        let guard = "This computer has not been authenticated for your account using Steam Guard.\nPlease check your email for the message from Steam, and enter the Steam Guard\n code from that message.\nSteam Guard code:\nFAILED (Account Logon Denied)";
+        assert_eq!(classify_signin(guard, true), NeedGuard { wrong: false });
+        assert_eq!(classify_signin("Two-factor code:FAILED (Two-factor code mismatch)", true), NeedGuard { wrong: true });
+        assert_eq!(classify_signin("FAILED login with result code Invalid Login Auth Code", true), NeedGuard { wrong: true });
+        assert_eq!(classify_signin("Two-factor code:\n", true), NeedGuard { wrong: false });
+        assert!(matches!(classify_signin("FAILED (Invalid Password)", true), Failed(m) if m.contains("password")));
+        assert_eq!(classify_signin("password:\nFAILED (No cached credentials)", false), NeedPassword);
+        assert!(matches!(classify_signin("ERROR! Rate Limit Exceeded", true), Failed(m) if m.contains("rate")));
+        assert!(matches!(classify_signin("something odd\nESync failed\n", true), Failed(m) if m.contains("ESync failed")));
+        assert!(matches!(classify_signin("", true), Failed(_)));
+    }
+
+    #[test]
+    fn reads_progress_phone_and_failures() {
+        assert_eq!(scan_line(" Update state (0x61) downloading, progress: 12.34 (123456 / 1000000)"), Seen::Progress(12.34));
         assert_eq!(scan_line("Please confirm the login in the Steam Mobile app on your phone."), Seen::ApproveOnPhone);
+        assert!(matches!(scan_line("ERROR! Failed to install app '2732960' (No subscription)"), Seen::Failure(m) if m.contains("doesn't own")));
+        assert_eq!(scan_line("Logging in user 'alice' to Steam Public...OK"), Seen::Nothing);
     }
 
     #[test]
-    fn detects_prompts_without_newlines() {
-        assert_eq!(scan_prompt("password: "), Some(Need::Password));
-        assert_eq!(scan_prompt("Logging in user 'a' to Steam Public...\npassword:"), Some(Need::Password));
-        assert_eq!(scan_prompt("This computer has not been authenticated for your account using Steam Guard.\nPlease check your email for the message from Steam, and enter the Steam Guard\n code from that message.\nYou can also enter this code at any time using 'set_steam_guard_code'\n    at the console.\nSteam Guard code:"), Some(Need::Guard));
-        assert_eq!(scan_prompt("Two-factor code:"), Some(Need::Guard));
-        assert_eq!(scan_prompt("Update state (0x61) downloading"), None);
-        assert_eq!(scan_prompt("Steam>"), None);
+    fn scrub_removes_secrets() {
+        assert_eq!(scrub("pw hunter2 code 12345 hunter2", &["hunter2", "12345", ""]), "pw *** code *** ***");
     }
 
     #[test]
@@ -307,5 +491,108 @@ mod tests {
     #[test]
     fn download_url_is_https_from_valves_cdn() {
         assert!(download_url().starts_with("https://steamcdn-a.akamaihd.net/client/installer/"));
+    }
+
+    /// End to end against a fake steamcmd that behaves like the real one with stdin closed: Steam Guard
+    /// accounts are refused until a `set_steam_guard_code` line carries the right code.
+    #[cfg(unix)]
+    mod fake_steamcmd {
+        use super::*;
+
+        const FAKE: &str = r#"#!/bin/sh
+# usage: steamcmd.sh +runscript FILE   |   steamcmd.sh +login USER ... +app_update ID validate ...
+if [ "$1" = "+runscript" ]; then
+  script=$(cat "$2")
+  user=$(echo "$script" | sed -n 's/^login \([^ ]*\).*/\1/p')
+  pass=$(echo "$script" | sed -n 's/^login [^ ]* "\(.*\)"$/\1/p')
+  code=$(echo "$script" | sed -n 's/^set_steam_guard_code //p')
+  if [ "$pass" = "bad" ]; then echo "FAILED (Invalid Password)"; exit 5; fi
+  if [ "$user" = "guarded" ]; then
+    if [ -z "$code" ]; then
+      printf 'This computer has not been authenticated for your account using Steam Guard.\nSteam Guard code:'; echo; echo "FAILED (Account Logon Denied)" >&2; exit 5
+    fi
+    if [ "$code" != "12345" ]; then echo "FAILED (Two-factor code mismatch)"; exit 5; fi
+  fi
+  if [ "$user" = "cached" ] && [ -n "$pass" ]; then echo "unexpected password"; exit 6; fi
+  echo "Logging in user '$user' to Steam Public...OK"; echo "Waiting for user info...OK"; exit 0
+fi
+dir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    +force_install_dir) dir="$2"; shift ;;
+    +app_update) if [ "$2" = "2732960" ]; then touch "$dir/INIZH.big"; else touch "$dir/INI.big"; fi
+                 echo " Update state (0x61) downloading, progress: 50.00 (1 / 2)"; shift ;;
+  esac
+  shift
+done
+exit 0
+"#;
+
+        fn root(name: &str) -> PathBuf {
+            let r = std::env::temp_dir().join(format!("gen-assets-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&r);
+            std::fs::create_dir_all(steamcmd_dir(&r)).unwrap();
+            std::fs::write(steamcmd_dir(&r).join("steamcmd.sh"), FAKE).unwrap();
+            r
+        }
+
+        fn until(job: &AssetJob, ok: impl Fn(&AssetState) -> bool) -> AssetState {
+            for _ in 0..200 {
+                let s = job.state();
+                if ok(&s) {
+                    return s;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("timed out; last state {:?}", job.state());
+        }
+
+        #[test]
+        fn steam_guard_account_signs_in_after_the_code_is_entered() {
+            let r = root("guard");
+            let job = AssetJob::start(&r, "guarded", "secret".into()).unwrap();
+            let s = until(&job, |s| s.need.is_some());
+            assert_eq!(s.need, Some(Need::Guard));
+            assert!(!s.log.contains("secret"));
+            job.submit("99999"); // wrong code is refused and asked for again
+            let s = until(&job, |s| s.need.is_some() && s.message.contains("didn't work"));
+            assert_eq!(s.need, Some(Need::Guard));
+            job.submit("12345");
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
+            assert!(zero_hour_dir(&r).join("INIZH.big").is_file() && generals_dir(&r).join("INI.big").is_file());
+            assert!(!steamcmd_dir(&r).join("rallypoint-signin.txt").exists(), "secret script must be deleted");
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn wrong_password_fails_without_asking_for_a_code() {
+            let r = root("badpw");
+            let job = AssetJob::start(&r, "alice", "bad".into()).unwrap();
+            let s = until(&job, |s| s.phase == Phase::Failed);
+            assert!(s.message.contains("password"), "{s:?}");
+            assert!(!steamcmd_dir(&r).join("rallypoint-signin.txt").exists());
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn cached_login_needs_no_password() {
+            let r = root("cached");
+            let job = AssetJob::start(&r, "cached", String::new()).unwrap();
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn cancel_stops_a_job_waiting_for_a_code() {
+            let r = root("cancel");
+            let job = AssetJob::start(&r, "guarded", "secret".into()).unwrap();
+            until(&job, |s| s.need.is_some());
+            job.cancel();
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(job.state().phase != Phase::Done);
+            std::fs::remove_dir_all(r).unwrap();
+        }
     }
 }

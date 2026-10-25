@@ -63,6 +63,7 @@ setInterval(() => invoke("assets_status").then((s) => {
   show("sneed", !!s.need);
   if (s.need) $("sneedlabel").textContent = s.need === "Guard" ? "Steam Guard code" : "Steam password";
   $("smsg").textContent = s.phase === "Idle" ? "" : `${s.message}${s.phase === "Downloading" ? ` ${s.percent.toFixed(0)}%` : ""}`;
+  if (s.log) $("slog").textContent = s.log;
   if (s.phase === "Done" && !wasDone) {
     invoke("get_config").then((c) => { $("dir").value = c.game_dir; });
   }
