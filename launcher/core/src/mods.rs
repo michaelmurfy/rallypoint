@@ -382,7 +382,6 @@ mod tests {
         std::fs::remove_dir_all(t).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_zip_holding_only_an_installer_gets_clear_guidance() {
         let t = temp("exezip");
@@ -396,6 +395,7 @@ mod tests {
         assert!(std::fs::read_dir(t.join("mods")).unwrap().next().is_none(), "no temp folders left behind");
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_a_folder_with_symlinks() {
         let t = temp("link");
