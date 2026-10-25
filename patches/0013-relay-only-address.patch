@@ -1,0 +1,52 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp b/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
+index 32f0285..5c8de34 100644
+--- a/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
++++ b/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
+@@ -27,6 +27,7 @@
+ #include "GameNetwork/IPEnumeration.h"
+ #include "GameNetwork/networkutil.h"
+ #include "GameClient/ClientInstance.h"
++#include "GameNetwork/RelayWire.h"
+ 
+ #if defined(__APPLE__)
+ // TheSuperHackers @port macOS: native IPv4 interface enumeration (see getAddresses).
+@@ -63,6 +64,16 @@ EnumeratedIP * IPEnumeration::getAddresses()
+ 	if (m_IPlist)
+ 		return m_IPlist;
+ 
++	// Playing through a Rallypoint relay: the only network this game has is the relay's virtual one. Every menu
++	// that lists or picks an address (Options, the LAN lobby, Direct Connect) then sees just that, never the
++	// adapters of the machine's real network.
++	if (RelayWire::config().on)
++	{
++		const uint32_t v = RelayWire::config().vip;
++		addNewIP((UnsignedByte)(v >> 24), (UnsignedByte)(v >> 16), (UnsignedByte)(v >> 8), (UnsignedByte)v);
++		return m_IPlist;
++	}
++
+ #if defined(__APPLE__)
+ 	// TheSuperHackers @port macOS: enumerate local IPv4 interfaces with getifaddrs()
+ 	// instead of gethostbyname(hostname). On macOS the machine's ".local" hostname
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 041bdda..50c6f41 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -61,6 +61,7 @@
+ #include "GameClient/TerrainVisual.h"
+ 
+ #include "GameNetwork/FirewallHelper.h"
++#include "GameNetwork/RelayWire.h"
+ 
+ // PUBLIC DATA ////////////////////////////////////////////////////////////////////////////////////
+ GlobalData* TheWritableGlobalData = nullptr;				///< The global data singleton
+@@ -1201,6 +1202,10 @@ void GlobalData::parseGameDataDefinition( INI* ini )
+ 	TheWritableGlobalData->m_drawScrollAnchor = optionPref.getDrawScrollAnchor();
+ 	TheWritableGlobalData->m_moveScrollAnchor = optionPref.getMoveScrollAnchor();
+ 	TheWritableGlobalData->m_defaultIP = optionPref.getLANIPAddress();
++	// A relay's virtual address (10.77.0.x) may have been saved into Options.ini while playing online. Offline there is no
++	// such adapter, so binding to it would fail ("Failed trying to communicate with the network"): ignore it.
++	if (!RelayWire::config().on && (TheWritableGlobalData->m_defaultIP >> 8) == 0x0A4D00)
++		TheWritableGlobalData->m_defaultIP = 0;
+ 	TheWritableGlobalData->m_firewallSendDelay = optionPref.getSendDelay();
+ 	TheWritableGlobalData->m_firewallBehavior = optionPref.getFirewallBehavior();
+ 	TheWritableGlobalData->m_firewallPortAllocationDelta = optionPref.getFirewallPortAllocationDelta();
