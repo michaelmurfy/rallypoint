@@ -15,5 +15,5 @@ Also included: the setup wizard, native Steam download without Rosetta, any reso
 
 Known gaps:
 - Not yet verified in a real game or live: the widescreen and online-play engine patches, the Steam download with a real account (including Steam Guard prompts), the updater against a live release, and the map-pack zips' internal layout.
-- No Linux game engine yet (the Linux build is the launcher only). Apple Silicon only on macOS.
+- No Linux game engine and no Linux launcher download (build it from source, see the README). Apple Silicon only on macOS.
 - You need your own copy of Generals and Zero Hour on Steam.
