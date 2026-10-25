@@ -61,19 +61,27 @@ fn run(file: &str, bind: &str) -> std::io::Result<()> {
     let start = Instant::now();
     let mut buf = [0u8; 2048];
     eprintln!("listening on {bind}, serials from {file}");
+    // Reload when the file changed. Also done on every Hello, so a serial issued a moment ago works at once.
+    let mut reload = |server: &mut Server| {
+        let m = mtime();
+        if m != seen {
+            seen = m;
+            server.set_serials(Serials::parse(&read(file)));
+        }
+    };
     loop {
         let now = start.elapsed().as_secs();
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
             if let Some(p) = Packet::decode(&buf[..n]) {
+                if matches!(p, Packet::Hello { .. }) {
+                    reload(&mut server);
+                }
                 for (to, out) in server.handle(from, p, now) {
                     sock.send_to(&out.encode(), to)?;
                 }
             }
         }
         server.expire(now);
-        if mtime() != seen {
-            seen = mtime();
-            server.set_serials(Serials::parse(&read(file)));
-        }
+        reload(&mut server);
     }
 }
