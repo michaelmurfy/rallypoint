@@ -105,6 +105,10 @@ On by default. Set `GEN_STRETCH=1` in the environment to get the original stretc
 
 Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
 
+Everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305), including the serial, the room and the password proof. The first time you connect to a server the launcher remembers its identity key; if a different server ever answers at that address, it refuses to connect and asks you. The server keeps its key in its data volume (`serials.key`): back it up, because a new key makes every player see a changed identity. Compare the fingerprint from `make key` with the one shown on the Online tab to be sure of a server the first time.
+
+While you are connected the Online tab shows how it is going: your latency, jitter and packet loss, the traffic you are sending, and the server's version, uptime, rooms and players in use, and load. The tunnel carries only the game's own network traffic (its lobby and game ports); anything else is dropped, and each player is limited to a sensible packet rate so one client cannot flood a server.
+
 ### Run a server
 
 Needs Docker, `make`, and one open **UDP** port (7777 by default).
@@ -120,6 +124,7 @@ make up
 | `make up` / `make down` / `make restart` | Start, stop, or apply changed settings |
 | `make update` | Pull the latest version, refresh the country lists, restart |
 | `make logs` / `make status` | Watch the server |
+| `make key` | Show the server's identity fingerprint |
 
 Settings live in `.env` (see [`.env.example`](.env.example)): the port, and `ALLOWED_COUNTRIES` to only accept players from certain countries. The country lists are downloaded for you; local-network addresses are always let through unless you set `ALLOW_PRIVATE=false`.
 

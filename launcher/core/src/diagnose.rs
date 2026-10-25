@@ -16,6 +16,8 @@ pub struct Report {
     pub checks: Vec<Check>,
     /// Last lines of `ReleaseCrashInfo.txt`, if the engine wrote one.
     pub crash: Option<String>,
+    /// Last lines the engine printed on its previous run (network errors show up here).
+    pub engine_log: Option<String>,
     /// Folder holding the crash report and logs.
     pub data_dir: String,
 }
@@ -36,7 +38,13 @@ fn check(name: &str, miss: Vec<String>, ok_text: &str, fix: &str) -> Check {
 }
 
 /// `documents` is the user's Documents folder, where the engine keeps its crash report.
-pub fn run(game_dir: &Path, base: Option<&Path>, engine: Option<&Path>, documents: &Path) -> Report {
+fn tail(path: &Path) -> Option<String> {
+    let t = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = t.lines().collect();
+    Some(lines[lines.len().saturating_sub(40)..].join("\n")).filter(|s| !s.trim().is_empty())
+}
+
+pub fn run(game_dir: &Path, base: Option<&Path>, engine: Option<&Path>, documents: &Path, engine_log: Option<&Path>) -> Report {
     let mut checks = vec![match engine {
         Some(p) => Check { name: "Game engine".into(), ok: true, detail: p.display().to_string() },
         None => Check { name: "Game engine".into(), ok: false, detail: "Not found. Reinstall Rallypoint.".into() },
@@ -51,11 +59,8 @@ pub fn run(game_dir: &Path, base: Option<&Path>, engine: Option<&Path>, document
         },
     });
     let data = documents.join(USER_DATA_LEAF);
-    let crash = std::fs::read_to_string(data.join("ReleaseCrashInfo.txt")).ok().map(|t| {
-        let lines: Vec<&str> = t.lines().collect();
-        lines[lines.len().saturating_sub(40)..].join("\n")
-    });
-    Report { checks, crash, data_dir: data.display().to_string() }
+    let crash = tail(&data.join("ReleaseCrashInfo.txt"));
+    Report { checks, crash, engine_log: engine_log.and_then(tail), data_dir: data.display().to_string() }
 }
 
 #[cfg(test)]
@@ -74,7 +79,7 @@ mod tests {
         let t = std::env::temp_dir().join(format!("diag-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&t);
         touch(&t.join("zh"), &["INIZH.big", "W3DZH.big"]);
-        let r = run(&t.join("zh"), None, Some(Path::new("engine.exe")), &t.join("docs"));
+        let r = run(&t.join("zh"), None, Some(Path::new("engine.exe")), &t.join("docs"), None);
         assert!(r.checks[0].ok);
         assert!(!r.checks[1].ok && r.checks[1].detail.contains("TexturesZH.big") && !r.checks[1].detail.contains("INIZH.big"));
         assert!(!r.checks[2].ok && r.checks[2].detail.contains("original Generals"));
@@ -92,7 +97,7 @@ mod tests {
         std::fs::create_dir_all(&data).unwrap();
         let log: String = (0..100).map(|i| format!("line {i}\n")).collect();
         std::fs::write(data.join("ReleaseCrashInfo.txt"), log).unwrap();
-        let r = run(&t.join("zh"), Some(&t.join("base")), Some(Path::new("e")), &t.join("docs"));
+        let r = run(&t.join("zh"), Some(&t.join("base")), Some(Path::new("e")), &t.join("docs"), None);
         assert!(r.checks.iter().all(|c| c.ok));
         let c = r.crash.unwrap();
         assert!(c.starts_with("line 60") && c.ends_with("line 99"));

@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, icons, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, icons, launch, maps, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -29,6 +29,11 @@ struct Updates(Mutex<Option<update::UpdateInfo>>);
 
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
+}
+
+/// What the engine printed on its last run.
+fn engine_log(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("engine.log"))
 }
 
 fn mods_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -104,7 +109,7 @@ fn diagnose(app: tauri::AppHandle, game_dir: String) -> Result<diagnose::Report,
     let engine = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data);
     let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base));
     let docs = app.path().document_dir().map_err(|e| e.to_string())?;
-    Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs))
+    Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs, Some(&engine_log(&app)?)))
 }
 
 #[tauri::command]
@@ -174,6 +179,7 @@ struct ConfigView {
     steam_user: String,
     setup_done: bool,
     check_updates: bool,
+    camera_height: u32,
     version: &'static str,
     os: &'static str,
 }
@@ -181,6 +187,7 @@ struct ConfigView {
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
     let c = Config::load(&config_path(&app)?);
+    let camera_height = c.camera();
     Ok(ConfigView {
         server: c.server,
         room: c.room,
@@ -188,6 +195,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         steam_user: c.steam_user,
         setup_done: c.setup_done,
         check_updates: !c.skip_update_check,
+        camera_height,
         version: update::current_version(),
         os: std::env::consts::OS,
     })
@@ -220,6 +228,20 @@ fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_camera_height(app: tauri::AppHandle, height: u32) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.camera_height = height.clamp(graphics::STANDARD_CAMERA, graphics::MAX_CAMERA);
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// Put the graphics fix's quality settings into the game's `Options.ini` (the original is kept once).
+#[tauri::command]
+fn graphics_apply_high(app: tauri::AppHandle) -> Result<(), String> {
+    graphics::apply_high_quality(&app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF))
+}
+
+#[tauri::command]
 fn set_setup_done(app: tauri::AppHandle, done: bool) -> Result<(), String> {
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
@@ -239,14 +261,31 @@ fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, password: St
     if c.room.is_empty() {
         return Err("Enter a room name first".into());
     }
-    let agent = Agent::start(&c.server, &c.serial, &c.room, &password).map_err(|e| e.to_string())?;
+    let pinned = c.server_keys.get(&c.server.to_lowercase()).and_then(|k| generals_proto::secure::from_hex(k));
+    let agent = Agent::start(&c.server, &c.serial, &c.room, &password, pinned).map_err(|e| e.to_string())?;
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent leaves its room
     Ok(())
+}
+
+/// Forget the saved identity of the configured server, so the next connection trusts whatever answers (use after
+/// the server's owner says its key changed).
+#[tauri::command]
+fn relay_forget_key(app: tauri::AppHandle) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.server_keys.remove(&c.server.to_lowercase());
+    c.save(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn relay_disconnect(relay: tauri::State<Relay>) {
     *relay.0.lock().unwrap() = None;
+}
+
+/// Latency, packet loss and the relay's own load figures; `None` unless connected.
+#[tauri::command]
+fn relay_diagnostics(relay: tauri::State<Relay>) -> Option<generals_core::agent::Diagnostics> {
+    relay.0.lock().unwrap().as_ref().and_then(|a| a.diagnostics())
 }
 
 #[tauri::command]
@@ -255,9 +294,16 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
     let guard = relay.0.lock().unwrap();
     // First connect: the server signed us up behind the scenes; keep the result for next time.
     if let (Some(a), Ok(path)) = (guard.as_ref(), config_path(&app)) {
-        if let Some(serial) = a.take_issued() {
+        let (serial, key) = (a.take_issued(), a.take_learned_key());
+        if serial.is_some() || key.is_some() {
             let mut c = Config::load(&path);
-            c.serial = serial;
+            if let Some(serial) = serial {
+                c.serial = serial;
+            }
+            // First visit to this server: remember who it is, so a different one answering later is caught.
+            if let Some(key) = key {
+                c.server_keys.insert(c.server.to_lowercase(), generals_proto::secure::to_hex(&key));
+            }
             let _ = c.save(&path);
         }
     }
@@ -269,6 +315,7 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
             x if x == WrongPassword as u8 => "Wrong room password",
             x if x == RoomFull as u8 => "That room is full",
             x if x == BadRoom as u8 => "Room names use letters, numbers, spaces, - _ . (max 32)",
+            x if x == ServerKeyChanged as u8 => "This server's identity changed",
             x if x == RateLimited as u8 => "Too many attempts, try again in a few minutes",
             x if x == Full as u8 => "Server is full",
             x if x == RegistrationClosed as u8 => "This server is private",
@@ -487,25 +534,22 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
         }
     }
     let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
+    // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
+    let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let opts = launch::LaunchOptions {
+        log: engine_log(&app).ok(),
         width,
         height,
         fullscreen,
         mod_path,
         mod_args,
-        // Online only once the relay has accepted us; the engine needs our virtual IP.
-        relay: match relay.0.lock().unwrap().as_ref() {
-            Some(a) => match a.status() {
-                Status::Connected(v) => Some((a.local.to_string(), format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3]))),
-                _ => None,
-            },
-            None => None,
-        },
+        relay: relay_cfg,
         env: {
             let mut env = vec![];
             if skirmish {
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
             }
+            env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             // Zero Hour also reads the base game's files.
             if let Some(b) = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base)) {
                 env.push(("GEN_GENERALS_PATH".to_string(), b.to_string_lossy().to_string()));
@@ -540,10 +584,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_camera_height, graphics_apply_high, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
-            relay_connect, relay_disconnect, relay_status,
+            relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, icons_install,
             launch_game
         ])

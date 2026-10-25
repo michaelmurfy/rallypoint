@@ -44,6 +44,36 @@ function toast(text, kind) {
   setTimeout(() => t.remove(), kind === "bad" ? 9000 : 4500);
 }
 
+/**
+ * One line of feedback that sits beside what caused it: a spinner while working, then the result.
+ * kind: "busy" | "ok" | "bad" | none. Good news clears itself; errors stay until the next action.
+ */
+function liveStatus() {
+  const el = h("span", { class: "live", role: "status" });
+  let timer = null;
+  const api = {
+    el,
+    set(text, kind) {
+      clearTimeout(timer);
+      el.className = "live " + (kind || "");
+      fill(el, kind === "busy" ? h("span", { class: "spin", "aria-hidden": "true" }) : null, text ? h("span", {}, text) : null);
+      if (kind === "ok") timer = setTimeout(() => api.set(""), 8000);
+      return api;
+    },
+    busy: (t) => api.set(t, "busy"),
+    ok: (t) => api.set(t, "ok"),
+    bad: (t) => api.set(t, "bad"),
+  };
+  return api;
+}
+
+/** Page-wide feedback goes in the line under the page title; the setup wizard (no page line) falls back to a toast. */
+let pageStatus = null;
+function say(text, kind) {
+  if (pageStatus && pageStatus.el.isConnected && !wizardEl) pageStatus.set(text, kind);
+  else toast(text, kind);
+}
+
 /** replaceChildren that skips null/false (replaceChildren would print "null"). */
 function fill(el, ...kids) {
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
@@ -74,7 +104,7 @@ const prefs = {
 const refreshers = new Set(); // views that show mods re-render through these
 const notifyMods = () => refreshers.forEach((f) => f());
 async function loadMods() {
-  try { store.mods = await invoke("mods_list"); } catch (e) { toast(errText(e), "bad"); }
+  try { store.mods = await invoke("mods_list"); } catch (e) { say(errText(e), "bad"); }
   notifyMods();
 }
 
@@ -123,16 +153,49 @@ function renderUpdate() {
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
     h("div", { class: "row" },
       u.installer ? install : null,
-      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => toast(errText(e), "bad")) }, "What's new"),
+      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => say(errText(e), "bad")) }, "What's new"),
       h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"))));
 }
-/** Ask GitHub for a newer release. The startup check stays quiet unless there is one. */
-async function checkUpdate(manual) {
-  try { store.update = await invoke("update_check"); } catch (e) { return manual && toast("Couldn't check for updates: " + errText(e), "bad"); }
+/** Ask GitHub for a newer release. Returns an error message, or null. The startup check stays quiet unless there is an update. */
+async function checkUpdate() {
+  try { store.update = await invoke("update_check"); } catch (e) { return "Couldn't check for updates: " + errText(e); }
   store.updateDismissed = false;
   store.updateNote = "";
   renderUpdate();
-  if (manual) toast(store.update ? `Rallypoint ${store.update.latest} is available` : "You have the latest version", store.update ? "ok" : undefined);
+  return null;
+}
+
+/** Settings card: Check now with the answer beside it, and the install actions once there is something to install. */
+function updatesCard() {
+  const fb = liveStatus();
+  const actions = h("div", { class: "row" });
+  const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
+  const install = h("button", { class: "btn primary", onclick: async () => {
+    install.disabled = true;
+    fb.busy("Downloading the installer…");
+    try { fb.ok(await invoke("update_install")); } catch (e) { fb.bad(errText(e)); }
+    install.disabled = false;
+  } }, "Download and open installer");
+  const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
+  const check = h("button", { class: "btn", onclick: async () => {
+    check.disabled = true;
+    fill(actions);
+    fb.busy("Checking…");
+    const err = await checkUpdate();
+    check.disabled = false;
+    if (err) fb.bad(err); else report();
+  } }, "Check now");
+  function report() {
+    const u = store.update;
+    fb.set(u ? `Rallypoint ${u.latest} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}` : "You have the latest version", u ? "ok" : "ok");
+    fill(actions, u && u.installer ? install : null, u ? notes : null);
+  }
+  if (store.update) report();
+  return h("div", { class: "card" }, h("h2", {}, "Updates"),
+    h("p", { class: "muted" }, `You have Rallypoint ${store.cfg.version}.`),
+    h("div", { class: "row" }, check, fb.el),
+    actions,
+    h("label", { class: "switch" }, auto, "Check for updates when Rallypoint starts"));
 }
 
 // ---------------------------------------------------------------- mod downloads
@@ -142,7 +205,7 @@ let watchTimer = null;
 async function startWatch(m) {
   try {
     await invoke("mods_get", { id: m.id });
-  } catch (e) { return toast(errText(e), "bad"); }
+  } catch (e) { return say(errText(e), "bad"); }
   store.watch = { id: m.id, name: m.name, found: null };
   notifyMods();
   clearInterval(watchTimer);
@@ -162,12 +225,12 @@ async function cancelWatch() {
 }
 /** Install `path`; with `id` it becomes that catalog mod. Errors are shown and the user can try another file. */
 async function installPath(path, id) {
-  toast("Installing…");
+  say("Installing…", "busy");
   try {
     const r = await invoke("mods_install", { path, id: id || null });
-    toast(`${r.folder} installed (${r.bigs} game file${r.bigs === 1 ? "" : "s"})`, "ok");
+    say(`${r.folder} installed (${r.bigs} game file${r.bigs === 1 ? "" : "s"})`, "ok");
     if (id) { clearInterval(watchTimer); store.watch = null; }
-  } catch (e) { toast(errText(e), "bad"); }
+  } catch (e) { say(errText(e), "bad"); }
   await loadMods();
 }
 /** Native file or folder picker, opened in the Downloads folder. */
@@ -180,13 +243,13 @@ async function choose(id, directory) {
       title: directory ? "Choose the mod folder" : "Choose the downloaded mod",
       filters: directory ? undefined : [{ name: "Mods and installers", extensions: ["zip", "7z", "rar", "exe", "gz", "tgz", "xz", "bz2", "tar"] }],
     });
-  } catch (e) { return toast("Couldn't open the file picker: " + errText(e), "bad"); }
+  } catch (e) { return say("Couldn't open the file picker: " + errText(e), "bad"); }
   if (picked) await installPath(typeof picked === "string" ? picked : picked.path, id);
 }
 
 // ---------------------------------------------------------------- maps
 async function loadMaps() {
-  try { store.maps = await invoke("maps_info"); } catch (e) { toast(errText(e), "bad"); }
+  try { store.maps = await invoke("maps_info"); } catch (e) { say(errText(e), "bad"); }
   notifyMods();
 }
 /** Pick an archive or folder of maps, in the Downloads folder, and add it. */
@@ -199,13 +262,13 @@ async function pickMaps(directory) {
       title: directory ? "Choose a folder of maps" : "Choose a maps archive",
       filters: directory ? undefined : [{ name: "Map archives", extensions: ["zip", "7z", "rar", "gz", "tgz"] }],
     });
-  } catch (e) { return toast("Couldn't open the file picker: " + errText(e), "bad"); }
+  } catch (e) { return say("Couldn't open the file picker: " + errText(e), "bad"); }
   if (!picked) return;
-  toast("Adding maps…");
+  say("Adding maps…", "busy");
   try {
     const n = await invoke("maps_install_path", { path: typeof picked === "string" ? picked : picked.path });
-    toast(`${n} map${n === 1 ? "" : "s"} added`, "ok");
-  } catch (e) { toast(errText(e), "bad"); }
+    say(`${n} map${n === 1 ? "" : "s"} added`, "ok");
+  } catch (e) { say(errText(e), "bad"); }
   loadMaps();
 }
 /** Map packs to install with one button, plus adding your own. Used on the Mods page and in the wizard. */
@@ -225,7 +288,7 @@ function mapsCard() {
       h("button", { class: "btn small", onclick: () => start(p) }, "Install"))));
   }
   async function start(p) {
-    try { await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { toast(errText(e), "bad"); }
+    try { await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { say(errText(e), "bad"); }
   }
   function poll() {
     clearInterval(timer);
@@ -349,7 +412,7 @@ function modCard(m, compact) {
       let armed = false;
       const rm = h("button", { class: "btn small danger", onclick: async () => {
         if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-        try { await invoke("mods_remove", { folder: m.path }); toast(m.name + " removed"); } catch (e) { toast(errText(e), "bad"); }
+        try { await invoke("mods_remove", { folder: m.path }); say(m.name + " removed"); } catch (e) { say(errText(e), "bad"); }
         loadMods();
       } }, "Remove");
       actions.append(rm);
@@ -367,7 +430,7 @@ function modCard(m, compact) {
       actions),
     !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null,
     h("div", { class: "row" },
-      h("button", { class: "btn small ghost", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => toast(errText(e), "bad")) }, "Mod page")));
+      h("button", { class: "btn small ghost", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
 }
 
 function watchBanner() {
@@ -419,13 +482,13 @@ function playPage() {
   fillFiles();
 
   async function launch(skirmish) {
-    if (!store.cfg.game_dir) { toast("Set up your game files first", "bad"); return openWizard(); }
+    if (!store.cfg.game_dir) { openWizard(); return; }
     const { w, h: hh } = size();
     play.disabled = sk.disabled = true;
     try {
       await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: fs.checked, skirmish, raisedCamera: !!prefs.get().camera });
-      toast(skirmish ? "Starting a skirmish…" : "Starting the game…", "ok");
-    } catch (e) { toast(errText(e), "bad"); }
+      say(skirmish ? "Starting a skirmish…" : "Starting the game…", "ok");
+    } catch (e) { say(errText(e), "bad"); }
     setTimeout(() => { play.disabled = sk.disabled = false; }, 2500);
   }
 
@@ -474,7 +537,7 @@ function modsPage() {
         let armed = false;
         const rm = h("button", { class: "btn small danger", onclick: async () => {
           if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-          try { await invoke("mods_remove", { folder: o.folder }); toast(o.folder + " removed"); } catch (e) { toast(errText(e), "bad"); }
+          try { await invoke("mods_remove", { folder: o.folder }); say(o.folder + " removed"); } catch (e) { say(errText(e), "bad"); }
           loadMods();
         } }, "Remove");
         return h("div", { class: "card" }, h("div", { class: "mod" }, h("div", {}, h("h3", {}, o.folder), h("p", { class: "muted small" }, `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)), rm));
@@ -482,7 +545,7 @@ function modsPage() {
   }
   refreshers.add(render); render();
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => toast(errText(e), "bad")) }, "Open mods folder")),
+    h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
     body, drop, help,
     h("div", { class: "page-head" }, h("h1", {}, "Maps")), h("div", { class: "card" }, maps.el));
   return { el, dispose: () => { refreshers.delete(render); maps.dispose(); } };
@@ -513,7 +576,51 @@ function storeServers(list) { try { localStorage.setItem("servers", JSON.stringi
 // Right-click does nothing in the launcher.
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
+const dur = (secs) => {
+  const d = Math.floor(secs / 86400), hr = Math.floor((secs % 86400) / 3600), m = Math.floor((secs % 3600) / 60);
+  return d ? `${d}d ${hr}h` : hr ? `${hr}h ${m}m` : `${m}m ${secs % 60}s`;
+};
+const rate = (kbps) => (kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbit/s` : `${kbps} kbit/s`);
+
+/** How the connection and the server are doing, refreshed while the Online page is open and we are connected. */
+function connectionCard() {
+  const body = h("dl", { class: "diag" });
+  const verdict = h("span", {});
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), body);
+  const row = (label, value, level) => [h("dt", {}, label), h("dd", { class: level || "" }, value)];
+  async function poll() {
+    let d = null;
+    try { d = await invoke("relay_diagnostics"); } catch { /* keep hidden */ }
+    card.hidden = !d;
+    if (!d) return;
+    const s = d.server;
+    const lat = d.rtt_ms == null ? null : d.avg_ms <= 60 ? "ok" : d.avg_ms <= 120 ? "warn" : "bad";
+    const loss = d.loss_pct == null ? null : d.loss_pct === 0 ? "ok" : d.loss_pct < 3 ? "warn" : "bad";
+    const load = s ? (s.load_pct < 70 ? "ok" : s.load_pct < 90 ? "warn" : "bad") : null;
+    const worst = [lat, loss, load].includes("bad") ? "bad" : [lat, loss, load].includes("warn") ? "warn" : lat ? "ok" : null;
+    const why = [lat === "bad" && `latency ${d.avg_ms} ms`, loss === "bad" && `${d.loss_pct}% packet loss`, load === "bad" && `server ${s.load_pct}% full`].filter(Boolean).join(", ");
+    verdict.className = "live " + (worst === "ok" ? "ok" : worst === "bad" ? "bad" : "");
+    verdict.textContent = worst === "ok" ? "Good" : worst === "warn" ? "Fair" : worst === "bad" ? `Poor: ${why}` : "Measuring…";
+    fill(body,
+      row("Latency", d.rtt_ms == null ? "measuring…" : `${d.rtt_ms} ms (average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0})`, lat),
+      row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
+      row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
+      d.server_identity ? row("Encryption", `on, server identity ${d.server_identity}${d.identity_saved ? " (checked against the saved one)" : " (saved now)"}`, "ok") : null,
+      s ? [
+        row("Server", `Rallypoint ${s.version}, up ${dur(s.uptime_secs)}`),
+        row("Rooms in use", `${s.rooms} of ${s.max_rooms}`),
+        row("Players online", `${s.players} of ${s.max_players}`),
+        row("In your room", String(s.room_players)),
+        row("Server load", `${s.load_pct}%, relaying ${s.pps} packets/s (${rate(s.kbps)})`, load),
+      ] : row("Server", "waiting for the server's numbers…"));
+  }
+  poll();
+  const timer = setInterval(poll, 2000);
+  return { el: card, dispose: () => clearInterval(timer) };
+}
+
 function onlinePage() {
+  const conn = connectionCard();
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
@@ -534,10 +641,10 @@ function onlinePage() {
   }
   const save = h("button", { class: "btn", onclick: () => {
     const s = joinServer(server.value, port.value);
-    if (!s.ok) return toast(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first", "bad");
+    if (!s.ok) return say(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first", "bad");
     const l = loadServers().filter((x) => !(x.server === s.text && (x.room || "") === room.value.trim()));
     l.push({ server: s.text, room: room.value.trim() });
-    storeServers(l); drawServers(); toast("Server saved");
+    storeServers(l); drawServers(); say("Server saved");
   } }, "Save server");
   drawServers();
   const btn = h("button", { class: "btn primary", onclick: async () => {
@@ -551,7 +658,7 @@ function onlinePage() {
         store.cfg.server = s.text; store.cfg.room = room.value.trim();
         await invoke("relay_connect", { password: pw.value });
       }
-    } catch (e) { toast(errText(e), "bad"); }
+    } catch (e) { say(errText(e), "bad"); }
     refresh();
   } }, "Connect");
   function refresh() {
@@ -560,6 +667,13 @@ function onlinePage() {
     btn.textContent = on ? "Disconnect" : "Connect";
     btn.dataset.mode = on ? "disconnect" : "connect";
     status.replaceChildren(pill(s, s.startsWith("Connected as") ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
+    if (s === "This server's identity changed") {
+      status.append(h("button", { class: "btn small", onclick: async () => {
+        try { await invoke("relay_forget_key"); await invoke("relay_disconnect"); say("Forgotten. Press Connect to trust the server as it is now.", "ok"); } catch (e) { say(errText(e), "bad"); }
+        refresh();
+      } }, "Trust its new identity"));
+      status.append(h("span", { class: "muted small" }, "Expected if its owner reinstalled it. If not, someone may be pretending to be that server."));
+    }
   }
   refreshers.add(refresh); refresh();
   const el = h("div", { class: "page" },
@@ -570,36 +684,66 @@ function onlinePage() {
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
       h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left."),
       h("div", { class: "row" }, btn, save, status)),
+    conn.el,
     h("div", { class: "card" }, saved$));
-  return { el, dispose: () => refreshers.delete(refresh) };
+  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
 }
 
 function diagnosePanel() {
   const out = h("div", {});
+  const fb = liveStatus();
   const run = h("button", { class: "btn", onclick: async () => {
+    run.disabled = true;
+    fb.busy("Checking…");
     try {
       const r = await invoke("diagnose", { gameDir: store.cfg.game_dir || "" });
       fill(out,
         r.checks.map((c) => h("div", { class: "mappack" }, h("div", {}, h("strong", {}, c.name), h("div", { class: "muted small" }, c.detail)), pill(c.ok ? "OK" : "Problem", c.ok ? "ok" : "bad"))),
         r.crash ? [h("p", { class: "muted small" }, "The game's last crash report (ReleaseCrashInfo.txt):"), h("pre", { class: "crash" }, r.crash)] : h("p", { class: "muted small" }, "The game has not written a crash report."),
-        h("div", { class: "row" }, h("button", { class: "btn small", onclick: () => invoke("open_game_data_folder").catch((e) => toast(errText(e), "bad")) }, "Open the game's data folder")));
-    } catch (e) { toast(errText(e), "bad"); }
+        r.engine_log ? [h("p", { class: "muted small" }, "What the game printed on its last run:"), h("pre", { class: "crash" }, r.engine_log)] : null,
+        h("div", { class: "row" }, h("button", { class: "btn small", onclick: () => invoke("open_game_data_folder").catch((e) => fb.bad(errText(e))) }, "Open the game's data folder")));
+      const bad = r.checks.filter((c) => !c.ok).length;
+      fb.set(bad ? `${bad} problem${bad === 1 ? "" : "s"} found` : "No problems found", bad ? "bad" : "ok");
+    } catch (e) { fb.bad(errText(e)); }
+    run.disabled = false;
   } }, "Check my install");
-  return h("div", {}, h("p", { class: "muted" }, "If the game stops with \u201cYou have encountered a serious error\u201d, this checks the usual causes: missing game files and a missing original Generals."), h("div", { class: "row" }, run), out);
+  return h("div", {}, h("p", { class: "muted" }, "If the game stops with \u201cYou have encountered a serious error\u201d, this checks for missing game files and a missing original Generals."), h("div", { class: "row" }, run, fb.el), out);
+}
+
+/** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
+function graphicsCard() {
+  const fb = liveStatus();
+  const choices = [[300, "Standard (original game)"], [510, "Far (recommended)"], [1000, "Very far"]];
+  const cur = store.cfg.camera_height || 510;
+  const camera = h("select", { "aria-label": "Camera distance", onchange: async () => {
+    try {
+      await invoke("set_camera_height", { height: +camera.value });
+      store.cfg.camera_height = +camera.value;
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
+  } }, choices.map(([v, label]) => h("option", { value: String(v), selected: v === cur }, label)));
+  const apply = h("button", { class: "btn", onclick: async () => {
+    apply.disabled = true;
+    fb.busy("Applying…");
+    try { await invoke("graphics_apply_high"); fb.ok("Applied. Your original Options.ini is kept as Options.ini.rallypoint-backup."); } catch (e) { fb.bad(errText(e)); }
+    apply.disabled = false;
+  } }, "Use high-quality settings");
+  return h("div", { class: "card" }, h("h2", {}, "Graphics"),
+    h("label", { class: "field" }, h("span", {}, "Camera distance"), camera),
+    h("p", { class: "muted small" }, "How far out you can zoom. The original game stops at 300."),
+    h("div", { class: "row" }, apply, fb.el),
+    h("p", { class: "muted small" }, "Turns on shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed."));
 }
 
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
-  const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
+    graphicsCard(),
     h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel()),
     h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
-    h("div", { class: "card" }, h("h2", {}, "Updates"),
-      h("p", { class: "muted" }, `You have Rallypoint ${store.cfg.version}. When it starts, Rallypoint can ask GitHub (github.com/michaelmurfy/rallypoint) whether a newer release exists. Nothing is downloaded until you choose to.`),
-      h("label", { class: "switch" }, auto, "Check for updates when Rallypoint starts"),
-      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => checkUpdate(true) }, "Check now"))),
+    updatesCard(),
     h("div", { class: "card" }, h("h2", {}, "About"),
       h("p", { class: "muted" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)));
   return { el, dispose: files.dispose };
@@ -612,7 +756,10 @@ let current = null, sideFiles, sideNet;
 function go(name) {
   store.page = name;
   current && current.dispose && current.dispose();
+  pageStatus = liveStatus();
   current = PAGES[name][2]();
+  const head = current.el.querySelector(".page-head");
+  if (head) head.after(h("div", { class: "page-status" }, pageStatus.el));
   document.getElementById("pagehost").replaceChildren(current.el);
   document.querySelectorAll(".nav").forEach((n) => (n.dataset.page === name ? n.setAttribute("aria-current", "page") : n.removeAttribute("aria-current")));
 }
@@ -748,7 +895,7 @@ async function start() {
     notifyOnlineOnly();
   }, 1000);
   if (!store.cfg.setup_done) openWizard();
-  if (store.cfg.check_updates !== false) checkUpdate(false);
+  if (store.cfg.check_updates !== false) checkUpdate();
 
   // Dropping a file or folder on the window installs it as a mod.
   try {

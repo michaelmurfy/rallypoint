@@ -1,6 +1,12 @@
-## Rallypoint 0.1 Beta 1
+## Rallypoint 0.1.0-beta.4
 
-The first beta: the feature set for 0.1 is in. It is still a **prerelease**, because a few pieces have only been tried by the developer (listed at the end), so please report what you hit.
+Still a **prerelease**. A few pieces have only been tried by the developer (listed at the end), so please report what you hit.
+
+New since beta 3:
+- **Zero Hour launches from the real game folder.** The engine is told where Weather.ini lives, and a nested base-game copy is no longer preferred over a sibling install.
+- **Shockwave unpacks inside Rallypoint.** The Clickteam installer is extracted and its Windows launcher is not started, so the same mod loads on macOS and Windows. Several mods can be stacked.
+- **Sharp command-bar icons download during setup**, with no extra prompt.
+- **Higher camera is optional** on the Play tab. Settings still has its own camera height.
 
 New since alpha 3:
 - **macOS: fullscreen and any resolution now work.** The macOS game engine was discarding the launcher's settings, so fullscreen, custom resolutions (4K, ultrawide) and mods were silently ignored. Fixed, with native macOS fullscreen.

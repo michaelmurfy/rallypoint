@@ -22,9 +22,25 @@ pub struct Config {
     /// Don't ask GitHub for a newer release when the launcher starts.
     #[serde(default)]
     pub skip_update_check: bool,
+    /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
+    #[serde(default = "default_camera")]
+    pub camera_height: u32,
+    /// Identity keys of relay servers seen before (hex, keyed by `host:port` as typed, lower case). A server
+    /// that later answers with a different key is refused until the player chooses to trust it.
+    #[serde(default)]
+    pub server_keys: std::collections::BTreeMap<String, String>,
+}
+
+fn default_camera() -> u32 {
+    crate::graphics::FAR_CAMERA
 }
 
 impl Config {
+    /// The camera limit to use; a missing or zero value means the recommended one.
+    pub fn camera(&self) -> u32 {
+        if self.camera_height == 0 { crate::graphics::FAR_CAMERA } else { self.camera_height }
+    }
+
     pub fn load(path: &Path) -> Config {
         std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }

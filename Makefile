@@ -3,7 +3,7 @@ COMPOSE ?= docker compose
 .DEFAULT_GOAL := help
 -include .env
 
-.PHONY: help config geo up down restart logs status update test release linux-client
+.PHONY: help config geo up down restart logs status key update test release linux-client
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  \033[1mmake %-9s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -38,6 +38,9 @@ restart: config geo ## Apply .env changes
 
 logs: ## Follow the server log
 	$(COMPOSE) logs -f --tail=100 relay
+
+key: ## Show the server's identity fingerprint (players check it the first time they connect)
+	$(COMPOSE) run --rm relay key
 
 status: ## Show whether the server is running
 	$(COMPOSE) ps
