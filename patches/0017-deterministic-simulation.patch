@@ -16,7 +16,7 @@ index 7f88b83..25e7bcb 100644
  			{
 diff --git a/b/Core/Libraries/Source/WWVegas/WWLib/detmath.h b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
 new file mode 100644
-index 0000000..032ce70
+index 0000000..0441496
 --- /dev/null
 +++ b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
 @@ -0,0 +1,325 @@
@@ -69,10 +69,10 @@ index 0000000..032ce70
 +	static const double K_LN2_HI   = 0.6931471803691238;
 +	static const double K_LN2_LO   = 1.9082149292705877e-10;
 +
-+	// sin(x) = x + x^3*S[0] + ... for |x| <= pi/4 (Taylor: 1/n! with alternating signs).
++	// sin(x) = x + x^3*kSinTerms[0] + ... for |x| <= pi/4 (Taylor: 1/n! with alternating signs).
 +	inline double sinKernel(double x)
 +	{
-+	static const double S[] = {
++	static const double kSinTerms[] = {
 +		-0.16666666666666666,
 +		0.008333333333333333,
 +		-0.0001984126984126984,
@@ -87,16 +87,16 @@ index 0000000..032ce70
 +		6.446950284384474e-26,
 +		-9.183689863795546e-29 };
 +		const double z = x * x;
-+		double p = S[11];
++		double p = kSinTerms[11];
 +		for (int i = 10; i >= 0; --i)
-+			p = S[i] + z * p;
++			p = kSinTerms[i] + z * p;
 +		return x + x * z * p;
 +	}
 +
-+	// cos(x) = 1 + x^2*C[0] + ... for |x| <= pi/4.
++	// cos(x) = 1 + x^2*kCosTerms[0] + ... for |x| <= pi/4.
 +	inline double cosKernel(double x)
 +	{
-+	static const double C[] = {
++	static const double kCosTerms[] = {
 +		-0.5,
 +		0.041666666666666664,
 +		-0.001388888888888889,
@@ -111,9 +111,9 @@ index 0000000..032ce70
 +		1.6117375710961184e-24,
 +		-2.4795962632247976e-27 };
 +		const double z = x * x;
-+		double p = C[12];
++		double p = kCosTerms[12];
 +		for (int i = 11; i >= 0; --i)
-+			p = C[i] + z * p;
++			p = kCosTerms[i] + z * p;
 +		return 1.0 + z * p;
 +	}
 +
@@ -134,7 +134,7 @@ index 0000000..032ce70
 +	// atan for 0 <= x <= 1, by halving the angle twice then a short series.
 +	inline double atanUnit(double x)
 +	{
-+	static const double A[] = {
++	static const double kAtanTerms[] = {
 +		-0.3333333333333333,
 +		0.2,
 +		-0.14285714285714285,
@@ -150,9 +150,9 @@ index 0000000..032ce70
 +		double t = x / (1.0 + std::sqrt(1.0 + x * x));
 +		t = t / (1.0 + std::sqrt(1.0 + t * t)); // tan(angle / 4)
 +		const double z = t * t;
-+		double p = A[11];
++		double p = kAtanTerms[11];
 +		for (int i = 10; i >= 0; --i)
-+			p = A[i] + z * p;
++			p = kAtanTerms[i] + z * p;
 +		return 4.0 * (t + t * z * p);
 +	}
 +}
@@ -251,7 +251,7 @@ index 0000000..032ce70
 +	if (x != x) return x;
 +	if (x > 709.0) return detail::posInf();
 +	if (x < -745.0) return 0.0;
-+	static const double E[] = {
++	static const double kExpTerms[] = {
 +		0.5,
 +		0.16666666666666666,
 +		0.041666666666666664,
@@ -273,9 +273,9 @@ index 0000000..032ce70
 +		4.110317623312165e-19 };
 +	const double k = std::floor(x * detail::K_INV_LN2 + 0.5);
 +	const double r = (x - k * detail::K_LN2_HI) - k * detail::K_LN2_LO;
-+	double p = E[18];
++	double p = kExpTerms[18];
 +	for (int i = 17; i >= 0; --i)
-+		p = E[i] + r * p;
++		p = kExpTerms[i] + r * p;
 +	return std::ldexp(1.0 + r + r * r * p, (int)k);
 +}
 +
@@ -285,7 +285,7 @@ index 0000000..032ce70
 +	if (x < 0.0) return detail::quietNaN();
 +	if (x == 0.0) return -detail::posInf();
 +	if (detail::isInf(x)) return x;
-+	static const double L[] = {
++	static const double kLogTerms[] = {
 +		0.3333333333333333,
 +		0.2,
 +		0.14285714285714285,
@@ -308,9 +308,9 @@ index 0000000..032ce70
 +	}
 +	const double f = (m - 1.0) / (m + 1.0);
 +	const double s = f * f;
-+	double p = L[11];
++	double p = kLogTerms[11];
 +	for (int i = 10; i >= 0; --i)
-+		p = L[i] + s * p;
++		p = kLogTerms[i] + s * p;
 +	const double series = 2.0 * (f + f * s * p);
 +	return (double)e * detail::K_LN2_HI + ((double)e * detail::K_LN2_LO + series);
 +}
