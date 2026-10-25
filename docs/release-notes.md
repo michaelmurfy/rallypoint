@@ -1,4 +1,30 @@
-## Rallypoint 0.1.0-beta.5
+## Rallypoint 0.2.0-beta.1
+
+The version number moves to **0.2** because multiplayer changed substantially. Still a **prerelease**: a full multiplayer game through the relay has not been played end to end yet, so please report what you hit.
+
+**Builds from before this one cannot play multiplayer with this one.** The lobby now compares a simulation version and game data, and refuses mismatches instead of starting a game that goes out of sync. Everyone should update.
+
+New since 0.1.0-beta.6:
+- **Same simulation on macOS and Windows.** The game's sine, cosine, arc-tangent and similar functions now use one shared implementation, floating point is strict on both platforms, and the lobby check that was disabled upstream is on, comparing a platform-independent simulation version. This is aimed at the "game mismatched straight away" desync between a Mac and a Windows PC.
+- **The server watches for desyncs.** Each game reports a checksum of its simulation to the relay, which compares them and tells everyone straight away which frame diverged. The game host is the master: whoever differs from the host is the one out of step. Shown in the game and on the Online tab. Bringing an out-of-step player back in line with the host is not done yet.
+- **Multiplayer sync logs** (Settings): record the first ten seconds of a game on both machines and compare them to see exactly where two games first differed.
+- **Encrypted relay traffic.** Everything between the launcher and the server, including your serial, room and password proof, is encrypted and authenticated, and the launcher remembers each server's identity and refuses a different one.
+- **Connection diagnostics** on the Online tab: latency, jitter, packet loss, traffic, and the server's version, load, rooms and players. The relay now carries only the game's own traffic and limits floods, sign-ups and guessing.
+- **Online tab:** separate server and port boxes, a saved server list, and the game only ever sees the relay's address range.
+- **macOS:** Fullscreen off now really gives a window; HiDPI text and trackpad zoom fixed; sharper ultrawide command bar.
+- **Windows:** the Visual C++ runtime ships with the engine and the engine runs from the game folder, which fixes the crash after start-up and the missing mouse cursor.
+- **Settings:** graphics options, Troubleshooting (game files and crash report), and clearer messages that appear next to the button you pressed.
+- **Mods:** choose the files yourself, standalone mods and add-ons are listed separately, a mod's own loading picture is shown, and Shockwave's installer unpacks inside Rallypoint.
+
+Known gaps:
+- Multiplayer through the relay has not been played from start to finish; the pieces are built and tested.
+- Resyncing an out-of-step player to the host mid-game is not built yet.
+- No Linux game engine (Proton or Wine is a possible future route) and no Linux launcher download. Apple Silicon only on macOS.
+- You need your own copy of Generals and Zero Hour on Steam.
+
+---
+
+## Earlier: Rallypoint 0.1.0-beta.5
 
 Still a **prerelease**. A few pieces have only been tried by the developer (listed at the end), so please report what you hit.
 
