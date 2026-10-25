@@ -1,5 +1,5 @@
-//! Sharp command-bar icons. GenTool publishes the high-resolution Zero Hour control bar; the wizard downloads it
-//! and Rallypoint loads it like any other mod, on macOS and Windows. The game's own launcher is not involved.
+//! Sharp command-bar icons. GenTool publishes the high-resolution Zero Hour control bar. Setup downloads it
+//! without asking and Rallypoint loads it with the game, on macOS and Windows.
 
 use crate::extract;
 use crate::mods;

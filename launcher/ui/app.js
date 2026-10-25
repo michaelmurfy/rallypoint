@@ -58,7 +58,7 @@ const nativeRes = () => ({ w: Math.round(screen.width * devicePixelRatio), h: Ma
 const ICON_FOLDER = "Control Bar HD";
 const prefs = {
   get() {
-    const blank = { res: "native", fs: false, mods: [], icons: true, camera: false };
+    const blank = { res: "native", fs: false, mods: [], camera: false };
     try {
       const raw = JSON.parse(localStorage.getItem("rallypoint.prefs") || "{}");
       const p = { ...blank, ...raw };
@@ -89,8 +89,20 @@ function toggleMod(folder, on) {
 }
 function launchFolders() {
   const folders = selectedFolders();
-  if (prefs.get().icons !== false && store.mods.other.some((o) => o.folder === ICON_FOLDER)) return [ICON_FOLDER, ...folders];
+  if (store.mods.other.some((o) => o.folder === ICON_FOLDER)) return [ICON_FOLDER, ...folders];
   return folders;
+}
+let iconsJob = null;
+/** Sharp command-bar icons. Setup downloads them on its own; they load with every game. */
+function ensureIcons() {
+  if (store.mods.other.some((o) => o.folder === ICON_FOLDER)) return Promise.resolve();
+  if (!iconsJob) {
+    iconsJob = (async () => {
+      await invoke("icons_install");
+      await loadMods();
+    })().catch((e) => { iconsJob = null; throw e; });
+  }
+  return iconsJob;
 }
 
 // ---------------------------------------------------------------- updates
@@ -664,24 +676,14 @@ function openWizard() {
         new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...[[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([x]) => x < nat.w).map(([x, y]) => new Option(`${x} × ${y}`, `${x}x${y}`)));
       resSel.value = [...resSel.options].some((o) => o.value === p.res) ? p.res : "native";
       const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
-      const icons = h("input", { type: "checkbox", checked: p.icons !== false, onchange: () => { prefs.set({ icons: icons.checked }); if (icons.checked) downloadIcons(); } });
       const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
-      const note = h("p", { class: "muted small" });
-      async function downloadIcons() {
-        if (prefs.get().icons === false || store.mods.other.some((o) => o.folder === ICON_FOLDER)) { note.textContent = ""; return; }
-        note.textContent = "Downloading sharp command-bar icons…";
-        try {
-          await invoke("icons_install");
-          await loadMods();
-          note.textContent = "Sharp icons installed. They load with the game.";
-        } catch (e) { note.textContent = errText(e); }
-      }
-      downloadIcons();
+      const haveIcons = store.mods.other.some((o) => o.folder === ICON_FOLDER);
+      const note = h("p", { class: "muted small" }, haveIcons ? "Sharp icons installed. They load with the game." : "Downloading sharp command-bar icons…");
+      if (!haveIcons) ensureIcons().then(() => { note.textContent = "Sharp icons installed. They load with the game."; }).catch((e) => { note.textContent = errText(e); });
       return h("div", { class: "stack" }, h("h2", {}, "Display"),
-        h("p", { class: "muted" }, "Rallypoint works at any resolution, including 4K and ultrawide. The camera keeps a normal view distance and the menus are scaled, not stretched."),
+        h("p", { class: "muted" }, "Rallypoint works at any resolution, including 4K and ultrawide. The camera keeps a normal view distance and the menus are scaled, not stretched. Sharp command-bar icons are downloaded for you."),
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel),
         h("label", { class: "switch" }, fs, "Fullscreen"),
-        h("label", { class: "switch" }, icons, "Sharp command-bar icons"),
         h("label", { class: "switch" }, cam, "Higher camera"),
         note);
     }
@@ -702,7 +704,7 @@ function openWizard() {
     return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
-        h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed") + (pr.icons !== false ? ", sharp icons" : "") + (pr.camera ? ", higher camera" : "")),
+        h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed") + (store.mods.other.some((o) => o.folder === ICON_FOLDER) ? ", sharp icons" : "") + (pr.camera ? ", higher camera" : "")),
         h("dt", {}, "Mods"), h("dd", {}, selectedFolders().map((f) => installedMods().find((m) => m.folder === f)?.name || f).join(", ") || "none"),
         h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added")),
       h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."),
@@ -737,6 +739,7 @@ async function start() {
   store.games = await invoke("detect_games").catch(() => []);
   shell();
   await loadMods();
+  ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
   await loadMaps();
   go("play");
   setInterval(async () => {
