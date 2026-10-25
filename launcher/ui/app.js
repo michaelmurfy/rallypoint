@@ -73,25 +73,24 @@ async function loadMods() {
 
 const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))];
 
-// ---------------------------------------------------------------- mod download watching
+// ---------------------------------------------------------------- mod downloads
+// "Get" opens the mod's official page. Nothing installs by itself: the user chooses the finished download
+// (or confirms the file we spotted in their Downloads folder).
 let watchTimer = null;
 async function startWatch(m) {
   try {
     await invoke("mods_get", { id: m.id });
   } catch (e) { return toast(errText(e), "bad"); }
-  store.watch = { id: m.id, name: m.name };
+  store.watch = { id: m.id, name: m.name, found: null };
   notifyMods();
   clearInterval(watchTimer);
   watchTimer = setInterval(async () => {
+    if (!store.watch) return clearInterval(watchTimer);
     let s;
-    try { s = await invoke("mods_poll"); } catch (e) { s = { state: "error", message: errText(e) }; }
-    if (s.state === "waiting") return;
-    clearInterval(watchTimer);
-    store.watch = null;
-    if (s.state === "installed") toast(s.message, "ok");
-    else if (s.state === "error") toast(s.message, "bad");
-    await loadMods();
-  }, 1000);
+    try { s = await invoke("mods_poll"); } catch { return; }
+    const found = s.state === "found" ? { path: s.path, name: s.message } : null;
+    if (JSON.stringify(found) !== JSON.stringify(store.watch.found)) { store.watch.found = found; notifyMods(); }
+  }, 1500);
 }
 async function cancelWatch() {
   clearInterval(watchTimer);
@@ -99,17 +98,35 @@ async function cancelWatch() {
   await invoke("mods_cancel_watch");
   notifyMods();
 }
-async function installPath(path) {
+/** Install `path`; with `id` it becomes that catalog mod. Errors are shown and the user can try another file. */
+async function installPath(path, id) {
   toast("Installing…");
   try {
-    const r = await invoke("mods_install", { path });
+    const r = await invoke("mods_install", { path, id: id || null });
     toast(`${r.folder} installed (${r.bigs} game file${r.bigs === 1 ? "" : "s"})`, "ok");
+    if (id) { clearInterval(watchTimer); store.watch = null; }
   } catch (e) { toast(errText(e), "bad"); }
   await loadMods();
 }
+/** Native file or folder picker, opened in the Downloads folder. */
+async function choose(id, directory) {
+  let picked;
+  try {
+    const dl = await invoke("downloads_dir").catch(() => null);
+    picked = await tauri.dialog.open({
+      multiple: false, directory: !!directory, defaultPath: dl || undefined,
+      title: directory ? "Choose the mod folder" : "Choose the downloaded mod",
+      filters: directory ? undefined : [{ name: "Mods and installers", extensions: ["zip", "7z", "rar", "exe", "gz", "tgz", "xz", "bz2", "tar"] }],
+    });
+  } catch (e) { return toast("Couldn't open the file picker: " + errText(e), "bad"); }
+  if (picked) await installPath(typeof picked === "string" ? picked : picked.path, id);
+}
 
 // ---------------------------------------------------------------- components
+/** A chip for the state of one thing (a mod is installed, waiting, or blocked). */
 function pill(text, kind) { return h("span", { class: "pill " + (kind || "") }, text); }
+/** A plain status line with a dot, for ambient state in the sidebar. */
+function status(text, kind) { return h("span", { class: "status " + (kind || "") }, text); }
 
 /** "Choose or download the game files". `onChange(ok)` fires whenever validity changes. */
 function gameFilesPanel(onChange) {
@@ -146,7 +163,7 @@ function gameFilesPanel(onChange) {
   const codeBtn = h("button", { class: "btn", hidden: true, onclick: () => invoke("assets_use_code") }, "Enter a code instead");
   const needLabel = h("span");
   const needInput = h("input", { type: "text", autocomplete: "one-time-code" });
-  const needBtn = h("button", { class: "btn primary", onclick: () => { invoke("assets_submit", { text: needInput.value }); needInput.value = ""; } }, "Submit");
+  const needBtn = h("button", { class: "btn primary", onclick: () => { invoke("assets_submit", { text: needInput.value }); needInput.value = ""; } }, "Send");
   const need = h("div", { class: "grid2", hidden: true }, h("label", { class: "field" }, needLabel, needInput), h("div", { class: "row" }, needBtn));
   const bar = h("progress", { max: 100, value: 0, hidden: true });
   const smsg = h("div", { class: "msg muted", role: "status" });
@@ -158,7 +175,11 @@ function gameFilesPanel(onChange) {
     go.hidden = active; cancel.hidden = !active; codeBtn.hidden = !s.phone;
     bar.hidden = s.phase !== "Downloading"; bar.value = s.percent;
     need.hidden = !s.need;
-    if (s.need) { needLabel.textContent = s.need === "Guard" ? "Steam Guard code" : "Steam password"; needInput.type = s.need === "Guard" ? "text" : "password"; }
+    if (s.need) {
+      needLabel.textContent = s.need === "Guard" ? "Steam Guard code" : "Steam password";
+      needInput.type = s.need === "Guard" ? "text" : "password";
+      needBtn.textContent = s.need === "Guard" ? "Send code" : "Send password";
+    }
     smsg.className = s.phone ? "banner" : "msg " + (s.phase === "Failed" ? "bad" : s.phase === "Done" ? "ok" : "muted");
     smsg.textContent = s.phase === "Idle" ? "" : s.message + (s.phase === "Downloading" ? ` ${s.percent.toFixed(0)}%` : "");
     if (s.log) log.textContent = s.log;
@@ -223,10 +244,12 @@ function modCard(m, compact) {
 }
 
 function watchBanner() {
-  if (!store.watch) return null;
-  return h("div", { class: "banner" },
-    h("div", {}, h("b", {}, `Download ${store.watch.name} in your browser`), h("p", { class: "muted small" }, "It installs automatically as soon as the download finishes (zip, 7z or rar; see the help below for .exe installers).")),
-    h("button", { class: "btn small", onclick: cancelWatch }, "Cancel"));
+  const w = store.watch;
+  if (!w) return null;
+  return h("div", { class: "banner stack" },
+    h("div", {}, h("b", {}, `Download ${w.name} in your browser`), h("p", { class: "muted small" }, "When the download has finished, choose the file here. (If you picked an .exe installer, see the help below.)")),
+    w.found ? h("div", { class: "row" }, h("span", { class: "small" }, "Found in Downloads: "), h("code", {}, w.found.name), h("button", { class: "btn small primary", onclick: () => installPath(w.found.path, w.id) }, "Install this file")) : null,
+    h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => choose(w.id, false) }, "Choose downloaded file…"), h("button", { class: "btn", onclick: cancelWatch }, "Cancel")));
 }
 
 // ---------------------------------------------------------------- pages
@@ -260,8 +283,8 @@ function playPage() {
 
   function fillFiles() {
     fill(files,
-      store.cfg.game_dir ? h("div", {}, pill("Game files ready", "ok"), h("span", { class: "muted small" }, " " + store.cfg.game_dir)) : h("div", {}, pill("Game files needed", "warn")),
-      store.cfg.game_dir ? null : h("button", { class: "btn", onclick: () => openWizard() }, "Set up"));
+      store.cfg.game_dir ? h("p", { class: "muted small" }, "Game files: " + store.cfg.game_dir) : h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet."),
+      store.cfg.game_dir ? null : h("button", { class: "btn", onclick: () => openWizard() }, "Find or download game files"));
   }
   fillFiles();
 
@@ -279,7 +302,7 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the full game (Solo Play → Skirmish). Quick Skirmish jumps straight into a 1v1 against the AI.")),
+      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the full game; Skirmish is under Solo Play. Quick Skirmish starts a 1v1 against the AI straight away.")),
       files,
       h("div", { class: "row" }, play, sk)),
     h("div", { class: "card" },
@@ -289,17 +312,18 @@ function playPage() {
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       custom,
       h("label", { class: "switch" }, fs, "Fullscreen"),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. The camera and menus adapt so nothing looks zoomed in or stretched.")));
+      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide: the camera and menus adapt instead of zooming in or stretching.")));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
 function modsPage() {
   const body = h("div", { class: "stack" });
-  const path = h("input", { type: "text", placeholder: "…or paste a path to a file or folder", "aria-label": "Path to mod" });
+  const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
   const drop = h("div", { class: "drop", id: "dropzone" },
-    h("b", {}, "Drop a mod here"),
-    h("span", { class: "small" }, ".zip, .7z, .rar, a folder, or an installer .exe"),
-    h("div", { class: "row" }, path, h("button", { class: "btn", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install")));
+    h("b", {}, "Add a mod from a file"),
+    h("span", { class: "small" }, "Drop it here, or choose it: .zip, .7z, .rar, a folder, or an installer .exe"),
+    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn", onclick: () => choose(null, true) }, "Choose folder…")),
+    h("div", { class: "row" }, path, h("button", { class: "btn small", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install path")));
   const help = h("details", { class: "card help" },
     h("summary", {}, "A mod came as an .exe installer?"),
     h("p", { class: "muted" }, "Rallypoint can unpack many installers without running them, if one of these free tools is installed (it tells you which if one is missing):"),
@@ -392,9 +416,9 @@ function go(name) {
 
 function updateSidebar() {
   if (!sideFiles) return;
-  sideFiles.replaceChildren(pill(store.cfg.game_dir ? "Game files ready" : "Game files needed", store.cfg.game_dir ? "ok" : "warn"));
+  sideFiles.replaceChildren(status(store.cfg.game_dir ? "Game files ready" : "Game files needed", store.cfg.game_dir ? "ok" : "warn"));
   const s = store.relay;
-  sideNet.replaceChildren(pill(s.startsWith("Connected as") ? "Online" : s === "Offline" ? "Offline" : s === "Connecting..." ? "Connecting…" : "Not connected", s.startsWith("Connected as") ? "ok" : s === "Offline" || s === "Connecting..." ? "" : "bad"));
+  sideNet.replaceChildren(status(s.startsWith("Connected as") ? "Online" : s === "Offline" ? "Offline" : s === "Connecting..." ? "Connecting…" : "Not connected", s.startsWith("Connected as") ? "ok" : s === "Offline" || s === "Connecting..." ? "" : "bad"));
 }
 
 function shell() {
@@ -433,9 +457,10 @@ function openWizard() {
   function body(step) {
     w.dispose = null;
     if (step === 0) {
-      return h("div", { class: "welcome" }, h("img", { src: "logo.png", alt: "" }), h("h1", {}, "Welcome to Rallypoint"),
-        h("p", { class: "muted" }, "A modern launcher for Command & Conquer: Generals – Zero Hour. Setup takes about two minutes, and you can change everything later."),
-        h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Pick a display setting"), h("li", {}, "Add mods and join online games, if you like")));
+      return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
+        h("div", { class: "stack" }, h("h1", {}, "Set up Rallypoint"),
+          h("p", { class: "muted" }, "Rallypoint runs Command & Conquer: Generals – Zero Hour on your Mac or PC, at any screen size. It needs your own copy of the game. This takes about two minutes and everything can be changed later."),
+          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods and an online server, if you want them"))));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); });
@@ -467,26 +492,31 @@ function openWizard() {
         h("p", { class: "muted" }, "To play with friends, enter a Rallypoint server and a room name. You pick the room password when you connect. Leave this blank to skip."),
         h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Room"), room)));
     }
-    return h("div", { class: "welcome" }, h("div", { class: "check" }, icon("check")), h("h1", {}, "You're all set"),
-      h("p", { class: "muted" }, "Game files: " + (store.cfg.game_dir || "not set yet")),
-      h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Start playing"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Explore mods")));
+    const pr = prefs.get(), nat = nativeRes();
+    return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
+      h("dl", { class: "summary" },
+        h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
+        h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed")),
+        h("dt", {}, "Mods"), h("dd", {}, installedMods().map((m) => m.name).join(", ") || "none"),
+        h("dt", {}, "Server"), h("dd", {}, store.cfg.server ? `${store.cfg.server}${store.cfg.room ? ", room " + store.cfg.room : ""}` : "none")),
+      h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));
   }
 
   let nextBtn, backBtn;
   function nav() {
     if (!nextBtn) return;
     nextBtn.disabled = w.i === 1 && !w.filesOk;
-    nextBtn.textContent = w.i === 0 ? "Get started" : "Next";
+    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to mods", "Continue to online play", "Review"][w.i] || "Continue";
     backBtn.hidden = w.i === 0;
   }
   function render() {
     w.dispose && w.dispose();
-    nextBtn = h("button", { class: "btn primary", onclick: () => { w.i++; render(); } }, "Next");
+    nextBtn = h("button", { class: "btn primary", onclick: () => { w.i++; render(); } }, "Continue");
     backBtn = h("button", { class: "btn", onclick: () => { w.i--; render(); } }, "Back");
     const last = w.i === steps.length - 1;
     overlay.replaceChildren(h("div", { class: "wizard" },
       h("div", { class: "wiz-head" }, h("div", { class: "row between" }, h("span", { class: "muted small" }, `Step ${w.i + 1} of ${steps.length}: ${steps[w.i]}`), last ? null : h("button", { class: "btn small ghost", onclick: () => finish() }, "Skip setup")),
-        h("div", { class: "dots" }, steps.map((_, k) => h("i", { class: k < w.i ? "done" : k === w.i ? "now" : "" })))),
+        h("div", { class: "chevs", role: "img", "aria-label": `Step ${w.i + 1} of ${steps.length}` }, steps.map((_, k) => h("i", { class: k < w.i ? "done" : k === w.i ? "now" : "" })))),
       h("div", { class: "wiz-body" }, body(w.i)),
       h("div", { class: "wiz-foot" }, backBtn, last ? h("span") : nextBtn)));
     nav();

@@ -1,0 +1,242 @@
+diff --git a/Dependencies/Utility/osdep_compat/win32_api.h b/Dependencies/Utility/osdep_compat/win32_api.h
+index 4728066..59976e1 100644
+--- a/Dependencies/Utility/osdep_compat/win32_api.h
++++ b/Dependencies/Utility/osdep_compat/win32_api.h
+@@ -1831,9 +1831,11 @@ inline BOOL DeleteFile(const char *path)
+ inline BOOL DeleteFileA(const char *path) { return DeleteFile(path); }
+ 
+ // --- Command line. ---------------------------------------------------------
+-// The real process command line is not reconstructed here; callers only need a
+-// non-null string. TODO(macos): stash argv at startup if exact text is needed.
+-inline char *GetCommandLineA() { static char s_empty[1] = {0}; return s_empty; }
++// main() stores the real command line here (joined the Windows way) so the engine's
++// parser sees the flags it was started with (-xres/-yres/-fullscreen/-mod ...).
++inline std::string &CommandLineStorage() { static std::string s; return s; }
++inline void SetCommandLineA(const char *cmd) { CommandLineStorage() = cmd ? cmd : ""; }
++inline char *GetCommandLineA() { return &CommandLineStorage()[0]; } // an empty string points at its terminator
+ inline char *GetCommandLine()  { return GetCommandLineA(); }
+ 
+ // --- COM task allocator (SHGetKnownFolderPath partner). --------------------
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index 33aef9b..622fa0b 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -995,10 +995,22 @@ GameEngine *CreateGameEngine()
+ #if !defined(_WIN32)
+ #include <unistd.h>	// _exit
+ #include <cstdio>	// fflush
++#include <cstring>	// strchr
++#include <string>
+ int main(int argc, char* argv[])
+ {
+-	(void)argc;
+-	(void)argv;
++	// Hand the real command line to the engine. Its parser skips the first token (the program name) and only honours a
++	// quote at the start of a token, so quote arguments that contain spaces (mod folders under "Application Support").
++	std::string commandLine = "generalszh";
++	for (int i = 1; i < argc; ++i)
++	{
++		commandLine += ' ';
++		if (strchr(argv[i], ' '))
++			commandLine += std::string("\"") + argv[i] + "\"";
++		else
++			commandLine += argv[i];
++	}
++	SetCommandLineA(commandLine.c_str());
+ 	int exitcode = WinMain(nullptr, nullptr, (LPSTR)"", 0 /*SW_HIDE*/);
+ 
+ 	// The engine already tore itself down inside WinMain (shutdownMemoryManager,
+diff --git a/cmake/dx8_stub/dx8_device.cpp b/cmake/dx8_stub/dx8_device.cpp
+index c8dcbac..36a1534 100644
+--- a/cmake/dx8_stub/dx8_device.cpp
++++ b/cmake/dx8_stub/dx8_device.cpp
+@@ -15,8 +15,11 @@
+ #include <windows.h>   // osdep_compat shim
+ #include <d3d8.h>
+ 
++#include <algorithm>
++#include <cstdlib>
+ #include <cstring>
+ #include <cstdio>
++#include <utility>
+ #include <vector>
+ 
+ #include "metal_backend.h"
+@@ -994,6 +997,7 @@ public:
+             m_height = pp->BackBufferHeight;
+             if (m_ctx) MetalContext_Resize(m_ctx, (int)m_width, (int)m_height);
+         }
++        if (pp && m_ctx) MetalContext_SetWindowed(m_ctx, pp->Windowed ? 1 : 0); // Options > Display can switch at runtime
+         return D3D_OK;
+     }
+     STDMETHOD(Present)(CONST RECT*, CONST RECT*, HWND, CONST RGNDATA*) override
+@@ -1761,40 +1765,54 @@ public:
+     }
+ 
+ private:
+-    // Advertised display modes. The engine (DX8Wrapper::Find_Color_Mode) scans
+-    // these for an exact width/height/format match, so we expose the common
+-    // resolutions in both a 32-bit (X8R8G8B8) and a 16-bit (R5G6B5) format.
+-    static const D3DDISPLAYMODE* ModeTable()
++    // Advertised display modes. The engine (DX8Wrapper::Find_Color_Mode) scans these for an exact
++    // width/height/format match, so a resolution that is not listed silently falls back to the default.
++    // We list the common resolutions that fit this screen, the screen's own native pixel size, and any
++    // sizes named in GEN_EXTRA_RES ("3440x1440,2560x1080"; the launcher sets it to the chosen size),
++    // each in a 32-bit (X8R8G8B8) and a 16-bit (R5G6B5) format.
++    static std::vector<D3DDISPLAYMODE>& Modes()
+     {
+-        static const struct { UINT w, h; } kRes[] = {
+-            { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1152, 864 },
+-            { 1280, 720 }, { 1280, 960 }, { 1280, 1024 }, { 1366, 768 },
+-            { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 },
+-            { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 },
+-        };
+-        static const D3DFORMAT kFmt[] = { D3DFMT_X8R8G8B8, D3DFMT_R5G6B5 };
+-        static const UINT kResCount = sizeof(kRes) / sizeof(kRes[0]);
+-        static const UINT kFmtCount = sizeof(kFmt) / sizeof(kFmt[0]);
+-        static D3DDISPLAYMODE table[kResCount * kFmtCount];
++        static std::vector<D3DDISPLAYMODE> modes;
+         static bool built = false;
+-        if (!built) {
+-            UINT idx = 0;
+-            for (UINT f = 0; f < kFmtCount; ++f)
+-                for (UINT r = 0; r < kResCount; ++r) {
+-                    table[idx].Width = kRes[r].w;
+-                    table[idx].Height = kRes[r].h;
+-                    table[idx].RefreshRate = 60;
+-                    table[idx].Format = kFmt[f];
+-                    ++idx;
+-                }
+-            built = true;
++        if (built) return modes;
++        built = true;
++        std::vector<std::pair<UINT, UINT>> res = {
++            { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 960 }, { 1280, 1024 },
++            { 1366, 768 }, { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 },
++            { 2560, 1440 },
++        };
++        int nw = 0, nh = 0;
++        MetalShim_NativeScreenSize(&nw, &nh);
++        static const UINT kBig[][2] = {
++            { 2560, 1080 }, { 2560, 1600 }, { 2880, 1800 }, { 3024, 1964 }, { 3440, 1440 }, { 3456, 2234 },
++            { 3840, 1600 }, { 3840, 2160 }, { 5120, 1440 }, { 5120, 2160 }, { 5120, 2880 },
++        };
++        for (const auto& r : kBig)
++            if (nw <= 0 || ((int)r[0] <= nw && (int)r[1] <= nh)) res.push_back({ r[0], r[1] });
++        if (nw > 0 && nh > 0) res.push_back({ (UINT)nw, (UINT)nh });
++        if (const char* extra = std::getenv("GEN_EXTRA_RES")) {
++            const char* p = extra;
++            unsigned w = 0, h = 0;
++            int used = 0;
++            while (std::sscanf(p, "%ux%u%n", &w, &h, &used) == 2) {
++                if (w >= 640 && w <= 16384 && h >= 480 && h <= 16384) res.push_back({ w, h });
++                p += used;
++                while (*p == ',' || *p == ' ') ++p;
++            }
+         }
+-        return table;
+-    }
+-    static UINT ModeCount()
+-    {
+-        return 15u /*resolutions*/ * 2u /*formats*/;
++        std::sort(res.begin(), res.end());
++        res.erase(std::unique(res.begin(), res.end()), res.end());
++        static const D3DFORMAT kFmt[] = { D3DFMT_X8R8G8B8, D3DFMT_R5G6B5 };
++        for (D3DFORMAT f : kFmt)
++            for (const auto& r : res) {
++                D3DDISPLAYMODE m{};
++                m.Width = r.first; m.Height = r.second; m.RefreshRate = 60; m.Format = f;
++                modes.push_back(m);
++            }
++        return modes;
+     }
++    static const D3DDISPLAYMODE* ModeTable() { return Modes().data(); }
++    static UINT ModeCount() { return (UINT)Modes().size(); }
+     static void FillMode(D3DDISPLAYMODE* pMode)
+     {
+         pMode->Width = 1024; pMode->Height = 768; pMode->RefreshRate = 60; pMode->Format = D3DFMT_X8R8G8B8;
+diff --git a/cmake/dx8_stub/metal_backend.h b/cmake/dx8_stub/metal_backend.h
+index f7dc410..b0de9ef 100644
+--- a/cmake/dx8_stub/metal_backend.h
++++ b/cmake/dx8_stub/metal_backend.h
+@@ -42,6 +42,12 @@ void MetalContext_Present(MetalContext* ctx);
+ // Resize the drawable / layer.
+ void MetalContext_Resize(MetalContext* ctx, int width, int height);
+ 
++// Enter (windowed == 0) or leave macOS fullscreen. Idempotent: repeated calls with the same value do nothing.
++void MetalContext_SetWindowed(MetalContext* ctx, int windowed);
++
++// Pixel size of the main display (points x backing scale), 0 if unknown.
++void MetalShim_NativeScreenSize(int* width, int* height);
++
+ // Pump pending NSEvents without presenting (used outside the draw loop).
+ void MetalContext_PumpEvents(MetalContext* ctx);
+ 
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 2288ad3..2b5f137 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -678,6 +678,7 @@ - (void)setFrameSize:(NSSize)newSize { [super setFrameSize:newSize]; [self layou
+     MTLClearColor        clearColor;
+     int                  width;
+     int                  height;
++    bool                 fullscreenWanted = false;  // last requested state (toggleFullScreen: is asynchronous)
+ 
+     // Shader functions + pipeline cache (keyed by fvf/blend state).
+     id<MTLLibrary>       shaderLib;   // owns vs_main, fs_main, shadow_fs
+@@ -1783,7 +1784,7 @@ static inline void DiagTexFree(void* tp) {
+     c->texLiveBytes.fetch_sub((long)TexApproxBytes((__bridge id<MTLTexture>)tp), std::memory_order_relaxed);
+ }
+ 
+-extern "C" MetalContext* MetalContext_Create(int width, int height, int /*windowed*/)
++extern "C" MetalContext* MetalContext_Create(int width, int height, int windowed)
+ {
+     @autoreleasepool {
+         EnsureAppInitialized();
+@@ -1950,6 +1951,14 @@ static inline void DiagTexFree(void* tp) {
+         [window makeKeyAndOrderFront:nil];
+ 
+         ctx->window = window;
++        // Fullscreen request (the launcher's "Fullscreen" / -fullscreen). The AspectFitView above letterboxes
++        // the render surface if the screen's aspect differs from the game's.
++        if (!windowed) {
++            [window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
++            [NSApp activateIgnoringOtherApps:YES];
++            [window toggleFullScreen:nil];
++            ctx->fullscreenWanted = true;
++        }
+         ctx->view   = view;
+         ctx->layer  = layer;
+         g_inputView = view;  // for input coordinate conversion (the MetalView)
+@@ -2143,6 +2152,31 @@ static void RebuildPipelinesForMSAA(MetalContext* ctx)
+ 
+ extern "C" void MetalContext_PumpEvents(MetalContext* /*ctx*/) { DrainEvents(); }
+ 
++extern "C" void MetalContext_SetWindowed(MetalContext* ctx, int windowed)
++{
++    if (!ctx || !ctx->window) return;
++    const bool wantFull = (windowed == 0);
++    if (wantFull == ctx->fullscreenWanted) return;   // toggleFullScreen: is async, so track the request, not the style mask
++    ctx->fullscreenWanted = wantFull;
++    @autoreleasepool {
++        [ctx->window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
++        [ctx->window toggleFullScreen:nil];
++    }
++}
++
++extern "C" void MetalShim_NativeScreenSize(int* width, int* height)
++{
++    if (width)  *width  = 0;
++    if (height) *height = 0;
++    @autoreleasepool {
++        NSScreen* s = [NSScreen mainScreen];
++        if (!s) return;
++        CGFloat k = s.backingScaleFactor;
++        if (width)  *width  = (int)(s.frame.size.width  * k + 0.5);
++        if (height) *height = (int)(s.frame.size.height * k + 0.5);
++    }
++}
++
+ extern "C" void MetalContext_Resize(MetalContext* ctx, int width, int height)
+ {
+     if (!ctx) return;

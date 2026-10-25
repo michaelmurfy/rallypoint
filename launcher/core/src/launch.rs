@@ -40,6 +40,11 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     let mut c = Command::new(engine);
     c.current_dir(game_dir).args(args(o));
     c.envs(o.env.iter().map(|(k, v)| (k, v)));
+    // The macOS engine only accepts resolutions it advertises; naming the chosen one makes any size (4K, ultrawide,
+    // a custom value) valid. Other platforms ignore it.
+    if o.width >= 640 && o.height >= 480 {
+        c.env("GEN_EXTRA_RES", format!("{}x{}", o.width, o.height));
+    }
     if let Some((agent, vip)) = &o.relay {
         c.env("GEN_RELAY", agent).env("GEN_RELAY_VIP", vip);
     }
@@ -61,6 +66,17 @@ mod tests {
         let o = LaunchOptions { env: vec![("GEN_AUTO_SKIRMISH".into(), "1".into())], ..Default::default() };
         let c = command(Path::new("e"), Path::new("."), &o);
         assert!(c.get_envs().any(|(k, v)| k == "GEN_AUTO_SKIRMISH" && v == Some("1".as_ref())));
+    }
+
+    #[test]
+    fn chosen_resolution_is_named_for_the_engine() {
+        let o = LaunchOptions { width: 3440, height: 1440, fullscreen: true, ..Default::default() };
+        assert_eq!(args(&o)[..5], ["-fullscreen", "-xres", "3440", "-yres", "1440"]);
+        let c = command(Path::new("e"), Path::new("."), &o);
+        assert!(c.get_envs().any(|(k, v)| k == "GEN_EXTRA_RES" && v == Some("3440x1440".as_ref())));
+        // nonsense sizes are not advertised
+        let c = command(Path::new("e"), Path::new("."), &LaunchOptions { width: 10, height: 10, ..Default::default() });
+        assert!(!c.get_envs().any(|(k, _)| k == "GEN_EXTRA_RES"));
     }
 
     #[test]

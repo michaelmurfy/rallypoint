@@ -267,7 +267,8 @@ fn mods_list(app: tauri::AppHandle) -> Result<ModList, String> {
     Ok(ModList { catalog, other })
 }
 
-/// Open the mod's official download page and start watching the Downloads folder for the file.
+/// Open the mod's official download page. We then watch the Downloads folder, but only to *suggest* the file:
+/// nothing is installed until the user picks one (or confirms the suggestion).
 #[tauri::command]
 fn mods_get(app: tauri::AppHandle, watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
     let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
@@ -283,36 +284,31 @@ fn mods_get(app: tauri::AppHandle, watch: tauri::State<ModWatch>, id: String) ->
 
 #[derive(serde::Serialize, Default)]
 struct WatchStatus {
-    /// "idle", "waiting", "installed" or "error"
+    /// "idle", "waiting" or "found"
     state: &'static str,
     id: String,
+    /// File name of the suggested download.
     message: String,
+    path: String,
 }
 
-/// Called every second by the UI while a download is expected. Installs the file as soon as it has finished.
+/// Polled by the UI while a download is expected. Only looks; never installs.
 #[tauri::command]
-async fn mods_poll(app: tauri::AppHandle, watch: tauri::State<'_, ModWatch>) -> Result<WatchStatus, String> {
+fn mods_poll(watch: tauri::State<ModWatch>) -> Result<WatchStatus, String> {
     let (id, since) = match watch.0.lock().unwrap().as_ref() {
         Some(w) => (w.id.clone(), w.since),
         None => return Ok(WatchStatus { state: "idle", ..Default::default() }),
     };
     let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
-    let Some(file) = mods::downloads_dir().and_then(|d| mods::find_download(&d, since, &m.detect)) else {
-        return Ok(WatchStatus { state: "waiting", id, message: "Waiting for your download to finish…".into() });
-    };
-    *watch.0.lock().unwrap() = None;
-    let dir = mods_dir(&app)?;
-    if let Some(base) = m.addon_for.as_ref().and_then(|id| catalog().ok()?.into_iter().find(|b| &b.id == id)) {
-        if !dir.join(&base.path).is_dir() {
-            return Ok(WatchStatus { state: "error", id, message: format!("{} needs to be installed first", base.name) });
-        }
-    }
-    let name = m.name.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || mods::install(&file, &dir, &m.path)).await.map_err(|e| e.to_string())?;
-    Ok(match result {
-        Ok(i) => WatchStatus { state: "installed", id, message: format!("{name} installed ({} MB)", i.mb) },
-        Err(e) => WatchStatus { state: "error", id, message: e },
+    Ok(match mods::downloads_dir().and_then(|d| mods::find_download(&d, since, &m.detect)) {
+        Some(f) => WatchStatus { state: "found", id, message: f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), path: f.to_string_lossy().into_owned() },
+        None => WatchStatus { state: "waiting", id, ..Default::default() },
     })
+}
+
+#[tauri::command]
+fn downloads_dir() -> Option<String> {
+    mods::downloads_dir().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -320,13 +316,28 @@ fn mods_cancel_watch(watch: tauri::State<ModWatch>) {
     *watch.0.lock().unwrap() = None;
 }
 
-/// Install from a file or folder the user chose or dropped on the window.
+/// Install from a file or folder the user chose or dropped on the window. With `id`, it is installed as that catalog mod
+/// (so it lands in the right folder and add-ons are checked against their base mod).
 #[tauri::command]
-async fn mods_install(app: tauri::AppHandle, path: String) -> Result<mods::Installed, String> {
+async fn mods_install(app: tauri::AppHandle, watch: tauri::State<'_, ModWatch>, path: String, id: Option<String>) -> Result<mods::Installed, String> {
     let src = PathBuf::from(path.trim());
-    let folder = mods::folder_for_archive(&src).ok_or("couldn't work out a name for that mod")?;
     let dir = mods_dir(&app)?;
-    tauri::async_runtime::spawn_blocking(move || mods::install(&src, &dir, &folder)).await.map_err(|e| e.to_string())?
+    let folder = match id {
+        Some(id) => {
+            let cat = catalog()?;
+            let m = cat.iter().find(|m| m.id == id).ok_or("unknown mod")?;
+            if let Some(base) = m.addon_for.as_ref().and_then(|b| cat.iter().find(|c| &c.id == b)) {
+                if !dir.join(&base.path).is_dir() {
+                    return Err(format!("{} needs to be installed first", base.name));
+                }
+            }
+            m.path.clone()
+        }
+        None => mods::folder_for_archive(&src).ok_or("couldn't work out a name for that mod")?,
+    };
+    let installed = tauri::async_runtime::spawn_blocking(move || mods::install(&src, &dir, &folder)).await.map_err(|e| e.to_string())??;
+    *watch.0.lock().unwrap() = None; // whatever we were waiting for has arrived
+    Ok(installed)
 }
 
 #[tauri::command]
@@ -417,11 +428,12 @@ fn main() {
         .manage(Relay::default())
         .manage(Downloads::default())
         .manage(ModWatch::default())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, save_game_dir, set_setup_done,
             relay_connect, relay_disconnect, relay_status,
-            mods_list, mods_get, mods_poll, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
+            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
             launch_game
         ])
         .run(tauri::generate_context!())

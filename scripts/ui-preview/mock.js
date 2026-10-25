@@ -32,10 +32,11 @@ const handlers = {
   assets_submit: () => { if (state.job) { state.job.coded = true; state.job.tick = 8; state.job.s = { ...state.job.s, need: null, message: "Signing in to Steam…" }; } },
   assets_cancel: () => { state.job = null; },
   mods_list: () => ({ catalog: state.mods, other: state.other }),
-  mods_get: () => { state.watch = true; setTimeout(() => { state.mods[0].installed = { folder: "Shockwave", bigs: 12, mb: 280 }; state.watch = false; }, 4000); },
-  mods_poll: () => (state.watch ? { state: "waiting", id: "shockwave", message: "" } : { state: "installed", id: "shockwave", message: "C&C: Shockwave installed (280 MB)" }),
+  mods_get: () => { state.watch = Date.now(); },
+  mods_poll: () => (state.watch && Date.now() - state.watch > 5000 ? { state: "found", id: "shockwave", message: "ShockWave_1.201.zip", path: "/Users/me/Downloads/ShockWave_1.201.zip" } : { state: state.watch ? "waiting" : "idle", id: "shockwave", message: "", path: "" }),
+  downloads_dir: () => "/Users/me/Downloads",
   mods_cancel_watch: () => { state.watch = false; },
-  mods_install: ({ path }) => ({ folder: path.split("/").pop().replace(/\.\w+$/, ""), bigs: 3, mb: 20 }),
+  mods_install: ({ path, id }) => { state.watch = false; if (id) { const m = state.mods.find((x) => x.id === id); m.installed = { folder: m.path, bigs: 12, mb: 280 }; return m.installed; } return { folder: path.split("/").pop().replace(/\.\w+$/, ""), bigs: 3, mb: 20 }; },
   mods_remove: ({ folder }) => { if (folder === "Shockwave") state.mods[0].installed = null; state.other = state.other.filter((o) => o.folder !== folder); },
   open_mods_folder: () => {}, open_homepage: () => {},
   relay_status: () => "Offline", relay_connect: () => {}, relay_disconnect: () => {},
@@ -44,4 +45,5 @@ const handlers = {
 window.__TAURI__ = {
   core: { invoke: async (cmd, args) => { if (!(cmd in handlers)) throw new Error("mock: no handler for " + cmd); return handlers[cmd](args || {}); } },
   webview: { getCurrentWebview: () => ({ onDragDropEvent: () => {} }) },
+  dialog: { open: async () => "/Users/me/Downloads/ShockWave_1.201.zip" },
 };
