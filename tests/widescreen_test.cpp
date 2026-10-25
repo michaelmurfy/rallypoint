@@ -2,6 +2,7 @@
 #include "Common/WideScreen.h"
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 
 static bool near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
 
@@ -34,5 +35,18 @@ int main()
 	assert(near(s.x, 2.4f) && s.xOffset == 0);
 	s = uiScale(1280, 1024, 800, 600, false);
 	assert(s.x < s.y && s.xOffset == 0);
+
+	// Control bar scheme art maps into the same centred 4:3 region as the windows, so it lines up with them.
+	const UiScale wnd = uiScale(3440, 1440, 800, 600, false);
+	UiScale c = schemeScale(3440, 1440, 800, 600);
+	assert(near(c.x, 2.4f) && near(c.y, 2.4f) && c.xOffset == wnd.xOffset && std::abs(c.xOffset - 760) <= 1);
+	// a scheme authored 16:9 (1920x1080) keeps its own aspect inside that region: same width as the windows' region
+	c = schemeScale(3440, 1440, 1920, 1080);
+	assert(std::fabs(c.x * 1920.0f - 1920.0f) < 0.5f && std::fabs(c.y * 1080.0f - 1440.0f) < 0.5f && c.xOffset == wnd.xOffset);
+	// plain 4:3, and taller than 4:3, behave exactly like the retail stretch (display / creation res)
+	c = schemeScale(1024, 768, 800, 600);
+	assert(near(c.x, 1.28f) && near(c.y, 1.28f) && c.xOffset == 0);
+	c = schemeScale(1280, 1024, 800, 600);
+	assert(near(c.x, 1.6f) && near(c.y, 1024.0f / 600.0f) && c.xOffset == 0);
 	return 0;
 }
