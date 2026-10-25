@@ -186,3 +186,7 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--surface-2); border-top-color: var(--rose); animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--muted); } }
+.diag { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; font-size: 14px; }
+.diag dt { color: var(--muted); }
+.diag dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.diag dd.ok { color: var(--ok-ink); } .diag dd.warn { color: var(--warn-ink); } .diag dd.bad { color: var(--bad-ink); }

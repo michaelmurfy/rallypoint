@@ -19,6 +19,10 @@ services:
       - /tmp
     cap_drop:
       - ALL
+    # A runaway or attacked relay must not take the host with it.
+    mem_limit: 256m
+    pids_limit: 64
+    cpus: 1.0
     security_opt:
       - no-new-privileges:true
 

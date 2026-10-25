@@ -25,6 +25,10 @@ pub struct Config {
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
     pub camera_height: u32,
+    /// Identity keys of relay servers seen before (hex, keyed by `host:port` as typed, lower case). A server
+    /// that later answers with a different key is refused until the player chooses to trust it.
+    #[serde(default)]
+    pub server_keys: std::collections::BTreeMap<String, String>,
 }
 
 fn default_camera() -> u32 {

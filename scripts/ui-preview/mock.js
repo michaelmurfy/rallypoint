@@ -54,7 +54,8 @@ const handlers = {
   diagnose: () => ({ checks: [{ name: 'Game engine', ok: true, detail: 'engine.exe' }, { name: 'Zero Hour files', ok: true, detail: 'C:/Games/ZH' }, { name: 'Generals (base game)', ok: false, detail: 'Not found. Zero Hour also needs the original Generals installed or downloaded from Settings.' }], crash: 'Release Crash at Mon Oct 25\nException code: C0000005', engine_log: '[launcher] 1920x1080 fullscreen=false relay=agent 127.0.0.1:5000, virtual IP 10.77.0.2\n[net] relay on: agent 7F000001:5000, virtual IP 0A4D0002, logical port 8086', data_dir: 'x' }), open_game_data_folder: () => {},
   set_camera_height: () => {}, graphics_apply_high: async () => { await new Promise((r) => setTimeout(r, 600)); },
   open_mods_folder: () => {}, open_homepage: () => {},
-  relay_status: () => "Offline", relay_connect: () => {}, relay_disconnect: () => {},
+  relay_diagnostics: () => (hash.includes("online") ? { rtt_ms: 42, avg_ms: 45, jitter_ms: 6, loss_pct: 0, samples: 20, up_kbps: 38, down_kbps: 61, server_identity: "3F2A-91C0-77AB-0E15", identity_saved: true, server: { version: "0.1.0-beta.4", uptime_secs: 273600, rooms: 4, players: 11, max_rooms: 256, max_players: 2048, room_players: 3, load_pct: 2, pps: 420, kbps: 310 } } : null),
+  relay_status: () => (hash.includes("online") ? "Connected as 10.77.0.2" : "Offline"), relay_connect: () => {}, relay_disconnect: () => {},
   launch_game: () => {},
 };
 window.__TAURI__ = {

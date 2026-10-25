@@ -541,7 +541,51 @@ function storeServers(list) { try { localStorage.setItem("servers", JSON.stringi
 // Right-click does nothing in the launcher.
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
+const dur = (secs) => {
+  const d = Math.floor(secs / 86400), hr = Math.floor((secs % 86400) / 3600), m = Math.floor((secs % 3600) / 60);
+  return d ? `${d}d ${hr}h` : hr ? `${hr}h ${m}m` : `${m}m ${secs % 60}s`;
+};
+const rate = (kbps) => (kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbit/s` : `${kbps} kbit/s`);
+
+/** How the connection and the server are doing, refreshed while the Online page is open and we are connected. */
+function connectionCard() {
+  const body = h("dl", { class: "diag" });
+  const verdict = h("span", {});
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), body);
+  const row = (label, value, level) => [h("dt", {}, label), h("dd", { class: level || "" }, value)];
+  async function poll() {
+    let d = null;
+    try { d = await invoke("relay_diagnostics"); } catch { /* keep hidden */ }
+    card.hidden = !d;
+    if (!d) return;
+    const s = d.server;
+    const lat = d.rtt_ms == null ? null : d.avg_ms <= 60 ? "ok" : d.avg_ms <= 120 ? "warn" : "bad";
+    const loss = d.loss_pct == null ? null : d.loss_pct === 0 ? "ok" : d.loss_pct < 3 ? "warn" : "bad";
+    const load = s ? (s.load_pct < 70 ? "ok" : s.load_pct < 90 ? "warn" : "bad") : null;
+    const worst = [lat, loss, load].includes("bad") ? "bad" : [lat, loss, load].includes("warn") ? "warn" : lat ? "ok" : null;
+    const why = [lat === "bad" && `latency ${d.avg_ms} ms`, loss === "bad" && `${d.loss_pct}% packet loss`, load === "bad" && `server ${s.load_pct}% full`].filter(Boolean).join(", ");
+    verdict.className = "live " + (worst === "ok" ? "ok" : worst === "bad" ? "bad" : "");
+    verdict.textContent = worst === "ok" ? "Good" : worst === "warn" ? "Fair" : worst === "bad" ? `Poor: ${why}` : "Measuring…";
+    fill(body,
+      row("Latency", d.rtt_ms == null ? "measuring…" : `${d.rtt_ms} ms (average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0})`, lat),
+      row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
+      row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
+      d.server_identity ? row("Encryption", `on, server identity ${d.server_identity}${d.identity_saved ? " (checked against the saved one)" : " (saved now)"}`, "ok") : null,
+      s ? [
+        row("Server", `Rallypoint ${s.version}, up ${dur(s.uptime_secs)}`),
+        row("Rooms in use", `${s.rooms} of ${s.max_rooms}`),
+        row("Players online", `${s.players} of ${s.max_players}`),
+        row("In your room", String(s.room_players)),
+        row("Server load", `${s.load_pct}%, relaying ${s.pps} packets/s (${rate(s.kbps)})`, load),
+      ] : row("Server", "waiting for the server's numbers…"));
+  }
+  poll();
+  const timer = setInterval(poll, 2000);
+  return { el: card, dispose: () => clearInterval(timer) };
+}
+
 function onlinePage() {
+  const conn = connectionCard();
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
@@ -588,6 +632,13 @@ function onlinePage() {
     btn.textContent = on ? "Disconnect" : "Connect";
     btn.dataset.mode = on ? "disconnect" : "connect";
     status.replaceChildren(pill(s, s.startsWith("Connected as") ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
+    if (s === "This server's identity changed") {
+      status.append(h("button", { class: "btn small", onclick: async () => {
+        try { await invoke("relay_forget_key"); await invoke("relay_disconnect"); say("Forgotten. Press Connect to trust the server as it is now.", "ok"); } catch (e) { say(errText(e), "bad"); }
+        refresh();
+      } }, "Trust its new identity"));
+      status.append(h("span", { class: "muted small" }, "Expected if its owner reinstalled it. If not, someone may be pretending to be that server."));
+    }
   }
   refreshers.add(refresh); refresh();
   const el = h("div", { class: "page" },
@@ -598,8 +649,9 @@ function onlinePage() {
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
       h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left."),
       h("div", { class: "row" }, btn, save, status)),
+    conn.el,
     h("div", { class: "card" }, saved$));
-  return { el, dispose: () => refreshers.delete(refresh) };
+  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
 }
 
 function diagnosePanel() {
