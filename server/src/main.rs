@@ -7,6 +7,11 @@ use std::io::Write;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant, SystemTime};
 
+/// The release this binary was built from (CI sets RALLYPOINT_VERSION), else the crate version.
+fn version() -> &'static str {
+    option_env!("RALLYPOINT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 fn read(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
@@ -22,6 +27,10 @@ fn clean(label: &str) -> String {
 
 fn main() -> std::io::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("rallypoint-server {}", version());
+        return Ok(());
+    }
     let mut take = |flag: &str, default: &str| match args.iter().position(|a| a == flag) {
         Some(i) if i + 1 < args.len() => {
             args.remove(i);
@@ -87,7 +96,7 @@ fn run(file: &str, bind: &str, open: bool) -> std::io::Result<()> {
     let mut seen: Option<SystemTime> = mtime();
     let start = Instant::now();
     let mut buf = [0u8; 2048];
-    eprintln!("listening on {bind}, serials from {file}, sign-up {}", if open { "open" } else { "closed" });
+    eprintln!("rallypoint-server {} listening on {bind}, serials from {file}, sign-up {}", version(), if open { "open" } else { "closed" });
     // Reload when the serial file changed. Also done on every Hello, so a serial issued a moment ago works at once.
     let mut reload = |server: &mut Server| {
         let m = mtime();
