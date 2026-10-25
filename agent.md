@@ -27,7 +27,7 @@ Cross-platform (macOS, Windows, Linux) launcher and multiplayer stack for C&C Ge
 1. (done) Launcher MVP: detect, mod select, launch.
 2. Engine patches: any resolution/HiDPI, 2D UI scaling, zoom by aspect ratio.
 3. `server/` (Linux Rust): UDP relay emulating LAN broadcast + lobby; `shared/` protocol crate.
-   - **Serial required to connect:** each client has a unique serial; the handshake carries it and the server rejects unknown, revoked or already-in-use serials. Open design points: who issues serials (server admin CLI vs. launcher self-registration) and whether it is bound to a machine. Store it in the launcher config; never log it in full.
+   - **Serial required to connect:** each client has a unique serial; the handshake carries it and the server rejects unknown, revoked or already-in-use serials. Decided: the server admin issues serials via a CLI, one per client, not bound to a machine. Store it in the launcher config; never log it in full.
 4. Determinism: `-ffp-contract=off`, deterministic trig, RNG audit; headless engine on the server as a per-frame CRC referee that pinpoints the first diverging object (incl. AI).
 5. Linux engine build, packaging, engine auto-install in the launcher.
 
