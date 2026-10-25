@@ -17,7 +17,7 @@ Rallypoint: cross-platform (macOS, Windows, Linux) launcher and multiplayer stac
 - `make test` (= `cargo test -p generals-core -p generals-proto -p generals-server` + `sh tests/run.sh`) before every commit.
 - `cargo check -p generals-launcher` - needs webkit2gtk dev packages on Linux.
 - `cd launcher/src-tauri && cargo tauri build` - needs the engine copied into `launcher/src-tauri/engine/`.
-- Release: `make release VERSION=0.1.0-alpha.1` (tag must match `tauri.conf.json` version's numeric core). Dry run: Actions > Release > Run workflow.
+- Release: `make release VERSION=0.2.0-beta.1` (tag must match `tauri.conf.json` version's numeric core). Dry run: Actions > Release > Run workflow.
 - Clone with `git clone --recurse-submodules --depth 1`; the engine repo is large.
 - No cmake/Docker is assumed locally; engine builds are verified through the release workflow.
 

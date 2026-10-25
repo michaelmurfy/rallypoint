@@ -4,7 +4,7 @@
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
-> **0.1 Beta.** Single player works on macOS and Windows and has been played on both. Multiplayer through the relay is the main thing still to do. See [What works](#what-works-in-01-beta) for an honest list of what is and isn't done.
+> **0.2 Beta.** Single player works on macOS and Windows and has been played on both. Multiplayer through the relay is the main thing still to do. See [What works](#what-works-in-02-beta) for an honest list of what is and isn't done.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
 
@@ -21,7 +21,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 - **Help when something goes wrong.** *Settings → Troubleshooting* checks your game files and the original Generals, and shows the game's last crash report and what it printed. Results appear next to the button you pressed, not in pop-ups.
 - **Internet multiplayer through your own server (in progress).** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet. The relay, the encryption and the connection diagnostics are built; playing a full multiplayer game through it is still to do (see below).
 
-## What works in 0.1 Beta
+## What works in 0.2 Beta
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
@@ -167,7 +167,7 @@ cd launcher/src-tauri && cargo tauri build                         # needs the e
 
 Building the engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --preset apple-arm64-release`, target `z_generals`; Windows: `cmake --preset win32`). Details for contributors and AI agents are in [`agent.md`](agent.md).
 
-Releases are built only when a version tag is pushed (`make release VERSION=0.1.0-beta.1`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
+Releases are built only when a version tag is pushed (`make release VERSION=0.2.0-beta.1`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
 
 ### Layout
 

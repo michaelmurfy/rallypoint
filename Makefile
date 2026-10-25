@@ -61,7 +61,7 @@ linux-client: ## Build the Linux launcher (.deb, .rpm, .AppImage); no engine on 
 	cd launcher/src-tauri && cargo tauri build
 	@echo "built: target/release/bundle/"
 
-release: ## Tag and publish a release: make release VERSION=0.1.0-alpha.1
+release: ## Tag and publish a release: make release VERSION=0.2.0-beta.1
 	@[ -n "$(VERSION)" ] || { echo "usage: make release VERSION=0.1.0-alpha.1"; exit 1; }
 	@[ -z "$$(git status --porcelain --untracked-files=no | grep -v '^ m engine')" ] || { echo "commit your changes first"; exit 1; }
 	git tag -a v$(VERSION) -m "Rallypoint $(VERSION)"
