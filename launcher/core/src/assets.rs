@@ -32,6 +32,8 @@ pub enum Phase {
 pub enum Need {
     Password,
     Guard,
+    /// Apple Silicon without Rosetta 2: steamcmd is an Intel program. Answer with "install" to install it.
+    Rosetta,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -43,6 +45,41 @@ pub struct AssetState {
     pub need: Option<Need>,
     /// Recent steamcmd output with secrets removed, for the "details" panel and bug reports.
     pub log: String,
+}
+
+/// Rosetta 2 (Apple's Intel translation layer), which Valve's macOS steamcmd needs on Apple Silicon.
+pub struct Rosetta {
+    pub missing: Box<dyn Fn() -> bool + Send>,
+    pub install: Box<dyn Fn() -> Result<(), String> + Send>,
+}
+
+impl Rosetta {
+    pub fn system() -> Rosetta {
+        Rosetta { missing: Box::new(rosetta_missing), install: Box::new(install_rosetta) }
+    }
+
+    /// For platforms and tests where it never matters.
+    pub fn not_needed() -> Rosetta {
+        Rosetta { missing: Box::new(|| false), install: Box::new(|| Ok(())) }
+    }
+}
+
+fn rosetta_missing() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64")) && !Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").exists()
+}
+
+/// Asks macOS for administrator rights with its own password dialog, then runs Apple's installer. The user has
+/// just clicked "Install Rosetta", which is the consent for accepting Apple's license for it.
+fn install_rosetta() -> Result<(), String> {
+    let out = Command::new("osascript")
+        .args(["-e", "do shell script \"/usr/sbin/softwareupdate --install-rosetta --agree-to-license\" with administrator privileges"])
+        .output()
+        .map_err(|e| format!("Couldn't ask macOS to install Rosetta: {e}"))?;
+    if out.status.success() && !rosetta_missing() {
+        Ok(())
+    } else {
+        Err("Rosetta wasn't installed. In Terminal run: softwareupdate --install-rosetta --agree-to-license".into())
+    }
 }
 
 /// Where steamcmd and the games live under `root` (the launcher's data directory).
@@ -113,6 +150,8 @@ pub fn signin_script(user: &str, password: &str, code: &str) -> Result<String, S
 pub enum SignIn {
     Ok,
     NeedPassword,
+    /// steamcmd couldn't run: an Intel binary on Apple Silicon without Rosetta.
+    NeedRosetta,
     /// Steam wants a Steam Guard code; `wrong` = we sent one and it was refused.
     NeedGuard { wrong: bool },
     Failed(String),
@@ -123,6 +162,9 @@ pub fn classify_signin(output: &str, gave_password: bool) -> SignIn {
     let low = output.to_ascii_lowercase();
     if low.contains("waiting for user info...ok") || low.contains("logged in ok") {
         return SignIn::Ok;
+    }
+    if low.contains("bad cpu type in executable") {
+        return SignIn::NeedRosetta;
     }
     if low.contains("rate limit exceeded") {
         return SignIn::Failed("Steam is rate limiting logins, try again later".into());
@@ -325,7 +367,27 @@ fn download(ctx: &mut Ctx, dir: &Path, user: &str, root: &Path) -> Result<(), St
     }
 }
 
-fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String>, mut ctx: Ctx) {
+/// Offer to install Rosetta and wait for the user's answer. `false` = stop the job (cancelled or failed).
+fn ensure_rosetta(ctx: &mut Ctx, rx: &Receiver<String>, rosetta: &Rosetta) -> bool {
+    for _ in 0..2 {
+        ctx.set(Phase::LoggingIn, 0.0, "Steam's downloader needs Rosetta 2 on this Mac. Installing it asks for your Mac password.", Some(Need::Rosetta));
+        if rx.recv().is_err() {
+            return false; // cancelled
+        }
+        ctx.set(Phase::Preparing, 0.0, "Installing Rosetta… (enter your Mac password when asked)", None);
+        if let Err(m) = (rosetta.install)() {
+            ctx.set(Phase::Failed, 0.0, &m, None);
+            return false;
+        }
+        if !(rosetta.missing)() {
+            return true;
+        }
+    }
+    ctx.set(Phase::Failed, 0.0, "Rosetta still isn't installed. In Terminal run: softwareupdate --install-rosetta --agree-to-license", None);
+    false
+}
+
+fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String>, mut ctx: Ctx, rosetta: Rosetta) {
     let dir = steamcmd_dir(&root);
     let _ = std::fs::remove_file(dir.join("rallypoint-signin.txt")); // stale file from a crash
     if let Err(e) = ensure_steamcmd(&dir) {
@@ -333,6 +395,9 @@ fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String
     }
     if std::fs::create_dir_all(zero_hour_dir(&root)).and(std::fs::create_dir_all(generals_dir(&root))).is_err() {
         return ctx.set(Phase::Failed, 0.0, "Couldn't create the game folder", None);
+    }
+    if (rosetta.missing)() && !ensure_rosetta(&mut ctx, &rx, &rosetta) {
+        return;
     }
     let mut code = String::new();
     for _attempt in 0..6 {
@@ -352,6 +417,13 @@ fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String
                 };
             }
             SignIn::Failed(m) => return ctx.set(Phase::Failed, 0.0, &m, None),
+            SignIn::NeedRosetta => {
+                // the up-front check missed it (e.g. Rosetta was removed): offer the install now
+                if !ensure_rosetta(&mut ctx, &rx, &rosetta) {
+                    return;
+                }
+                continue;
+            }
             SignIn::NeedPassword => (Need::Password, "Enter your Steam password"),
             SignIn::NeedGuard { wrong: false } => (Need::Guard, "Enter your Steam Guard code (check your email or the Steam Mobile app)"),
             SignIn::NeedGuard { wrong: true } => (Need::Guard, "That code didn't work. Enter the newest Steam Guard code"),
@@ -359,6 +431,7 @@ fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String
         ctx.set(Phase::LoggingIn, 0.0, message, Some(need));
         match rx.recv() {
             Ok(text) if need == Need::Password => password = text,
+            Ok(_) if need == Need::Rosetta => {}
             Ok(text) => code = text.trim().to_string(),
             Err(_) => return, // cancelled
         }
@@ -369,6 +442,10 @@ fn worker(root: PathBuf, user: String, mut password: String, rx: Receiver<String
 impl AssetJob {
     /// Starts the download in the background. `password` may be empty if steamcmd already has a cached login.
     pub fn start(root: &Path, user: &str, password: String) -> io::Result<AssetJob> {
+        Self::start_with(root, user, password, Rosetta::system())
+    }
+
+    pub fn start_with(root: &Path, user: &str, password: String, rosetta: Rosetta) -> io::Result<AssetJob> {
         // Names are checked again when the sign-in script is built; this gives the user an immediate answer.
         if signin_script(user, "", "").is_err() {
             return Err(io::Error::other("enter your Steam account name"));
@@ -378,7 +455,7 @@ impl AssetJob {
         let mut ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), log: vec![] };
         ctx.set(Phase::Preparing, 0.0, "Getting Steam's downloader…", None);
         let (root, user) = (root.to_path_buf(), user.to_string());
-        std::thread::spawn(move || worker(root, user, password, rx, ctx));
+        std::thread::spawn(move || worker(root, user, password, rx, ctx, rosetta));
         Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled })
     }
 
@@ -466,6 +543,7 @@ mod tests {
         assert!(matches!(classify_signin("ERROR! Rate Limit Exceeded", true), Failed(m) if m.contains("rate")));
         assert!(matches!(classify_signin("something odd\nESync failed\n", true), Failed(m) if m.contains("ESync failed")));
         assert!(matches!(classify_signin("", true), Failed(_)));
+        assert_eq!(classify_signin("/Users/a/Library/Application Support/GeneralsZH/steamcmd/steamcmd.sh: line 37: /x/steamcmd: Bad CPU type in executable", false), NeedRosetta);
     }
 
     #[test]
@@ -503,6 +581,9 @@ mod tests {
 # usage: steamcmd.sh +runscript FILE   |   steamcmd.sh +login USER ... +app_update ID validate ...
 if [ "$1" = "+runscript" ]; then
   script=$(cat "$2")
+  if echo "$script" | grep -q '^login norosetta' && [ ! -f "$(dirname "$0")/rosetta-ok" ]; then
+    echo "$0: line 37: steamcmd: Bad CPU type in executable"; exit 126
+  fi
   user=$(echo "$script" | sed -n 's/^login \([^ ]*\).*/\1/p')
   pass=$(echo "$script" | sed -n 's/^login [^ ]* "\(.*\)"$/\1/p')
   code=$(echo "$script" | sed -n 's/^set_steam_guard_code //p')
@@ -550,7 +631,7 @@ exit 0
         #[test]
         fn steam_guard_account_signs_in_after_the_code_is_entered() {
             let r = root("guard");
-            let job = AssetJob::start(&r, "guarded", "secret".into()).unwrap();
+            let job = AssetJob::start_with(&r, "guarded", "secret".into(), Rosetta::not_needed()).unwrap();
             let s = until(&job, |s| s.need.is_some());
             assert_eq!(s.need, Some(Need::Guard));
             assert!(!s.log.contains("secret"));
@@ -568,7 +649,7 @@ exit 0
         #[test]
         fn wrong_password_fails_without_asking_for_a_code() {
             let r = root("badpw");
-            let job = AssetJob::start(&r, "alice", "bad".into()).unwrap();
+            let job = AssetJob::start_with(&r, "alice", "bad".into(), Rosetta::not_needed()).unwrap();
             let s = until(&job, |s| s.phase == Phase::Failed);
             assert!(s.message.contains("password"), "{s:?}");
             assert!(!steamcmd_dir(&r).join("rallypoint-signin.txt").exists());
@@ -578,16 +659,81 @@ exit 0
         #[test]
         fn cached_login_needs_no_password() {
             let r = root("cached");
-            let job = AssetJob::start(&r, "cached", String::new()).unwrap();
+            let job = AssetJob::start_with(&r, "cached", String::new(), Rosetta::not_needed()).unwrap();
             let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
             assert_eq!(s.phase, Phase::Done, "{s:?}");
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        fn fake_rosetta(missing: bool, installs: Arc<std::sync::atomic::AtomicUsize>, marker: Option<PathBuf>) -> (Rosetta, Arc<AtomicBool>) {
+            let flag = Arc::new(AtomicBool::new(missing));
+            let (f1, f2) = (flag.clone(), flag.clone());
+            let rosetta = Rosetta {
+                missing: Box::new(move || f1.load(Ordering::Relaxed)),
+                install: Box::new(move || {
+                    installs.fetch_add(1, Ordering::Relaxed);
+                    f2.store(false, Ordering::Relaxed);
+                    if let Some(m) = &marker {
+                        std::fs::write(m, "").unwrap();
+                    }
+                    Ok(())
+                }),
+            };
+            (rosetta, flag)
+        }
+
+        #[test]
+        fn missing_rosetta_is_offered_up_front_then_the_job_continues() {
+            let r = root("rosetta-upfront");
+            let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (ros, _) = fake_rosetta(true, installs.clone(), None);
+            let job = AssetJob::start_with(&r, "cached", String::new(), ros).unwrap();
+            let s = until(&job, |s| s.need.is_some());
+            assert_eq!(s.need, Some(Need::Rosetta));
+            assert_eq!(installs.load(Ordering::Relaxed), 0, "nothing installs until the user says so");
+            job.submit("install");
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
+            assert_eq!(installs.load(Ordering::Relaxed), 1);
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn bad_cpu_type_from_steamcmd_triggers_the_same_offer() {
+            // the up-front check says all is well, but steamcmd itself can't run
+            let r = root("rosetta-late");
+            let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let marker = steamcmd_dir(&r).join("rosetta-ok");
+            let (mut ros, flag) = fake_rosetta(false, installs.clone(), Some(marker));
+            let f = flag.clone();
+            ros.missing = Box::new(move || f.load(Ordering::Relaxed)); // stays false until install flips it
+            flag.store(false, Ordering::Relaxed);
+            let job = AssetJob::start_with(&r, "norosetta", String::new(), ros).unwrap();
+            let s = until(&job, |s| s.need.is_some());
+            assert_eq!(s.need, Some(Need::Rosetta), "{s:?}");
+            job.submit("install");
+            let s = until(&job, |s| s.phase == Phase::Done || s.phase == Phase::Failed);
+            assert_eq!(s.phase, Phase::Done, "{s:?}");
+            assert_eq!(installs.load(Ordering::Relaxed), 1);
+            std::fs::remove_dir_all(r).unwrap();
+        }
+
+        #[test]
+        fn a_failed_rosetta_install_is_reported_with_the_manual_command() {
+            let r = root("rosetta-fail");
+            let ros = Rosetta { missing: Box::new(|| true), install: Box::new(|| Err("Rosetta wasn't installed. In Terminal run: softwareupdate --install-rosetta --agree-to-license".into())) };
+            let job = AssetJob::start_with(&r, "cached", String::new(), ros).unwrap();
+            until(&job, |s| s.need.is_some());
+            job.submit("install");
+            let s = until(&job, |s| s.phase == Phase::Failed);
+            assert!(s.message.contains("softwareupdate --install-rosetta"));
             std::fs::remove_dir_all(r).unwrap();
         }
 
         #[test]
         fn cancel_stops_a_job_waiting_for_a_code() {
             let r = root("cancel");
-            let job = AssetJob::start(&r, "guarded", "secret".into()).unwrap();
+            let job = AssetJob::start_with(&r, "guarded", "secret".into(), Rosetta::not_needed()).unwrap();
             until(&job, |s| s.need.is_some());
             job.cancel();
             std::thread::sleep(Duration::from_millis(300));

@@ -54,13 +54,17 @@ $("sget").onclick = () => {
     .then(() => { $("spass").value = ""; }, (e) => { $("smsg").textContent = e; });
 };
 $("scancel").onclick = () => invoke("assets_cancel");
-$("ssubmit").onclick = () => { invoke("assets_submit", { text: $("sinput").value }); $("sinput").value = ""; };
+let need = null;
+$("ssubmit").onclick = () => { invoke("assets_submit", { text: need === "Rosetta" ? "install" : $("sinput").value }); $("sinput").value = ""; };
 let wasDone = false;
 setInterval(() => invoke("assets_status").then((s) => {
   const active = s.phase === "Preparing" || s.phase === "LoggingIn" || s.phase === "Downloading";
   show("sget", !active); show("scancel", active);
   show("sbar", s.phase === "Downloading"); $("sbar").value = s.percent;
+  need = s.need;
   show("sneed", !!s.need);
+  show("sfield", s.need === "Guard" || s.need === "Password"); // Rosetta only needs a button
+  $("ssubmit").textContent = s.need === "Rosetta" ? "Install Rosetta" : "Submit";
   if (s.need) $("sneedlabel").textContent = s.need === "Guard" ? "Steam Guard code" : "Steam password";
   $("smsg").textContent = s.phase === "Idle" ? "" : `${s.message}${s.phase === "Downloading" ? ` ${s.percent.toFixed(0)}%` : ""}`;
   if (s.log) $("slog").textContent = s.log;
