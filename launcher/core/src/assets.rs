@@ -83,6 +83,8 @@ pub fn steamcmd_args(user: &str, generals: &Path, zero_hour: &Path) -> Vec<Strin
 pub enum Seen {
     Prompt(Need),
     Progress(f32),
+    /// steamcmd is waiting for the user to approve the sign-in in the Steam Mobile app (no code to type).
+    ApproveOnPhone,
     Failure(String),
     Nothing,
 }
@@ -96,6 +98,9 @@ pub fn scan_line(line: &str) -> Seen {
         }
     }
     let low = l.to_ascii_lowercase();
+    if low.contains("confirm the login in the steam mobile app") || low.contains("waiting for confirmation") {
+        return Seen::ApproveOnPhone;
+    }
     if low.contains("invalid password") || low.contains("login failure") {
         return Seen::Failure("Steam rejected the username or password".into());
     }
@@ -176,6 +181,7 @@ impl AssetJob {
                     match scan_line(&line) {
                         Seen::Progress(p) => *state.lock().unwrap() = AssetState { phase: Phase::Downloading, percent: p, message: "Downloading game files…".into(), need: None },
                         Seen::Failure(m) => failure = Some(m),
+                        Seen::ApproveOnPhone => *state.lock().unwrap() = AssetState { phase: Phase::LoggingIn, percent: 0.0, message: "Approve this sign-in in the Steam Mobile app on your phone".into(), need: None },
                         _ => {}
                     }
                 }
@@ -278,6 +284,7 @@ mod tests {
         assert!(matches!(scan_line("ERROR! Failed to install app '2732960' (No subscription)"), Seen::Failure(m) if m.contains("doesn't own")));
         assert!(matches!(scan_line("ERROR! something else"), Seen::Failure(_)));
         assert_eq!(scan_line("Logging in user 'alice' to Steam Public...OK"), Seen::Nothing);
+        assert_eq!(scan_line("Please confirm the login in the Steam Mobile app on your phone."), Seen::ApproveOnPhone);
     }
 
     #[test]
