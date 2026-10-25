@@ -79,7 +79,7 @@ pub struct ClientPending(HandshakeState);
 /// First message: `first` (a `Hello` or `Register`) encrypted to `server_pub`. Send it, and keep the pending state
 /// to read the reply; resend the same bytes if the reply is lost.
 pub fn client_start(server_pub: &Key, first: &Packet) -> Result<(Vec<u8>, ClientPending), Error> {
-    let mut hs = builder().remote_public_key(server_pub).build_initiator().map_err(|_| Error::Crypto)?;
+    let mut hs = builder().remote_public_key(server_pub).map_err(|_| Error::Crypto)?.build_initiator().map_err(|_| Error::Crypto)?;
     let mut out = vec![0u8; MAX_MSG];
     let n = hs.write_message(&first.encode(), &mut out).map_err(|_| Error::Crypto)?;
     out.truncate(n);
@@ -101,7 +101,7 @@ pub struct ServerPending(HandshakeState);
 
 /// Decrypt a first message. Fails (and so is dropped silently) for anything not encrypted to this server's key.
 pub fn server_accept(private: &Key, msg1: &[u8]) -> Result<(Packet, ServerPending), Error> {
-    let mut hs = builder().local_private_key(private).build_responder().map_err(|_| Error::Crypto)?;
+    let mut hs = builder().local_private_key(private).map_err(|_| Error::Crypto)?.build_responder().map_err(|_| Error::Crypto)?;
     let mut payload = vec![0u8; MAX_MSG];
     let n = hs.read_message(msg1, &mut payload).map_err(|_| Error::Crypto)?;
     Ok((Packet::decode(&payload[..n]).ok_or(Error::Format)?, ServerPending(hs)))
