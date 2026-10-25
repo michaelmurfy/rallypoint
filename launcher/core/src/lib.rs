@@ -6,4 +6,6 @@ pub mod engine;
 pub mod extract;
 pub mod launch;
 pub mod mods;
+pub mod proc;
 pub mod steam;
+pub mod update;

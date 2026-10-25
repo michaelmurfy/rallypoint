@@ -1,5 +1,6 @@
 //! Build the engine command line. Resolution flags are the engine's existing `-xres/-yres`;
 //! arbitrary-size and zoom support land with the Phase 2 engine patches.
+use crate::proc::quiet;
 use std::path::Path;
 use std::process::Command;
 
@@ -38,7 +39,7 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
 /// Runs the engine from the game dir so it finds the `.big` files.
 pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     let mut c = Command::new(engine);
-    c.current_dir(game_dir).args(args(o));
+    quiet(&mut c).current_dir(game_dir).args(args(o)); // no stray console if the engine is a console-subsystem build
     c.envs(o.env.iter().map(|(k, v)| (k, v)));
     // The macOS engine only accepts resolutions it advertises; naming the chosen one makes any size (4K, ultrawide,
     // a custom value) valid. Other platforms ignore it.

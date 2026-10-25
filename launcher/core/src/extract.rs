@@ -2,6 +2,7 @@
 //! launcher needs no archive library. Entries are listed and checked for path traversal before anything is written,
 //! and symlinks in the result are rejected.
 use std::path::{Component, Path, PathBuf};
+use crate::proc::quiet;
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +58,7 @@ fn seven_zip() -> Option<PathBuf> {
 }
 
 fn is_bsdtar() -> bool {
-    Command::new("tar").arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("bsdtar")).unwrap_or(false)
+    quiet(&mut Command::new("tar")).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("bsdtar")).unwrap_or(false)
 }
 
 /// Tools that can handle `kind`, best first, only those present.
@@ -127,7 +128,7 @@ pub fn unsafe_entry(name: &str) -> bool {
 }
 
 fn out(cmd: &mut Command) -> Result<String, String> {
-    let o = cmd.output().map_err(|e| format!("couldn't run {:?}: {e}", cmd.get_program()))?;
+    let o = quiet(cmd).output().map_err(|e| format!("couldn't run {:?}: {e}", cmd.get_program()))?;
     if o.status.success() {
         Ok(String::from_utf8_lossy(&o.stdout).into_owned())
     } else {

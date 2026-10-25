@@ -52,7 +52,7 @@ function fill(el, ...kids) {
 const errText = (e) => (typeof e === "string" ? e : (e && e.message) || String(e));
 
 // ---------------------------------------------------------------- state
-const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "Offline", page: "play", watch: null };
+const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "Offline", page: "play", watch: null, update: null, updateNote: "" };
 const nativeRes = () => ({ w: Math.round(screen.width * devicePixelRatio), h: Math.round(screen.height * devicePixelRatio) });
 
 const prefs = {
@@ -72,6 +72,36 @@ async function loadMods() {
 }
 
 const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))];
+
+// ---------------------------------------------------------------- updates
+function renderUpdate() {
+  const host = document.getElementById("updatehost");
+  if (!host) return;
+  const u = store.update;
+  if (!u || store.updateDismissed) return fill(host);
+  const install = h("button", { class: "btn primary", onclick: async () => {
+    install.disabled = true;
+    store.updateNote = "Downloading the installer…";
+    renderUpdate();
+    try { store.updateNote = await invoke("update_install"); } catch (e) { store.updateNote = errText(e); }
+    renderUpdate();
+  } }, "Download and open installer");
+  fill(host, h("div", { class: "banner stack updatebar" },
+    h("div", {}, h("b", {}, `Rallypoint ${u.latest} is available`),
+      h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
+    h("div", { class: "row" },
+      u.installer ? install : null,
+      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => toast(errText(e), "bad")) }, "What's new"),
+      h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"))));
+}
+/** Ask GitHub for a newer release. The startup check stays quiet unless there is one. */
+async function checkUpdate(manual) {
+  try { store.update = await invoke("update_check"); } catch (e) { return manual && toast("Couldn't check for updates: " + errText(e), "bad"); }
+  store.updateDismissed = false;
+  store.updateNote = "";
+  renderUpdate();
+  if (manual) toast(store.update ? `Rallypoint ${store.update.latest} is available` : "You have the latest version", store.update ? "ok" : undefined);
+}
 
 // ---------------------------------------------------------------- mod downloads
 // "Get" opens the mod's official page. Nothing installs by itself: the user chooses the finished download
@@ -393,10 +423,15 @@ function onlinePage() {
 
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
+  const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
     h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
+    h("div", { class: "card" }, h("h2", {}, "Updates"),
+      h("p", { class: "muted" }, `You have Rallypoint ${store.cfg.version}. When it starts, Rallypoint can ask GitHub (github.com/michaelmurfy/rallypoint) whether a newer release exists. Nothing is downloaded until you choose to.`),
+      h("label", { class: "switch" }, auto, "Check for updates when Rallypoint starts"),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => checkUpdate(true) }, "Check now"))),
     h("div", { class: "card" }, h("h2", {}, "About"),
       h("p", { class: "muted" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)));
   return { el, dispose: files.dispose };
@@ -410,7 +445,7 @@ function go(name) {
   store.page = name;
   current && current.dispose && current.dispose();
   current = PAGES[name][2]();
-  document.getElementById("main").replaceChildren(current.el);
+  document.getElementById("pagehost").replaceChildren(current.el);
   document.querySelectorAll(".nav").forEach((n) => (n.dataset.page === name ? n.setAttribute("aria-current", "page") : n.removeAttribute("aria-current")));
 }
 
@@ -428,7 +463,7 @@ function shell() {
     h("aside", { class: "sidebar" },
       h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("b", {}, "Rallypoint")),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet)),
-    h("main", { id: "main" })));
+    h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
 }
 
@@ -537,6 +572,7 @@ async function start() {
     notifyOnlineOnly();
   }, 1000);
   if (!store.cfg.setup_done) openWizard();
+  if (store.cfg.check_updates !== false) checkUpdate(false);
 
   // Dropping a file or folder on the window installs it as a mod.
   try {

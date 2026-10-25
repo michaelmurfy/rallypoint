@@ -6,6 +6,7 @@
 use serde::Serialize;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use crate::proc::quiet;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -219,7 +220,7 @@ fn ensure_tool(root: &Path) -> Result<PathBuf, String> {
     let b = build().ok_or("Steam downloads aren't available on this kind of computer")?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let zip = dir.join("download.zip");
-    let status = Command::new("curl")
+    let status = quiet(&mut Command::new("curl"))
         .args(["-fsSL", "--proto", "=https", "--proto-redir", "=https", "-o"])
         .arg(&zip)
         .arg(download_url(&b))
@@ -269,7 +270,7 @@ enum Run {
 /// One DepotDownloader run for one app. Handles its prompts: the password from `password` (once), otherwise the
 /// user is asked through the job state and the answer arrives on `inbox`.
 fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32, no_mobile: bool) -> Result<(Run, Option<String>), String> {
-    let mut child = Command::new(exe)
+    let mut child = quiet(&mut Command::new(exe))
         .args(dd_args(user, app, dir, no_mobile))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

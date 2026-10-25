@@ -19,6 +19,9 @@ pub struct Config {
     /// The first-run setup wizard has been completed (or skipped).
     #[serde(default)]
     pub setup_done: bool,
+    /// Don't ask GitHub for a newer release when the launcher starts.
+    #[serde(default)]
+    pub skip_update_check: bool,
 }
 
 impl Config {

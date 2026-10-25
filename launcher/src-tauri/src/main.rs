@@ -1,4 +1,7 @@
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, mods, steam};
+// No console window on Windows in release builds.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, engine, launch, mods, steam, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -17,6 +20,9 @@ struct Watch {
 }
 #[derive(Default)]
 struct ModWatch(Mutex<Option<Watch>>);
+/// The newest release found by the last update check.
+#[derive(Default)]
+struct Updates(Mutex<Option<update::UpdateInfo>>);
 
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
@@ -146,6 +152,7 @@ struct ConfigView {
     game_dir: String,
     steam_user: String,
     setup_done: bool,
+    check_updates: bool,
     version: &'static str,
     os: &'static str,
 }
@@ -159,7 +166,8 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         game_dir: c.game_dir,
         steam_user: c.steam_user,
         setup_done: c.setup_done,
-        version: env!("CARGO_PKG_VERSION"),
+        check_updates: !c.skip_update_check,
+        version: update::current_version(),
         os: std::env::consts::OS,
     })
 }
@@ -180,6 +188,14 @@ fn save_game_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let mut c = Config::load(&cfg);
     c.game_dir = path.trim().to_string();
     c.save(&cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.skip_update_check = !on;
+    c.save(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -355,6 +371,37 @@ fn open_homepage(id: String) -> Result<(), String> {
     open_url(&catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?.homepage)
 }
 
+// ---- updates --------------------------------------------------------------------------------------
+
+/// Ask GitHub for a newer release. `None` means up to date. Errors are for the Settings button; the startup check ignores them.
+#[tauri::command]
+async fn update_check(updates: tauri::State<'_, Updates>) -> Result<Option<update::UpdateInfo>, String> {
+    let found = tauri::async_runtime::spawn_blocking(|| update::check(update::current_version())).await.map_err(|e| e.to_string())??;
+    *updates.0.lock().unwrap() = found.clone();
+    Ok(found)
+}
+
+/// Download the installer for this computer, verify it, and open it.
+#[tauri::command]
+async fn update_install(updates: tauri::State<'_, Updates>) -> Result<String, String> {
+    let info = updates.0.lock().unwrap().clone().ok_or("check for updates first")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = update::download(&info, &update::downloads_dir())?;
+        update::open_installer(&file)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn open_release_page(updates: tauri::State<Updates>) -> Result<(), String> {
+    let page = updates.0.lock().unwrap().as_ref().map(|u| u.page.clone()).ok_or("no release to show")?;
+    if !page.starts_with("https://github.com/") {
+        return Err("unexpected release link".into());
+    }
+    open_url(&page)
+}
+
 // ---- launching ------------------------------------------------------------------------------------
 
 #[tauri::command]
@@ -428,10 +475,12 @@ fn main() {
         .manage(Relay::default())
         .manage(Downloads::default())
         .manage(ModWatch::default())
+        .manage(Updates::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, save_game_dir, set_setup_done,
+            get_config, save_config, save_game_dir, set_setup_done, set_check_updates,
+            update_check, update_install, open_release_page,
             relay_connect, relay_disconnect, relay_status,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage,
             launch_game

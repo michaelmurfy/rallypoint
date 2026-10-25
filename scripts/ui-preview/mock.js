@@ -2,7 +2,7 @@
 //   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install)
 const hash = location.hash;
 const state = {
-  cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), version: "0.1.0", os: "macos" },
+  cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), check_updates: true, version: "0.1.0-alpha.3", os: "macos" },
   mods: [{ id: "shockwave", name: "C&C: Shockwave", description: "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).", homepage: "https://www.moddb.com/mods/cc-shockwave", download_page: "https://www.moddb.com/mods/cc-shockwave/downloads", path: "Shockwave", detect: ["shockwave"], notes: "On the download page choose the full release. A .zip or \"no installer\" download installs automatically. If only the .exe installer is offered, see the help below.", args: [], installed: hash.includes("modinstalled") ? { folder: "Shockwave", bigs: 12, mb: 280 } : null },
     { id: "shockwave-chaos", name: "C&C: Shockwave Chaos", description: "A deliberately over-the-top add-on for Shockwave with lots of new and reworked units, generals and abilities.", homepage: "https://www.moddb.com/mods/cc-shockwave-chaos", download_page: "https://www.moddb.com/mods/cc-shockwave-chaos/downloads", path: "ShockwaveChaos", detect: ["chaos"], addon_for: "shockwave", notes: "An add-on: C&C: Shockwave must be installed first. Rallypoint combines it with Shockwave when you launch.", args: [], installed: null }],
   other: hash.includes("modinstalled") ? [{ folder: "My Custom Mod", bigs: 2, mb: 14 }] : [],
@@ -21,6 +21,10 @@ function advance() {
 setInterval(advance, 500);
 const handlers = {
   get_config: () => structuredClone(state.cfg),
+  set_check_updates: ({ on }) => { state.cfg.check_updates = on; },
+  update_check: () => (hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
+  update_install: async () => { await new Promise((r) => setTimeout(r, 1500)); return "The installer disk image is open. Quit Rallypoint, then drag the new Rallypoint onto Applications."; },
+  open_release_page: () => {},
   detect_games: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Generals - Zero Hour", zero_hour: true }] : []),
   check_game_dir: ({ path }) => (path.includes("ZeroHour") ? { ok: true, message: "Zero Hour found" } : path.trim() ? { ok: false, message: "No Zero Hour files in that folder (INIZH.big is missing)" } : { ok: false, message: "Choose the folder that contains INIZH.big" }),
   save_game_dir: ({ path }) => { state.cfg.game_dir = path.trim(); },

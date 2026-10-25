@@ -121,6 +121,9 @@ jobs:
         run: cargo binstall --no-confirm --locked tauri-cli@2.12.4
       - run: cargo tauri build ${{ matrix.bundles }}
         working-directory: launcher/src-tauri
+        env:
+          # lets the in-app updater tell 0.1.0-alpha.3 from 0.1.0-alpha.4
+          RALLYPOINT_VERSION: ${{ github.ref_name }}
       - name: Collect installers
         shell: bash
         run: |
