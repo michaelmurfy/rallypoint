@@ -80,7 +80,7 @@ Unpacking uses tools already on your computer. macOS and Windows can open `.zip`
 
 Many mods ship a Windows installer (and some also a launcher program, or patch the game's own executable). Rallypoint runs a ported engine, so what matters is the mod's **game data** (`.big` files). Your options, best first:
 
-1. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build (Shockwave's ModDB page has one). Use that.
+1. **Look for a plain download.** Many mods also offer a `.zip` or "no installer" build. Use that. (Shockwave's own download is an installer in a `.zip` that `innoextract` and 7-Zip can't open, so use option 3: run it on Windows, or in Wine or CrossOver on a Mac, install to a new empty folder, then choose that folder. Shockwave Chaos is a plain `.zip` and installs directly.)
 2. **Drop the installer on the window.** If `innoextract` or 7-Zip is installed, Rallypoint unpacks the installer without running it and keeps the game files.
 3. **On Windows, run the installer normally**, then drag the folder it installed into onto the Mods tab. Rallypoint copies the game files into its own `Mods` folder.
 4. **Unpack it yourself** with `innoextract -d out Setup.exe` or `7z x Setup.exe -oout`, then drop the `out` folder on the window.

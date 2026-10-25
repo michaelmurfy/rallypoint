@@ -307,13 +307,8 @@ fn mods_list(app: tauri::AppHandle) -> Result<ModList, String> {
 /// Open the mod's official download page. We then watch the Downloads folder, but only to *suggest* the file:
 /// nothing is installed until the user picks one (or confirms the suggestion).
 #[tauri::command]
-fn mods_get(app: tauri::AppHandle, watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
+fn mods_get( watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
     let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
-    if let Some(base) = m.addon_for.as_ref().and_then(|b| catalog().ok()?.into_iter().find(|c| &c.id == b)) {
-        if !mods_dir(&app)?.join(&base.path).is_dir() {
-            return Err(format!("Install {} first; {} is an add-on for it", base.name, m.name));
-        }
-    }
     open_url(&m.download_page)?;
     *watch.0.lock().unwrap() = Some(Watch { id, since: SystemTime::now() });
     Ok(())
@@ -361,14 +356,9 @@ async fn mods_install(app: tauri::AppHandle, watch: tauri::State<'_, ModWatch>, 
     let dir = mods_dir(&app)?;
     let folder = match id {
         Some(id) => {
-            let cat = catalog()?;
-            let m = cat.iter().find(|m| m.id == id).ok_or("unknown mod")?;
-            if let Some(base) = m.addon_for.as_ref().and_then(|b| cat.iter().find(|c| &c.id == b)) {
-                if !dir.join(&base.path).is_dir() {
-                    return Err(format!("{} needs to be installed first", base.name));
-                }
-            }
-            m.path.clone()
+            // An add-on may be installed before or after its base; launching it is what needs both.
+            let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
+            m.path
         }
         None => mods::folder_for_archive(&src).ok_or("couldn't work out a name for that mod")?,
     };

@@ -129,6 +129,22 @@ fn flatten(mut cur: PathBuf) -> PathBuf {
     }
 }
 
+/// Does `dir` hold an `.exe` somewhere (an installer inside a zip, say)?
+fn has_installer(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(p),
+                Ok(t) if t.is_file() && p.extension().map(|x| x.eq_ignore_ascii_case("exe")).unwrap_or(false) => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 fn unique_suffix() -> String {
     format!("{}-{}", std::process::id(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0))
 }
@@ -148,8 +164,10 @@ pub fn install(src: &Path, mods_dir: &Path, folder: &str) -> Result<Installed, S
         let root = flatten(tmp.clone());
         let (bigs, bytes) = scan(&root);
         if bigs == 0 {
-            return Err(if extract::kind_of(src) == Some(Kind::Exe) {
-                "That installer didn't contain game files we could unpack. See the README section on mods that come as an .exe".to_string()
+            return Err(if extract::kind_of(src) == Some(Kind::Exe) || has_installer(&tmp) {
+                "That is a Windows installer, and its files can't be unpacked without running it. Run it on Windows (or in Wine or CrossOver), \
+                 pick a new empty folder as the install location, then choose that folder here instead."
+                    .to_string()
             } else {
                 "No .big game files were found in that. Mods that use loose files or an .exe patcher can't be installed automatically; see the README".to_string()
             });
@@ -362,6 +380,19 @@ mod tests {
         assert_eq!(std::fs::read_dir(&mods).unwrap().count(), 0);
         assert!(install(&src, &mods, "...").is_err());
         std::fs::remove_dir_all(t).unwrap();
+    }
+
+    #[test]
+    fn a_zip_holding_only_an_installer_gets_clear_guidance() {
+        let t = temp("exezip");
+        let src = t.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("Setup.exe"), b"MZ").unwrap();
+        std::fs::write(src.join("readme.txt"), b"hi").unwrap();
+        let err = install(&src, &t.join("mods"), "Shockwave").unwrap_err();
+        assert!(err.contains("Windows installer") && err.contains("empty folder"), "{err}");
+        assert!(!t.join("mods").join("Shockwave").exists());
+        assert!(std::fs::read_dir(t.join("mods")).unwrap().next().is_none(), "no temp folders left behind");
     }
 
     #[cfg(unix)]

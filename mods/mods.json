@@ -9,7 +9,7 @@
     "detect": [
       "shockwave"
     ],
-    "notes": "On the download page choose the full release. A .zip or \"no installer\" download installs automatically. If only the .exe installer is offered, see the README section on mods that come as an .exe."
+    "notes": "On the download page choose the full release. Shockwave ships as a Windows installer (.exe, usually inside a .zip). Run it on Windows (or Wine or CrossOver), install to a new empty folder, then choose that folder here. A plain .zip of the game files installs directly."
   },
   {
     "id": "shockwave-chaos",
@@ -22,6 +22,6 @@
       "chaos"
     ],
     "addon_for": "shockwave",
-    "notes": "An add-on: C&C: Shockwave must be installed first. On the download page choose the latest full version. Rallypoint combines it with Shockwave when you launch, so nothing in your Shockwave folder is changed."
+    "notes": "An add-on for Shockwave: you need both to play. Its download is a plain .zip that installs directly. Rallypoint combines it with Shockwave when you launch, so nothing in your Shockwave folder is changed."
   }
 ]

@@ -1,0 +1,14 @@
+diff --git a/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp b/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
+index f118b34..efaca34 100644
+--- a/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
++++ b/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
+@@ -230,6 +230,9 @@ void ArchiveFileSystem::loadMods()
+ 
+ 	if (TheGlobalData->m_modDir.isNotEmpty())
+ 	{
++		// Shockwave and its add-ons ship some archives as .gib (same BIG format). Load them first so a
++		// .big of the same mod can still override them.
++		loadBigFilesFromDirectory(TheGlobalData->m_modDir, "*.gib", TRUE);
+ 		MAYBE_UNUSED Bool ret = loadBigFilesFromDirectory(TheGlobalData->m_modDir, "*.big", TRUE);
+ 		(void)ret;
+ 		DEBUG_ASSERTLOG(ret, ("loadBigFilesFromDirectory(%s) returned FALSE!", TheGlobalData->m_modDir.str()));

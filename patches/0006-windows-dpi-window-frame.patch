@@ -1,0 +1,24 @@
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index 622fa0b..436c4e5 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -731,7 +731,18 @@ static Bool initializeAppWindows( HINSTANCE hInstance, Int nCmdShow, Bool runWin
+ 	rect.top = 0;
+ 	rect.right = startWidth;
+ 	rect.bottom = startHeight;
+-	AdjustWindowRect (&rect, windowStyle, FALSE);
++	// The manifest makes the process per-monitor DPI aware, so the title bar and borders are drawn at the
++	// display's scale. AdjustWindowRect assumes 96 DPI and would leave the client area too small (or the
++	// window clipped) at 125-200%, so size the frame for the system DPI when the OS offers that.
++	{
++		typedef BOOL (WINAPI *AdjustForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
++		typedef UINT (WINAPI *GetDpiFn)();
++		HMODULE user32 = GetModuleHandleA("user32.dll");
++		AdjustForDpiFn adjustForDpi = user32 ? (AdjustForDpiFn)GetProcAddress(user32, "AdjustWindowRectExForDpi") : nullptr;
++		GetDpiFn systemDpi = user32 ? (GetDpiFn)GetProcAddress(user32, "GetDpiForSystem") : nullptr;
++		if (!(adjustForDpi && systemDpi && adjustForDpi(&rect, windowStyle, FALSE, 0, systemDpi())))
++			AdjustWindowRect (&rect, windowStyle, FALSE);
++	}
+ 	if (runWindowed) {
+ 		// Makes the normal debug 800x600 window center in the screen.
+ 		startWidth = DEFAULT_DISPLAY_WIDTH;
