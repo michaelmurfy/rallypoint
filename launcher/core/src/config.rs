@@ -22,6 +22,9 @@ pub struct Config {
     /// Don't ask GitHub for a newer release when the launcher starts.
     #[serde(default)]
     pub skip_update_check: bool,
+    /// Record the engine's per-frame sync logs, for finding out why a multiplayer game went out of sync.
+    #[serde(default)]
+    pub sync_logs: bool,
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
     pub camera_height: u32,
