@@ -1,3 +1,5 @@
+<p align="center"><img src="launcher/ui/logo.png" alt="Rallypoint" width="112"></p>
+
 # Rallypoint
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
