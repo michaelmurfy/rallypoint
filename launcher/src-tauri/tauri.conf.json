@@ -8,5 +8,5 @@
     "withGlobalTauri": true,
     "windows": [{ "title": "Generals Launcher", "width": 720, "height": 520 }]
   },
-  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png"] }
+  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png", "icons/icon.ico"] }
 }
