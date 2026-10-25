@@ -261,8 +261,13 @@ fn mods_list(app: tauri::AppHandle) -> Result<ModList, String> {
 
 /// Open the mod's official download page and start watching the Downloads folder for the file.
 #[tauri::command]
-fn mods_get(watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
+fn mods_get(app: tauri::AppHandle, watch: tauri::State<ModWatch>, id: String) -> Result<(), String> {
     let m = catalog()?.into_iter().find(|m| m.id == id).ok_or("unknown mod")?;
+    if let Some(base) = m.addon_for.as_ref().and_then(|b| catalog().ok()?.into_iter().find(|c| &c.id == b)) {
+        if !mods_dir(&app)?.join(&base.path).is_dir() {
+            return Err(format!("Install {} first; {} is an add-on for it", base.name, m.name));
+        }
+    }
     open_url(&m.download_page)?;
     *watch.0.lock().unwrap() = Some(Watch { id, since: SystemTime::now() });
     Ok(())
@@ -289,6 +294,11 @@ async fn mods_poll(app: tauri::AppHandle, watch: tauri::State<'_, ModWatch>) -> 
     };
     *watch.0.lock().unwrap() = None;
     let dir = mods_dir(&app)?;
+    if let Some(base) = m.addon_for.as_ref().and_then(|id| catalog().ok()?.into_iter().find(|b| &b.id == id)) {
+        if !dir.join(&base.path).is_dir() {
+            return Ok(WatchStatus { state: "error", id, message: format!("{} needs to be installed first", base.name) });
+        }
+    }
     let name = m.name.clone();
     let result = tauri::async_runtime::spawn_blocking(move || mods::install(&file, &dir, &m.path)).await.map_err(|e| e.to_string())?;
     Ok(match result {
@@ -340,8 +350,15 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     let (mod_path, mod_args) = match mod_folder.filter(|f| !f.is_empty()) {
         Some(f) => {
             let name = mods::sanitize_folder(&f).filter(|n| *n == f).ok_or("invalid mod")?;
-            let args = catalog()?.into_iter().find(|m| m.path == name).map(|m| m.args).unwrap_or_default();
-            (Some(mods_dir(&app)?.join(name).to_string_lossy().to_string()), args)
+            let cat = catalog()?;
+            let this = cat.iter().find(|m| m.path == name);
+            let args = this.map(|m| m.args.clone()).unwrap_or_default();
+            // An add-on is launched together with the mod it extends.
+            let folder = match this.and_then(|m| m.addon_for.as_ref()).and_then(|id| cat.iter().find(|b| &b.id == id)) {
+                Some(base) => mods::compose(&mods_dir(&app)?, &base.path, &name)?,
+                None => mods_dir(&app)?.join(&name),
+            };
+            (Some(folder.to_string_lossy().to_string()), args)
         }
         None => (None, vec![]),
     };

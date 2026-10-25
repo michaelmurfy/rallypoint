@@ -26,6 +26,9 @@ pub struct Mod {
     pub notes: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Id of the mod this one is an add-on for. The engine loads one mod folder, so at launch the two are combined.
+    #[serde(default)]
+    pub addon_for: Option<String>,
 }
 
 pub fn load_manifest(json: &str) -> Result<Vec<Mod>, serde_json::Error> {
@@ -177,6 +180,42 @@ pub fn remove(mods_dir: &Path, folder: &str) -> Result<(), String> {
     std::fs::remove_dir_all(p).map_err(|e| e.to_string())
 }
 
+fn link_tree(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for e in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let ty = e.file_type().map_err(|e| e.to_string())?;
+        let to = dst.join(e.file_name());
+        if ty.is_dir() {
+            link_tree(&e.path(), &to)?;
+        } else if ty.is_file() {
+            let _ = std::fs::remove_file(&to); // a later layer replaces an earlier file of the same name
+            // hard links cost no space or time; fall back to a copy across drives or on odd filesystems
+            std::fs::hard_link(e.path(), &to).or_else(|_| std::fs::copy(e.path(), &to).map(|_| ())).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Build the folder to launch for an add-on: the base mod's files with the add-on's laid over them.
+/// Rebuilt every launch (it is only links) and kept out of the installed list by its leading dot.
+pub fn compose(mods_dir: &Path, base: &str, addon: &str) -> Result<PathBuf, String> {
+    let (b, a) = (sanitize_folder(base).filter(|n| n == base), sanitize_folder(addon).filter(|n| n == addon));
+    let (b, a) = (b.ok_or("invalid mod")?, a.ok_or("invalid mod")?);
+    let (base_dir, addon_dir) = (mods_dir.join(&b), mods_dir.join(&a));
+    if !base_dir.is_dir() {
+        return Err(format!("{b} needs to be installed first"));
+    }
+    if !addon_dir.is_dir() {
+        return Err(format!("{a} isn't installed"));
+    }
+    let out = mods_dir.join(format!(".run-{a}"));
+    let _ = std::fs::remove_dir_all(&out);
+    link_tree(&base_dir, &out)?;
+    link_tree(&addon_dir, &out)?;
+    Ok(out)
+}
+
 pub fn downloads_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| PathBuf::from(h).join("Downloads"))
 }
@@ -229,6 +268,39 @@ mod tests {
             assert_eq!(sanitize_folder(&m.path).as_deref(), Some(m.path.as_str()));
             assert!(!m.detect.is_empty());
         }
+    }
+
+    #[test]
+    fn bundled_addon_points_at_a_catalog_mod() {
+        let m = load_manifest(include_str!("../../../mods/mods.json")).unwrap();
+        let chaos = m.iter().find(|m| m.id == "shockwave-chaos").unwrap();
+        assert_eq!(chaos.addon_for.as_deref(), Some("shockwave"));
+        assert!(m.iter().any(|b| Some(&b.id) == chaos.addon_for.as_ref()), "base mod is in the catalog");
+        assert_ne!(chaos.path, m.iter().find(|b| b.id == "shockwave").unwrap().path);
+    }
+
+    #[test]
+    fn composes_an_addon_over_its_base_without_touching_either() {
+        let t = temp("compose");
+        let mods = t.join("Mods");
+        for (dir, files) in [("Base", vec![("a.big", "base-a"), ("same.big", "base"), ("Sub/x.big", "x")]), ("Addon", vec![("same.big", "addon"), ("b.big", "addon-b")])] {
+            for (f, c) in files {
+                let p = mods.join(dir).join(f);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, c).unwrap();
+            }
+        }
+        let out = compose(&mods, "Base", "Addon").unwrap();
+        let read = |p: &str| std::fs::read_to_string(out.join(p)).unwrap();
+        assert_eq!((read("a.big").as_str(), read("b.big").as_str(), read("Sub/x.big").as_str()), ("base-a", "addon-b", "x"));
+        assert_eq!(read("same.big"), "addon", "the add-on's file wins");
+        assert_eq!(std::fs::read_to_string(mods.join("Base/same.big")).unwrap(), "base", "the base is untouched");
+        // rebuilding works, and the composed folder never shows up as an installed mod
+        compose(&mods, "Base", "Addon").unwrap();
+        assert_eq!(list_installed(&mods).iter().map(|i| i.folder.as_str()).collect::<Vec<_>>(), ["Addon", "Base"]);
+        assert!(compose(&mods, "Missing", "Addon").unwrap_err().contains("installed first"));
+        assert!(compose(&mods, "../x", "Addon").is_err());
+        std::fs::remove_dir_all(t).unwrap();
     }
 
     #[test]

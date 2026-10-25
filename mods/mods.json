@@ -6,7 +6,22 @@
     "homepage": "https://www.moddb.com/mods/cc-shockwave",
     "download_page": "https://www.moddb.com/mods/cc-shockwave/downloads",
     "path": "Shockwave",
-    "detect": ["shockwave"],
+    "detect": [
+      "shockwave"
+    ],
     "notes": "On the download page choose the full release. A .zip or \"no installer\" download installs automatically. If only the .exe installer is offered, see the README section on mods that come as an .exe."
+  },
+  {
+    "id": "shockwave-chaos",
+    "name": "C&C: Shockwave Chaos",
+    "description": "A deliberately over-the-top add-on for Shockwave with lots of new and reworked units, generals and abilities.",
+    "homepage": "https://www.moddb.com/mods/cc-shockwave-chaos",
+    "download_page": "https://www.moddb.com/mods/cc-shockwave-chaos/downloads",
+    "path": "ShockwaveChaos",
+    "detect": [
+      "chaos"
+    ],
+    "addon_for": "shockwave",
+    "notes": "An add-on: C&C: Shockwave must be installed first. On the download page choose the latest full version. Rallypoint combines it with Shockwave when you launch, so nothing in your Shockwave folder is changed."
   }
 ]

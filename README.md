@@ -70,7 +70,7 @@ Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be
 | Windows | `%APPDATA%\GeneralsZH\` |
 | Linux | `~/.local/share/GeneralsZH/` |
 
-Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and picks the file up afterwards. Currently listed: **C&C: Shockwave**. Know another mod that should be? Open an issue with its ModDB link.
+Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and picks the file up afterwards. Currently listed: **C&C: Shockwave** and its add-on **C&C: Shockwave Chaos** (it needs Shockwave installed first; Rallypoint lays it over Shockwave when you launch, without changing your Shockwave folder). The add-on setup is untested in a real game. Know another mod that should be listed? Open an issue with its ModDB link.
 
 Unpacking uses tools already on your computer. macOS and Windows can open `.zip` out of the box; for `.7z`, `.rar` and installer `.exe` files you may need `brew install sevenzip innoextract` (macOS), `sudo apt install p7zip-full innoextract unzip` (Linux) or [7-Zip](https://www.7-zip.org/) (Windows). Rallypoint tells you if one is missing. Archives are checked before anything is written, and ones that try to escape their folder are refused.
 

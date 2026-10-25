@@ -208,7 +208,9 @@ function modCard(m, compact) {
   } else if (waiting) {
     actions.append(pill("Waiting for download", "warn"));
   } else {
-    actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
+    const base = m.addon_for ? store.mods.catalog.find((b) => b.id === m.addon_for) : null;
+    if (base && !base.installed) actions.append(pill(`Needs ${base.name}`, "warn"));
+    else actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
   }
   return h("div", { class: "card" },
     h("div", { class: "mod" },
