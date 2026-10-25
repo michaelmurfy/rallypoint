@@ -1,12 +1,34 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Generals Launcher",
+  "productName": "Rallypoint",
   "version": "0.1.0",
-  "identifier": "nz.co.murfy.generals-launcher",
-  "build": { "frontendDist": "../ui" },
+  "identifier": "nz.co.murfy.rallypoint",
+  "build": {
+    "frontendDist": "../ui"
+  },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "Generals Launcher", "width": 720, "height": 520 }]
+    "windows": [
+      {
+        "title": "Rallypoint",
+        "width": 720,
+        "height": 520
+      }
+    ]
   },
-  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.png", "icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "engine/*"
+    ],
+    "shortDescription": "Launcher for C&C Generals: Zero Hour",
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
 }

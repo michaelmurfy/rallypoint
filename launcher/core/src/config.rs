@@ -7,6 +7,9 @@ pub struct Config {
     /// Relay server `host:port`.
     pub server: String,
     pub serial: String,
+    /// Game data folder (the one with the `.big` files); empty = use whatever Steam detection finds.
+    #[serde(default)]
+    pub game_dir: String,
 }
 
 impl Config {
@@ -46,7 +49,7 @@ mod tests {
     fn roundtrip_and_mask() {
         let p = std::env::temp_dir().join(format!("gen-cfg-{}/config.json", std::process::id()));
         assert!(Config::load(&p).serial.is_empty()); // missing file -> default
-        let c = Config { server: "play.example:7777".into(), serial: "55BC-E547-64E4-5A53".into() };
+        let c = Config { server: "play.example:7777".into(), serial: "55BC-E547-64E4-5A53".into(), ..Default::default() };
         c.save(&p).unwrap();
         let back = Config::load(&p);
         assert_eq!((back.server.as_str(), back.serial.as_str()), ("play.example:7777", "55BC-E547-64E4-5A53"));

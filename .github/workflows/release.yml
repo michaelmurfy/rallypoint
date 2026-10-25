@@ -1,0 +1,191 @@
+# Builds the engine, launcher bundles, relay server and Docker image.
+#   push a tag vX.Y.Z or vX.Y.Z-alpha.N  -> build everything and publish a GitHub Release
+#   manual run (Actions > Release > Run)   -> build everything, publish nothing (artifacts only)
+# Plain pushes and PRs never run this; see ci.yml for the fast checks.
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---- game engine (our patches applied on top of the submodule) -----------------------------
+  engine-macos:
+    name: Engine (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: brew install ninja
+      - run: sh patches/apply.sh
+      - name: Configure and build
+        working-directory: engine
+        run: |
+          cmake --preset apple-arm64-release
+          cmake --build build/apple-arm64-release --config Release --target z_generals
+      - name: Package (relocatable, ad-hoc signed)
+        working-directory: engine
+        run: bash scripts/package-macos-release.sh Release build/apple-arm64-release
+      - name: Flatten payload
+        run: |
+          mkdir -p out/engine
+          cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
+          ls -la out/engine
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-macos
+          path: out/engine
+          if-no-files-found: error
+
+  engine-windows:
+    name: Engine (Windows x86)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: sh patches/apply.sh
+        shell: bash
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - name: Configure and build
+        working-directory: engine
+        run: |
+          cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF
+          cmake --build --preset win32
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/engine | Out-Null
+          Get-ChildItem engine/build/win32/Core/Release, engine/build/win32/GeneralsMD/Release -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.exe', '.dll' } | Copy-Item -Destination out/engine -Verbose
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-windows
+          path: out/engine
+          if-no-files-found: error
+
+  # ---- launcher app (engine bundled in as a resource) ----------------------------------------
+  launcher:
+    name: Launcher (${{ matrix.os }})
+    needs: [engine-macos, engine-windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, engine: engine-macos, bundles: "" }
+          - { os: windows-latest, engine: engine-windows, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
+          - { os: ubuntu-latest, engine: "", bundles: "" } # no Linux engine yet: launcher only
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"; core="${tag%%-*}"
+          app=$(python3 -c "import json;print(json.load(open('launcher/src-tauri/tauri.conf.json'))['version'])")
+          [ "$core" = "$app" ] || { echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $app"; exit 1; }
+      - if: matrix.engine != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.engine }}
+          path: launcher/src-tauri/engine
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: Swatinem/rust-cache@v2
+      # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
+      - id: tauri-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: tauri-cli-2.12.4-${{ runner.os }}
+      - if: steps.tauri-cli.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - if: steps.tauri-cli.outputs.cache-hit != 'true'
+        run: cargo binstall --no-confirm --locked tauri-cli@2.12.4
+      - run: cargo tauri build ${{ matrix.bundles }}
+        working-directory: launcher/src-tauri
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p dist
+          find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
+          ls dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-launcher-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---- relay server (binary + Docker image) --------------------------------------------------
+  server:
+    name: Relay server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Binary
+        run: |
+          cargo build --release -p generals-server
+          mkdir -p dist
+          tar -C target/release -czf dist/rallypoint-server-linux-x86_64.tar.gz rallypoint-server
+      - name: Docker image and smoke test
+        run: |
+          docker build -f server/Dockerfile -t rallypoint-relay .
+          docker run -d --name relay -p 7777:7777/udp rallypoint-relay
+          sleep 1
+          SERIAL=$(docker exec relay rallypoint-server issue ci)
+          python3 scripts/smoke_relay.py 127.0.0.1 7777 "$SERIAL"
+          AUTO=$(python3 scripts/smoke_relay.py 127.0.0.1 7777)
+          docker exec relay rallypoint-server list | grep "$AUTO"
+      - name: Push image to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rallypoint-relay"
+          VERSION="${GITHUB_REF_NAME#v}"
+          docker tag rallypoint-relay "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION"
+          case "$VERSION" in *-*) ;; *) docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest" ;; esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-server
+          path: dist/*
+
+  # ---- publish -------------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [launcher, server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS)
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
+            --title "Rallypoint ${GITHUB_REF_NAME#v}" --notes-file docs/release-notes.md --generate-notes

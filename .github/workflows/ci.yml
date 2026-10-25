@@ -1,5 +1,15 @@
+# Fast checks only. Nothing here builds the engine or app bundles; that happens in release.yml on version tags.
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -8,31 +18,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4 # engine submodule is not needed for launcher tests
+      - uses: actions/checkout@v4 # the engine submodule is not needed for these tests
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p generals-core
-
-  server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p generals-proto -p generals-server
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build -f server/Dockerfile -t generals-relay .
-      - name: Issue a serial and complete a handshake
-        run: |
-          docker run -d --name relay -p 7777:7777/udp generals-relay
-          sleep 1
-          SERIAL=$(docker exec relay generals-server issue ci)
-          python3 scripts/smoke_relay.py 127.0.0.1 7777 "$SERIAL"
-          echo "auto-registration:"
-          AUTO=$(python3 scripts/smoke_relay.py 127.0.0.1 7777)
-          docker exec relay generals-server list | grep "$AUTO"
+      - run: cargo test -p generals-core -p generals-proto -p generals-server
 
   engine-math:
     runs-on: ubuntu-latest
@@ -41,34 +29,3 @@ jobs:
         with:
           submodules: true
       - run: sh tests/run.sh
-
-  launcher-build:
-    needs: test
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-      - uses: Swatinem/rust-cache@v2
-      # Pinned so the cache key means something. On a miss, binstall fetches the prebuilt binary
-      # (and compiles from source only if none exists for the platform).
-      - id: tauri-cli
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-tauri*
-          key: tauri-cli-2.12.4-${{ runner.os }}
-      - if: steps.tauri-cli.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-binstall
-      - if: steps.tauri-cli.outputs.cache-hit != 'true'
-        run: cargo binstall --no-confirm --locked tauri-cli@2.12.4
-      - run: cargo tauri build
-        working-directory: launcher/src-tauri
-      - uses: actions/upload-artifact@v4
-        with:
-          name: launcher-${{ matrix.os }}
-          path: target/release/bundle/**

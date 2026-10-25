@@ -1,4 +1,4 @@
-use generals_core::{agent::{Agent, Status}, config::Config, launch, mods, steam};
+use generals_core::{agent::{Agent, Status}, config::Config, engine, launch, mods, steam};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -32,12 +32,13 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 struct ConfigView {
     server: String,
     serial_masked: String,
+    game_dir: String,
 }
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
     let c = Config::load(&config_path(&app)?);
-    Ok(ConfigView { serial_masked: c.masked_serial(), server: c.server })
+    Ok(ConfigView { serial_masked: c.masked_serial(), game_dir: c.game_dir.clone(), server: c.server })
 }
 
 /// An empty `serial` keeps the stored one.
@@ -98,8 +99,14 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_id: Option<String>, width: u32, height: u32, fullscreen: bool) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_id: Option<String>, width: u32, height: u32, fullscreen: bool, skirmish: bool) -> Result<(), String> {
     let base = base(&app)?;
+    let data = app.path().data_dir().map_err(|e| e.to_string())?;
+    let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
+        .ok_or("This build has no game engine for your platform yet")?;
+    if !game_dir.join("INIZH.big").is_file() {
+        return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
+    }
     let m = match mod_id {
         Some(id) => mods::load_manifest(MODS_JSON).map_err(|e| e.to_string())?.into_iter().find(|m| m.id == id),
         None => None,
@@ -118,9 +125,23 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             },
             None => None,
         },
+        // Straight into a 1v1 skirmish against the AI; plain Play opens the full menu (Solo > Skirmish).
+        env: if skirmish { vec![("GEN_AUTO_SKIRMISH".into(), "1".into())] } else { vec![] },
     };
-    let exe = base.join("runtime").join(if cfg!(windows) { "generalszh.exe" } else { "generalszh" });
-    launch::command(&exe, &game_dir, &opts).spawn().map(|_| ()).map_err(|e| format!("{}: {e}", exe.display()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)); // bundles can lose the exec bit
+    }
+    launch::command(&exe, &game_dir, &opts).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
+    // Remember a manually chosen folder.
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    if c.game_dir != game_dir.to_string_lossy() {
+        c.game_dir = game_dir.to_string_lossy().into();
+        let _ = c.save(&path);
+    }
+    Ok(())
 }
 
 fn main() {

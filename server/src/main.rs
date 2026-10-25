@@ -1,4 +1,4 @@
-//! generals-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>
+//! rallypoint-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>
 use generals_proto::Packet;
 use generals_server::{format_serial, os_random, Serials, Server};
 use std::io::Write;
@@ -18,7 +18,7 @@ fn main() -> std::io::Result<()> {
         }
         _ => default.to_string(),
     };
-    // Env defaults let `docker exec generals-server issue ...` find the same files as the entrypoint.
+    // Env defaults let `docker exec rallypoint-server issue ...` find the same files as the entrypoint.
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let file = take("--serials", &env("GENERALS_SERIALS", "serials.txt"));
     let bind = take("--bind", &env("GENERALS_BIND", "0.0.0.0:7777"));
@@ -48,7 +48,7 @@ fn main() -> std::io::Result<()> {
         }
         Some("list") => print!("{}", read(&file)),
         Some("run") => run(&file, &bind, !closed)?,
-        _ => eprintln!("usage: generals-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>"),
+        _ => eprintln!("usage: rallypoint-server [--serials FILE] [--bind ADDR] [--closed] <run | issue [label] | revoke SERIAL | list>"),
     }
     Ok(())
 }

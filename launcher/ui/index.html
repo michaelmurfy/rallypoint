@@ -9,6 +9,7 @@
 </style>
 <h2>Generals Launcher</h2>
 <label>Game install <select id="game"></select></label>
+<label>or game folder <input id="dir" size="40" placeholder="folder containing INIZH.big"></label>
 <label>Mod <select id="mod"><option value="">None (vanilla)</option></select></label>
 <label>Resolution <input id="w" type="number" size="5"> x <input id="h" type="number" size="5"></label>
 <label><input id="fs" type="checkbox"> Fullscreen</label>
@@ -20,7 +21,7 @@
   <button id="save">Save</button> <button id="net">Connect</button>
   <p id="relay">Offline</p>
 </fieldset>
-<button id="go">Play</button>
+<button id="go">Play</button> <button id="sk">Quick Skirmish (vs AI)</button>
 <p id="msg"></p>
 <script>
   const { invoke } = window.__TAURI__.core, $ = (i) => document.getElementById(i);
@@ -31,7 +32,7 @@
       || "<option value=''>No Steam install found</option>";
   });
   invoke("installed_mods").then((m) => m.forEach((x) => $("mod").add(new Option(x.name, x.id))));
-  invoke("get_config").then((c) => { $("srv").value = c.server; $("ser").placeholder = c.serial_masked || "issued on first connect"; });
+  invoke("get_config").then((c) => { $("dir").value = c.game_dir; $("srv").value = c.server; $("ser").placeholder = c.serial_masked || "issued on first connect"; });
   $("save").onclick = () => invoke("save_config", { server: $("srv").value, serial: $("ser").value })
     .then(() => { $("ser").value = ""; return invoke("get_config"); })
     .then((c) => $("ser").placeholder = c.serial_masked || "issued on first connect", (e) => $("relay").textContent = e);
@@ -41,8 +42,10 @@
     $("relay").textContent = s;
     $("net").textContent = s === "Offline" || s.startsWith("Server") || s.startsWith("This") || s.startsWith("Too") || s === "Rejected by server" ? "Connect" : "Disconnect";
   }), 1000);
-  $("go").onclick = () => invoke("launch_game", {
-    gameDir: $("game").value, modId: $("mod").value || null,
-    width: +$("w").value, height: +$("h").value, fullscreen: $("fs").checked,
+  const play = (skirmish) => invoke("launch_game", {
+    gameDir: $("dir").value.trim() || $("game").value, modId: $("mod").value || null,
+    width: +$("w").value, height: +$("h").value, fullscreen: $("fs").checked, skirmish,
   }).then(() => $("msg").textContent = "Launched.", (e) => $("msg").textContent = e);
+  $("go").onclick = () => play(false);
+  $("sk").onclick = () => play(true);
 </script>

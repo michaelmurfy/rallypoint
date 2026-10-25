@@ -1,8 +1,8 @@
 # docker compose up -d
 # Clients get a serial automatically on first connect. For an invite-only server set
 # GENERALS_REGISTRATION=closed below and hand out serials yourself:
-# docker compose exec relay generals-server issue alice
-# docker compose exec relay generals-server revoke XXXX-XXXX-XXXX-XXXX
+# docker compose exec relay rallypoint-server issue alice
+# docker compose exec relay rallypoint-server revoke XXXX-XXXX-XXXX-XXXX
 services:
   relay:
     build:

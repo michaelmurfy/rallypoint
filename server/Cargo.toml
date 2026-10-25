@@ -3,5 +3,9 @@ name = "generals-server"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "rallypoint-server"
+path = "src/main.rs"
+
 [dependencies]
 generals-proto = { path = "../shared" }
