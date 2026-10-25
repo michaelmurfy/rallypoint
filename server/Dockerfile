@@ -1,5 +1,8 @@
 # Build from the repo root: docker build -f server/Dockerfile -t rallypoint-relay .
 FROM rust:1-slim AS build
+# The release version, compiled into the server so it can report it.
+ARG RALLYPOINT_VERSION
+ENV RALLYPOINT_VERSION=$RALLYPOINT_VERSION
 WORKDIR /src
 COPY shared shared
 COPY server server

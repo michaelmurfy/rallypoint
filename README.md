@@ -10,7 +10,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 ## Features
 
-- **A modern launcher** with a first-run setup wizard that walks you through game files, display, mods and online play.
+- **A modern launcher** with a first-run setup wizard that walks you through game files, display, mods and maps.
 - **Get the game files from inside the launcher.** On macOS and Linux (where Steam can't install these games) it downloads them for you from your Steam account with a native downloader (no Rosetta needed); on Windows it finds your Steam install.
 - **Skirmish / single player.** The game engine is bundled in the app. **Play** opens the full game (Solo Play → Skirmish); **Quick Skirmish** jumps straight into a 1v1 against the AI.
 - **Any resolution and aspect ratio.** 4K, HiDPI and ultrawide are supported. The camera keeps the same world scale per pixel, so wide screens see *more* of the map instead of being zoomed in, and the 2D UI is scaled uniformly and centred instead of stretched.
@@ -52,7 +52,7 @@ Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 ## Playing
 
-The first time you open Rallypoint, a short **setup wizard** helps you find or download your game files, choose a display setting, and optionally add a mod or an online server. You can run it again from **Settings**.
+The first time you open Rallypoint, a short **setup wizard** helps you find or download your game files, choose a display setting, and optionally add mods and maps. Online play is set up later from the **Online** tab. You can run the wizard again from **Settings**.
 
 On the Play tab choose a mod (optional), a resolution (it defaults to your screen's native pixels) and fullscreen, then press **Play** for the full menu, or **Quick Skirmish** to drop straight into a match against the AI.
 

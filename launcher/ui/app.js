@@ -453,17 +453,67 @@ function modsPage() {
   return { el, dispose: () => { refreshers.delete(render); maps.dispose(); } };
 }
 
+const DEFAULT_PORT = "7777";
+/** "host:port" (as stored) into the two boxes; a bare host gets the default port. */
+function splitServer(s) {
+  const m = (s || "").trim().match(/^(.*):(\d{1,5})$/);
+  return m ? { host: m[1], port: m[2] } : { host: (s || "").trim(), port: DEFAULT_PORT };
+}
+/** The two boxes back into "host:port". A port typed into the host box wins, so "play.example:7788" just works. */
+function joinServer(host, port) {
+  const typed = host.trim().match(/^(.*):(\d{1,5})$/);
+  const h = typed ? typed[1] : host.trim();
+  const p = (typed ? typed[2] : port.trim()) || DEFAULT_PORT;
+  const ok = h.length > 0 && /^\d{1,5}$/.test(p) && +p >= 1 && +p <= 65535;
+  return { ok, text: `${h}:${p}`, host: h, port: p };
+}
+
+/** Saved servers live in this launcher's own storage (never the room password). */
+function loadServers() {
+  try { const v = JSON.parse(localStorage.getItem("servers") || "[]"); return Array.isArray(v) ? v.filter((x) => x && typeof x.server === "string") : []; }
+  catch { return []; }
+}
+function storeServers(list) { try { localStorage.setItem("servers", JSON.stringify(list)); } catch { /* storage unavailable */ } }
+
+// Right-click does nothing in the launcher.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 function onlinePage() {
-  const server = h("input", { type: "text", placeholder: "host:7777", value: store.cfg.server || "", "aria-label": "Server" });
+  const saved = splitServer(store.cfg.server);
+  const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
+  const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
   const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room" });
   const pw = h("input", { type: "password", autocomplete: "off", "aria-label": "Room password" });
   const status = h("div", { class: "row" });
+  const saved$ = h("div", {});
+  function drawServers() {
+    const list = loadServers();
+    fill(saved$, list.length ? [h("h2", {}, "Saved servers"), ...list.map((x, i) => {
+      const sp = splitServer(x.server);
+      return h("div", { class: "mappack" },
+        h("div", {}, h("strong", {}, x.server), x.room ? h("span", { class: "muted small" }, `  room ${x.room}`) : null),
+        h("div", { class: "row" },
+          h("button", { class: "btn small", onclick: () => { server.value = sp.host; port.value = sp.port; room.value = x.room || ""; pw.focus(); } }, "Use"),
+          h("button", { class: "btn small ghost danger", onclick: () => { const l = loadServers(); l.splice(i, 1); storeServers(l); drawServers(); } }, "Remove")));
+    })] : []);
+  }
+  const save = h("button", { class: "btn", onclick: () => {
+    const s = joinServer(server.value, port.value);
+    if (!s.ok) return toast(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first", "bad");
+    const l = loadServers().filter((x) => !(x.server === s.text && (x.room || "") === room.value.trim()));
+    l.push({ server: s.text, room: room.value.trim() });
+    storeServers(l); drawServers(); toast("Server saved");
+  } }, "Save server");
+  drawServers();
   const btn = h("button", { class: "btn primary", onclick: async () => {
     try {
       if (btn.dataset.mode === "disconnect") await invoke("relay_disconnect");
       else {
-        await invoke("save_config", { server: server.value, room: room.value, steamUser: store.cfg.steam_user || "" });
-        store.cfg.server = server.value.trim(); store.cfg.room = room.value.trim();
+        const s = joinServer(server.value, port.value);
+        if (!s.ok) throw new Error(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first");
+        server.value = s.host; port.value = s.port;
+        await invoke("save_config", { server: s.text, room: room.value, steamUser: store.cfg.steam_user || "" });
+        store.cfg.server = s.text; store.cfg.room = room.value.trim();
         await invoke("relay_connect", { password: pw.value });
       }
     } catch (e) { toast(errText(e), "bad"); }
@@ -481,10 +531,11 @@ function onlinePage() {
     h("div", { class: "page-head" }, h("h1", {}, "Online")),
     h("div", { class: "card" },
       h("p", { class: "muted" }, "Join a room on a Rallypoint server, then use the game's LAN lobby. Everyone in the same room with the same password ends up in the same game."),
-      h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Room"), room)),
-      h("label", { class: "field" }, h("span", {}, "Room password"), pw),
+      h("div", { class: "hostport" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Port"), port)),
+      h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
       h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left."),
-      h("div", { class: "row" }, btn, status)));
+      h("div", { class: "row" }, btn, save, status)),
+    h("div", { class: "card" }, saved$));
   return { el, dispose: () => refreshers.delete(refresh) };
 }
 
@@ -555,7 +606,7 @@ function closeWizard() { wizardEl && wizardEl.remove(); wizardEl = null; }
 
 function openWizard() {
   closeWizard();
-  const steps = ["Welcome", "Game files", "Display", "Mods", "Maps", "Online", "Ready"];
+  const steps = ["Welcome", "Game files", "Display", "Mods", "Maps", "Ready"];
   const w = { i: 0, filesOk: !!store.cfg.game_dir, dispose: null };
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Set up Rallypoint" });
   wizardEl = overlay;
@@ -577,7 +628,7 @@ function openWizard() {
       return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
         h("div", { class: "stack" }, h("h1", {}, "Set up Rallypoint"),
           h("p", { class: "muted" }, "Rallypoint runs Command & Conquer: Generals – Zero Hour on your Mac or PC, at any screen size. It needs your own copy of the game. This takes about two minutes and everything can be changed later."),
-          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods, maps and an online server, if you want them"))));
+          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods and maps, if you want them"))));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); });
@@ -607,22 +658,14 @@ function openWizard() {
       return h("div", { class: "stack" }, h("h2", {}, "Maps (optional)"),
         h("p", { class: "muted" }, "Zero Hour comes with a few maps. These packs from GenTool's download page add the ranked 1v1, 2v2 and 3v3 maps that most online players use. You can add more any time from the Mods tab."), panel.el);
     }
-    if (step === 5) {
-      const server = h("input", { type: "text", placeholder: "host:7777", value: store.cfg.server || "", "aria-label": "Server", onchange: save });
-      const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room", onchange: save });
-      function save() { store.cfg.server = server.value.trim(); store.cfg.room = room.value.trim(); invoke("save_config", { server: server.value, room: room.value, steamUser: store.cfg.steam_user || "" }); }
-      return h("div", { class: "stack" }, h("h2", {}, "Online play (optional)"),
-        h("p", { class: "muted" }, "To play with friends, enter a Rallypoint server and a room name. You pick the room password when you connect. Leave this blank to skip."),
-        h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Room"), room)));
-    }
     const pr = prefs.get(), nat = nativeRes();
     return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
         h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed")),
         h("dt", {}, "Mods"), h("dd", {}, installedMods().map((m) => m.name).join(", ") || "none"),
-        h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added"),
-        h("dt", {}, "Server"), h("dd", {}, store.cfg.server ? `${store.cfg.server}${store.cfg.room ? ", room " + store.cfg.room : ""}` : "none")),
+        h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added")),
+      h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."),
       h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));
   }
 
@@ -630,7 +673,7 @@ function openWizard() {
   function nav() {
     if (!nextBtn) return;
     nextBtn.disabled = w.i === 1 && !w.filesOk;
-    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to mods", "Continue to maps", "Continue to online play", "Review"][w.i] || "Continue";
+    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to mods", "Continue to maps", "Review"][w.i] || "Continue";
     backBtn.hidden = w.i === 0;
   }
   function render() {

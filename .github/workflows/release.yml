@@ -119,11 +119,18 @@ jobs:
           tool: cargo-binstall
       - if: steps.tauri-cli.outputs.cache-hit != 'true'
         run: cargo binstall --no-confirm --locked tauri-cli@2.12.4
-      - run: cargo tauri build ${{ matrix.bundles }}
+      - name: Work out the version
+        shell: bash
+        run: |
+          # A tag build uses the tag (v0.1.0-beta.1 -> 0.1.0-beta.1); a manual run gets a clearly fake one.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # tauri.conf.json carries the base 0.1.0; this file overrides it so installers and the app are named by the real version
+          printf '{"version":"%s"}' "$VERSION" > launcher/src-tauri/tauri.version.json
+          echo "building $VERSION"
+      # RALLYPOINT_VERSION (set above) is also compiled into the app, so the updater can tell 0.1.0-beta.1 from 0.1.0-beta.2
+      - run: cargo tauri build ${{ matrix.bundles }} --config tauri.version.json
         working-directory: launcher/src-tauri
-        env:
-          # lets the in-app updater tell 0.1.0-alpha.3 from 0.1.0-alpha.4
-          RALLYPOINT_VERSION: ${{ github.ref_name }}
       - name: Collect installers
         shell: bash
         run: |
@@ -146,14 +153,18 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: Swatinem/rust-cache@v2
+      - name: Work out the version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Binary
         run: |
           cargo build --release -p generals-server
           mkdir -p dist
-          tar -C target/release -czf dist/rallypoint-server-linux-x86_64.tar.gz rallypoint-server
+          tar -C target/release -czf "dist/rallypoint-server-${RALLYPOINT_VERSION}-linux-x86_64.tar.gz" rallypoint-server
       - name: Docker image and smoke test
         run: |
-          docker build -f server/Dockerfile -t rallypoint-relay .
+          docker build -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" -t rallypoint-relay .
           # same hardening as docker-compose.yml
           docker run -d --name relay -p 7777:7777/udp --read-only --tmpfs /tmp --cap-drop ALL \
             --security-opt no-new-privileges:true -v relay-data:/data rallypoint-relay

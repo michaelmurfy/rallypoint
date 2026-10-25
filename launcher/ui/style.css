@@ -136,6 +136,8 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 #updatehost { max-width: 720px; }
 #updatehost:not(:empty) { margin-bottom: 20px; }
 
+.hostport { display: grid; grid-template-columns: 1fr 7.5em; gap: 12px; }
+
 /* ---- maps ---- */
 .mappack { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .mappack:first-child { border-top: 0; padding-top: 2px; }
