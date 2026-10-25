@@ -23,7 +23,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
-| Launcher | ✅ | ✅ | ✅ (no engine yet) |
+| Launcher | ✅ | ✅ | build it yourself (see [Linux](#linux)) |
 | Download game files from Steam | ⚠️ written, not tried with a real account | ✅ finds your Steam install | ⚠️ same as macOS |
 | Engine / Skirmish | ⚠️ builds in CI; the upstream port reports Skirmish playable | ⚠️ builds from upstream source, untested here | ❌ not built yet |
 | Widescreen / HiDPI patch | ⚠️ written, not played yet | ⚠️ written, not played yet | – |
@@ -40,7 +40,7 @@ Download the installer for your platform from the [Releases](../../releases) pag
 
 - **macOS:** open the `.dmg` and drag Rallypoint to Applications. The app is ad-hoc signed, not notarised, so Gatekeeper blocks the first launch. Right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. SmartScreen may warn about an unknown publisher (**More info → Run anyway**).
-- **Linux:** `.deb`, `.rpm` or `.AppImage`. This only gives you the launcher for now.
+- **Linux:** there is no Linux installer or game engine yet; see [Linux](#linux). The relay server does run on Linux (below).
 
 ### Game data
 
@@ -122,6 +122,21 @@ make up
 Settings live in `.env` (see [`.env.example`](.env.example)): the port, and `ALLOWED_COUNTRIES` to only accept players from certain countries. The country lists are downloaded for you; local-network addresses are always let through unless you set `ALLOW_PRIVATE=false`.
 
 The image is also published as `ghcr.io/michaelmurfy/rallypoint-relay`, and the release page has a plain Linux binary (`rallypoint-server`).
+
+## Linux
+
+Releases don't include a Linux launcher, and there is no Linux game engine yet (only the relay server runs on Linux). If you want the launcher itself, build it:
+
+```bash
+# Debian / Ubuntu build dependencies (other distros: the equivalent webkit2gtk 4.1 / GTK 3 dev packages)
+sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+git clone --depth 1 https://github.com/michaelmurfy/rallypoint
+cd rallypoint/launcher/src-tauri
+cargo install tauri-cli --version "^2" --locked
+cargo tauri build            # .deb, .rpm and .AppImage in ../../target/release/bundle/
+```
+
+The launcher opens and manages mods, maps and relay rooms, but has no engine to start on Linux.
 
 ## Build from source
 

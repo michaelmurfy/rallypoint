@@ -87,7 +87,6 @@ jobs:
         include:
           - { os: macos-15, engine: engine-macos, bundles: "" }
           - { os: windows-latest, engine: engine-windows, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
-          - { os: ubuntu-latest, engine: "", bundles: "" } # no Linux engine yet: launcher only
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -104,8 +103,6 @@ jobs:
         with:
           name: ${{ matrix.engine }}
           path: launcher/src-tauri/engine
-      - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
       - uses: Swatinem/rust-cache@v2
       # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
       - id: tauri-cli
