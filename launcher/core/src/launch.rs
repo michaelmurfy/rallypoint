@@ -12,6 +12,9 @@ pub struct LaunchOptions {
     pub mod_path: Option<String>,
     #[serde(default)]
     pub mod_args: Vec<String>,
+    /// Tunnel agent address and our virtual IP; the patched engine reads these from the environment.
+    #[serde(default)]
+    pub relay: Option<(String, String)>,
 }
 
 pub fn args(o: &LaunchOptions) -> Vec<String> {
@@ -33,6 +36,9 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
 pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     let mut c = Command::new(engine);
     c.current_dir(game_dir).args(args(o));
+    if let Some((agent, vip)) = &o.relay {
+        c.env("GEN_RELAY", agent).env("GEN_RELAY_VIP", vip);
+    }
     c
 }
 
@@ -42,7 +48,15 @@ mod tests {
 
     #[test]
     fn builds_args_with_mod() {
-        let o = LaunchOptions { width: 3840, height: 1600, fullscreen: false, mod_path: Some("/m/Shockwave".into()), mod_args: vec!["-noshellmap".into()] };
+        let o = LaunchOptions { width: 3840, height: 1600, fullscreen: false, mod_path: Some("/m/Shockwave".into()), mod_args: vec!["-noshellmap".into()], relay: None };
         assert_eq!(args(&o), ["-win", "-xres", "3840", "-yres", "1600", "-mod", "/m/Shockwave", "-noshellmap"]);
+    }
+
+    #[test]
+    fn relay_sets_env() {
+        let o = LaunchOptions { width: 1, height: 1, fullscreen: false, mod_path: None, mod_args: vec![], relay: Some(("127.0.0.1:5000".into(), "10.77.0.2".into())) };
+        let c = command(Path::new("e"), Path::new("."), &o);
+        let envs: Vec<_> = c.get_envs().map(|(k, v)| (k.to_str().unwrap().to_string(), v.unwrap().to_str().unwrap().to_string())).collect();
+        assert_eq!(envs, [("GEN_RELAY".to_string(), "127.0.0.1:5000".to_string()), ("GEN_RELAY_VIP".to_string(), "10.77.0.2".to_string())]);
     }
 }

@@ -989,6 +989,8 @@ dependencies = [
 name = "generals-core"
 version = "0.1.0"
 dependencies = [
+ "generals-proto",
+ "generals-server",
  "serde",
  "serde_json",
 ]
@@ -998,6 +1000,7 @@ name = "generals-launcher"
 version = "0.1.0"
 dependencies = [
  "generals-core",
+ "generals-proto",
  "serde",
  "tauri",
  "tauri-build",

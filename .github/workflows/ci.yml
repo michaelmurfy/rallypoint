@@ -19,6 +19,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p generals-proto -p generals-server
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f server/Dockerfile -t generals-relay .
+      - name: Issue a serial and complete a handshake
+        run: |
+          docker run -d --name relay -p 7777:7777/udp generals-relay
+          sleep 1
+          SERIAL=$(docker exec relay generals-server issue ci)
+          python3 scripts/smoke_relay.py 127.0.0.1 7777 "$SERIAL"
+
   engine-math:
     runs-on: ubuntu-latest
     steps:

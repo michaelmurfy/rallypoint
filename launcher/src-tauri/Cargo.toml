@@ -8,5 +8,6 @@ tauri-build = "2"
 
 [dependencies]
 generals-core = { path = "../core" }
+generals-proto = { path = "../../shared" }
 tauri = "2"
 serde = { version = "1", features = ["derive"] }

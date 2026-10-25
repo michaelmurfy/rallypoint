@@ -1,0 +1,16 @@
+# docker compose up -d
+# docker compose exec relay generals-server issue alice     # prints a new serial
+# docker compose exec relay generals-server revoke XXXX-XXXX-XXXX-XXXX
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "7777:7777/udp"
+    volumes:
+      - relay-data:/data
+
+volumes:
+  relay-data:

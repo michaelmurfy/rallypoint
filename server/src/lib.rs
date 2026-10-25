@@ -76,17 +76,17 @@ impl Server {
         let my_vip = me.vip;
         match pkt {
             Packet::Ping => vec![(from, Packet::Ping)],
-            Packet::Bcast { payload, .. } => self
+            Packet::Bcast { src_port, dst_port, payload, .. } => self
                 .sessions
                 .iter()
                 .filter(|(a, _)| **a != from)
-                .map(|(a, _)| (*a, Packet::Bcast { vip: my_vip, payload: payload.clone() }))
+                .map(|(a, _)| (*a, Packet::Bcast { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
-            Packet::Data { vip, payload } => self
+            Packet::Data { vip, src_port, dst_port, payload } => self
                 .sessions
                 .iter()
                 .filter(|(a, s)| **a != from && s.vip == vip)
-                .map(|(a, _)| (*a, Packet::Data { vip: my_vip, payload: payload.clone() }))
+                .map(|(a, _)| (*a, Packet::Data { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
             _ => vec![],
         }
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn unauthenticated_traffic_is_rejected() {
         let mut s = server();
-        let out = s.handle(addr(9), Packet::Bcast { vip: [0; 4], payload: vec![1] }, 0);
+        let out = s.handle(addr(9), Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: vec![1] }, 0);
         assert_eq!(out, [(addr(9), Packet::Reject(Reason::NotAuthed))]);
     }
 
@@ -164,12 +164,12 @@ mod tests {
         let mut s = server();
         s.handle(addr(1), hello("AAA"), 0); // vip .1
         s.handle(addr(2), hello("BBB"), 0); // vip .2
-        let b = s.handle(addr(1), Packet::Bcast { vip: [0; 4], payload: vec![7] }, 1);
-        assert_eq!(b, [(addr(2), Packet::Bcast { vip: [10, 77, 0, 1], payload: vec![7] })]);
-        let d = s.handle(addr(2), Packet::Data { vip: [10, 77, 0, 1], payload: vec![8] }, 1);
-        assert_eq!(d, [(addr(1), Packet::Data { vip: [10, 77, 0, 2], payload: vec![8] })]);
+        let b = s.handle(addr(1), Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: vec![7] }, 1);
+        assert_eq!(b, [(addr(2), Packet::Bcast { vip: [10, 77, 0, 1], src_port: 8086, dst_port: 8086, payload: vec![7] })]);
+        let d = s.handle(addr(2), Packet::Data { vip: [10, 77, 0, 1], src_port: 8088, dst_port: 8088, payload: vec![8] }, 1);
+        assert_eq!(d, [(addr(1), Packet::Data { vip: [10, 77, 0, 2], src_port: 8088, dst_port: 8088, payload: vec![8] })]);
         // unknown destination goes nowhere
-        assert!(s.handle(addr(2), Packet::Data { vip: [10, 77, 0, 99], payload: vec![] }, 1).is_empty());
+        assert!(s.handle(addr(2), Packet::Data { vip: [10, 77, 0, 99], src_port: 8088, dst_port: 8088, payload: vec![] }, 1).is_empty());
     }
 
     #[test]

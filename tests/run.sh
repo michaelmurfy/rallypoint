@@ -3,5 +3,7 @@
 set -e
 cd "$(dirname "$0")/.."
 sh patches/apply.sh
-c++ -std=c++17 -Wall -Iengine/Core/GameEngine/Include tests/widescreen_test.cpp -o /tmp/widescreen_test
-/tmp/widescreen_test && echo "widescreen_test ok"
+for t in widescreen relaywire; do
+  c++ -std=c++17 -Wall -Iengine/Core/GameEngine/Include tests/${t}_test.cpp -o /tmp/${t}_test
+  /tmp/${t}_test && echo "${t}_test ok"
+done

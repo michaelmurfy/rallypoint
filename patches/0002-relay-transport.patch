@@ -1,0 +1,252 @@
+diff --git a/Core/GameEngine/Include/GameNetwork/RelayWire.h b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+new file mode 100644
+index 0000000..625da85
+--- /dev/null
++++ b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+@@ -0,0 +1,92 @@
++// Wire format and settings for tunnelling engine UDP through the launcher's relay agent.
++// Mirrors shared/src/lib.rs in the launcher repo (golden bytes are checked on both sides).
++// Enabled by env: GEN_RELAY=127.0.0.1:<agent port>, GEN_RELAY_VIP=<our virtual ip>. Pure C++, no sockets.
++#pragma once
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++namespace RelayWire
++{
++
++enum Tag : uint8_t { TagBcast = 4, TagData = 5, TagBind = 7 };
++static const size_t HEADER = 9; // tag + vip(4) + src port(2) + dst port(2)
++
++struct Config
++{
++	bool on;
++	uint32_t agentIp; // host order
++	uint16_t agentPort;
++	uint32_t vip;     // host order
++};
++
++inline bool parseIp(const char *s, uint32_t &ip)
++{
++	unsigned a, b, c, d;
++	if (!s || sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 || a > 255 || b > 255 || c > 255 || d > 255)
++		return false;
++	ip = (a << 24) | (b << 16) | (c << 8) | d;
++	return true;
++}
++
++inline Config parseConfig(const char *relay, const char *vip)
++{
++	Config c = { false, 0, 0, 0 };
++	unsigned port = 0;
++	char host[64];
++	if (!relay || !vip || sscanf(relay, "%63[0-9.]:%u", host, &port) != 2 || port == 0 || port > 65535)
++		return c;
++	if (parseIp(host, c.agentIp) && parseIp(vip, c.vip))
++	{
++		c.agentPort = (uint16_t)port;
++		c.on = true;
++	}
++	return c;
++}
++
++inline const Config &config()
++{
++	static const Config c = parseConfig(getenv("GEN_RELAY"), getenv("GEN_RELAY_VIP"));
++	return c;
++}
++
++inline void put32(uint8_t *o, uint32_t v) { o[0] = v >> 24; o[1] = v >> 16; o[2] = v >> 8; o[3] = v; }
++inline void put16(uint8_t *o, uint16_t v) { o[0] = v >> 8; o[1] = v; }
++
++// Engine -> agent. A destination of 255.255.255.255 is the LAN broadcast. Returns bytes written, 0 if cap too small.
++inline size_t encode(uint8_t *out, size_t cap, uint32_t dstIp, uint16_t srcPort, uint16_t dstPort, const uint8_t *payload, size_t n)
++{
++	if (cap < HEADER + n)
++		return 0;
++	const bool bcast = dstIp == 0xFFFFFFFFu;
++	out[0] = bcast ? TagBcast : TagData;
++	put32(out + 1, bcast ? 0 : dstIp);
++	put16(out + 5, srcPort);
++	put16(out + 7, dstPort);
++	memcpy(out + HEADER, payload, n);
++	return HEADER + n;
++}
++
++inline size_t encodeBind(uint8_t *out, uint16_t port)
++{
++	out[0] = TagBind;
++	put16(out + 1, port);
++	return 3;
++}
++
++// Agent -> engine. Anything that is not a Bcast/Data packet is ignored (returns false).
++inline bool decode(const uint8_t *in, size_t n, uint32_t &srcIp, uint16_t &srcPort, uint16_t &dstPort, const uint8_t *&payload, size_t &payloadLen)
++{
++	if (n < HEADER || (in[0] != TagBcast && in[0] != TagData))
++		return false;
++	srcIp = ((uint32_t)in[1] << 24) | ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 8) | in[4];
++	srcPort = (uint16_t)((in[5] << 8) | in[6]);
++	dstPort = (uint16_t)((in[7] << 8) | in[8]);
++	payload = in + HEADER;
++	payloadLen = n - HEADER;
++	return true;
++}
++
++}
+diff --git a/Core/GameEngine/Include/GameNetwork/udp.h b/Core/GameEngine/Include/GameNetwork/udp.h
+index 95c6150..d3f2009 100644
+--- a/Core/GameEngine/Include/GameNetwork/udp.h
++++ b/Core/GameEngine/Include/GameNetwork/udp.h
+@@ -102,6 +102,11 @@ class UDP
+ 
+ 	Int m_lastError;
+ 
++	// Relay mode (GEN_RELAY): traffic is tunnelled through the launcher's local agent.
++	Bool m_relay = FALSE;
++	UnsignedShort m_logicalPort = 0;
++	Int ReadRelay(unsigned char *msg,UnsignedInt len,sockaddr_in *from);
++
+  public:
+                    UDP();
+                   ~UDP();
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+index abd4109..91deab7 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+@@ -30,6 +30,7 @@
+ #include "Common/GameState.h"
+ #include "Common/Registry.h"
+ #include "GameNetwork/LANAPI.h"
++#include "GameNetwork/RelayWire.h"
+ #include "GameNetwork/networkutil.h"
+ #include "Common/GlobalData.h"
+ #include "Common/RandomValue.h"
+@@ -1266,7 +1267,8 @@ void LANAPI::addPlayer( LANPlayer *player )
+ Bool LANAPI::SetLocalIP( UnsignedInt localIP )
+ {
+ 	Bool retval = TRUE;
+-	m_localIP = localIP;
++	// Relay mode: we are only reachable at the virtual IP the relay assigned, whatever adapter was picked.
++	m_localIP = RelayWire::config().on ? RelayWire::config().vip : localIP;
+ 
+ 	m_transport->reset();
+ 	retval = m_transport->init(m_localIP, lobbyPort);
+diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
+index 6806417..59eb616 100644
+--- a/Core/GameEngine/Source/GameNetwork/udp.cpp
++++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
+@@ -34,6 +34,7 @@
+ #include "Common/GameEngine.h"
+ //#include "GameNetwork/NetworkInterface.h"
+ #include "GameNetwork/udp.h"
++#include "GameNetwork/RelayWire.h"
+ 
+ 
+ //-------------------------------------------------------------------------
+@@ -147,6 +148,16 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
+   int retval;
+   int status;
+ 
++  // Relay mode: bind an ephemeral loopback socket, but keep presenting the requested port and our
++  // virtual IP to the rest of the engine. The agent learns the port from the Bind packet.
++  const RelayWire::Config &relay = RelayWire::config();
++  const UnsignedShort logicalPort = Port;
++  if (relay.on)
++  {
++    IP = 0x7F000001;
++    Port = 0;
++  }
++
+   IP=htonl(IP);
+   Port=htons(Port);
+ 
+@@ -187,6 +198,21 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
+   if (retval==-1)
+     fprintf(stderr,"Couldn't set nonblocking mode!\n");
+ 
++  if (relay.on)
++  {
++    m_relay = TRUE;
++    m_logicalPort = logicalPort;
++    myIP = relay.vip;
++    myPort = logicalPort;
++    uint8_t bindPkt[3];
++    const size_t n = RelayWire::encodeBind(bindPkt, logicalPort);
++    sockaddr_in agent = {};
++    agent.sin_family = AF_INET;
++    agent.sin_addr.s_addr = htonl(relay.agentIp);
++    agent.sin_port = htons(relay.agentPort);
++    sendto(fd,(const char *)bindPkt,(int)n,0,(struct sockaddr *)&agent,sizeof(agent));
++  }
++
+   return(OK);
+ }
+ 
+@@ -243,6 +269,19 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
+   to.sin_family=AF_INET;
+ 
+   ClearStatus();
++  if (m_relay)
++  {
++    // Wrap the datagram for the agent instead of sending it to the peer directly.
++    const RelayWire::Config &relay = RelayWire::config();
++    uint8_t wrapped[2048];
++    const size_t n = RelayWire::encode(wrapped, sizeof(wrapped), IP, m_logicalPort, port, msg, len);
++    if (n == 0) return(-1);
++    to.sin_port = htons(relay.agentPort);
++    to.sin_addr.s_addr = htonl(relay.agentIp);
++    retval = sendto(fd,(const char *)wrapped,(int)n,0,(struct sockaddr *)&to,sizeof(to));
++    if (retval == (Int)n) return((Int)len); // callers compare against the payload length
++    return(retval);
++  }
+   retval=sendto(fd,(const char *)msg,len,0,(struct sockaddr *)&to,sizeof(to));
+   #ifdef _WIN32
+   if (retval==SOCKET_ERROR)
+@@ -259,11 +298,44 @@ Int UDP::Write(const unsigned char *msg,UnsignedInt len,UnsignedInt IP,UnsignedS
+   return(retval);
+ }
+ 
++// Receives from the relay agent: unwraps Bcast/Data and reports the sender as virtual-IP:logical-port.
++Int UDP::ReadRelay(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
++{
++  uint8_t buf[2048];
++  for (;;)
++  {
++    int n = recvfrom(fd,(char *)buf,sizeof(buf),0,nullptr,nullptr);
++    if (n < 0)
++    {
++      #ifdef _WIN32
++      return (WSAGetLastError() == WSAEWOULDBLOCK) ? 0 : -1;
++      #else
++      return -1; // same as the direct path: callers see EAGAIN as "nothing to read"
++      #endif
++    }
++    uint32_t srcIp; uint16_t srcPort, dstPort; const uint8_t *payload; size_t payloadLen;
++    if (!RelayWire::decode(buf, (size_t)n, srcIp, srcPort, dstPort, payload, payloadLen) || payloadLen > len)
++      continue; // not for us, or too big for the caller's buffer
++    memcpy(msg, payload, payloadLen);
++    if (from)
++    {
++      memset(from, 0, sizeof(*from));
++      from->sin_family = AF_INET;
++      from->sin_addr.s_addr = htonl(srcIp);
++      from->sin_port = htons(srcPort);
++    }
++    return (Int)payloadLen;
++  }
++}
++
+ Int UDP::Read(unsigned char *msg,UnsignedInt len,sockaddr_in *from)
+ {
+   Int retval;
+   int    alen=sizeof(sockaddr_in);
+ 
++  if (m_relay)
++    return ReadRelay(msg,len,from);
++
+   if (from!=nullptr)
+   {
+     retval=recvfrom(fd,(char *)msg,len,0,(struct sockaddr *)from,&alen);

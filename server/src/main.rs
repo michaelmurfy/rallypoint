@@ -18,8 +18,10 @@ fn main() -> std::io::Result<()> {
         }
         _ => default.to_string(),
     };
-    let file = take("--serials", "serials.txt");
-    let bind = take("--bind", "0.0.0.0:7777");
+    // Env defaults let `docker exec generals-server issue ...` find the same files as the entrypoint.
+    let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+    let file = take("--serials", &env("GENERALS_SERIALS", "serials.txt"));
+    let bind = take("--bind", &env("GENERALS_BIND", "0.0.0.0:7777"));
 
     match args.first().map(String::as_str) {
         Some("issue") => {
