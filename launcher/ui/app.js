@@ -382,12 +382,14 @@ function openMapViewer(entries, start) {
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   function paint(v) {
     const info = v.info;
-    // the picture is square; draw it at the map's own proportions, fitted into the box
+    // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
+    // proportions, centred in it.
     const ratio = info ? info.width / info.height : 1;
     const cw = ratio >= 1 ? 384 : Math.round(384 * ratio), ch = ratio >= 1 ? Math.round(384 / ratio) : 384;
-    canvas.width = cw; canvas.height = ch;
+    const ox = Math.round((384 - cw) / 2), oy = Math.round((384 - ch) / 2);
+    canvas.width = 384; canvas.height = 384;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, 384, 384);
     if (v.rgba) {
       const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
       for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
@@ -395,12 +397,12 @@ function openMapViewer(entries, start) {
       src.width = v.image_w; src.height = v.image_h;
       src.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
       ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(src, 0, 0, cw, ch);
+      ctx.drawImage(src, ox, oy, cw, ch);
     }
     if (info) {
       ctx.font = "700 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       for (const st of info.starts) {
-        const x = st.x * cw, y = (1 - st.y) * ch;
+        const x = ox + st.x * cw, y = oy + (1 - st.y) * ch;
         ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2);
         ctx.fillStyle = css("--accent"); ctx.fill();
         ctx.lineWidth = 2; ctx.strokeStyle = css("--text"); ctx.stroke();

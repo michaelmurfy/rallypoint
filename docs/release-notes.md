@@ -1,5 +1,6 @@
 ## Rallypoint 0.3.7
 
+- **The map preview keeps one size.** The window no longer grows, shrinks or shifts as you step through maps; wide and tall maps sit centred in the same square.
 - **Sync logs stay off until you switch them on.** 0.3.6 turned them on for new installs; that is undone. They are in Settings > Multiplayer sync logs, next to Download debug logs.
 - **One more float check in the logs**, to find why a few trees are rotated by one bit differently on Windows and macOS (harmless to play, but it keeps the checksums from ever agreeing).
 

@@ -293,4 +293,7 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 /* ---- map preview ---- */
 .wizard.mapviewer { width: min(480px, 100%); animation: rise .22s var(--ease); }
 .mapviewer .wiz-body { justify-items: center; }
-.mapview-canvas { max-width: 100%; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); }
+.mapviewer .wiz-head h2, .mapviewer .wiz-head p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mapviewer .wiz-head p { min-height: 1.5em; }
+.mapviewer .wiz-body p { min-height: 3em; text-align: center; }
+.mapview-canvas { width: 384px; height: 384px; max-width: 100%; aspect-ratio: 1; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); }
