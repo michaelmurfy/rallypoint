@@ -92,6 +92,9 @@ struct RoomSync {
     /// frame -> (player -> (checksum, claims to be the host))
     frames: BTreeMap<u32, HashMap<Vip, (u32, bool)>>,
     verdicts: u8,
+    /// Frames every player agreed on, and the last one.
+    agreed: u32,
+    last_agreed: u32,
 }
 
 /// Handshakes one address (or IPv6 /64) may start per minute; each costs the server a key exchange.
@@ -127,6 +130,8 @@ pub struct Server {
     sec_bytes: u32,
     last_pps: u32,
     last_kbps: u32,
+    /// Lines for the operator (joins, leaves, rejects, desyncs). The library does no I/O; `main` prints them.
+    events: Vec<String>,
 }
 
 /// Address used for per-source limits. An IPv6 user typically owns a whole /64, so that is the unit; an IPv4-mapped
@@ -143,6 +148,10 @@ fn rate_key(ip: IpAddr) -> IpAddr {
         },
         v4 => v4,
     }
+}
+
+fn fmt_vip(v: Vip) -> String {
+    format!("{}.{}.{}.{}", v[0], v[1], v[2], v[3])
 }
 
 fn valid_room(name: &str) -> bool {
@@ -186,6 +195,7 @@ impl Server {
             sec_bytes: 0,
             last_pps: 0,
             last_kbps: 0,
+            events: vec![],
         };
         s.reseed();
         s
@@ -204,6 +214,17 @@ impl Server {
             }
         }
         self.secret = secret;
+    }
+
+    /// Something worth a line in the log. Capped so a flood cannot grow it without bound between drains.
+    fn note(&mut self, msg: String) {
+        if self.events.len() < 500 {
+            self.events.push(msg);
+        }
+    }
+
+    pub fn take_events(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.events)
     }
 
     /// `false` = only admin-issued serials (Register is refused).
@@ -252,7 +273,12 @@ impl Server {
     }
 
     pub fn expire(&mut self, now: u64) {
-        self.sessions.retain(|_, s| now.saturating_sub(s.last_seen) < SESSION_TIMEOUT_SECS);
+        let timed_out: Vec<SocketAddr> = self.sessions.iter().filter(|(_, s)| now.saturating_sub(s.last_seen) >= SESSION_TIMEOUT_SECS).map(|(a, _)| *a).collect();
+        for a in timed_out {
+            if let Some(s) = self.sessions.remove(&a) {
+                self.note(format!("timeout: {} left room '{}' ({}, silent for {SESSION_TIMEOUT_SECS}s)", fmt_vip(s.vip), s.room, a));
+            }
+        }
         self.gc_rooms();
         self.recent.retain(|_, (t, _)| now.saturating_sub(*t) < REGISTER_DEDUP_SECS);
         self.by_ip.retain(|_, h| {
@@ -300,8 +326,17 @@ impl Server {
     /// A room exists only while it has members.
     fn gc_rooms(&mut self) {
         let used: HashSet<&String> = self.sessions.values().map(|s| &s.room).collect();
+        let gone: Vec<String> = self.rooms.keys().filter(|n| !used.contains(*n)).cloned().collect();
+        let mut lines = vec![];
+        for name in &gone {
+            let (agreed, last, verdicts) = self.sync.get(name).map(|r| (r.agreed, r.last_agreed, r.verdicts)).unwrap_or_default();
+            lines.push(format!("room '{name}' closed: {agreed} checked frames agreed (last {last}), {verdicts} desync verdicts"));
+        }
         self.rooms.retain(|name, _| used.contains(name));
         self.sync.retain(|name, _| used.contains(name));
+        for l in lines {
+            self.note(l);
+        }
     }
 
     fn cookie(&self, ip: IpAddr, bucket: u64) -> Cookie {
@@ -351,16 +386,30 @@ impl Server {
             return vec![]; // not encrypted to our key
         };
         let (answer, join) = match first {
-            Packet::Register => (self.register(from, now), None),
+            Packet::Register => {
+                let a = self.register(from, now);
+                match &a {
+                    Packet::Issued { .. } => self.note(format!("sign-up: serial issued to {}", from.ip())),
+                    Packet::Reject(r) => self.note(format!("sign-up from {} refused: {r:?}", from.ip())),
+                    _ => {}
+                }
+                (a, None)
+            }
             Packet::Hello { serial, room, verifier } => match self.hello(from, serial, room, verifier, now) {
                 Ok(join) => (Packet::Welcome { vip: join.vip }, Some(join)),
-                Err(r) => (Packet::Reject(r), None),
+                Err(r) => {
+                    self.note(format!("join from {} refused: {r:?}", from.ip()));
+                    (Packet::Reject(r), None)
+                }
             },
             _ => return vec![],
         };
         let Ok((reply, crypto)) = pending.reply(&answer) else { return vec![] };
         if let Some(j) = join {
-            self.rooms.entry(j.room.clone()).or_insert(j.verifier);
+            let new_room = self.rooms.insert(j.room.clone(), j.verifier).is_none();
+            let n = self.sessions.values().filter(|s| s.room == j.room).count() + 1;
+            let tail = &j.serial[j.serial.len().saturating_sub(4)..];
+            self.note(format!("join: {} (serial ...{tail}, {}) {} room '{}', {n} in it", fmt_vip(j.vip), from, if new_room { "opened" } else { "entered" }, j.room));
             self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0 });
         }
         let reply = Wire::Hs2 { msg: reply }.encode();
@@ -398,6 +447,7 @@ impl Server {
             Packet::StatsRequest => vec![(from, Packet::Stats(self.stats(now, &room)))],
             Packet::Crc { frame, crc, host } => self.record_crc(&room, my_vip, frame, crc, host),
             Packet::Leave => {
+                self.note(format!("leave: {} left room '{}'", fmt_vip(my_vip), room));
                 self.sessions.remove(&from);
                 self.hs_cache.remove(&from);
                 self.gc_rooms();
@@ -438,7 +488,7 @@ impl Server {
         let members: Vec<(SocketAddr, Vip)> = self.sessions.iter().filter(|(_, s)| s.room == room).map(|(a, s)| (*a, s.vip)).collect();
         let sync = self.sync.entry(room.to_string()).or_default();
         if sync.verdicts >= SYNC_VERDICTS_PER_ROOM {
-            return vec![];
+            return vec![]; // enough reports for this room; the log has them
         }
         sync.frames.entry(frame).or_default().insert(vip, (crc, host));
         while sync.frames.len() > SYNC_FRAMES_KEPT {
@@ -454,6 +504,8 @@ impl Server {
         }
         if votes.len() == 1 {
             sync.frames.remove(&frame);
+            sync.agreed += 1;
+            sync.last_agreed = frame;
             return vec![]; // everyone agrees
         }
         // The host is the master: when exactly one player says it is the host, everyone else is measured against it.
@@ -470,7 +522,17 @@ impl Server {
         players.sort_by_key(|e| e.vip);
         sync.frames.remove(&frame);
         sync.verdicts += 1;
+        let summary: Vec<String> = players.iter().map(|e| format!("{}={:08X}{}", fmt_vip(e.vip), e.crc, if e.odd { " (odd)" } else { "" })).collect();
+        let (agreed, last) = (sync.agreed, sync.last_agreed);
         let verdict = Packet::Desync(SyncVerdict { frame, certain, host, players });
+        let line = format!(
+            "DESYNC room '{room}' frame {frame}: {}; host {}; {}; {agreed} frames agreed before it (last {last}){}",
+            summary.join(", "),
+            host.map(fmt_vip).unwrap_or_else(|| "unknown".into()),
+            if certain { "certain" } else { "no clear majority" },
+            if self.sync[room].verdicts >= SYNC_VERDICTS_PER_ROOM { "; further verdicts for this room are not reported" } else { "" }
+        );
+        self.note(line);
         members.into_iter().map(|(a, _)| (a, verdict.clone())).collect()
     }
 
@@ -1040,6 +1102,25 @@ mod tests {
         let Packet::Desync(v) = &out[0].1 else { panic!() };
         assert!(v.certain);
         assert_eq!(v.players.iter().filter(|e| e.odd).map(|e| e.vip).collect::<Vec<_>>(), [[10, 77, 0, 2]]);
+    }
+
+    #[test]
+    fn the_operator_log_names_joins_desyncs_and_closed_rooms() {
+        let (a, b) = (addr(1), addr(2));
+        let mut w = World::standard();
+        w.quick(a, "AAA", "r", 0);
+        w.quick(b, "BBB", "r", 0);
+        w.send(a, Packet::Crc { frame: 100, crc: 7, host: true }, 1);
+        w.send(b, Packet::Crc { frame: 100, crc: 7, host: false }, 1);
+        w.send(a, Packet::Crc { frame: 200, crc: 1, host: true }, 2);
+        w.send(b, Packet::Crc { frame: 200, crc: 2, host: false }, 2);
+        w.send(a, Packet::Leave, 3);
+        w.send(b, Packet::Leave, 3);
+        let log = w.s.take_events().join("\n");
+        assert!(log.contains("join: 10.77.0.1") && log.contains("opened room 'r', 1 in it") && log.contains("entered room 'r', 2 in it"), "{log}");
+        assert!(log.contains("DESYNC room 'r' frame 200") && log.contains("10.77.0.2=00000002 (odd)") && log.contains("host 10.77.0.1; certain; 1 frames agreed"), "{log}");
+        assert!(log.contains("leave: 10.77.0.1") && log.contains("room 'r' closed: 1 checked frames agreed (last 100), 1 desync verdicts"), "{log}");
+        assert!(w.s.take_events().is_empty(), "drained");
     }
 
     #[test]
