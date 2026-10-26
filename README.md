@@ -139,7 +139,7 @@ make up
 
 If `docker compose pull` says `unauthorized`, the GHCR package `rallypoint-relay` is still private: on GitHub open it under your profile's Packages > Package settings and change its visibility to Public. Until then `make up`, `restart` and `update` print that hint and build from your checkout instead.
 
-Settings live in `.env` (see [`.env.example`](.env.example)): the port, and `ALLOWED_COUNTRIES` to only accept players from certain countries. The country lists are downloaded for you; local-network addresses are always let through unless you set `ALLOW_PRIVATE=false`.
+Settings live in `.env` (see [`.env.example`](.env.example)): the port, and `ALLOWED_COUNTRIES` to only accept players from certain countries. The country lists are downloaded for you; local-network addresses are refused by the country limit unless you set `ALLOW_PRIVATE=true` (only for a LAN-only server: behind Docker, clients that Docker proxies appear as a private 172.x address and would all get through).
 
 The image is also published as `ghcr.io/michaelmurfy/rallypoint-relay`, and the release page has a plain Linux binary (`rallypoint-server`).
 

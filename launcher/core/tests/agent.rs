@@ -68,11 +68,46 @@ fn start(server: &str, serial: &str) -> Agent {
     Agent::start(server, serial, "room", "pw", None).unwrap()
 }
 
+/// The token the launcher gives its engine (`GEN_RELAY_TOKEN`).
+fn token_of(agent: &Agent) -> [u8; 16] {
+    let hex = agent.token_hex();
+    std::array::from_fn(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+}
+
 fn engine_socket(agent: &Agent, port: u16) -> UdpSocket {
     let s = UdpSocket::bind("127.0.0.1:0").unwrap();
     s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    s.send_to(&Packet::Auth { token: token_of(agent) }.encode(), agent.local).unwrap();
     s.send_to(&Packet::Bind { port }.encode(), agent.local).unwrap();
     s
+}
+
+#[test]
+fn another_local_process_cannot_take_over_the_tunnel() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = start(&server, "AAA");
+    let b = start(&server, "BBB");
+    let va = match wait(&a, |s| matches!(s, Status::Connected(_))) {
+        Status::Connected(v) => v,
+        s => panic!("a: {s:?}"),
+    };
+    wait(&b, |s| matches!(s, Status::Connected(_)));
+    let ea = engine_socket(&a, 8088);
+    let eb = engine_socket(&b, 8088);
+    // someone else on this machine tries to claim the port, with no token and with a wrong one
+    let intruder = UdpSocket::bind("127.0.0.1:0").unwrap();
+    intruder.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+    intruder.send_to(&Packet::Bind { port: 8088 }.encode(), a.local).unwrap();
+    intruder.send_to(&Packet::Data { vip: [10, 77, 0, 9], src_port: 8088, dst_port: 8088, payload: game_packet(b"x") }.encode(), a.local).unwrap();
+    intruder.send_to(&Packet::Auth { token: [0; 16] }.encode(), a.local).unwrap();
+    intruder.send_to(&Packet::Bind { port: 8088 }.encode(), a.local).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    eb.send_to(&Packet::Data { vip: va, src_port: 8088, dst_port: 8088, payload: game_packet(b"orders") }.encode(), b.local).unwrap();
+    let mut buf = [0u8; 2048];
+    let n = ea.recv(&mut buf).unwrap();
+    assert!(matches!(Packet::decode(&buf[..n]), Some(Packet::Data { payload, .. }) if payload == game_packet(b"orders")), "the engine still gets its traffic");
+    assert!(intruder.recv(&mut buf).is_err(), "the intruder gets nothing");
+    stop.store(true, Ordering::Relaxed);
 }
 
 #[test]

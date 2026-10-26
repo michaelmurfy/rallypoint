@@ -48,6 +48,11 @@ pub fn generate_keypair() -> (Key, Key) {
     (kp.private.try_into().expect("32 bytes"), kp.public.try_into().expect("32 bytes"))
 }
 
+/// 16 random bytes, for the token that lets the launcher's agent tell its own engine from other local processes.
+pub fn random_token() -> [u8; 16] {
+    generate_keypair().0[..16].try_into().expect("16 bytes")
+}
+
 /// What a person compares to check a server is the one they meant: 16 hex digits, grouped.
 pub fn fingerprint(public: &Key) -> String {
     let h = sha256(&[b"rallypoint/key/v1\0", public]);
@@ -78,8 +83,12 @@ pub struct ClientPending(HandshakeState);
 
 /// First message: `first` (a `Hello` or `Register`) encrypted to `server_pub`. Send it, and keep the pending state
 /// to read the reply; resend the same bytes if the reply is lost.
-pub fn client_start(server_pub: &Key, first: &Packet) -> Result<(Vec<u8>, ClientPending), Error> {
-    let mut hs = builder().remote_public_key(server_pub).map_err(|_| Error::Crypto)?.build_initiator().map_err(|_| Error::Crypto)?;
+///
+/// `cookie` is the one the server issued for this client's address; it is mixed into the handshake, so a recording
+/// of this message only works for whoever can echo that same cookie, i.e. from this address. Replaying it from
+/// elsewhere fails to decrypt.
+pub fn client_start(server_pub: &Key, first: &Packet, cookie: &[u8; 16]) -> Result<(Vec<u8>, ClientPending), Error> {
+    let mut hs = builder().prologue(cookie).map_err(|_| Error::Crypto)?.remote_public_key(server_pub).map_err(|_| Error::Crypto)?.build_initiator().map_err(|_| Error::Crypto)?;
     let mut out = vec![0u8; MAX_MSG];
     let n = hs.write_message(&first.encode(), &mut out).map_err(|_| Error::Crypto)?;
     out.truncate(n);
@@ -100,8 +109,8 @@ impl ClientPending {
 pub struct ServerPending(HandshakeState);
 
 /// Decrypt a first message. Fails (and so is dropped silently) for anything not encrypted to this server's key.
-pub fn server_accept(private: &Key, msg1: &[u8]) -> Result<(Packet, ServerPending), Error> {
-    let mut hs = builder().local_private_key(private).map_err(|_| Error::Crypto)?.build_responder().map_err(|_| Error::Crypto)?;
+pub fn server_accept(private: &Key, msg1: &[u8], cookie: &[u8; 16]) -> Result<(Packet, ServerPending), Error> {
+    let mut hs = builder().prologue(cookie).map_err(|_| Error::Crypto)?.local_private_key(private).map_err(|_| Error::Crypto)?.build_responder().map_err(|_| Error::Crypto)?;
     let mut payload = vec![0u8; MAX_MSG];
     let n = hs.read_message(msg1, &mut payload).map_err(|_| Error::Crypto)?;
     Ok((Packet::decode(&payload[..n]).ok_or(Error::Format)?, ServerPending(hs)))
@@ -189,14 +198,16 @@ mod tests {
     use super::*;
     use crate::{Reason, Vip};
 
+    const COOKIE: [u8; 16] = [3; 16];
+
     fn hello() -> Packet {
         Packet::Hello { serial: "AAAA-BBBB".into(), room: "lan".into(), verifier: [7; 32] }
     }
 
     fn connect() -> (Session, Session, Key) {
         let (private, public) = generate_keypair();
-        let (msg1, pending) = client_start(&public, &hello()).unwrap();
-        let (got, server) = server_accept(&private, &msg1).unwrap();
+        let (msg1, pending) = client_start(&public, &hello(), &COOKIE).unwrap();
+        let (got, server) = server_accept(&private, &msg1, &COOKIE).unwrap();
         assert_eq!(got, hello());
         let (msg2, server_session) = server.reply(&Packet::Welcome { vip: [10, 77, 0, 1] as Vip }).unwrap();
         let (reply, client_session) = pending.finish(&msg2).unwrap();
@@ -219,7 +230,7 @@ mod tests {
     #[test]
     fn nothing_readable_on_the_wire() {
         let (private, public) = generate_keypair();
-        let (msg1, _) = client_start(&public, &hello()).unwrap();
+        let (msg1, _) = client_start(&public, &hello(), &COOKIE).unwrap();
         let hay = |h: &[u8], n: &[u8]| h.windows(n.len()).any(|w| w == n);
         assert!(!hay(&msg1, b"AAAA-BBBB") && !hay(&msg1, b"lan") && !hay(&msg1, &[7; 32]), "serial, room and password proof are encrypted");
         let (c, s, _) = connect();
@@ -228,12 +239,23 @@ mod tests {
         drop((private, s));
     }
 
+    /// A recorded first message is only good for the address whose cookie it was made with.
+    #[test]
+    fn a_recorded_first_message_cannot_be_replayed_from_another_address() {
+        let (private, public) = generate_keypair();
+        let (msg1, _) = client_start(&public, &hello(), &COOKIE).unwrap();
+        assert!(server_accept(&private, &msg1, &COOKIE).is_ok(), "from the address it was made for");
+        assert!(server_accept(&private, &msg1, &[4; 16]).is_err(), "the attacker's own cookie does not open it");
+        assert_eq!(random_token().len(), 16);
+        assert_ne!(random_token(), random_token());
+    }
+
     #[test]
     fn wrong_server_key_cannot_read_or_answer() {
         let (_, public) = generate_keypair();
         let (other_private, _) = generate_keypair();
-        let (msg1, _) = client_start(&public, &hello()).unwrap();
-        assert!(server_accept(&other_private, &msg1).is_err(), "an impostor cannot even read the hello");
+        let (msg1, _) = client_start(&public, &hello(), &COOKIE).unwrap();
+        assert!(server_accept(&other_private, &msg1, &COOKIE).is_err(), "an impostor cannot even read the hello");
     }
 
     #[test]
@@ -275,16 +297,16 @@ mod tests {
     #[test]
     fn rejects_travel_the_same_way() {
         let (private, public) = generate_keypair();
-        let (msg1, pending) = client_start(&public, &Packet::Register).unwrap();
-        let (_, server) = server_accept(&private, &msg1).unwrap();
+        let (msg1, pending) = client_start(&public, &Packet::Register, &COOKIE).unwrap();
+        let (_, server) = server_accept(&private, &msg1, &COOKIE).unwrap();
         let (msg2, _) = server.reply(&Packet::Reject(Reason::RateLimited)).unwrap();
         assert_eq!(pending.finish(&msg2).unwrap().0, Packet::Reject(Reason::RateLimited));
         assert!(pending_garbage(&public));
     }
 
     fn pending_garbage(public: &Key) -> bool {
-        let (_, p) = client_start(public, &Packet::Register).unwrap();
-        p.finish(&[0u8; 80]).is_err() && server_accept(&[1; 32], &[0u8; 5]).is_err()
+        let (_, p) = client_start(public, &Packet::Register, &COOKIE).unwrap();
+        p.finish(&[0u8; 80]).is_err() && server_accept(&[1; 32], &[0u8; 5], &COOKIE).is_err()
     }
 
     #[test]

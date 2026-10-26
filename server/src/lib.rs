@@ -382,7 +382,7 @@ impl Server {
             return vec![];
         }
         e.1 += 1;
-        let Ok((first, pending)) = secure::server_accept(&self.identity.0, &msg) else {
+        let Ok((first, pending)) = secure::server_accept(&self.identity.0, &msg, &cookie) else {
             return vec![]; // not encrypted to our key
         };
         let (answer, join) = match first {
@@ -494,7 +494,8 @@ impl Server {
         while sync.frames.len() > SYNC_FRAMES_KEPT {
             sync.frames.pop_first();
         }
-        let reports = &sync.frames[&frame];
+        // A report older than the 16 newest frames was just dropped by the loop above: nothing to compare.
+        let Some(reports) = sync.frames.get(&frame) else { return vec![] };
         if reports.len() < members.len().max(2) || !members.iter().all(|(_, v)| reports.contains_key(v)) {
             return vec![]; // still waiting for someone
         }
@@ -679,11 +680,19 @@ mod tests {
             World::new("# c\nAAA first\nBBB\nDDD\n!CCC\n")
         }
 
+        /// Ask for a cookie the way the agent does: a first message with the zero cookie, whose content does not matter.
+        fn challenge(&mut self, from: SocketAddr, now: u64) -> ([u8; 16], Vec<u8>) {
+            let probe = vec![0u8; 80];
+            let out = self.s.handle(from, &Wire::Hs1 { cookie: [0; 16], msg: probe.clone() }.encode(), now);
+            let Some(Wire::Challenge { cookie }) = out.first().and_then(|o| Wire::decode(&o.1)) else { panic!("expected a challenge, got {out:?}") };
+            (cookie, probe)
+        }
+
         /// A first handshake message from `from` with a valid cookie. `None`: the server stayed silent.
         fn handshake(&mut self, from: SocketAddr, first: &Packet, now: u64) -> Option<(Packet, Crypto)> {
-            let (msg1, pending) = secure::client_start(&self.s.public_key(), first).unwrap();
-            let out = self.s.handle(from, &Wire::Hs1 { cookie: [0; 16], msg: msg1.clone() }.encode(), now);
-            let Some(Wire::Challenge { cookie }) = out.first().and_then(|o| Wire::decode(&o.1)) else { panic!("expected a challenge, got {out:?}") };
+            let (cookie, probe) = self.challenge(from, now);
+            let (msg1, pending) = secure::client_start(&self.s.public_key(), first, &cookie).unwrap();
+            let _ = probe;
             let out = self.s.handle(from, &Wire::Hs1 { cookie, msg: msg1 }.encode(), now);
             let Some(Wire::Hs2 { msg }) = out.first().and_then(|o| Wire::decode(&o.1)) else { return None };
             Some(pending.finish(&msg).unwrap())
@@ -850,9 +859,8 @@ mod tests {
     #[test]
     fn register_needs_a_cookie_and_issues_a_working_serial() {
         let mut w = World::new("");
-        let (msg1, _) = secure::client_start(&w.s.public_key(), &Packet::Register).unwrap();
-        let out = w.s.handle(addr(1), &Wire::Hs1 { cookie: [0; 16], msg: msg1.clone() }.encode(), 0);
-        let Some(Wire::Challenge { cookie }) = Wire::decode(&out[0].1) else { panic!() };
+        let (cookie, _) = w.challenge(addr(1), 0);
+        let (msg1, _) = secure::client_start(&w.s.public_key(), &Packet::Register, &cookie).unwrap();
         assert!(w.s.take_new_serials().is_empty(), "the challenge is stateless: nothing issued yet");
         // a cookie for another address does not work
         let out = w.s.handle(addr_from("127.0.0.2", 1), &Wire::Hs1 { cookie, msg: msg1.clone() }.encode(), 0);
@@ -898,7 +906,7 @@ mod tests {
         assert!(rsp.len() < req.len());
         assert_eq!(Wire::decode(&rsp), Some(Wire::KeyReply { key: w.s.public_key() }));
         // a first handshake message without a cookie gets only a small challenge
-        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", "")).unwrap();
+        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", ""), &[0; 16]).unwrap();
         let hs = Wire::Hs1 { cookie: [0; 16], msg: msg1 }.encode();
         assert!(w.s.handle(addr(1), &hs, 0).remove(0).1.len() <= hs.len());
         // garbage and short keys request get nothing
@@ -908,24 +916,38 @@ mod tests {
     #[test]
     fn handshakes_are_private_and_only_for_the_real_server_key() {
         let mut w = World::standard();
-        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "secretroom", "")).unwrap();
+        let (cookie, _) = w.challenge(addr(1), 0);
+        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "secretroom", ""), &cookie).unwrap();
         assert!(!msg1.windows(3).any(|x| x == b"AAA") && !msg1.windows(10).any(|x| x == b"secretroom"));
         // a client that pinned some other key (an impostor server, or a changed identity) gets no answer
         let (_, wrong_pub) = secure::generate_keypair();
-        let (bad1, _) = secure::client_start(&wrong_pub, &hello("AAA", "r", "")).unwrap();
-        let cookie = match Wire::decode(&w.s.handle(addr(1), &Wire::Hs1 { cookie: [0; 16], msg: bad1.clone() }.encode(), 0)[0].1) {
-            Some(Wire::Challenge { cookie }) => cookie,
-            _ => panic!(),
-        };
+        let (bad1, _) = secure::client_start(&wrong_pub, &hello("AAA", "r", ""), &cookie).unwrap();
         assert!(w.s.handle(addr(1), &Wire::Hs1 { cookie, msg: bad1 }.encode(), 0).is_empty());
+    }
+
+    /// A recorded join (or sign-up) cannot be replayed from another address to take a player's serial or use up sign-ups.
+    #[test]
+    fn a_recorded_first_message_is_useless_from_another_address() {
+        let mut w = World::standard();
+        let victim = addr(1);
+        let (cookie, _) = w.challenge(victim, 0);
+        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", ""), &cookie).unwrap();
+        // what an eavesdropper on the victim's link records: the cookie and the message
+        let attacker = addr_from("203.0.113.9", 4000);
+        let (their_cookie, _) = w.challenge(attacker, 0);
+        assert!(w.s.handle(attacker, &Wire::Hs1 { cookie: their_cookie, msg: msg1.clone() }.encode(), 1).is_empty(), "wrong cookie for the message: dropped");
+        assert!(w.s.handle(attacker, &Wire::Hs1 { cookie, msg: msg1 }.encode(), 1).len() == 1, "the victim's cookie is only valid for the victim's address, so this is a Challenge");
+        assert!(matches!(Wire::decode(&w.s.handle(attacker, &Wire::Hs1 { cookie, msg: vec![9; 80] }.encode(), 1)[0].1), Some(Wire::Challenge { .. })));
+        assert_eq!(w.s.sessions.len(), 0, "no session was created for the attacker");
+        assert!(matches!(w.join(victim, hello("AAA", "r", ""), 2), Packet::Welcome { .. }), "the real player is not locked out");
     }
 
     #[test]
     fn a_retransmitted_first_message_gets_the_same_answer_not_a_second_session() {
         let mut w = World::standard();
-        let (msg1, pending) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", "")).unwrap();
+        let (cookie, _) = w.challenge(addr(1), 0);
+        let (msg1, pending) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", ""), &cookie).unwrap();
         let hs = |cookie| Wire::Hs1 { cookie, msg: msg1.clone() }.encode();
-        let Some(Wire::Challenge { cookie }) = Wire::decode(&w.s.handle(addr(1), &hs([0; 16]), 0)[0].1) else { panic!() };
         let first = w.s.handle(addr(1), &hs(cookie), 0);
         let again = w.s.handle(addr(1), &hs(cookie), 1);
         assert_eq!(first, again);
@@ -939,9 +961,9 @@ mod tests {
         let mut w = World::new("");
         let mut answered = 0;
         for p in 0..HANDSHAKES_PER_MIN + 10 {
-            let (msg1, _) = secure::client_start(&w.s.public_key(), &Packet::Register).unwrap();
             let from = addr(1000 + p as u16);
-            let Some(Wire::Challenge { cookie }) = Wire::decode(&w.s.handle(from, &Wire::Hs1 { cookie: [0; 16], msg: msg1.clone() }.encode(), 0)[0].1) else { panic!() };
+            let (cookie, _) = w.challenge(from, 0);
+            let (msg1, _) = secure::client_start(&w.s.public_key(), &Packet::Register, &cookie).unwrap();
             if !w.s.handle(from, &Wire::Hs1 { cookie, msg: msg1 }.encode(), 0).is_empty() {
                 answered += 1;
             }
@@ -953,7 +975,7 @@ mod tests {
     fn country_filter_silences_blocked_sources() {
         let mut w = World::standard();
         w.s.set_allow(Box::new(|ip| ip.to_string().starts_with("127.")));
-        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", "")).unwrap();
+        let (msg1, _) = secure::client_start(&w.s.public_key(), &hello("AAA", "r", ""), &[0; 16]).unwrap();
         let blocked = addr_from("8.8.8.8", 1);
         assert!(w.s.handle(blocked, &Wire::Hs1 { cookie: [0; 16], msg: msg1 }.encode(), 0).is_empty());
         assert!(w.s.handle(blocked, &Wire::KeyRequest.encode(), 0).is_empty());
@@ -1121,6 +1143,19 @@ mod tests {
         assert!(log.contains("DESYNC room 'r' frame 200") && log.contains("10.77.0.2=00000002 (odd)") && log.contains("host 10.77.0.1; certain; 1 frames agreed"), "{log}");
         assert!(log.contains("leave: 10.77.0.1") && log.contains("room 'r' closed: 1 checked frames agreed (last 100), 1 desync verdicts"), "{log}");
         assert!(w.s.take_events().is_empty(), "drained");
+    }
+
+    #[test]
+    fn a_report_for_an_old_frame_cannot_crash_the_server() {
+        let mut w = World::standard();
+        w.quick(addr(1), "AAA", "r", 0);
+        w.quick(addr(2), "BBB", "r", 0);
+        for f in 100..100 + SYNC_FRAMES_KEPT as u32 {
+            w.send(addr(1), Packet::Crc { frame: f, crc: 1, host: false }, 1);
+        }
+        // older than every frame kept: it is stored, trimmed away again, and must not be looked up afterwards
+        assert!(w.send(addr(1), Packet::Crc { frame: 5, crc: 1, host: false }, 1).is_empty());
+        assert!(w.s.sync["r"].frames.len() <= SYNC_FRAMES_KEPT);
     }
 
     #[test]

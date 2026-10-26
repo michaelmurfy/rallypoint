@@ -60,6 +60,9 @@ pub enum Packet {
     Ping,
     /// Engine -> local agent only: "I own this logical port, send its traffic to me".
     Bind { port: u16 },
+    /// Engine -> local agent only, first thing from each of the engine's sockets: proves it is the process the launcher
+    /// started (the token is passed to it in `GEN_RELAY_TOKEN`). Anything from a local address that has not sent it is dropped.
+    Auth { token: [u8; 16] },
     /// Client -> server: sign-up, asking for a serial.
     Register,
     /// Server -> client: the serial issued for a Register. The client must store it.
@@ -145,6 +148,7 @@ impl Packet {
             Packet::Data { vip, src_port, dst_port, payload } => data(5, vip, *src_port, *dst_port, payload),
             Packet::Ping => vec![6],
             Packet::Bind { port } => [&[7][..], &port.to_be_bytes()].concat(),
+            Packet::Auth { token } => [&[17][..], token].concat(),
             Packet::Register => vec![8],
             Packet::Issued { serial } => [&[9, serial.len() as u8][..], serial.as_bytes()].concat(),
             Packet::Leave => vec![10],
@@ -214,6 +218,7 @@ impl Packet {
             5 => vip(rest).map(|(vip, src_port, dst_port, payload)| Packet::Data { vip, src_port, dst_port, payload })?,
             6 if rest.is_empty() => Packet::Ping,
             7 => Packet::Bind { port: u16::from_be_bytes(rest.try_into().ok()?) },
+            17 if rest.len() == 16 => Packet::Auth { token: rest.try_into().ok()? },
             8 if rest.is_empty() => Packet::Register,
             9 => {
                 let (serial, r) = take_str(rest, MAX_SERIAL)?;
@@ -387,6 +392,7 @@ mod tests {
             Packet::Bcast { vip: [0; 4], src_port: 8086, dst_port: 8086, payload: vec![1, 2, 3] },
             Packet::Data { vip: [10, 77, 0, 9], src_port: 8088, dst_port: 8088, payload: vec![] },
             Packet::Bind { port: 8088 },
+            Packet::Auth { token: [5; 16] },
             Packet::Register,
             Packet::Issued { serial: "AAAA-BBBB-CCCC-DDDD".into() },
             Packet::Ping,
@@ -418,6 +424,10 @@ mod tests {
         let p = Packet::Data { vip: [10, 77, 0, 1], src_port: 8088, dst_port: 8086, payload: vec![0xAA] };
         assert_eq!(p.encode(), [5, 10, 77, 0, 1, 0x1F, 0x98, 0x1F, 0x96, 0xAA]);
         assert_eq!(Packet::Bind { port: 8086 }.encode(), [7, 0x1F, 0x96]);
+        let mut auth = vec![17];
+        auth.extend(0..16u8);
+        assert_eq!(Packet::Auth { token: core::array::from_fn(|i| i as u8) }.encode(), auth, "the engine's RelayWire.h checks the same bytes");
+        assert_eq!(Packet::decode(&[17, 1, 2, 3]), None);
     }
 
     #[test]

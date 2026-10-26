@@ -150,6 +150,49 @@ fn list(tool: &Tool, archive: &Path) -> Result<Option<Vec<String>>, String> {
     })
 }
 
+/// The first entry of a verbose listing that is a symbolic or hard link, if any. Extracting a link and then a file
+/// "inside" it writes outside the destination before any check of the finished tree could notice, so links are
+/// refused up front. `kind` says which tool's listing format `text` is in.
+fn find_link(tool: &Tool, text: &str) -> Option<String> {
+    let unix_mode = |t: &str| t.len() >= 10 && t.is_char_boundary(10) && t[1..10].chars().all(|c| "rwxsStT-".contains(c));
+    match tool {
+        // `tar -tv`: `lrwxr-xr-x ... name -> target` for symlinks, `hrw-r--r-- ... link to ...` for hard links.
+        Tool::BsdTar | Tool::Tar => text.lines().find(|l| (l.starts_with('l') || l.starts_with('h')) && unix_mode(l)).map(|l| l.trim().to_string()),
+        // `unzip -Z`: zipinfo's long format starts with the Unix mode.
+        Tool::Unzip => text.lines().find(|l| l.starts_with('l') && unix_mode(l)).map(|l| l.trim().to_string()),
+        // `7z l -slt`: blocks of `Key = value`; links carry a Symbolic Link / Hard Link field or a Unix mode starting with `l`.
+        Tool::SevenZip(_) => {
+            let mut path = String::new();
+            for l in text.lines() {
+                if let Some(p) = l.strip_prefix("Path = ") {
+                    path = p.to_string();
+                } else if l.strip_prefix("Symbolic Link = ").or_else(|| l.strip_prefix("Hard Link = ")).is_some_and(|v| !v.trim().is_empty()) {
+                    return Some(path);
+                } else if let Some(a) = l.strip_prefix("Attributes = ") {
+                    if a.split_whitespace().any(|t| t.starts_with('l') && unix_mode(t)) {
+                        return Some(path);
+                    }
+                }
+            }
+            None
+        }
+        // `unrar lt`: `Type: Unix symbolic link` (and the like).
+        Tool::Unrar => text.lines().find(|l| l.trim_start().to_ascii_lowercase().starts_with("type:") && l.to_ascii_lowercase().contains("link")).map(|l| l.trim().to_string()),
+        Tool::Innoextract => None,
+    }
+}
+
+fn links_in(tool: &Tool, archive: &Path) -> Result<Option<String>, String> {
+    let text = match tool {
+        Tool::BsdTar | Tool::Tar => out(Command::new("tar").arg("-tvf").arg(archive))?,
+        Tool::Unzip => out(Command::new("unzip").arg("-Z").arg(archive))?,
+        Tool::SevenZip(p) => out(Command::new(p).args(["l", "-slt", "-ba"]).arg(archive))?,
+        Tool::Unrar => out(Command::new("unrar").arg("lt").arg(archive))?,
+        Tool::Innoextract => return Ok(None),
+    };
+    Ok(find_link(tool, &text))
+}
+
 fn run_extract(tool: &Tool, archive: &Path, dest: &Path) -> Result<(), String> {
     let mut cmd = match tool {
         Tool::BsdTar | Tool::Tar => {
@@ -219,6 +262,9 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<(), String> {
                     return Err(format!("the archive contains an unsafe path ({bad:?}); refusing to unpack it"));
                 }
             }
+            if let Some(link) = links_in(&tool, archive)? {
+                return Err(format!("the archive contains a symbolic link ({link}), which isn't allowed; refusing to unpack it"));
+            }
             run_extract(&tool, archive, dest)?;
             check_tree(dest)
         })();
@@ -244,6 +290,43 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn spots_links_in_each_tools_listing() {
+        let tar = "-rw-r--r--  0 u g  5 Jan  1 00:00 a.txt\nlrwxr-xr-x  0 u g  0 Jan  1 00:00 link -> /Users/me\n";
+        assert!(find_link(&Tool::BsdTar, tar).unwrap().contains("link -> /Users/me"));
+        assert!(find_link(&Tool::Tar, "hrw-r--r-- 0 u/g 0 2026-01-01 00:00 b link to a\n").is_some());
+        assert!(find_link(&Tool::Tar, "-rw-r--r--  0 u g  5 Jan  1 00:00 a.txt\ndrwxr-xr-x  0 u g  0 Jan  1 00:00 dir/\n").is_none());
+        assert!(find_link(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\nlrwxr-xr-x  3.0 unx  8 bx stor 26-Jan-01 00:00 link\n").is_some());
+        assert!(find_link(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\n").is_none());
+        let sz = std::path::PathBuf::from("7z");
+        assert_eq!(find_link(&Tool::SevenZip(sz.clone()), "Path = a\nAttributes = A_ -rw-r--r--\n\nPath = link\nAttributes = _ lrwxrwxrwx\n").as_deref(), Some("link"));
+        assert_eq!(find_link(&Tool::SevenZip(sz.clone()), "Path = x\nSymbolic Link = /etc\n").as_deref(), Some("x"));
+        assert!(find_link(&Tool::SevenZip(sz), "Path = a\nAttributes = A_ -rw-r--r--\nSymbolic Link = \n").is_none());
+        assert!(find_link(&Tool::Unrar, "Name: l\n Type: Unix symbolic link\n").is_some());
+        assert!(find_link(&Tool::Unrar, "Name: f\n Type: File\n").is_none());
+    }
+
+    /// A tar holding a symlink is refused before anything is written (the old order extracted it first).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_before_anything_is_extracted() {
+        if find_in_path("tar").is_none() {
+            return;
+        }
+        let t = std::env::temp_dir().join(format!("gen-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(t.join("src")).unwrap();
+        std::fs::create_dir_all(t.join("dest")).unwrap();
+        std::os::unix::fs::symlink("/", t.join("src/escape")).unwrap();
+        std::fs::write(t.join("src/real.txt"), "x").unwrap();
+        let tar = t.join("evil.tar");
+        assert!(Command::new("tar").arg("-cf").arg(&tar).arg("-C").arg(t.join("src")).args(["escape", "real.txt"]).status().unwrap().success());
+        let err = extract(&tar, &t.join("dest")).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+        assert_eq!(std::fs::read_dir(t.join("dest")).unwrap().count(), 0, "nothing was unpacked");
+        let _ = std::fs::remove_dir_all(&t);
+    }
 
     fn crc32(data: &[u8]) -> u32 {
         let mut crc = !0u32;
