@@ -176,11 +176,17 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
-      - name: Binary
+      - name: Binaries for Linux (x86_64, arm64, armv7), built on Debian so they run on Raspberry Pi OS too
         run: |
-          cargo build --release -p generals-server
+          docker buildx create --name multi --driver docker-container --use
+          docker buildx build --builder multi -f server/Dockerfile --target binary --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 --output type=local,dest=out-bin .
           mkdir -p dist
-          tar -C target/release -czf "dist/rallypoint-server-${RALLYPOINT_VERSION}-linux-x86_64.tar.gz" rallypoint-server
+          for p in "linux_amd64 x86_64" "linux_arm64 aarch64" "linux_arm_v7 armv7"; do
+            set -- $p
+            tar -C "out-bin/$1" -czf "dist/rallypoint-server-${RALLYPOINT_VERSION}-linux-$2.tar.gz" rallypoint-server
+          done
+          ls -l dist
       - name: Docker image and smoke test
         run: |
           docker build -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" -t rallypoint-relay .
@@ -200,20 +206,54 @@ jobs:
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rallypoint-relay"
           VERSION="${GITHUB_REF_NAME#v}"
-          docker tag rallypoint-relay "$IMAGE:$VERSION"
-          docker push "$IMAGE:$VERSION"
+          # One multi-architecture image: Docker pulls the right one for the machine (PC, Raspberry Pi, ARM server).
           # `latest` follows the newest release, prereleases included: every release so far is one, and docker-compose.yml pulls it.
-          docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest"
+          docker buildx build --builder multi -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-server
           path: dist/*
 
+  # ---- relay server for macOS and Windows (Linux is built above) -----------------------------
+  server-desktop:
+    name: Relay server (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, name: macos-arm64 }
+          - { os: windows-latest, name: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          export RALLYPOINT_VERSION="$VERSION"
+          cargo build --release -p generals-server
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            (cd target/release && 7z a -tzip "$GITHUB_WORKSPACE/dist/rallypoint-server-${VERSION}-${{ matrix.name }}.zip" rallypoint-server.exe)
+          else
+            tar -C target/release -czf "dist/rallypoint-server-${VERSION}-${{ matrix.name }}.tar.gz" rallypoint-server
+          fi
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-server-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
   # ---- publish -------------------------------------------------------------------------------
   publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [launcher, server]
+    needs: [launcher, server, server-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release

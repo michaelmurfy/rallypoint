@@ -1,3 +1,10 @@
+## Rallypoint 0.4.3
+
+- **The server runs on ARM.** The Docker image is now multi-architecture (x86_64, arm64 and armv7), so `make up` works on a Raspberry Pi 3, 4 or 5 and on ARM cloud servers. Each release also has plain server downloads for Linux x86_64, arm64 and armv7, macOS (Apple silicon) and Windows.
+- **A tidier connection readout.** Under "Online" in the bottom-left corner, ping, players in your room and packet loss now sit in a small panel of three readings instead of loose text, and nothing shows under "Offline" any more (it used to print "null").
+
+---
+
 ## Rallypoint 0.4.1
 
 - **Fixes the Windows and macOS games drifting apart at the start.** The 0.4.0 logs showed the first difference at frame 1: a building the AI placed ended one bit apart (position `4396FDAC` on macOS, `4396FDAB` on Windows). The cause: the game puts Windows' x87 maths unit into 24-bit precision, which is right for its float arithmetic but makes every double-precision calculation on that unit single precision, so the game's own double maths (the logs showed a sine of `3FE6A09E80000000` where macOS had `3FE6A09E6ECB41FE`) came out slightly different. The Windows build now compiles for SSE2 explicitly, and every double-precision maths function also switches the unit to 53-bit precision while it runs. The lobby's maths fingerprint now includes the double-precision functions and runs with the game's own FPU settings, so a computer that still differs is refused at the lobby rather than starting a game that drifts. **Update every player together.** The game version changes, so 0.4.0 and older cannot join 0.4.1.
