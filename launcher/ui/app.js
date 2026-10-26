@@ -7,6 +7,8 @@ const invoke = (cmd, args) => tauri.core.invoke(cmd, args);
 // ---------------------------------------------------------------- helpers
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
+  // Server names, rooms, paths and codes: the webview must not autocorrect, capitalise, spell-check or autofill them.
+  if (tag === "input" || tag === "textarea") for (const [k, v] of [["autocomplete", "off"], ["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"]]) el.setAttribute(k, v);
   for (const [k, v] of Object.entries(props || {})) {
     if (v == null || v === false) continue;
     if (k === "class") el.className = v;
