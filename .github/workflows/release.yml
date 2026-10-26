@@ -202,7 +202,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           docker tag rallypoint-relay "$IMAGE:$VERSION"
           docker push "$IMAGE:$VERSION"
-          case "$VERSION" in *-*) ;; *) docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest" ;; esac
+          # `latest` follows the newest release, prereleases included: every release so far is one, and docker-compose.yml pulls it.
+          docker tag rallypoint-relay "$IMAGE:latest"; docker push "$IMAGE:latest"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-server
