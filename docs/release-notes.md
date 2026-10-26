@@ -1,3 +1,16 @@
+## Rallypoint 0.3.0
+
+The first release that is no longer marked as a prerelease. Multiplayer between macOS and Windows has not yet been played from start to finish, so please keep Settings > Multiplayer sync logs on and report what you find.
+
+- **Multiplayer sync fixes.** The Windows and macOS games differed from the very first frame: Windows used its own sine, cosine and inverse square root, and the height of objects placed off the map came from a screen-size-dependent copy of the terrain. Both are fixed, and the sync logs now record enough to find any further difference.
+- **Security fixes.** A malformed report could crash the relay and every room on it; recorded logins can't be replayed to lock a player out; archives with links are refused before anything is unpacked; mod installers can't exhaust memory; other programs on your computer can't take over the game's connection; a server only receives its own serial.
+- **Update the server and every launcher together.** The login handshake changed. Run `make update` on your server (it pulls the released image).
+- **Mods and interface.** Cold War Crisis is in the mod list (it can't be combined with Shockwave or Chaos), a tile mod picker, smoother animations, and no autocorrect in text fields.
+- **Updates.** Rallypoint can update itself on macOS and Windows: download, verify, restart, and show what's new.
+- **Server.** Joins, leaves, refusals and each desync are logged; the country limit refuses private addresses unless `ALLOW_PRIVATE=true`.
+
+---
+
 ## Rallypoint 0.2.0-beta.7
 
 Still a **prerelease**. Security fixes from a review.
