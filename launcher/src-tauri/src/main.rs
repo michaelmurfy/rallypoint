@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -522,16 +522,38 @@ async fn update_check(updates: tauri::State<'_, Updates>) -> Result<Option<updat
     Ok(found)
 }
 
-/// Download the installer for this computer, verify it, and open it.
+/// Download and verify the update, then replace the running app and restart it. Returns only when it could not
+/// restart by itself (the installer was opened for the user instead).
 #[tauri::command]
-async fn update_install(updates: tauri::State<'_, Updates>) -> Result<String, String> {
+async fn update_install(app: tauri::AppHandle, updates: tauri::State<'_, Updates>) -> Result<String, String> {
     let info = updates.0.lock().unwrap().clone().ok_or("check for updates first")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let file = update::download(&info, &update::downloads_dir())?;
-        update::open_installer(&file)
+    let data = base(&app)?;
+    let (data2, info2) = (data.clone(), info.clone());
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        let file = update::download(&info2, &update::downloads_dir())?;
+        let work = data2.join("update");
+        if selfupdate::apply(&file, &work)? {
+            selfupdate::save_marker(&data2, &selfupdate::WhatsNew { version: info2.latest.clone(), notes: info2.notes.clone() })?;
+            Ok(None)
+        } else {
+            update::open_installer(&file).map(Some)
+        }
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    match started {
+        Some(msg) => Ok(msg),
+        None => {
+            app.exit(0);
+            Ok("Restarting…".into())
+        }
+    }
+}
+
+/// Release notes to show once after an update.
+#[tauri::command]
+fn whats_new_take(app: tauri::AppHandle) -> Result<Option<selfupdate::WhatsNew>, String> {
+    Ok(selfupdate::take_marker(&base(&app)?, update::current_version()))
 }
 
 #[tauri::command]
@@ -622,7 +644,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
-            update_check, update_install, open_release_page,
+            update_check, update_install, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
             relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
