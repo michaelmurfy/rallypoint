@@ -32,6 +32,9 @@ pub struct Mod {
     /// The player brings the files (a download, an installer's folder) with a file picker; nothing is watched for.
     #[serde(default)]
     pub pick: bool,
+    /// Ids of mods this one cannot be played with (a total conversion replaces what the others change).
+    #[serde(default)]
+    pub conflicts: Vec<String>,
 }
 
 pub fn load_manifest(json: &str) -> Result<Vec<Mod>, serde_json::Error> {
@@ -248,6 +251,19 @@ pub fn with_bases(catalog: &[Mod], selected: &[String]) -> Vec<String> {
     out
 }
 
+/// The first two names (from `with_bases`' result) that cannot be played together, in either direction.
+pub fn conflict(catalog: &[Mod], ordered: &[String]) -> Option<(String, String)> {
+    let found: Vec<&Mod> = ordered.iter().filter_map(|f| catalog.iter().find(|m| &m.path == f)).collect();
+    for a in &found {
+        for b in &found {
+            if a.id != b.id && a.conflicts.contains(&b.id) {
+                return Some((a.name.clone(), b.name.clone()));
+            }
+        }
+    }
+    None
+}
+
 /// The engine loads one `-mod` folder. One selection is used as-is; several are hard-linked into `Mods/.run`
 /// (later folders replace earlier files of the same name). The dot keeps it out of the installed list.
 pub fn stack(mods_dir: &Path, folders: &[String]) -> Result<Option<PathBuf>, String> {
@@ -325,6 +341,21 @@ pub fn find_download(dir: &Path, since: SystemTime, detect: &[String]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn total_conversions_refuse_other_mods_even_through_a_base() {
+        let m = |id: &str, path: &str, addon_for: Option<&str>, conflicts: &[&str]| Mod {
+            id: id.into(), name: id.into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: path.into(),
+            detect: vec![], notes: String::new(), args: vec![], addon_for: addon_for.map(Into::into), pick: false, conflicts: conflicts.iter().map(|c| c.to_string()).collect(),
+        };
+        let cat = vec![m("sw", "SW", None, &[]), m("chaos", "Chaos", Some("sw"), &[]), m("cwc", "CWC", None, &["sw", "chaos"])];
+        let ordered = |sel: &[&str]| with_bases(&cat, &sel.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(conflict(&cat, &ordered(&["CWC"])), None);
+        assert_eq!(conflict(&cat, &ordered(&["SW", "Chaos"])), None);
+        assert_eq!(conflict(&cat, &ordered(&["CWC", "SW"])), Some(("cwc".into(), "sw".into())));
+        assert!(conflict(&cat, &ordered(&["Chaos", "CWC"])).is_some(), "the add-on brings its base in, which clashes");
+    }
+
     use crate::extract::tests::make_zip;
 
     fn temp(name: &str) -> PathBuf {
@@ -385,8 +416,8 @@ mod tests {
         assert!(compose(&mods, "Missing", "Addon").unwrap_err().contains("installed first"));
         assert!(compose(&mods, "../x", "Addon").is_err());
         let cat = vec![
-            Mod { id: "base".into(), name: "Base".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Base".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: None, pick: false },
-            Mod { id: "add".into(), name: "Add".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Addon".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: Some("base".into()), pick: false },
+            Mod { id: "base".into(), name: "Base".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Base".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: None, pick: false, conflicts: vec![] },
+            Mod { id: "add".into(), name: "Add".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Addon".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: Some("base".into()), pick: false, conflicts: vec![] },
         ];
         assert_eq!(with_bases(&cat, &["Addon".into()]), ["Base".to_string(), "Addon".to_string()]);
         let stacked = stack(&mods, &with_bases(&cat, &["Addon".into()])).unwrap().unwrap();

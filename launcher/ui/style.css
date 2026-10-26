@@ -114,8 +114,19 @@ input[type=number] { width: 7em; }
 .switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s var(--ease), background .15s var(--ease); }
 .switch input:checked { background: var(--accent); }
 .switch input:checked::after { transform: translateX(16px); background: #fff; }
-.picks { display: grid; gap: 6px; }
-.pick { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.tile { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--r-btn); border: 1px solid var(--line); background: var(--bg); cursor: pointer; transition: background .12s var(--ease), border-color .12s var(--ease); }
+.tile:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); }
+.tile.on { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.tile.off { opacity: .55; cursor: not-allowed; }
+.tile-text { display: grid; gap: 1px; min-width: 0; }
+.tile-text b { font-weight: 650; overflow-wrap: anywhere; }
+.tile input { appearance: none; flex: none; width: 18px; height: 18px; margin: 0; border-radius: 5px; border: 1.5px solid var(--muted); background: none; display: grid; place-items: center; cursor: inherit; transition: background .12s var(--ease), border-color .12s var(--ease); }
+.tile input::after { content: ""; width: 9px; height: 5px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg) scale(0); transition: transform .12s var(--ease); }
+.tile input:checked { background: var(--accent); border-color: var(--accent); }
+.tile input:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
+.tile:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+label.field.narrow { max-width: 20em; }
 progress { width: 100%; height: 8px; border-radius: 999px; overflow: hidden; border: 0; background: var(--surface-2); accent-color: var(--accent); }
 progress::-webkit-progress-bar { background: var(--surface-2); }
 progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }

@@ -585,6 +585,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     }
     let cat = catalog()?;
     let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    if let Some((a, b)) = mods::conflict(&cat, &ordered) {
+        return Err(format!("{a} and {b} can't be played together. Untick one of them."));
+    }
     let mut mod_args = vec![];
     for name in &ordered {
         if let Some(m) = cat.iter().find(|m| &m.path == name) {
