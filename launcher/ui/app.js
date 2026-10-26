@@ -969,13 +969,51 @@ function openWizard() {
   render();
 }
 
+/** Release notes are markdown. Render the small subset GitHub notes use, as elements, never as HTML. */
+function renderNotes(text) {
+  const body = (text || "").trim();
+  const root = h("div", { class: "notes" });
+  if (!body) {
+    root.append(h("p", {}, "No release notes were published for this version."));
+    return root;
+  }
+  function inline(s) {
+    const out = [];
+    const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+    let i = 0, m;
+    while ((m = re.exec(s))) {
+      if (m.index > i) out.push(s.slice(i, m.index));
+      out.push(m[1] != null ? h("strong", {}, m[1]) : h("code", {}, m[2]));
+      i = m.index + m[0].length;
+    }
+    if (i < s.length) out.push(s.slice(i));
+    return out;
+  }
+  let list = null;
+  for (const line of body.split("\n")) {
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+    const item = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (/^\s*---\s*$/.test(line)) { list = null; root.append(h("hr")); continue; }
+    if (heading) { list = null; root.append(h("h3", {}, ...inline(heading[2]))); continue; }
+    if (item) {
+      if (!list) { list = h("ul"); root.append(list); }
+      list.append(h("li", {}, ...inline(item[1])));
+      continue;
+    }
+    if (!line.trim()) { list = null; continue; }
+    list = null;
+    root.append(h("p", {}, ...inline(line)));
+  }
+  return root;
+}
+
 /** Shown once, on the first start after an update. */
 function showWhatsNew(w) {
   const close = () => overlay.remove();
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": `What's new in ${w.version}` },
     h("div", { class: "wizard whatsnew" },
       h("div", { class: "wiz-head" }, h("h2", {}, `Rallypoint ${w.version}`), h("p", { class: "muted small" }, "You're up to date. Here's what changed.")),
-      h("div", { class: "wiz-body" }, h("p", { class: "notes" }, w.notes.trim() || "No release notes were published for this version.")),
+      h("div", { class: "wiz-body" }, renderNotes(w.notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Continue"))));
   document.getElementById("root").append(overlay);
 }

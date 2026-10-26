@@ -147,7 +147,7 @@ pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str) -> Optio
         current: current.trim_start_matches('v').to_string(),
         latest: r.tag_name.trim_start_matches('v').to_string(),
         page: r.html_url.clone(),
-        notes: r.body.clone().unwrap_or_default().chars().take(1500).collect(),
+        notes: r.body.clone().unwrap_or_default(),
         sums: r.assets.iter().find(|a| a.name == "SHA256SUMS").cloned(),
         size_mb: asset.as_ref().map(|a| a.size / 1_048_576).unwrap_or(0),
         installer: asset.is_some(),
@@ -286,6 +286,15 @@ mod tests {
         assert!(newer("0.1.0-alpha.2", &[], "macos", "aarch64").is_none());
         // a build whose version isn't a version (a CI dry run) is offered the newest release
         assert!(newer("main", &rels, "windows", "x86_64").is_some());
+    }
+
+    #[test]
+    fn release_notes_are_kept_whole() {
+        let mut r = release("v0.2.0", false);
+        let body = "word ".repeat(400);
+        r.body = Some(body.clone());
+        let u = newer("0.1.0", &[r], "windows", "x86_64").unwrap();
+        assert_eq!(u.notes, body);
     }
 
     #[test]
