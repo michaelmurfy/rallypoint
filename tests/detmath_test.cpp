@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 static uint64_t g_hash = 1469598103934665603ull;
 static void mix(double v)
@@ -77,6 +78,45 @@ int main()
 	assert(DetMath::sin(0.0) == 0.0 && DetMath::cos(0.0) == 1.0 && DetMath::exp(0.0) == 1.0 && DetMath::log(1.0) == 0.0);
 	assert(std::isinf(DetMath::log(0.0)) && std::isnan(DetMath::log(-1.0)) && std::isinf(DetMath::exp(800.0)) && DetMath::exp(-800.0) == 0.0);
 	assert(close(DetMath::sin(1.0e7), std::sin(1.0e7), 1e-9)); // beyond the exact-reduction range: still sane
+
+	// the float sin and cos are integer-only: the two angles where Windows and macOS once disagreed, accuracy to one ulp,
+	// and a hash of the bits that CI checks on x86 as well
+	{
+		const uint32_t knownBits[2] = { 0x3F490FDBu, 0xC028AB2Bu };
+		const uint32_t knownSin[2] = { 0x3F3504F3u, 0xBEF838F5u }, knownCos[2] = { 0x3F3504F3u, 0xBF5FE715u };
+		for (int i = 0; i < 2; ++i)
+		{
+			float x, sv = 0, cv = 0;
+			memcpy(&x, &knownBits[i], 4);
+			sv = DetMath::sinf(x);
+			cv = DetMath::cosf(x);
+			uint32_t sb, cb;
+			memcpy(&sb, &sv, 4);
+			memcpy(&cb, &cv, 4);
+			assert(sb == knownSin[i] && cb == knownCos[i]);
+		}
+		uint64_t fh = 1469598103934665603ull;
+		uint32_t lcg = 12345u;
+		for (int i = 0; i < 200000; ++i)
+		{
+			lcg = lcg * 1664525u + 1013904223u;
+			const float x = ((int)(lcg >> 8) - 8388608) / 8388608.0f * (i % 3 == 0 ? 0.01f : i % 3 == 1 ? 12.0f : 900.0f);
+			const float s = DetMath::sinf(x), c = DetMath::cosf(x);
+			const long double ts = sinl((long double)x), tc = cosl((long double)x);
+			int e;
+			frexpf((float)ts, &e);
+			assert(fabsl((long double)s - ts) <= 1.01L * ldexpl(1.0L, e - 24));
+			frexpf((float)tc, &e);
+			assert(fabsl((long double)c - tc) <= 1.01L * ldexpl(1.0L, e - 24));
+			uint32_t sb, cb;
+			memcpy(&sb, &s, 4);
+			memcpy(&cb, &c, 4);
+			for (uint32_t v : { sb, cb }) { fh ^= v; fh *= 1099511628211ull; }
+		}
+		printf("float sin/cos hash %016llx\n", (unsigned long long)fh);
+		fflush(stdout);
+		assert(fh == 0xca74d6f85213d93eull);
+	}
 
 	// the same bits everywhere
 	printf("detmath hash %016llx\n", (unsigned long long)g_hash);

@@ -1,0 +1,179 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/detmath.h b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
+index 0441496..3338a1d 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/detmath.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
+@@ -311,9 +311,92 @@ inline double pow(double x, double y)
+ 	return negative ? -r : r;
+ }
+ 
+-// The float flavours the engine calls: compute in double, round once.
+-inline float sinf(float x)  { return (float)sin((double)x); }
+-inline float cosf(float x)  { return (float)cos((double)x); }
++// Sine and cosine of a float with integer arithmetic only. On 2026-10-26 a Mac and a Windows PC (both running the
++// double-precision functions above) stored a different last bit for the rotation of 33 map objects: Windows returned
++// sin(0x3F490FDB) = 0x3F3504F4 where the correctly rounded value, and macOS, give 0x3F3504F3. Nothing in the
++// double-precision path should be able to do that, and the cause on the Windows side was not found; integers cannot
++// be affected by the compiler's floating-point choices, so the game's float sin and cos use them. The angle is Q52,
++// the series Q62 (signed 64-bit; products go through a portable 128-bit multiply). Accurate to about 2 float ulps for |x| < 1024.
++namespace detail
++{
++	inline std::uint64_t mulHigh(std::uint64_t a, std::uint64_t b, std::uint64_t *lo)
++	{
++		const std::uint64_t a0 = a & 0xffffffffull, a1 = a >> 32, b0 = b & 0xffffffffull, b1 = b >> 32;
++		const std::uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
++		const std::uint64_t mid = (p00 >> 32) + (p01 & 0xffffffffull) + (p10 & 0xffffffffull);
++		*lo = (mid << 32) | (p00 & 0xffffffffull);
++		return p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
++	}
++	// (a * b) >> 62, rounded toward zero
++	inline std::int64_t mulQ62(std::int64_t a, std::int64_t b)
++	{
++		const bool neg = (a < 0) != (b < 0);
++		const std::uint64_t ua = a < 0 ? 0 - (std::uint64_t)a : (std::uint64_t)a, ub = b < 0 ? 0 - (std::uint64_t)b : (std::uint64_t)b;
++		std::uint64_t lo;
++		const std::uint64_t hi = mulHigh(ua, ub, &lo);
++		const std::uint64_t r = (hi << 2) | (lo >> 62);
++		return neg ? 0 - (std::int64_t)r : (std::int64_t)r;
++	}
++	// sin and cos of r, |r| <= ~0.8, as Q62: Taylor series with the exact 1/n! constants (round(2^62 / n!)).
++	inline void sinCosQ62(std::int64_t r, std::int64_t *s, std::int64_t *c)
++	{
++		static const std::int64_t kInvFact[16] = {
++			4611686018427387904ll, 4611686018427387904ll, 2305843009213693952ll, 768614336404564651ll,
++			192153584101141163ll, 38430716820228233ll, 6405119470038039ll, 915017067148291ll,
++			114377133393536ll, 12708570377060ll, 1270857037706ll, 115532457973ll,
++			9627704831ll, 740592679ll, 52899477ll, 3526632ll };
++		const std::int64_t z = mulQ62(r, r);
++		std::int64_t ps = kInvFact[15], pc = kInvFact[14];
++		for (int n = 13; n >= 1; n -= 2) ps = kInvFact[n] - mulQ62(z, ps);
++		for (int n = 12; n >= 0; n -= 2) pc = kInvFact[n] - mulQ62(z, pc);
++		*s = mulQ62(r, ps);
++		*c = pc;
++	}
++	inline float q62ToFloat(std::int64_t v)
++	{
++		static const float kTwoPowMinus62 = 2.168404344971009e-19f; // exactly 2^-62
++		return (float)v * kTwoPowMinus62;
++	}
++	// Sine and cosine of x; false when x is not handled here (NaN, infinity, |x| >= 1024) and the caller falls back.
++	inline bool sinCosFloat(float x, float *sOut, float *cOut)
++	{
++		std::uint32_t bits;
++		std::memcpy(&bits, &x, 4);
++		const bool negative = (bits >> 31) != 0;
++		const int e = (int)((bits >> 23) & 0xff);
++		if (e == 0xff || e >= 127 + 10) return false;
++		if (e < 115) // |x| < 2^-12, zero or denormal: sin(x) = x and cos(x) = 1 to within 3e-8
++		{
++			*sOut = e == 0 ? 0.0f : x;
++			*cOut = 1.0f;
++			return true;
++		}
++		const std::uint64_t m = (std::uint64_t)((bits & 0x7fffff) | 0x800000); // |x| = m * 2^(e - 150)
++		const std::uint64_t a = m << (e - 150 + 52);                           // |x| as Q52; the shift is >= 17
++		std::uint64_t lo;
++		const std::uint64_t hi = mulHigh(a, 11743562013128004906ull, &lo);            // |x| * (2/pi) * 2^116 as hi:lo
++		const std::int64_t k = (std::int64_t)((hi + (1ull << 51)) >> 52);      // the nearest multiple of pi/2
++		const std::int64_t r52 = (std::int64_t)a - k * 7074237752028440ll;       // the remainder, Q52
++		std::int64_t s, c;
++		sinCosQ62(r52 * 1024, &s, &c);
++		std::int64_t sv, cv;
++		switch (k & 3)
++		{
++		case 0: sv = s; cv = c; break;
++		case 1: sv = c; cv = -s; break;
++		case 2: sv = -s; cv = -c; break;
++		default: sv = -c; cv = s; break;
++		}
++		if (negative) sv = -sv;
++		*sOut = q62ToFloat(sv);
++		*cOut = q62ToFloat(cv);
++		return true;
++	}
++}
++
++// The float flavours the engine calls: sin and cos by integers (above), the rest in double rounded once.
++inline float sinf(float x)  { float s, c; return detail::sinCosFloat(x, &s, &c) ? s : (float)sin((double)x); }
++inline float cosf(float x)  { float s, c; return detail::sinCosFloat(x, &s, &c) ? c : (float)cos((double)x); }
+ inline float tanf(float x)  { return (float)tan((double)x); }
+ inline float asinf(float x) { return (float)asin((double)x); }
+ inline float acosf(float x) { return (float)acos((double)x); }
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 77d83d3..d8bf711 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -54,6 +54,9 @@
+ #include "Common/version.h"
+ 
+ #include "GameLogic/AI.h"
++#include "GameLogic/TerrainLogic.h"
++#include "Lib/trig.h"
++#include "detmath.h"
+ #include "GameLogic/Weapon.h"
+ #include "GameLogic/Module/BodyModule.h"
+ 
+@@ -1275,6 +1278,53 @@ void GlobalData::parseCustomDefinition()
+ 	}
+ }
+ 
++// Rallypoint: a fingerprint of this build's maths, taken through the calls the simulation makes (our Sin and Cos, the
++// float flavours of the rest, and the matrix the game builds for a rotated object), over fixed inputs. It is part of
++// the simulation id below, so two players whose maths gives different bits are refused at the lobby instead of
++// starting a game that quietly runs two different simulations (which is what a Mac and a Windows PC did on 2026-10-26).
++// Each part is also printed, so a refusal can be traced to the function that differs.
++static UnsignedInt mathFingerprint()
++{
++	struct Hash
++	{
++		UnsignedInt h;
++		Hash() : h(2166136261u) {}
++		void mix(float v) { UnsignedInt b; memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 16777619u; } }
++	};
++	Hash trig, inverse, expo, matrix;
++	UnsignedInt lcg = 12345u;
++	const float knownAngles[2] = { 0.78539818525f, -2.6354470253f };
++	for (int i = 0; i < 4098; ++i)
++	{
++		float x;
++		if (i < 2) x = knownAngles[i];
++		else { lcg = lcg * 1664525u + 1013904223u; x = ((Int)(lcg >> 8) - 8388608) / 8388608.0f * (i < 2048 ? 7.0f : i < 4000 ? 600.0f : 0.01f); }
++		trig.mix(Sin(x)); trig.mix(Cos(x));
++		trig.mix(DetMath::tanf(x * 0.2f));
++		const float u = x / 600.0f;
++		const float unit = u < -1.0f ? -1.0f : u > 1.0f ? 1.0f : u;
++		inverse.mix(DetMath::asinf(unit)); inverse.mix(DetMath::acosf(unit));
++		inverse.mix(DetMath::atan2f(x, 3.0f + unit)); inverse.mix(DetMath::atanf(x));
++		const float pos = 0.001f + (x < 0 ? -x : x);
++		expo.mix(DetMath::expf(unit * 8.0f)); expo.mix(DetMath::logf(pos)); expo.mix(DetMath::powf(pos, 0.5f + unit * 0.4f));
++		expo.mix((float)sqrt((double)pos)); expo.mix(sqrtf(pos));
++		if (i < 512)
++		{
++			Coord3D pos3 = { 100.0f, 200.0f, 0.0f }, up = { 0.0f, 0.0f, 1.0f }, slope = { 0.2f, -0.1f, 0.9746794f };
++			Matrix3D m, m2;
++			makeAlignToNormalMatrix(x, pos3, up, m);
++			makeAlignToNormalMatrix(x, pos3, slope, m2);
++			for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) { matrix.mix(m[r][c]); matrix.mix(m2[r][c]); }
++		}
++	}
++	const UnsignedInt parts[4] = { trig.h, inverse.h, expo.h, matrix.h };
++	fprintf(stderr, "[env] math fingerprint: sin/cos/tan %08X, inverse trig %08X, exp/log/pow/sqrt %08X, object matrices %08X\n", parts[0], parts[1], parts[2], parts[3]);
++	fflush(stderr);
++	UnsignedInt all = 2166136261u;
++	for (int i = 0; i < 4; ++i) { all ^= parts[i]; all *= 16777619u; }
++	return all;
++}
++
+ UnsignedInt GlobalData::generateExeCRC()
+ {
+ 	DEBUG_ASSERTCRASH(TheFileSystem != nullptr, ("TheFileSystem is null"));
+@@ -1301,8 +1351,8 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 4;
+-		const UnsignedInt idBlock[2] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId };
++		static const UnsignedInt kRallypointSimulationId = 5;
++		const UnsignedInt idBlock[3] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));
+ 	}
