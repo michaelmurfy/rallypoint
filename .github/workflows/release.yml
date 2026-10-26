@@ -42,6 +42,7 @@ jobs:
           mkdir -p out/engine
           cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
           ls -la out/engine
+          strings -a out/engine/generalszh | grep -q 'DebugFrame_' || { echo "sync log writer missing from the engine"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-macos
@@ -74,7 +75,7 @@ jobs:
       - name: Configure and build
         working-directory: engine
         run: |
-          cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF
+          cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF
           cmake --build --preset win32
       - name: Collect
         shell: pwsh
@@ -85,6 +86,7 @@ jobs:
           # The engine must run on the VC++ runtime it was built with: an older system msvcp140.dll (14.29 is common)
           # crashes in std::mutex::lock. Microsoft allows these files to be shipped beside the executable.
           $crt = Get-ChildItem "$env:VCToolsRedistDir\x86" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          if (-not (Get-ChildItem out/engine -Filter *.exe | Select-String -Pattern 'DebugFrame_' -Quiet)) { throw "sync log writer missing from the engine" }
           if (-not $crt) { throw "no x86 CRT under $env:VCToolsRedistDir" }
           'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

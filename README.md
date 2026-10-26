@@ -29,7 +29,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 | Download game files from Steam | ✅ tried with a real account | ✅ finds your Steam install | not used (no engine) |
 | Engine / Skirmish | ✅ | ✅ | ❌ no engine yet |
 | Widescreen / HiDPI (any resolution, ultrawide, command bar and text) | ✅ | ✅ | – |
-| Mods (Shockwave, Shockwave Chaos) | ✅ | ✅ | – |
+| Mods (Shockwave, Shockwave Chaos, Cold War Crisis) | ✅ | ✅ | – |
 | Relay server | – | – | ✅ (Docker or binary) |
 | Encrypted relay traffic, server diagnostics | ✅ tested between the launcher and a real server | ✅ same code | – |
 | Multiplayer game through the relay | ⏳ still to do | ⏳ still to do | – |
@@ -76,7 +76,7 @@ Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be
 | Windows | `%APPDATA%\GeneralsZH\` |
 | Linux | `~/.local/share/GeneralsZH/` |
 
-Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and you choose the file you downloaded. Currently listed: **C&C: Shockwave**, which plays on its own, and its add-on **C&C: Shockwave Chaos**, which needs Shockwave installed and is played together with it (Rallypoint lays it over Shockwave when you launch, without changing your Shockwave folder). Know another mod that should be listed? Open an issue with its ModDB link.
+Why does it open your browser instead of downloading directly? Mod sites such as ModDB don't allow automated downloads, so the launcher links to the official page and you choose the file you downloaded. Currently listed: **C&C: Shockwave**, which plays on its own, and its add-on **C&C: Shockwave Chaos**, which needs Shockwave installed and is played together with it (Rallypoint lays it over Shockwave when you launch, without changing your Shockwave folder). **Cold War Crisis** is a total conversion that plays on its own: ticking it on the Play page unticks Shockwave and Chaos and keeps them switched off, because the two can't be combined. Know another mod that should be listed? Open an issue with its ModDB link.
 
 Unpacking uses tools already on your computer. macOS and Windows can open `.zip` out of the box; for `.7z`, `.rar` and installer `.exe` files you may need `brew install sevenzip innoextract` (macOS), `sudo apt install p7zip-full innoextract unzip` (Linux) or [7-Zip](https://www.7-zip.org/) (Windows). Rallypoint tells you if one is missing. Archives are checked before anything is written, and ones that try to escape their folder are refused.
 

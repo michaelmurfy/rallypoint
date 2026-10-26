@@ -25,5 +25,24 @@
     "addon_for": "shockwave",
     "notes": "Download the .zip from ModDB, unpack it if you like, then choose the .zip or its folder. Rallypoint plays it together with Shockwave, so nothing in your Shockwave folder is changed.",
     "pick": true
+  },
+  {
+    "id": "cold-war-crisis",
+    "name": "Cold War Crisis",
+    "description": "A total conversion of Zero Hour (version 469), with its own movies, cursors and content.",
+    "homepage": "https://www.moddb.com/mods/cold-war-crisis",
+    "download_page": "https://www.moddb.com/mods/cold-war-crisis",
+    "path": "ColdWarCrisis",
+    "detect": [
+      "cwc",
+      "cold-war",
+      "coldwar"
+    ],
+    "notes": "Download the manual installation .zip from ModDB (about 550 MB) and choose it here; no installer is run. It replaces the game's content, so it can't be played together with Shockwave or Chaos.",
+    "pick": true,
+    "conflicts": [
+      "shockwave",
+      "shockwave-chaos"
+    ]
   }
 ]

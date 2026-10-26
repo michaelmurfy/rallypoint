@@ -43,7 +43,7 @@ function icon(name) {
 function toast(text, kind) {
   const t = h("div", { class: "toast " + (kind || "") }, text);
   document.getElementById("toasts").append(t);
-  setTimeout(() => t.remove(), kind === "bad" ? 9000 : 4500);
+  setTimeout(() => { t.classList.add("leaving"); setTimeout(() => t.remove(), 180); }, kind === "bad" ? 9000 : 4500);
 }
 
 /**
@@ -111,14 +111,29 @@ async function loadMods() {
 }
 
 const needsOf = (m) => (m.addon_for ? (store.mods.catalog.find((b) => b.id === m.addon_for) || {}).name || null : null);
-const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name, needs: needsOf(m) })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
+const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name, needs: needsOf(m), id: m.id, conflicts: m.conflicts || [] })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
 const selectedFolders = () => {
   const have = new Set(installedMods().map((m) => m.folder));
   return (prefs.get().mods || []).filter((f) => have.has(f));
 };
+/** Catalog ids a folder brings in: itself and, for an add-on, the mod it is laid over. */
+function idsFor(folder) {
+  const m = store.mods.catalog.find((c) => c.path === folder);
+  return m ? [m.id, ...(m.addon_for ? [m.addon_for] : [])] : [];
+}
+const conflictsOf = (folder) => (store.mods.catalog.find((c) => c.path === folder) || {}).conflicts || [];
+/** Name of a ticked mod that rules this one out (a total conversion rules out what it replaces), or null. */
+function blockedBy(folder) {
+  const mine = idsFor(folder);
+  const hit = selectedFolders().find((f) => f !== folder && conflictsOf(f).some((id) => mine.includes(id)));
+  return hit ? (installedMods().find((m) => m.folder === hit) || {}).name || hit : null;
+}
 function toggleMod(folder, on) {
-  const cur = selectedFolders().filter((f) => f !== folder);
+  const mine = conflictsOf(folder);
+  // Ticking a total conversion unticks the mods it can't be played with.
+  const cur = selectedFolders().filter((f) => f !== folder && !(on && idsFor(f).some((id) => mine.includes(id))));
   prefs.set({ mods: on ? [...cur, folder] : cur });
+  notifyMods(); // other tiles may have been unticked or ruled out
 }
 function launchFolders() {
   const folders = selectedFolders();
@@ -443,19 +458,22 @@ function modCard(m, compact) {
     // The player brings the files: nothing to wait for in the launcher.
     actions.append(
       h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"),
-      h("button", { class: "btn", onclick: () => choose(m.id, true) }, "Choose folder…"));
+      h("button", { class: "btn ghost", onclick: () => choose(m.id, true) }, "Choose folder…"));
   } else {
     actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
   }
   const missingBase = role.base && !role.base.installed && !m.installed;
   return h("div", { class: "card" + (role.base ? " addon" : "") },
     h("div", { class: "mod" },
-      h("div", {}, h("div", { class: "row" }, h("h3", {}, m.name), pill(role.pill, role.base ? "" : "ok")), h("p", { class: "muted" }, m.description), !compact ? h("p", { class: "small" + (missingBase ? " warn-text" : " muted") }, role.how) : null),
+      h("div", { class: "stack tight" },
+        h("div", { class: "row" }, h("h3", {}, m.name), role.base ? pill(role.pill) : null),
+        h("p", { class: "muted" }, m.description),
+        missingBase ? h("p", { class: "small warn-text" }, role.how) : null,
+        !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null),
       actions),
-    !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null,
-    h("div", { class: "row" },
-      m.pick && !m.installed && !busy ? h("button", { class: "btn small", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Open download page") : null,
-      h("button", { class: "btn small ghost", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
+    h("div", { class: "mod-links" },
+      m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
+      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
 }
 
 /** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
@@ -503,9 +521,11 @@ function playPage() {
     const mods = installedMods();
     fill(picks, mods.length ? mods.map((m) => {
       const on = selectedFolders().includes(m.folder);
-      const box = h("input", { type: "checkbox", checked: on, onchange: () => toggleMod(m.folder, box.checked) });
-      return h("label", { class: "pick" }, box, m.name, m.needs ? h("span", { class: "muted small" }, `  add-on, plays together with ${m.needs}`) : null);
-    }) : h("p", { class: "muted small" }, "No mods installed yet."));
+      const blocker = on ? null : blockedBy(m.folder);
+      const box = h("input", { type: "checkbox", checked: on, disabled: !!blocker, onchange: () => toggleMod(m.folder, box.checked) });
+      const note = blocker ? `Can't be played with ${blocker}` : m.needs ? `Add-on for ${m.needs}` : m.conflicts && m.conflicts.length ? "Total conversion, plays on its own" : "";
+      return h("label", { class: "tile" + (on ? " on" : "") + (blocker ? " off" : "") }, box, h("span", { class: "tile-text" }, h("b", {}, m.name), note ? h("span", { class: "muted small" }, note) : null));
+    }) : h("p", { class: "muted small" }, "No mods installed yet. Add some on the ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Mods page"), "."));
   }
   refreshers.add(fillMods); fillMods();
 
@@ -535,13 +555,12 @@ function playPage() {
       h("div", { class: "row" }, play, sk)),
     h("div", { class: "card" },
       h("h3", {}, "Options"),
-      h("div", { class: "grid2" },
-        h("div", { class: "field" }, h("span", {}, "Mods"), picks),
-        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
+      h("div", { class: "field" }, h("span", {}, "Mods"), picks),
+      h("label", { class: "field narrow" }, h("span", {}, "Resolution"), resSel),
       custom,
       h("label", { class: "switch" }, fs, "Fullscreen"),
       h("label", { class: "switch" }, cam, "Higher camera"),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. Several mods load together; an add-on is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
+      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. Mods that fit together load together; an add-on is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
@@ -567,7 +586,6 @@ function modsPage() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
     fill(body,
       watchBanner(),
-      h("h2", {}, "Mods"),
       modGroups(),
       store.mods.other.length ? h("h2", {}, "Your other mods") : null,
       store.mods.other.map((o) => {

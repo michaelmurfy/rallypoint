@@ -585,6 +585,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     }
     let cat = catalog()?;
     let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    if let Some((a, b)) = mods::conflict(&cat, &ordered) {
+        return Err(format!("{a} and {b} can't be played together. Untick one of them."));
+    }
     let mut mod_args = vec![];
     for name in &ordered {
         if let Some(m) = cat.iter().find(|m| &m.path == name) {
@@ -596,7 +599,13 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
-        sync_logs: if Config::load(&config_path(&app)?).sync_logs { Some(sync_logs_dir(&app)?) } else { None },
+        sync_logs: if Config::load(&config_path(&app)?).sync_logs {
+            let dir = sync_logs_dir(&app)?;
+            launch::prepare_sync_logs(&dir).map_err(|e| e.to_string())?;
+            Some(dir)
+        } else {
+            None
+        },
         width,
         height,
         fullscreen,

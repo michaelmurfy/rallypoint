@@ -45,10 +45,20 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
     // The first ten seconds of simulation, frame by frame: enough to see where two players' games first differ.
     if let Some(dir) = &o.sync_logs {
         a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "300".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
+        // Per-object lines, not only the frame total, so a desync log says which object diverged.
+        a.push("-LogObjectCRCs".into());
+        // The game state is only written out when a checksum is taken (every 100 frames normally): every 10 narrows down where it went wrong.
+        a.extend(["-NetCRCInterval".into(), "10".into(), "-ReplayCRCInterval".into(), "10".into()]);
     }
     // EA and Generals logo movies. The engine's own -nologo; the menu scene stays.
     a.push("-nologo".into());
     a
+}
+
+/// The engine only creates the last folder of the sync-log path and ignores failure, so a missing
+/// parent means the per-frame files are never written. Make the folder before the game starts.
+pub fn prepare_sync_logs(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
 }
 
 /// Loading picture for a mod folder. The engine otherwise paints `Install_Final.bmp` from the game
@@ -171,6 +181,15 @@ mod tests {
         let i = on.iter().position(|a| a == "-SaveDebugCRCPerFrame").unwrap();
         assert_eq!(on[i + 1], "/data/sync logs");
         assert!(on.windows(2).any(|w| w[0] == "-DebugCRCFromFrame" && w[1] == "0"));
+        assert!(on.iter().any(|a| a == "-LogObjectCRCs"));
+        assert!(on.windows(2).any(|w| w[0] == "-NetCRCInterval" && w[1] == "10"));
+        assert!(on.windows(2).any(|w| w[0] == "-ReplayCRCInterval" && w[1] == "10"));
+        let t = std::env::temp_dir().join(format!("gen-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let dir = t.join("sync logs");
+        prepare_sync_logs(&dir).unwrap();
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&t);
     }
 
     #[test]

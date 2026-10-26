@@ -1,0 +1,60 @@
+diff --git a/Core/GameEngine/Include/Common/CRCDebug.h b/Core/GameEngine/Include/Common/CRCDebug.h
+--- a/Core/GameEngine/Include/Common/CRCDebug.h
++++ b/Core/GameEngine/Include/Common/CRCDebug.h
+@@ -66,5 +66,6 @@
+ 
+ 	void outputCRCDebugLines();
++	void flushCRCDebugPerFrame();
+ 	void CRCDebugStartNewGame();
+ 	void outputCRCDumpLines();
+ 
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -155,8 +155,17 @@ static void outputCRCDebugLinesPerFrame()
+ 	if (numDebugStrings >= MaxStrings)
+ 		start = nextDebugString - MaxStrings;
+ 	nextDebugString = 0;
+ 	numDebugStrings = 0;
+ 	if (!fp)
+-		return;
++	{
++		static Bool told = FALSE;
++		if (!told)
++		{
++			told = TRUE;
++			fprintf(stderr, "[sync] could not write %s\n", fname.str());
++			fflush(stderr);
++		}
++		return;
++	}
+ 
+ 	for (Int i=start; i<end; ++i)
+@@ -169,4 +178,9 @@
+ 	fclose(fp);
+ }
+ 
++void flushCRCDebugPerFrame()
++{
++	outputCRCDebugLinesPerFrame();
++}
++
+ void outputCRCDumpLines()
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -3684,7 +3684,14 @@
+ static void reportRelayDesync(const RelayWire::Desync &d)
+ {
++	// The Windows release build does not define DEBUG_LOGGING, so DEBUG_LOG never reaches engine.log.
++	// Flush the frame that just diverged before the game stops on the mismatch.
++#ifdef DEBUG_CRC
++	flushCRCDebugPerFrame();
++#endif
+ 	UnicodeString who;
+ 	for (int i = 0; i < d.count; ++i)
+ 	{
+ 		DEBUG_LOG(("Relay sync check, frame %u: %u.%u.%u.%u has checksum %8.8X%s", d.frame, (d.vip[i] >> 24) & 255, (d.vip[i] >> 16) & 255, (d.vip[i] >> 8) & 255, d.vip[i] & 255, d.crc[i], d.odd[i] ? " (differs from the majority)" : ""));
++		fprintf(stderr, "[sync] frame %u: %u.%u.%u.%u checksum %08X%s\n", d.frame, (d.vip[i] >> 24) & 255, (d.vip[i] >> 16) & 255, (d.vip[i] >> 8) & 255, d.vip[i] & 255, d.crc[i], d.odd[i] ? " (differs)" : "");
++		fflush(stderr);
+ 		if (d.certain && !d.odd[i])
