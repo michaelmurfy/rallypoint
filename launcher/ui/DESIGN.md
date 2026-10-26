@@ -35,7 +35,8 @@ State colors stay off the red scale on purpose, so "installed", "waiting" and "f
 - **Feedback**: it appears where the action happened. A button's result goes in `liveStatus()` right beside it (spinner while working, then the answer; good news clears itself, errors stay). Page-wide actions use `say()`, which writes to the line under the page title. Toasts are only the fallback inside the setup wizard.
 - **Lists**: map packs and similar rows are separated by hairlines, not boxed in cards.
 - **Copy**: sentence case, no arrow glyphs, no filler adjectives.
-- **Motion**: 120-180ms ease-out, no overshoot, nothing under `prefers-reduced-motion: reduce`.
+- **Motion**: 120-240ms ease-out, no overshoot, nothing under `prefers-reduced-motion: reduce`. Pages rise in once with a 30ms stagger, wizard steps slide in, toasts fade out, the waiting dot pulses. Only elements built once per visit animate: anything that re-renders while you watch it (the mod list, sidebar status) must not, or it replays on every refresh.
+- **Mods**: one primary action per mod; the relation to another mod is a pill only for add-ons, and a warning line only when the base is missing; the two secondary pages are quiet text links under the card, not buttons.
 
 ## Rules for new pages
 
