@@ -326,6 +326,48 @@ pub fn view(name: &str, dir: &Path) -> Result<MapView, String> {
     Ok(MapView { name: name.to_string(), image_w, image_h, rgba, info, size_kb: dir_size_kb(dir) })
 }
 
+/// How many players a map is for: its start positions. 0 for a solo map or mission; `None` when the map can't be read.
+pub fn player_count(dir: &Path) -> Option<u8> {
+    let name = dir.file_name()?.to_string_lossy().into_owned();
+    let files: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+    let ext = |p: &Path| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("map"));
+    let file = files.iter().find(|p| ext(p) && p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(&name))).or_else(|| files.iter().find(|p| ext(p)))?;
+    if std::fs::metadata(file).ok()?.len() >= (64 << 20) {
+        return None;
+    }
+    parse_map(&std::fs::read(file).ok()?).ok().map(|m| m.starts.len().min(255) as u8)
+}
+
+/// Player counts for many maps at once. Reading a map means unpacking it, so the answers are kept in `cache` (a JSON
+/// file) against the map file's size and only maps not seen before, or changed, are read.
+pub fn counts(maps: &[(String, std::path::PathBuf)], cache: &Path) -> std::collections::BTreeMap<String, u8> {
+    let mut known: std::collections::BTreeMap<String, (u64, u8)> = std::fs::read_to_string(cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut out = std::collections::BTreeMap::new();
+    let mut changed = false;
+    for (name, dir) in maps {
+        let size = dir_size_kb(dir);
+        match known.get(name) {
+            Some(&(sz, n)) if sz == size => {
+                out.insert(name.clone(), n);
+            }
+            _ => {
+                if let Some(n) = player_count(dir) {
+                    known.insert(name.clone(), (size, n));
+                    out.insert(name.clone(), n);
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        if let Some(d) = cache.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = serde_json::to_vec(&known).map(|b| std::fs::write(cache, b));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +479,28 @@ mod tests {
     }
 
     /// A real map from the player's own folder, when there is one: the reader copes with the game's actual files.
+    #[test]
+    fn counts_players_from_start_positions_and_remembers_the_answer() {
+        let t = std::env::temp_dir().join(format!("gen-mapcount-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        for (n, bytes) in [("Duo", tiny_map()), ("Broken", b"not a map".to_vec())] {
+            std::fs::create_dir_all(t.join(n)).unwrap();
+            std::fs::write(t.join(n).join(format!("{n}.map")), bytes).unwrap();
+        }
+        assert_eq!(player_count(&t.join("Duo")), Some(2));
+        assert_eq!(player_count(&t.join("Broken")), None);
+        let maps = vec![("Duo".to_string(), t.join("Duo")), ("Broken".to_string(), t.join("Broken"))];
+        let cache = t.join("lib").join("players.json");
+        let c = counts(&maps, &cache);
+        assert_eq!(c.get("Duo"), Some(&2));
+        assert!(!c.contains_key("Broken"));
+        assert!(cache.is_file());
+        // a second call answers from the cache even when the map file can no longer be parsed
+        std::fs::write(t.join("Duo").join("Duo.map"), vec![b'x'; tiny_map().len()]).unwrap();
+        assert_eq!(counts(&maps, &cache).get("Duo"), Some(&2));
+        let _ = std::fs::remove_dir_all(t);
+    }
+
     #[test]
     fn reads_a_real_map_if_present() {
         let Some(home) = std::env::var_os("HOME") else { return };
