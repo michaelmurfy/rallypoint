@@ -1,3 +1,9 @@
+## Rallypoint 0.3.2
+
+A diagnostic build for the multiplayer desync. The Windows and macOS games still differ at the first frame, in the terrain height of objects that sit at the edge of a map (18.125 on the Mac, 25.0 on Windows). The sync logs now fingerprint the terrain height data and record the first off-map height lookups, so the next comparison shows whether the two machines load different height data or read it differently. Keep Settings > Multiplayer sync logs on. No server change.
+
+---
+
 ## Rallypoint 0.3.1
 
 Rallypoint 0.3.0 was never published: its macOS build failed to compile. This release has everything in it (see 0.3.0 below) plus the fix, so use this one. As before, **update the server and every launcher together**.

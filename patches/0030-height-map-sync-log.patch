@@ -1,0 +1,58 @@
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+index 2f2c246..c9a7734 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+@@ -89,6 +89,7 @@
+ #include "W3DDevice/GameClient/W3DCustomScene.h"
+ 
+ #include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.
++#include "Common/CRCDebug.h"
+ #include "W3DDevice/GameClient/BaseHeightMap.h"
+ 
+ #include "W3DDevice/GameClient/HeightMap.h"
+@@ -878,6 +879,45 @@ Real BaseHeightMapRenderObjClass::getHeightMapHeight(Real x, Real y, Coord3D* no
+ 
+ 	float height;
+ 
++	// Rallypoint: sync-log detail for a height that differs between machines. Once per game, a fingerprint of the logic
++	// height map (size, border, a hash of every height), and then the inputs of the first few off-map lookups.
++	{
++		static const void *loggedFor = nullptr;
++		static int offMapLogged = 0;
++		// only count a game's lookups once its logic is running and the sync log is on (the map is also read while loading)
++		const Bool logging = TheGameLogic && TheGameLogic->isInGame() && TheCRCFirstFrameToLog >= 0;
++		if (!logging)
++		{
++			// nothing
++		}
++		else if (loggedFor != logicHeightMap)
++		{
++			loggedFor = logicHeightMap;
++			offMapLogged = 0;
++			UnsignedInt h = 2166136261u;
++			const UnsignedByte *d = logicHeightMap->getDataPtr();
++			const Int n = logicHeightMap->getXExtent() * logicHeightMap->getYExtent();
++			for (Int k = 0; k < n; k++)
++				h = (h ^ d[k]) * 16777619u;
++			addCRCDebugLineNoCounter("HeightMap: extent %d x %d, border %d, hash %08X, is client map %d", logicHeightMap->getXExtent(), logicHeightMap->getYExtent(), logicHeightMap->getBorderSizeInline(), h, (int)(logicHeightMap == m_map));
++		}
++		if (logging && offMapLogged < 6)
++		{
++			const Real inv = 1.0f / MAP_XY_FACTOR;
++			Real fx2 = x * inv, fy2 = y * inv;
++			Int ix2 = fast_float2long_round(FAST_REAL_FLOOR(fx2)) + logicHeightMap->getBorderSizeInline();
++			Int iy2 = fast_float2long_round(FAST_REAL_FLOOR(fy2)) + logicHeightMap->getBorderSizeInline();
++			if (ix2 > (logicHeightMap->getXExtent()-3) || iy2 > (logicHeightMap->getYExtent()-3) || iy2 < 1 || ix2 < 1)
++			{
++				offMapLogged++;
++				UnsignedInt xb, yb;
++				memcpy(&xb, &x, 4);
++				memcpy(&yb, &y, 4);
++				addCRCDebugLineNoCounter("HeightMap off-map lookup: x %08X y %08X ix %d iy %d", xb, yb, ix2, iy2); // client calls may add lines too, so no counter
++			}
++		}
++	}
++
+ 	//	3-----2
+ 	//  |    /|
+ 	//  |  /  |
