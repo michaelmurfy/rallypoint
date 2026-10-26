@@ -454,7 +454,7 @@ function mapOrganiser() {
   const LIMIT = 150;
   let all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
   let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
-  const summary = h("p", { class: "muted" });
+  const summary = h("span", { class: "pill" });
   const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
   const packSel = h("select", { "aria-label": "Show maps from", onchange: () => { pack = packSel.value; shown = LIMIT; draw(); } });
   const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
@@ -466,9 +466,9 @@ function mapOrganiser() {
   const clear = h("button", { class: "btn small ghost", hidden: true, onclick: () => { q = ""; pack = ""; view = "all"; pf = ""; search.value = ""; shown = LIMIT; draw(); } }, "Clear filters");
   const list = h("div", { class: "maplist" });
   const more = h("button", { class: "btn small", hidden: true, onclick: () => { shown += LIMIT; draw(); } }, "Show more");
-  const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on those shown");
-  const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off those shown");
-  const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete those shown");
+  const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on shown");
+  const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off shown");
+  const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete shown…");
   const empty = h("div", { class: "notice", hidden: true });
   const players = (m) => (counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
@@ -489,12 +489,13 @@ function mapOrganiser() {
     fill(chips,
       h("span", { class: "muted small chiplabel" }, "Players"),
       chip("", "Any"),
-      ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), `${n === 0 ? "Solo" : n} (${have.get(n)})`)),
+      ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), h("span", {}, n === 0 ? "Solo" : String(n), h("span", { class: "chipcount" }, String(have.get(n)))))),
       counts ? null : h("span", { class: "muted small" }, "counting…"));
   }
   function drawSummary() {
     const n = all.filter((m) => m.enabled).length;
-    summary.textContent = all.length ? `${all.length} map${all.length === 1 ? "" : "s"}, ${n} switched on. Changes apply the next time the game starts.` : "";
+    summary.textContent = all.length ? `${n} of ${all.length} switched on` : "";
+    summary.className = "pill" + (n ? " ok" : "");
   }
   function draw() {
     const packs = [...new Set(all.map((m) => m.pack))].sort();
@@ -505,7 +506,7 @@ function mapOrganiser() {
     const v = visible();
     drawSummary();
     drawChips();
-    result.textContent = all.length ? `Showing ${v.length} of ${all.length}` : "";
+    result.textContent = all.length ? (v.length === all.length ? `${all.length} maps` : `${v.length} of ${all.length} maps`) : "";
     clear.hidden = !(q || pack || view !== "all" || pf !== "");
     empty.hidden = !!v.length;
     fill(empty, all.length ? "No maps match." : h("span", {}, "No maps yet. Install a pack above, or add your own maps from a file or folder."));
@@ -515,14 +516,14 @@ function mapOrganiser() {
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
       const idx = v.indexOf(m);
-      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         h("button", { class: "btn small ghost", "aria-label": `Preview ${m.name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, "Preview"));
       return row;
     }));
     more.hidden = v.length <= shown;
     more.textContent = `Show more (${v.length - shown} left)`;
     [on, off, del].forEach((b) => { b.disabled = !v.length; });
-    del.textContent = confirmDelete ? `Click again to delete ${v.length} map${v.length === 1 ? "" : "s"}` : "Delete those shown";
+    del.textContent = confirmDelete ? `Click again to delete ${v.length} map${v.length === 1 ? "" : "s"}` : "Delete shown…";
   }
   async function bulk(enabled) {
     const names = visible().filter((m) => m.enabled !== enabled).map((m) => m.name);
@@ -550,13 +551,17 @@ function mapOrganiser() {
   }
   refreshers.add(reloadOrganiser);
   reloadOrganiser();
-  const el = h("div", { class: "stack" },
-    summary,
+  const el = h("div", { class: "organiser" },
+    h("div", { class: "row between" }, h("h2", {}, "Your maps"), summary),
     h("div", { class: "organiser-bar" }, search, packSel, segs),
     chips,
-    h("div", { class: "mapresultrow" }, result, h("div", { class: "row" }, clear, sortSel)),
-    h("div", { class: "row" }, on, off, del),
-    empty, list, h("div", { class: "row" }, more));
+    empty,
+    h("div", { class: "listbox" },
+      h("div", { class: "listhead" }, h("div", { class: "row" }, result, clear), sortSel),
+      list,
+      h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
+    h("div", { class: "row center" }, more),
+    h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
   return { el, dispose: () => refreshers.delete(reloadOrganiser) };
 }
 
@@ -565,7 +570,7 @@ function mapsPage() {
   const org = mapOrganiser();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps")),
-    h("div", { class: "card" }, h("h2", {}, "Your maps"), org.el),
+    h("div", { class: "card" }, org.el),
     h("details", { class: "card help", open: true }, h("summary", {}, "Get more maps"), packs.el));
   return { el, dispose: () => { packs.dispose(); org.dispose(); } };
 }
@@ -704,7 +709,7 @@ function modCard(m, compact) {
         h("div", { class: "row" }, h("h3", {}, m.name), role.base ? pill(role.pill) : null),
         h("p", { class: "muted" }, m.description),
         missingBase ? h("p", { class: "small warn-text" }, role.how) : null,
-        !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null),
+        !compact && m.notes && !m.installed ? h("details", { class: "help-inline" }, h("summary", {}, "How to install"), h("p", { class: "muted small" }, m.notes)) : null),
       actions),
     h("div", { class: "mod-links" },
       m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
