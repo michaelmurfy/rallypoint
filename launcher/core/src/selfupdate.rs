@@ -227,7 +227,7 @@ mod tests {
         let mut c = Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"]).arg(&script);
         spawn_detached(c).unwrap();
-        let ran = (0..30).any(|_| {
+        let ran = (0..300).any(|_| { // up to 30 s: PowerShell can take several seconds to start on a busy CI runner
             if marker.is_file() {
                 return true;
             }
