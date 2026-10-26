@@ -1,0 +1,63 @@
+diff --git a/Core/GameEngine/Include/GameNetwork/RelayWire.h b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+index c89e7f3..76d6a9d 100644
+--- a/Core/GameEngine/Include/GameNetwork/RelayWire.h
++++ b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+@@ -171,4 +171,7 @@ inline bool decodeDesync(const uint8_t *in, size_t n, Desync &d)
+ 
+ // Implemented in udp.cpp (the engine target): send our checksum to the agent; take the relay's latest verdict, if any.
+ void RelayWire_ReportCrc(uint32_t frame, uint32_t crc, bool host);
++// Remember which frame a checksum was taken at. The checksum message is only executed a few frames later (and at
++// different frames on different machines), so the report below is filed under the frame it was taken at.
++void RelayWire_NoteCrc(uint32_t frame, uint32_t crc);
+ bool RelayWire_TakeDesync(RelayWire::Desync &out);
+diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
+index 13cced5..6af6661 100644
+--- a/Core/GameEngine/Source/GameNetwork/udp.cpp
++++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
+@@ -319,12 +319,34 @@ bool RelayWire_TakeDesync(RelayWire::Desync &out)
+   return true;
+ }
+ 
++static uint32_t s_crcFrames[64][2];
++static unsigned s_crcFramesNext = 0;
++
++void RelayWire_NoteCrc(uint32_t frame, uint32_t crc)
++{
++  s_crcFrames[s_crcFramesNext % 64][0] = frame;
++  s_crcFrames[s_crcFramesNext % 64][1] = crc;
++  ++s_crcFramesNext;
++}
++
+ // Tell the agent our simulation checksum for a frame; it passes it to the relay, which compares all players'.
+ void RelayWire_ReportCrc(uint32_t frame, uint32_t crc, bool host)
+ {
+   const RelayWire::Config &relay = RelayWire::config();
+   if (!relay.on)
+     return;
++  // `frame` is when the message was executed, which differs between the players (a game with real simulation
++  // differences was not the problem on 2026-10-26: the relay compared the checksum of frame 50 with that of frame 30).
++  // File the checksum under the frame it was taken at, if we remember it.
++  for (unsigned i = 0; i < 64 && i < s_crcFramesNext; ++i)
++  {
++    const unsigned k = (s_crcFramesNext - 1 - i) % 64;
++    if (s_crcFrames[k][1] == crc)
++    {
++      frame = s_crcFrames[k][0];
++      break;
++    }
++  }
+   static int fd = -2;
+   if (fd == -2)
+     fd = (int)socket(AF_INET, SOCK_DGRAM, DEFAULT_PROTOCOL);
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index d971103..a928466 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -3928,6 +3928,7 @@ void GameLogic::update()
+ 	if (generateForSolo || generateForMP)
+ 	{
+ 		m_CRC = getCRC( CRC_RECALC );
++		RelayWire_NoteCrc(m_frame, m_CRC);
+ 		bool isPlayback = (TheRecorder && TheRecorder->isPlaybackMode());
+ 
+ 		GameMessage *msg = newInstance(GameMessage)(GameMessage::MSG_LOGIC_CRC);

@@ -1,3 +1,11 @@
+## Rallypoint 0.4.2
+
+- **Changing games no longer breaks the lobby.** Starting the game a second or third time without disconnecting and reconnecting (Shockwave, then Zero Hour) left you able to see each other in the lobby while the game never loaded. Rallypoint only listened to the first few network sockets the games opened, so a later game's were ignored; each new game now starts fresh.
+- **No more false "out of sync" warnings.** The 0.4.1 logs show a Mac and a Windows PC with identical simulations for the first 300 frames of both a Chaos game and a Zero Hour game, yet the server reported a mismatch. It was comparing one player's checksum of frame 50 with the other's of frame 30, because the two machines run the checksum message a few frames apart. Checksums are now compared for the frame they were taken at, so a warning means the games really differ. Update every player together.
+- **Download debug logs opens the Downloads folder on Windows.** Explorer was given the file's path in a way that fell back to Documents.
+
+---
+
 ## Rallypoint 0.4.1
 
 - **Fixes the Windows and macOS games drifting apart at the start.** The 0.4.0 logs showed the first difference at frame 1: a building the AI placed ended one bit apart (position `4396FDAC` on macOS, `4396FDAB` on Windows). The cause: the game puts Windows' x87 maths unit into 24-bit precision, which is right for its float arithmetic but makes every double-precision calculation on that unit single precision, so the game's own double maths (the logs showed a sine of `3FE6A09E80000000` where macOS had `3FE6A09E6ECB41FE`) came out slightly different. The Windows build now compiles for SSE2 explicitly, and every double-precision maths function also switches the unit to 53-bit precision while it runs. The lobby's maths fingerprint now includes the double-precision functions and runs with the game's own FPU settings, so a computer that still differs is refused at the lobby rather than starting a game that drifts. **Update every player together.** The game version changes, so 0.4.0 and older cannot join 0.4.1.

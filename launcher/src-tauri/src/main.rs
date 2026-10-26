@@ -289,7 +289,12 @@ async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg("-R").arg(&zip).spawn();
     #[cfg(windows)]
-    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", zip.display())).spawn();
+    {
+        // Explorer wants `/select,"path"` as one argument with the quotes inside it: a path with a space, passed the usual
+        // way, is split up and Explorer falls back to the Documents folder.
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", zip.display().to_string().replace('/', "\\"))).spawn();
+    }
     #[cfg(all(unix, not(target_os = "macos")))]
     if let Some(d) = zip.parent() { let _ = open_folder(d); }
     Ok(zip.to_string_lossy().into_owned())
@@ -777,6 +782,10 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)); // bundles can lose the exec bit
+    }
+    // Games of earlier launches are over: the agent forgets their sockets, so this one's are admitted.
+    if let Some(a) = relay.0.lock().unwrap().as_ref() {
+        a.new_engine();
     }
     launch::command(&exe, &game_dir, &opts).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
     // Remember the folder that worked.
