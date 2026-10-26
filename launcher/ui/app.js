@@ -1264,14 +1264,15 @@ function updateSidebar() {
   if (!sideFiles) return;
   sideFiles.replaceChildren(status(store.cfg.game_dir ? "Game files ready" : "Game files needed", store.cfg.game_dir ? "ok" : "warn"));
   const s = store.relay;
-  // beside "Online": how the connection is doing
+  // under "Online": how the connection is doing, as three small readings
   const d = net.last, on = !!d && s.startsWith("Connected as");
   const lvl = (v, warn, bad) => (v == null ? "" : v > bad ? "bad" : v > warn ? "warn" : "ok");
-  const meta = on ? h("span", { class: "navmeta" },
-    h("span", { class: lvl(d.rtt_ms, 60, 120), title: "Ping to the server" }, d.rtt_ms == null ? "…" : `${d.rtt_ms} ms`),
-    d.server ? h("span", { title: "Players in your room" }, `${d.server.room_players} player${d.server.room_players === 1 ? "" : "s"}`) : null,
-    h("span", { class: lvl(d.loss_pct, 0, 2), title: "Packets with no answer" }, d.loss_pct == null ? "…" : `${d.loss_pct}% loss`)) : null;
-  sideNet.replaceChildren(status(s.startsWith("Connected as") ? "Online" : s === "Offline" ? "Offline" : s === "Connecting..." ? "Connecting…" : "Not connected", s.startsWith("Connected as") ? "ok" : s === "Offline" || s === "Connecting..." ? "" : "bad"), meta);
+  const reading = (value, unit, label, level, hint) => h("span", { class: "reading " + level, title: hint }, h("b", {}, value, h("i", {}, unit)), h("span", {}, label));
+  const meta = on ? h("div", { class: "netstats" },
+    reading(d.rtt_ms == null ? "…" : String(d.rtt_ms), d.rtt_ms == null ? "" : " ms", "ping", lvl(d.rtt_ms, 60, 120), "Ping to the server"),
+    reading(d.server ? String(d.server.room_players) : "…", "", "players", "", "Players in your room"),
+    reading(d.loss_pct == null ? "…" : String(d.loss_pct), d.loss_pct == null ? "" : "%", "loss", lvl(d.loss_pct, 0, 2), "Packets that got no answer")) : null;
+  fill(sideNet, status(s.startsWith("Connected as") ? "Online" : s === "Offline" ? "Offline" : s === "Connecting..." ? "Connecting…" : "Not connected", s.startsWith("Connected as") ? "ok" : s === "Offline" || s === "Connecting..." ? "" : "bad"), meta);
 }
 window.addEventListener("net", () => updateSidebar());
 

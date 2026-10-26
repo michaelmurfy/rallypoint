@@ -30,7 +30,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 | Engine / Skirmish | ✅ | ✅ | ❌ no engine yet |
 | Widescreen / HiDPI (any resolution, ultrawide, command bar and text) | ✅ | ✅ | – |
 | Mods (Shockwave, Shockwave Chaos, Cold War Crisis) | ✅ | ✅ | – |
-| Relay server | – | – | ✅ (Docker or binary) |
+| Relay server | ✅ binary | ✅ binary | ✅ Docker or binary, x86_64, arm64 and armv7 |
 | Encrypted relay traffic, server diagnostics | ✅ tested between the launcher and a real server | ✅ same code | – |
 | Multiplayer through the relay, Windows against Windows | – | ✅ played | – |
 | Multiplayer through the relay, cross-platform (macOS against Windows) | ✅ played against a Windows PC | ✅ played against a Mac | – |
@@ -123,6 +123,8 @@ The relay also checks that every player's game stays in step: each game reports 
 While you are connected the Online tab shows how it is going: your latency, jitter and packet loss, the traffic you are sending, and the server's version, uptime, rooms and players in use, and load. The tunnel carries only the game's own network traffic (its lobby and game ports); anything else is dropped, and each player is limited to a sensible packet rate so one client cannot flood a server.
 
 ### Run a server
+
+The server runs on Linux (x86_64, arm64 and 32-bit armv7: Raspberry Pi 3, 4 and 5, Oracle and other ARM cloud servers), macOS (Apple silicon) and Windows. The Docker image is one multi-architecture image, so `make up` is the same on a PC and on a Pi. Without Docker, each release has a download for every platform (`rallypoint-server-<version>-linux-aarch64.tar.gz`, `-linux-armv7`, `-linux-x86_64`, `-macos-arm64`, `-windows-x86_64.zip`): unpack it and run `rallypoint-server run`, with the same settings as environment variables (see [`.env.example`](.env.example)). The Linux downloads are built on Debian 12 and run on Raspberry Pi OS Bookworm and newer. A 32-bit Pi Zero or Pi 1 (armv6) is not covered.
 
 Needs Docker on Linux, `make`, and one open **UDP** port (7777 by default; open it in the host's firewall). The container uses the host's network, so game packets don't pass through Docker's NAT and proxy, which adds delay.
 

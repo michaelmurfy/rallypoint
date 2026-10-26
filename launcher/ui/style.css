@@ -350,5 +350,11 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .mod h3 { font-size: 15px; }
 .mod-links { margin-top: -2px; }
 
-.navmeta { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 2px 0 0 15px; font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.35; }
-.navmeta .ok { color: var(--ok-ink); } .navmeta .warn { color: var(--warn-ink); } .navmeta .bad { color: var(--bad-ink); }
+
+/* the connection readings under "Online" in the sidebar */
+.netstats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; padding: 7px 4px 6px; border-radius: var(--r-btn); background: var(--bg); }
+.reading { display: grid; justify-items: center; gap: 1px; min-width: 0; }
+.reading b { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; white-space: nowrap; }
+.reading b i { font-style: normal; font-size: 10px; font-weight: 600; color: var(--muted); margin-left: 1px; }
+.reading > span { font-size: 10.5px; color: var(--muted); }
+.reading.ok b { color: var(--ok-ink); } .reading.warn b { color: var(--warn-ink); } .reading.bad b { color: var(--bad-ink); }
