@@ -1,3 +1,12 @@
+## Rallypoint 0.2.0-beta.4
+
+Still a **prerelease**.
+
+- **Fixes the crash at game start when Multiplayer sync logs is on** (macOS). Beta.3 crashed as soon as a game began with sync logs enabled; they now write their frame files.
+- **Server:** the relay image is published as `ghcr.io/michaelmurfy/rallypoint-relay:latest` (and by version), and `make up` / `make update` now pull it instead of building on the server.
+
+---
+
 ## Rallypoint 0.2.0-beta.3
 
 Still a **prerelease**. Mostly about finding the multiplayer desync.
