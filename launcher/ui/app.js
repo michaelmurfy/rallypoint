@@ -800,7 +800,7 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the full game; Skirmish is under Solo Play. Quick Skirmish starts a 1v1 against the AI straight away.")),
+      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game. Quick Skirmish starts a 1v1 against the AI straight away.")),
       files,
       h("div", { class: "row" }, play, sk)),
     h("div", { class: "card" },
@@ -812,7 +812,7 @@ function playPage() {
       custom,
       h("label", { class: "switch" }, fs, "Fullscreen"),
       h("label", { class: "switch" }, cam, "Higher camera"),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
+      h("details", { class: "help-inline" }, h("summary", {}, "About these options"), h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs. A higher camera is optional and stays off for a normal online view."))));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
