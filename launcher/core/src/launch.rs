@@ -47,6 +47,8 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
         a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "300".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
         // Per-object lines, not only the frame total, so a desync log says which object diverged.
         a.push("-LogObjectCRCs".into());
+        // And each object's module data (what its behaviours contribute to the checksum), for when the objects look the same.
+        a.push("-CRCLogicModuleData".into());
         // The game state is only written out when a checksum is taken (every 100 frames normally): every 10 narrows down where it went wrong.
         a.extend(["-NetCRCInterval".into(), "10".into(), "-ReplayCRCInterval".into(), "10".into()]);
     }
@@ -127,9 +129,12 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).ok()?;
     }
+    // The game before this one stays as engine.log.1: a crash or desync is often looked at after the next start.
+    let _ = std::fs::rename(path, path.with_extension("log.1"));
     let mut f = std::fs::File::create(path).ok()?;
     let splash = o.mod_path.as_deref().and_then(|dir| splash_bitmap(Path::new(dir))).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "retail".into());
     let _ = writeln!(f, "[launcher] {}x{} fullscreen={} relay={} splash={}", o.width, o.height, o.fullscreen, o.relay.as_ref().map(|(a, v)| format!("agent {a}, virtual IP {v}")).unwrap_or_else(|| "off".into()), splash);
+    let _ = writeln!(f, "[launcher] arguments: {}", args(o).join(" "));
     Some(f)
 }
 
@@ -169,7 +174,12 @@ mod tests {
         let o = LaunchOptions { width: 1920, height: 1080, relay: Some(("127.0.0.1:5000".into(), "10.77.0.2".into())), log: Some(log.clone()), ..Default::default() };
         let _ = command(Path::new("e"), Path::new("."), &o);
         let text = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(text.trim(), "[launcher] 1920x1080 fullscreen=false relay=agent 127.0.0.1:5000, virtual IP 10.77.0.2 splash=retail");
+        let mut lines = text.lines();
+        assert_eq!(lines.next().unwrap(), "[launcher] 1920x1080 fullscreen=false relay=agent 127.0.0.1:5000, virtual IP 10.77.0.2 splash=retail");
+        assert!(lines.next().unwrap().starts_with("[launcher] arguments: -win -xres 1920"));
+        // starting again keeps the last run
+        let _ = command(Path::new("e"), Path::new("."), &o);
+        assert!(log.with_extension("log.1").is_file());
         let _ = std::fs::remove_dir_all(&t);
     }
 
@@ -181,7 +191,7 @@ mod tests {
         let i = on.iter().position(|a| a == "-SaveDebugCRCPerFrame").unwrap();
         assert_eq!(on[i + 1], "/data/sync logs");
         assert!(on.windows(2).any(|w| w[0] == "-DebugCRCFromFrame" && w[1] == "0"));
-        assert!(on.iter().any(|a| a == "-LogObjectCRCs"));
+        assert!(on.iter().any(|a| a == "-LogObjectCRCs") && on.iter().any(|a| a == "-CRCLogicModuleData"));
         assert!(on.windows(2).any(|w| w[0] == "-NetCRCInterval" && w[1] == "10"));
         assert!(on.windows(2).any(|w| w[0] == "-ReplayCRCInterval" && w[1] == "10"));
         let t = std::env::temp_dir().join(format!("gen-sync-{}", std::process::id()));

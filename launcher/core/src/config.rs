@@ -23,6 +23,10 @@ pub fn machine_name() -> String {
     if name.is_empty() { "Player".into() } else { name }
 }
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Relay server `host:port`.
@@ -50,7 +54,7 @@ pub struct Config {
     #[serde(default)]
     pub skip_update_check: bool,
     /// Record the engine's per-frame sync logs, for finding out why a multiplayer game went out of sync.
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub sync_logs: bool,
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
@@ -74,12 +78,17 @@ fn default_camera() -> u32 {
 
 impl Config {
     /// The camera limit to use; a missing or zero value means the recommended one.
+    /// A first run: everything off or empty, except what is on unless chosen otherwise (`sync_logs`).
+    fn fresh() -> Config {
+        Config { sync_logs: true, ..Default::default() }
+    }
+
     pub fn camera(&self) -> u32 {
         if self.camera_height == 0 { crate::graphics::FAR_CAMERA } else { self.camera_height }
     }
 
     pub fn load(path: &Path) -> Config {
-        let mut c: Config = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut c: Config = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(Config::fresh);
         c.migrate_serial();
         c
     }

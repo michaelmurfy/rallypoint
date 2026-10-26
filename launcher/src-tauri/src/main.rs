@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
+use generals_core::{bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -265,6 +265,34 @@ fn open_sync_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
     let d = sync_logs_dir(&app)?;
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     open_folder(&d)
+}
+
+/// Everything the developer needs to look into a crash or a desync, in one zip in the Downloads folder.
+#[tauri::command]
+async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>) -> Result<String, String> {
+    let base = base(&app)?;
+    let cfg = Config::load(&config_path(&app)?);
+    let relay_text = match relay.0.lock().unwrap().as_ref() {
+        Some(a) => format!("{:?}", a.status()),
+        None => "not connected".to_string(),
+    };
+    let src = bundle::Sources {
+        game_data: app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF),
+        game_dir: Some(PathBuf::from(&cfg.game_dir)).filter(|p| p.is_dir()),
+        base,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        extra: vec![("relay".into(), relay_text)],
+    };
+    let out_dir = mods::downloads_dir().filter(|d| d.is_dir()).unwrap_or_else(|| src.base.clone());
+    let zip = tauri::async_runtime::spawn_blocking(move || bundle::create(&src, &out_dir)).await.map_err(|e| e.to_string())??;
+    // Show it in its folder.
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg("-R").arg(&zip).spawn();
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", zip.display())).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(d) = zip.parent() { let _ = open_folder(d); }
+    Ok(zip.to_string_lossy().into_owned())
 }
 
 /// Compare this machine's sync logs with another player's (a folder, or a zip of one): where did the games first differ?
@@ -760,7 +788,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,

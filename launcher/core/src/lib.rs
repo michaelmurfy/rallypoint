@@ -2,6 +2,7 @@
 pub mod agent;
 pub mod assets;
 pub mod clickteam;
+pub mod bundle;
 pub mod config;
 pub mod diagnose;
 pub mod engine;
