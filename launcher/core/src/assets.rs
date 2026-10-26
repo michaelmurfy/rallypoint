@@ -11,7 +11,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub const GENERALS_APP: u32 = 2229870;
 pub const ZERO_HOUR_APP: u32 = 2732960;
@@ -81,6 +81,76 @@ pub fn generals_dir(root: &Path) -> PathBuf {
 pub fn zero_hour_dir(root: &Path) -> PathBuf {
     root.join("game/ZeroHour")
 }
+/// The folder the tool believes is the user's data folder. DepotDownloader keeps the sign-in it was told to remember
+/// (`-remember-password`: a long-lived login token, not the password) in .NET isolated storage under the user's data
+/// folder, where it would stay for good and where other programs of this user can read it. On macOS and Linux that folder
+/// comes from `XDG_DATA_HOME`, so the tool is given one of ours and it is emptied when the job ends. Windows has no such
+/// override (the folder comes from the system), so there the file is found and removed instead (see `wipe_login`).
+pub fn steam_home(root: &Path) -> PathBuf {
+    root.join("tools").join("steam-home")
+}
+
+/// Every `account.config` (the tool's saved sign-in) below `dir`, which is an IsolatedStorage folder.
+fn account_configs(dir: &Path, found: &mut Vec<PathBuf>, depth: usize) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        match e.file_type() {
+            Ok(t) if t.is_dir() && depth < 6 => account_configs(&p, found, depth + 1),
+            Ok(t) if t.is_file() && e.file_name() == "account.config" => found.push(p),
+            _ => {}
+        }
+    }
+}
+
+fn isolated_storage_roots() -> Vec<PathBuf> {
+    let mut v = vec![];
+    if cfg!(windows) {
+        if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+            v.push(PathBuf::from(d).join("IsolatedStorage"));
+        }
+    } else if let Some(h) = std::env::var_os("HOME") {
+        v.push(PathBuf::from(&h).join(".local/share/IsolatedStorage"));
+        v.push(PathBuf::from(h).join("Library/Application Support/IsolatedStorage"));
+    }
+    v
+}
+
+/// Remove the sign-in this job saved. `since`: when the job began; in the shared Windows folder only a file written
+/// since then is touched, so a sign-in the user keeps for their own use of the tool is left alone.
+pub fn wipe_login(root: &Path, since: SystemTime) -> usize {
+    let mut gone = 0;
+    if steam_home(root).exists() && std::fs::remove_dir_all(steam_home(root)).is_ok() {
+        gone += 1;
+    }
+    if cfg!(windows) {
+        let mut found = vec![];
+        isolated_storage_roots().iter().for_each(|r| account_configs(r, &mut found, 0));
+        for f in found {
+            if std::fs::metadata(&f).and_then(|m| m.modified()).is_ok_and(|t| t >= since) && std::fs::remove_file(&f).is_ok() {
+                gone += 1;
+            }
+        }
+    }
+    gone
+}
+
+/// "Forget my Steam sign-in": also removes sign-ins saved by earlier versions, which kept them for good.
+pub fn forget_saved_logins(root: &Path) -> usize {
+    forget_in(root, &isolated_storage_roots())
+}
+
+fn forget_in(root: &Path, shared: &[PathBuf]) -> usize {
+    let mut gone = wipe_login(root, SystemTime::now());
+    let mut found = vec![];
+    shared.iter().for_each(|r| account_configs(r, &mut found, 0));
+    for f in found {
+        if std::fs::remove_file(&f).is_ok() {
+            gone += 1;
+        }
+    }
+    gone
+}
+
 fn tool_exe(dir: &Path) -> PathBuf {
     dir.join(if cfg!(windows) { "DepotDownloader.exe" } else { "DepotDownloader" })
 }
@@ -179,6 +249,8 @@ struct Ctx {
     cancelled: Arc<AtomicBool>,
     use_code: Arc<AtomicBool>,
     log: Vec<String>,
+    /// Where the tool keeps its remembered sign-in during this job (see `steam_home`).
+    home: PathBuf,
 }
 
 impl Ctx {
@@ -270,8 +342,14 @@ enum Run {
 /// One DepotDownloader run for one app. Handles its prompts: the password from `password` (once), otherwise the
 /// user is asked through the job state and the answer arrives on `inbox`.
 fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32, no_mobile: bool) -> Result<(Run, Option<String>), String> {
-    let mut child = quiet(&mut Command::new(exe))
-        .args(dd_args(user, app, dir, no_mobile))
+    let mut cmd = Command::new(exe);
+    quiet(&mut cmd).args(dd_args(user, app, dir, no_mobile));
+    if !cfg!(windows) {
+        // a private data folder for the tool's remembered sign-in, emptied when the job ends
+        let _ = std::fs::create_dir_all(&ctx.home);
+        cmd.env("XDG_DATA_HOME", &ctx.home);
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -408,7 +486,14 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
     Ok((Run::Finished(matches!(status, Some(Ok(s)) if s.success())), failure))
 }
 
-fn worker(root: PathBuf, user: String, password: String, rx: Receiver<String>, mut ctx: Ctx) {
+fn worker(root: PathBuf, user: String, password: String, rx: Receiver<String>, ctx: Ctx) {
+    let began = SystemTime::now();
+    worker_inner(root.clone(), user, password, rx, ctx);
+    // however it ended (done, failed, cancelled): the remembered sign-in is not kept
+    wipe_login(&root, began);
+}
+
+fn worker_inner(root: PathBuf, user: String, password: String, rx: Receiver<String>, mut ctx: Ctx) {
     ctx.set(Phase::Preparing, 0.0, "Getting Steam's downloader…", None);
     let exe = match ensure_tool(&root) {
         Ok(e) => e,
@@ -452,7 +537,7 @@ impl AssetJob {
         }
         let (state, child, cancelled, use_code): (Shared<AssetState>, Shared<Option<Child>>, Arc<AtomicBool>, Arc<AtomicBool>) = Default::default();
         let (tx, rx) = mpsc::channel();
-        let ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), use_code: use_code.clone(), log: vec![] };
+        let ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), use_code: use_code.clone(), log: vec![], home: steam_home(root) };
         let (root, user) = (root.to_path_buf(), user.to_string());
         std::thread::spawn(move || worker(root, user, password, rx, ctx));
         Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled, use_code })
@@ -502,6 +587,30 @@ mod tests {
         assert!(!a.contains("-no-mobile"), "phone approval is the default");
         assert!(dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).contains(&"-no-mobile".to_string()));
         assert!(!dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).iter().any(|x| x == "-password"));
+    }
+
+    #[test]
+    fn the_saved_sign_in_is_removed_after_a_job_and_old_ones_on_request() {
+        let t = std::env::temp_dir().join(format!("gen-steam-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let shared = t.join("IsolatedStorage");
+        let old = shared.join("abc/def/AppFiles");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("account.config"), "token").unwrap();
+        std::fs::write(old.join("other.txt"), "keep").unwrap();
+        std::fs::create_dir_all(steam_home(&t).join("IsolatedStorage/x")).unwrap();
+        std::fs::write(steam_home(&t).join("IsolatedStorage/x/account.config"), "token").unwrap();
+        // after a job: our private folder is gone; the shared folder is only touched on Windows, and only for files newer than the job
+        wipe_login(&t, SystemTime::now());
+        assert!(!steam_home(&t).exists());
+        assert!(old.join("other.txt").exists());
+        if !cfg!(windows) {
+            assert!(old.join("account.config").exists(), "a file the job did not write is left alone");
+        }
+        // the explicit action removes sign-ins saved by earlier versions too, and nothing else
+        assert!(forget_in(&t, &[shared.clone()]) >= 1);
+        assert!(!old.join("account.config").exists() && old.join("other.txt").exists());
+        std::fs::remove_dir_all(t).unwrap();
     }
 
     #[test]

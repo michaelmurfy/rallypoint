@@ -166,6 +166,12 @@ fn assets_use_code(jobs: tauri::State<Downloads>) {
     }
 }
 
+/// Remove the Steam sign-in the downloader remembers (earlier versions kept it for good): how many were found.
+#[tauri::command]
+fn steam_forget_login(app: tauri::AppHandle) -> Result<usize, String> {
+    Ok(assets::forget_saved_logins(&base(&app)?))
+}
+
 #[tauri::command]
 fn assets_cancel(jobs: tauri::State<Downloads>) {
     *jobs.0.lock().unwrap() = None; // dropping the job stops it
@@ -814,7 +820,7 @@ fn main() {
         .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
+            detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,

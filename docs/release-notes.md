@@ -4,6 +4,7 @@ Security hardening, from a review of the code.
 
 - **Signed updates.** Each release's checksums are now signed (Ed25519) and the app only installs an update whose signature matches the key built into it. Before, the checksums came from the same place as the installer, so they only caught corrupt downloads. A release without a valid signature (including every release before this one) is not installed from inside the app: use **What's new** to open the release page. Installers are downloaded into a folder only you can use, and checked again right before they run.
 - **The debug zip shows what goes in before it is made.** Your Steam account name and lobby name are left out, your user name in file paths is replaced by `<home>`, and the last replay (it can contain chat) is only added if you tick it.
+- **Your Steam sign-in is not kept.** Downloading the game from Steam used to leave a saved sign-in token on your computer for good. Rallypoint now gives the downloader a private folder for it and removes it when the download ends, however it ends. **Settings > Game files > Saved Steam sign-in > Forget** removes one an earlier version left. Your Steam password was never stored.
 - **Server image builds use the tested dependencies.** The Docker build keeps every library at the version CI tested, the base images are pinned by digest, and a weekly check looks for known vulnerabilities in the Rust libraries.
 
 ---

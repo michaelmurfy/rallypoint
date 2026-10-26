@@ -1250,12 +1250,23 @@ function syncCard() {
     fb.el, result);
 }
 
+/** Steam's downloader can remember a sign-in (a token, not the password). Rallypoint no longer keeps it; this removes an old one. */
+function forgetSteamRow() {
+  const fb = liveStatus();
+  const btn = h("button", { class: "btn", onclick: async () => {
+    btn.disabled = true;
+    try { const n = await invoke("steam_forget_login"); fb.ok(n ? "Removed the saved Steam sign-in." : "There was no saved Steam sign-in."); } catch (e) { fb.bad(errText(e)); }
+    btn.disabled = false;
+  } }, "Forget");
+  return setting("Saved Steam sign-in", h("span", {}, "Rallypoint clears it when a download ends. This removes one an earlier version left. ", fb.el), btn);
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     h("h3", { class: "section-title" }, "Game"),
-    h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
+    h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()),
     graphicsCard(),
     h("h3", { class: "section-title" }, "Multiplayer"),
     syncCard(),
