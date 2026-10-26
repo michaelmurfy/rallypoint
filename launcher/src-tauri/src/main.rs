@@ -166,6 +166,12 @@ fn assets_use_code(jobs: tauri::State<Downloads>) {
     }
 }
 
+/// Remove the Steam sign-in the downloader remembers (earlier versions kept it for good): how many were found.
+#[tauri::command]
+fn steam_forget_login(app: tauri::AppHandle) -> Result<usize, String> {
+    Ok(assets::forget_saved_logins(&base(&app)?))
+}
+
 #[tauri::command]
 fn assets_cancel(jobs: tauri::State<Downloads>) {
     *jobs.0.lock().unwrap() = None; // dropping the job stops it
@@ -269,7 +275,7 @@ fn open_sync_logs_folder(app: tauri::AppHandle) -> Result<(), String> {
 
 /// Everything the developer needs to look into a crash or a desync, in one zip in the Downloads folder.
 #[tauri::command]
-async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>) -> Result<String, String> {
+async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>, include_replay: bool) -> Result<String, String> {
     let base = base(&app)?;
     let cfg = Config::load(&config_path(&app)?);
     let relay_text = match relay.0.lock().unwrap().as_ref() {
@@ -282,6 +288,9 @@ async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>
         base,
         version: env!("CARGO_PKG_VERSION").to_string(),
         extra: vec![("relay".into(), relay_text)],
+        include_replay,
+        // their user name is in every path; it is removed from the text files
+        home: std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from),
     };
     let out_dir = mods::downloads_dir().filter(|d| d.is_dir()).unwrap_or_else(|| src.base.clone());
     let zip = tauri::async_runtime::spawn_blocking(move || bundle::create(&src, &out_dir)).await.map_err(|e| e.to_string())??;
@@ -673,9 +682,12 @@ async fn update_install(app: tauri::AppHandle, updates: tauri::State<'_, Updates
     let data = base(&app)?;
     let (data2, info2) = (data.clone(), info.clone());
     let started = tauri::async_runtime::spawn_blocking(move || {
-        let file = update::download(&info2, &update::downloads_dir())?;
+        // Into a folder only this user can use, not Downloads where any program of this user could swap the file after
+        // it was checked; the checksum is checked again right before it is run.
         let work = data2.join("update");
-        if selfupdate::apply(&file, &work)? {
+        let file = update::download(&info2, &work.join("download"))?;
+        file.unchanged()?;
+        if selfupdate::apply(&file.path, &work)? {
             selfupdate::save_marker(&data2, &selfupdate::WhatsNew { version: info2.latest.clone(), notes: info2.notes.clone() })?;
             Ok(None)
         } else {
@@ -808,7 +820,7 @@ fn main() {
         .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
+            detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,

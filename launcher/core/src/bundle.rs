@@ -1,5 +1,7 @@
 //! The debug bundle: one zip with everything needed to work out why a game crashed or went out of sync. The player
-//! sends it; nothing leaves the machine by itself. Passwords, serials, tokens and server keys are never put in it.
+//! sends it; nothing leaves the machine by itself. Passwords, serials, tokens, server keys and the Steam account name are
+//! never put in it, the user's home folder is replaced by `<home>` in every text file, and the last replay (it can hold
+//! in-game chat) is only added when the player ticks it.
 use crate::proc::quiet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,6 +16,10 @@ pub struct Sources {
     pub version: String,
     /// Extra sections for system.txt (title, text), e.g. the relay connection state.
     pub extra: Vec<(String, String)>,
+    /// Add `LastReplay.rep`. Off unless the player asks: a replay can contain the chat of the game.
+    pub include_replay: bool,
+    /// The user's home folder, which is removed from the text files (it has their user name in it).
+    pub home: Option<PathBuf>,
 }
 
 const MAX_COPY: u64 = 200 * 1024 * 1024;
@@ -21,8 +27,38 @@ const MAX_COPY: u64 = 200 * 1024 * 1024;
 /// The config without anything secret: every top-level entry whose name mentions a password, serial, token or key.
 pub fn scrub_config(text: &str) -> String {
     let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str::<serde_json::Value>(text) else { return "(config could not be read)".into() };
-    m.retain(|k, _| !["password", "serial", "token", "key"].iter().any(|w| k.to_lowercase().contains(w)));
+    // secrets, and who the player is on Steam and in the lobby
+    m.retain(|k, _| !["password", "serial", "token", "key", "steam", "player_name"].iter().any(|w| k.to_lowercase().contains(w)));
     serde_json::to_string_pretty(&serde_json::Value::Object(m)).unwrap_or_default()
+}
+
+/// `text` with the user's home folder replaced by `<home>`, in the spellings it turns up in (either slash, doubled
+/// backslashes in JSON).
+pub fn redact_home(text: &str, home: &Path) -> String {
+    let h = home.to_string_lossy();
+    let h = h.trim_end_matches(['/', '\\']);
+    if h.len() < 4 {
+        return text.to_string();
+    }
+    let forward = h.replace('\\', "/");
+    let back = h.replace('/', "\\");
+    let doubled = back.replace('\\', "\\\\");
+    let mut out = text.to_string();
+    for v in [doubled, back, forward, h.to_string()] {
+        out = out.replace(&v, "<home>");
+    }
+    out
+}
+
+/// Replace the home folder in a text file that was just copied.
+fn redact_file(path: &Path, home: &Path) {
+    if let Ok(t) = std::fs::read(path) {
+        let text = String::from_utf8_lossy(&t);
+        let r = redact_home(&text, home);
+        if r != text {
+            let _ = std::fs::write(path, r);
+        }
+    }
 }
 
 fn copy_file(from: &Path, to: &Path) {
@@ -104,7 +140,9 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
     for p in newest(&s.game_data, "releasecrashinfo", 3) {
         copy_file(&p, &stage.join("game").join(p.file_name().unwrap()));
     }
-    copy_file(&s.game_data.join("Replays").join("LastReplay.rep"), &stage.join("game").join("LastReplay.rep"));
+    if s.include_replay {
+        copy_file(&s.game_data.join("Replays").join("LastReplay.rep"), &stage.join("game").join("LastReplay.rep"));
+    }
     // macOS leaves a crash report of its own for each crash of the engine.
     if let Some(home) = std::env::var_os("HOME") {
         for p in newest(&PathBuf::from(home).join("Library/Logs/DiagnosticReports"), "generalszh", 3) {
@@ -120,7 +158,21 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
     for (title, text) in &s.extra {
         sys.push_str(&format!("\n== {title} ==\n{text}\n"));
     }
-    std::fs::write(stage.join("system.txt"), sys)
+    std::fs::write(stage.join("system.txt"), sys)?;
+    // the text files that can hold paths (a crash report names the folders the game ran from)
+    if let Some(home) = &s.home {
+        for f in ["engine.log", "engine.log.1", "config.json", "system.txt"] {
+            redact_file(&stage.join(f), home);
+        }
+        for dir in ["game", "crash-reports"] {
+            for e in std::fs::read_dir(stage.join(dir)).into_iter().flatten().flatten() {
+                if !matches!(e.path().extension(), Some(x) if x == "rep") {
+                    redact_file(&e.path(), home);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Zip `stage` into `out`. macOS and Windows ship a `tar` that writes zips; elsewhere `zip` is used.
@@ -161,9 +213,23 @@ mod tests {
     #[test]
     fn config_keeps_settings_and_drops_secrets() {
         let t = scrub_config(r#"{"server":"s:1","camera_height":510,"room_passwords":{"a|b":"hunter2"},"serials":{"s":"X"},"server_keys":{"s":"K"},"steam_user":"me"}"#);
-        assert!(t.contains("camera_height") && t.contains("steam_user"));
+        assert!(t.contains("camera_height") && t.contains("server"));
         assert!(!t.contains("hunter2") && !t.contains("serials") && !t.contains("server_keys"));
         assert!(scrub_config("not json").contains("could not"));
+        // who the player is on Steam and in the lobby stays out too
+        let t = scrub_config(r#"{"server":"s:1","steam_user":"ann_steam","player_name":"Ann S"}"#);
+        assert!(!t.contains("ann_steam") && !t.contains("Ann S") && t.contains("server"));
+    }
+
+    #[test]
+    fn the_home_folder_is_removed_in_every_spelling() {
+        let home = Path::new("C:\\Users\\Ann Smith");
+        let t = redact_home("-mod C:\\Users\\Ann Smith\\AppData\\x, C:/Users/Ann Smith/Documents, \"C:\\\\Users\\\\Ann Smith\\\\g\"", home);
+        assert!(!t.contains("Ann Smith"), "{t}");
+        assert_eq!(t.matches("<home>").count(), 3);
+        assert_eq!(redact_home("/Users/ann/x", Path::new("/Users/ann")), "<home>/x");
+        // nothing sensible to replace: leave the text alone
+        assert_eq!(redact_home("keep /x", Path::new("/")), "keep /x");
     }
 
     #[test]
@@ -180,21 +246,28 @@ mod tests {
         std::fs::create_dir_all(base.join("sync-logs")).unwrap();
         std::fs::create_dir_all(data.join("Replays")).unwrap();
         std::fs::create_dir_all(base.join("Mods/Shockwave")).unwrap();
-        std::fs::write(base.join("engine.log"), "[net] relay on").unwrap();
+        std::fs::write(base.join("engine.log"), "[net] relay on\n-mod /Users/ann smith/Library/GeneralsZH/Mods/X").unwrap();
         std::fs::write(base.join("sync-logs/DebugFrame_000000.txt"), "0:00000 line").unwrap();
         std::fs::write(base.join("config.json"), r#"{"server":"s","room_passwords":{"x":"secret"}}"#).unwrap();
         std::fs::write(data.join("Options.ini"), "Resolution = 1280 720").unwrap();
         std::fs::write(data.join("ReleaseCrashInfo.txt"), "crash").unwrap();
         std::fs::write(data.join("Replays/LastReplay.rep"), "rep").unwrap();
-        let s = Sources { base: base.clone(), game_data: data, game_dir: None, version: "9.9.9".into(), extra: vec![("relay".into(), "connected".into())] };
+        let s = Sources { base: base.clone(), game_data: data, game_dir: None, version: "9.9.9".into(), extra: vec![("relay".into(), "connected".into())], include_replay: false, home: Some(PathBuf::from("/Users/ann smith")) };
         let out = t.join("stage");
         stage(&s, &out, 0).unwrap();
-        for f in ["engine.log", "sync-logs/DebugFrame_000000.txt", "config.json", "game/Options.ini", "game/ReleaseCrashInfo.txt", "game/LastReplay.rep", "system.txt"] {
+        for f in ["engine.log", "sync-logs/DebugFrame_000000.txt", "config.json", "game/Options.ini", "game/ReleaseCrashInfo.txt", "system.txt"] {
             assert!(out.join(f).is_file(), "{f}");
         }
         let sys = std::fs::read_to_string(out.join("system.txt")).unwrap();
         assert!(sys.contains("Rallypoint 9.9.9") && sys.contains("Shockwave/") && sys.contains("== relay ==\nconnected"));
         assert!(!std::fs::read_to_string(out.join("config.json")).unwrap().contains("secret"));
+        let log = std::fs::read_to_string(out.join("engine.log")).unwrap();
+        assert!(log.contains("-mod <home>/Library") && !log.contains("ann smith"), "{log}");
+        assert!(!out.join("game/LastReplay.rep").exists(), "the replay is only added when asked for");
+        let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: None } };
+        let out2 = t.join("stage2");
+        stage(&with, &out2, 0).unwrap();
+        assert!(out2.join("game/LastReplay.rep").is_file());
         // The zip itself needs the system's tar or zip, which a bare build machine may lack.
         if let Ok(z) = create(&s, &t.join("out")) {
             assert!(z.metadata().unwrap().len() > 100 && z.to_string_lossy().ends_with(".zip"));

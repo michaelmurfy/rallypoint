@@ -1,10 +1,11 @@
 //! Self-update through GitHub releases, the same on every OS: ask GitHub for the newest release (prereleases
 //! count, since alphas are what exist), pick the installer for this machine, download it, check it against the
-//! release's SHA256SUMS, and open it. Installing is left to the platform's own installer, so there is no signing
-//! key to manage. (The checksum comes from the same release, so it guards against corrupt downloads, not against
-//! a compromised repository.)
+//! release's SHA256SUMS, and open it. SHA256SUMS comes from the same release as the installer, so on its own it only
+//! guards against corrupt downloads. It is therefore signed (Ed25519, `SHA256SUMS.sig`, key in `UPDATE_PUBLIC_KEY`)
+//! and a release whose signature does not check is never installed from inside the app.
 use crate::extract::{hex, sha256_file};
 use crate::proc::quiet;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,9 @@ use std::process::Command;
 pub const REPO: &str = "michaelmurfy/rallypoint";
 const API: &str = "https://api.github.com/repos/michaelmurfy/rallypoint/releases?per_page=15";
 const DOWNLOAD_PREFIX: &str = "https://github.com/michaelmurfy/rallypoint/releases/download/";
+/// The public half of the release signing key (hex). The private half is a GitHub Actions secret and a backup held by
+/// the maintainer; `cargo run -p generals-core --example release_sign -- keygen` makes a pair.
+pub const UPDATE_PUBLIC_KEY: &str = "07eed9ab3aabb5451aa2899ac42df17425928685e731eab5e802e2c5e7a5466b";
 
 /// The running version: the release tag when CI built this binary, otherwise the crate version.
 pub fn current_version() -> &'static str {
@@ -117,6 +121,9 @@ pub struct UpdateInfo {
     pub asset: Option<Asset>,
     #[serde(skip)]
     pub sums: Option<Asset>,
+    /// The signature over SHA256SUMS.
+    #[serde(skip)]
+    pub sig: Option<Asset>,
     pub size_mb: u64,
     /// There is an installer for this computer, so it can be downloaded from inside the app.
     pub installer: bool,
@@ -149,6 +156,7 @@ pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str) -> Optio
         page: r.html_url.clone(),
         notes: r.body.clone().unwrap_or_default(),
         sums: r.assets.iter().find(|a| a.name == "SHA256SUMS").cloned(),
+        sig: r.assets.iter().find(|a| a.name == "SHA256SUMS.sig").cloned(),
         size_mb: asset.as_ref().map(|a| a.size / 1_048_576).unwrap_or(0),
         installer: asset.is_some(),
         asset,
@@ -180,10 +188,6 @@ pub fn checksum_for(sums: &str, name: &str) -> Option<String> {
     sums.lines().filter_map(|l| l.split_once(char::is_whitespace)).find(|(_, f)| f.trim().trim_start_matches('*') == name).map(|(h, _)| h.to_ascii_lowercase())
 }
 
-pub fn downloads_dir() -> PathBuf {
-    crate::mods::downloads_dir().filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir)
-}
-
 fn fetch_verified(asset: &Asset, sums_text: &str, dest_dir: &Path, proto: &str) -> Result<PathBuf, String> {
     let want = checksum_for(sums_text, &asset.name).ok_or("the release has no checksum for this installer")?;
     let dest = dest_dir.join(&asset.name);
@@ -199,18 +203,79 @@ fn fetch_verified(asset: &Asset, sums_text: &str, dest_dir: &Path, proto: &str) 
 }
 
 /// Download this machine's installer into `dest_dir` and verify it. Only files from this repository's releases.
-pub fn download(info: &UpdateInfo, dest_dir: &Path) -> Result<PathBuf, String> {
+/// An installer on disk whose checksum and signature chain has been checked, and the checksum it must still have when
+/// it is run (the file sits in a folder other programs of this user can write to until then).
+#[derive(Debug, Clone)]
+pub struct Downloaded {
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+impl Downloaded {
+    /// Still the file that was verified? Call right before running it.
+    pub fn unchanged(&self) -> Result<(), String> {
+        let now = hex(&sha256_file(&self.path).map_err(|e| e.to_string())?);
+        if now == self.sha256 { Ok(()) } else { Err("the downloaded installer changed after it was checked, so it won't be run".into()) }
+    }
+}
+
+/// Is `sig_text` (hex of the 64 signature bytes) a valid signature by `public_hex` over `message`?
+pub fn verify_signature(public_hex: &str, message: &[u8], sig_text: &str) -> Result<(), String> {
+    let key: [u8; 32] = unhex(public_hex.trim()).and_then(|v| v.try_into().ok()).ok_or("the app's update key is not set up")?;
+    let key = VerifyingKey::from_bytes(&key).map_err(|_| "the app's update key is not valid".to_string())?;
+    let sig: [u8; 64] = unhex(sig_text.trim()).and_then(|v| v.try_into().ok()).ok_or("the release's signature is malformed")?;
+    key.verify(message, &Signature::from_bytes(&sig)).map_err(|_| "the release's signature does not match, so it won't be installed".to_string())
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || !s.is_ascii() {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+}
+
+/// A folder only this user can use (installers are kept here between the check and the run).
+pub fn private_dir(dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        // %APPDATA% is only readable and writable by this user (and administrators) by default
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())
+    }
+}
+
+/// Download the installer for `info` into `dest_dir` after checking the signature on SHA256SUMS and then the
+/// installer against it. A release without a valid signature is refused.
+pub fn download(info: &UpdateInfo, dest_dir: &Path) -> Result<Downloaded, String> {
+    download_with(info, dest_dir, UPDATE_PUBLIC_KEY, "=https", true)
+}
+
+fn download_with(info: &UpdateInfo, dest_dir: &Path, public_hex: &str, proto: &str, require_prefix: bool) -> Result<Downloaded, String> {
     let asset = info.asset.as_ref().ok_or("this release has no installer for your computer; open the release page")?;
     let sums = info.sums.as_ref().ok_or("this release has no checksums, so it won't be installed automatically")?;
-    if !asset.browser_download_url.starts_with(DOWNLOAD_PREFIX) || !sums.browser_download_url.starts_with(DOWNLOAD_PREFIX) {
+    let sig = info.sig.as_ref().ok_or("this release isn't signed, so it won't be installed automatically; open the release page")?;
+    if require_prefix && [asset, sums, sig].iter().any(|a| !a.browser_download_url.starts_with(DOWNLOAD_PREFIX)) {
         return Err("the release points outside this repository; refusing to download it".into());
     }
-    let sums_text = String::from_utf8_lossy(&curl(&sums.browser_download_url, "=https", None)?).into_owned();
-    fetch_verified(asset, &sums_text, dest_dir, "=https")
+    let sums_bytes = curl(&sums.browser_download_url, proto, None)?;
+    let sig_text = String::from_utf8_lossy(&curl(&sig.browser_download_url, proto, None)?).into_owned();
+    verify_signature(public_hex, &sums_bytes, &sig_text)?;
+    let sums_text = String::from_utf8_lossy(&sums_bytes).into_owned();
+    private_dir(dest_dir)?;
+    let path = fetch_verified(asset, &sums_text, dest_dir, proto)?;
+    let sha256 = checksum_for(&sums_text, &asset.name).ok_or("the release has no checksum for this installer")?;
+    Ok(Downloaded { path, sha256 })
 }
 
 /// Hand the installer to the OS. Returns what the user should do next.
-pub fn open_installer(path: &Path) -> Result<String, String> {
+pub fn open_installer(file: &Downloaded) -> Result<String, String> {
+    file.unchanged()?;
+    let path = file.path.as_path();
     #[cfg(target_os = "macos")]
     {
         Command::new("open").arg(path).spawn().map_err(|e| e.to_string())?;
@@ -258,7 +323,7 @@ mod tests {
         Asset { name: name.into(), size: 8 * 1_048_576, browser_download_url: format!("{DOWNLOAD_PREFIX}v1/{name}") }
     }
     fn assets() -> Vec<Asset> {
-        ["Rallypoint-0.1.0-1.x86_64.rpm", "rallypoint-server-linux-x86_64.tar.gz", "Rallypoint_0.1.0_aarch64.dmg", "Rallypoint_0.1.0_amd64.AppImage", "Rallypoint_0.1.0_amd64.deb", "Rallypoint_0.1.0_x64-setup.exe", "SHA256SUMS"].iter().map(|n| asset(n)).collect()
+        ["Rallypoint-0.1.0-1.x86_64.rpm", "rallypoint-server-linux-x86_64.tar.gz", "Rallypoint_0.1.0_aarch64.dmg", "Rallypoint_0.1.0_amd64.AppImage", "Rallypoint_0.1.0_amd64.deb", "Rallypoint_0.1.0_x64-setup.exe", "SHA256SUMS", "SHA256SUMS.sig"].iter().map(|n| asset(n)).collect()
     }
 
     #[test]
@@ -322,6 +387,36 @@ mod tests {
         let mut no_sums = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64").unwrap();
         no_sums.sums = None;
         assert!(download(&no_sums, Path::new(".")).unwrap_err().contains("no checksums"));
+        let mut unsigned = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64").unwrap();
+        unsigned.sig = None;
+        assert!(download(&unsigned, Path::new(".")).unwrap_err().contains("isn't signed"));
+    }
+
+    fn keypair(seed: u8) -> (ed25519_dalek::SigningKey, String) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let public = key.verifying_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        (key, public)
+    }
+    fn sign(key: &ed25519_dalek::SigningKey, message: &[u8]) -> String {
+        use ed25519_dalek::Signer;
+        key.sign(message).to_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn only_the_key_holder_can_make_a_release_installable() {
+        let (key, public) = keypair(7);
+        let sums = b"abc  file.exe\n";
+        let sig = sign(&key, sums);
+        assert!(verify_signature(&public, sums, &sig).is_ok());
+        assert!(verify_signature(&public, sums, &format!("{sig}\n")).is_ok(), "a trailing newline is fine");
+        // changed checksums, a signature by another key, junk, and a missing key are all refused
+        assert!(verify_signature(&public, b"abc  other.exe\n", &sig).is_err());
+        assert!(verify_signature(&public, sums, &sign(&keypair(8).0, sums)).is_err());
+        assert!(verify_signature(&public, sums, "nonsense").is_err());
+        assert!(verify_signature(&public, sums, &"0".repeat(128)).is_err());
+        assert!(verify_signature("", sums, &sig).is_err());
+        // the key built into the app is a real public key
+        assert!(VerifyingKey::from_bytes(&unhex(UPDATE_PUBLIC_KEY).unwrap().try_into().unwrap()).is_ok());
     }
 
     /// The download and checksum path against local files (curl can fetch file:// URLs), so no network is needed.
@@ -345,6 +440,34 @@ mod tests {
         assert!(e.contains("didn't match"));
         assert!(!t.join("out3/Rallypoint_9_x64-setup.exe").exists() && !t.join("out3/Rallypoint_9_x64-setup.exe.part").exists());
         assert!(fetch_verified(&a, "", &t.join("out"), "=file").unwrap_err().contains("no checksum"));
+        std::fs::remove_dir_all(t).unwrap();
+    }
+
+    /// The whole chain on local files: signature on SHA256SUMS, then the installer against it, then the re-check at run time.
+    #[cfg(unix)]
+    #[test]
+    fn a_signed_release_downloads_and_a_swapped_file_is_caught() {
+        let t = std::env::temp_dir().join(format!("gen-upd-sig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(&t).unwrap();
+        let (key, public) = keypair(9);
+        let name = "Rallypoint_9_x64-setup.exe";
+        std::fs::write(t.join(name), "installer bytes").unwrap();
+        let sums = format!("{}  {name}\n", hex(&sha256_file(&t.join(name)).unwrap()));
+        std::fs::write(t.join("SHA256SUMS"), &sums).unwrap();
+        std::fs::write(t.join("SHA256SUMS.sig"), sign(&key, sums.as_bytes())).unwrap();
+        let at = |n: &str| Asset { name: n.into(), size: 15, browser_download_url: format!("file://{}", t.join(n).display()) };
+        let info = UpdateInfo { current: "0.0.1".into(), latest: "9".into(), page: String::new(), notes: String::new(), asset: Some(at(name)), sums: Some(at("SHA256SUMS")), sig: Some(at("SHA256SUMS.sig")), size_mb: 0, installer: true };
+        let got = download_with(&info, &t.join("private"), &public, "=file", false).unwrap();
+        got.unchanged().unwrap();
+        // the folder is private, and a file replaced after the check is not run
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(t.join("private")).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::write(&got.path, "something else").unwrap();
+        assert!(got.unchanged().unwrap_err().contains("changed after it was checked"));
+        // a different key refuses the same release
+        assert!(download_with(&info, &t.join("private2"), &keypair(10).1, "=file", false).unwrap_err().contains("signature"));
+        assert!(!t.join("private2").exists(), "nothing is written before the signature is good");
         std::fs::remove_dir_all(t).unwrap();
     }
 }

@@ -1,21 +1,13 @@
-# Keeps the pinned GitHub Actions (and the Rust crates) current: a pull request when a new version comes out.
+# Proposals for newer dependencies, as pull requests that CI tests. Nothing is merged by itself.
 version: 2
 updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "ci"
-    groups:
-      actions:
-        patterns: ["*"]
   - package-ecosystem: cargo
     directory: /
-    schedule:
-      interval: monthly
-    commit-message:
-      prefix: "deps"
-    groups:
-      rust-minor-and-patch:
-        update-types: [minor, patch]
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /server
+    schedule: { interval: weekly }
