@@ -271,13 +271,23 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .organiser-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .organiser-bar input[type=text] { flex: 1 1 200px; width: auto; }
 .organiser-bar select { width: auto; max-width: 240px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 32px; }
+.chiplabel { margin-right: 4px; }
+.chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; font-size: 13px; padding: 4px 11px; border-radius: 999px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease); }
+.chip:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 24%, transparent); }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mapresultrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; }
+.mapresultrow select { width: auto; padding-top: 5px; padding-bottom: 5px; font-size: 13px; }
+.mapplayers { text-align: right; font-weight: 650; }
+.mapresult { margin: 0; }
 .segs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-btn); overflow: hidden; }
 .seg { border: 0; background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; padding: 8px 14px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
 .seg + .seg { border-left: 1px solid var(--line); }
 .seg:hover { color: var(--text); }
 .seg[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .maplist { display: grid; max-height: 460px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-btn); background: var(--bg); }
-.maprow { display: grid; grid-template-columns: auto 1fr 200px 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
+.maprow { display: grid; grid-template-columns: auto 1fr 180px 76px 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
 .maprow:first-child { border-top: 0; }
 .maprow:hover { background: var(--surface-2); }
 .maprow.on { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }

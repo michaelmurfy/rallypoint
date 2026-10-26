@@ -1,5 +1,6 @@
 ## Rallypoint 0.3.7
 
+- **Easier to browse many maps.** Filter by number of players (2, 3, 4… or solo), sort by name, players or size, see "Showing 41 of 791" with one button to clear every filter, and a player count on each row. The first time, reading the start positions of every map takes a moment; the list works meanwhile and the answers are remembered. The preview window can also switch the map on or off, so you can step through maps and decide as you go.
 - **The map preview keeps one size.** The window no longer grows, shrinks or shifts as you step through maps; wide and tall maps sit centred in the same square.
 - **Sync logs stay off until you switch them on.** 0.3.6 turned them on for new installs; that is undone. They are in Settings > Multiplayer sync logs, next to Download debug logs.
 - **One more float check in the logs**, to find why a few trees are rotated by one bit differently on Windows and macOS (harmless to play, but it keeps the checksums from ever agreeing).

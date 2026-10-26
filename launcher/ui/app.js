@@ -362,7 +362,7 @@ function mapsCard() {
 }
 
 /** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
-function openMapViewer(entries, start) {
+function openMapViewer(entries, start, onChange) {
   let i = start, token = 0;
   const canvas = h("canvas", { class: "mapview-canvas", width: 384, height: 384, role: "img", "aria-label": "Map preview" });
   const title = h("h2", {});
@@ -370,12 +370,18 @@ function openMapViewer(entries, start) {
   const note = h("p", { class: "muted", role: "status" });
   const prev = h("button", { class: "btn", onclick: () => go(-1) }, "Previous");
   const next = h("button", { class: "btn", onclick: () => go(1) }, "Next");
+  const toggle = h("button", { class: "btn", onclick: async () => {
+    const m = entries[i];
+    toggle.disabled = true;
+    try { await invoke("maps_set_enabled", { names: [m.name], enabled: !m.enabled }); m.enabled = !m.enabled; if (onChange) onChange(); show(false); } catch (e) { note.textContent = errText(e); }
+    toggle.disabled = false;
+  } });
   const close = h("button", { class: "btn primary", onclick: () => finish() }, "Close");
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
     h("div", { class: "wizard mapviewer" },
       h("div", { class: "wiz-head" }, title, facts),
       h("div", { class: "wiz-body" }, canvas, note),
-      h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next), close)));
+      h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
   const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
   function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
@@ -410,8 +416,10 @@ function openMapViewer(entries, start) {
       }
     }
   }
-  async function show() {
+  async function show(reload = true) {
     const m = entries[i], mine = ++token;
+    toggle.textContent = m.enabled ? "Switch off" : "Switch on";
+    if (!reload) { facts.textContent = `${m.pack} · ${m.enabled ? "switched on" : "switched off"} · ${i + 1} of ${entries.length}`; return; }
     title.textContent = m.name;
     facts.textContent = `${m.pack} · ${m.enabled ? "switched on" : "switched off"} · ${i + 1} of ${entries.length}`;
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
@@ -439,18 +447,45 @@ function openMapViewer(entries, start) {
 function mapOrganiser() {
   const LIMIT = 150;
   let all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
+  let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
   const summary = h("p", { class: "muted" });
   const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
   const packSel = h("select", { "aria-label": "Show maps from", onchange: () => { pack = packSel.value; shown = LIMIT; draw(); } });
   const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
   const segs = h("div", { class: "segs", role: "group", "aria-label": "Show" }, seg("all", "All"), seg("on", "On"), seg("off", "Off"));
+  const sortSel = h("select", { "aria-label": "Sort maps", onchange: () => { sortBy = sortSel.value; shown = LIMIT; draw(); } },
+    new Option("Sort: name", "name"), new Option("Sort: fewest players", "players"), new Option("Sort: most players", "players-desc"), new Option("Sort: largest file", "size"));
+  const chips = h("div", { class: "chips", role: "group", "aria-label": "Number of players" });
+  const result = h("p", { class: "muted small mapresult", role: "status" });
+  const clear = h("button", { class: "btn small ghost", hidden: true, onclick: () => { q = ""; pack = ""; view = "all"; pf = ""; search.value = ""; shown = LIMIT; draw(); } }, "Clear filters");
   const list = h("div", { class: "maplist" });
   const more = h("button", { class: "btn small", hidden: true, onclick: () => { shown += LIMIT; draw(); } }, "Show more");
   const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on those shown");
   const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off those shown");
   const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete those shown");
   const empty = h("div", { class: "notice", hidden: true });
-  const visible = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!pack || m.pack === pack) && (view === "all" || (view === "on") === m.enabled));
+  const players = (m) => (counts && m.name in counts ? counts[m.name] : null);
+  const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
+  const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!pack || m.pack === pack) && (view === "all" || (view === "on") === m.enabled));
+  const visible = () => {
+    const v = base().filter((m) => pf === "" || players(m) === Number(pf));
+    const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    if (sortBy === "size") v.sort((a, b) => b.size_kb - a.size_kb || byName(a, b));
+    else if (sortBy.startsWith("players")) { const d = sortBy === "players" ? 1 : -1; v.sort((a, b) => d * ((players(a) ?? 99) - (players(b) ?? 99)) || byName(a, b)); }
+    return v;
+  };
+  function drawChips() {
+    // the player counts that exist among the maps the other filters leave, so a chip never leads to nothing
+    const have = new Map();
+    if (counts) for (const m of base()) { const n = players(m); if (n !== null) have.set(n, (have.get(n) || 0) + 1); }
+    if (pf !== "" && !have.has(Number(pf))) pf = "";
+    const chip = (value, label) => h("button", { class: "chip", "aria-pressed": String(pf === value), onclick: () => { pf = value; shown = LIMIT; draw(); } }, label);
+    fill(chips,
+      h("span", { class: "muted small chiplabel" }, "Players"),
+      chip("", "Any"),
+      ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), `${n === 0 ? "Solo" : n} (${have.get(n)})`)),
+      counts ? null : h("span", { class: "muted small" }, "counting…"));
+  }
   function drawSummary() {
     const n = all.filter((m) => m.enabled).length;
     summary.textContent = all.length ? `${all.length} map${all.length === 1 ? "" : "s"}, ${n} switched on. Changes apply the next time the game starts.` : "";
@@ -463,6 +498,9 @@ function mapOrganiser() {
     segs.querySelectorAll(".seg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
     const v = visible();
     drawSummary();
+    drawChips();
+    result.textContent = all.length ? `Showing ${v.length} of ${all.length}` : "";
+    clear.hidden = !(q || pack || view !== "all" || pf !== "");
     empty.hidden = !!v.length;
     fill(empty, all.length ? "No maps match." : h("span", {}, "No maps yet. Install a pack above, or add your own maps from a file or folder."));
     fill(list, v.slice(0, shown).map((m) => {
@@ -471,8 +509,8 @@ function mapOrganiser() {
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
       const idx = v.indexOf(m);
-      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
-        h("button", { class: "btn small ghost", "aria-label": `Preview ${m.name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx); } }, "Preview"));
+      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+        h("button", { class: "btn small ghost", "aria-label": `Preview ${m.name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, "Preview"));
       return row;
     }));
     more.hidden = v.length <= shown;
@@ -501,12 +539,16 @@ function mapOrganiser() {
   async function reloadOrganiser() {
     try { all = await invoke("maps_organiser"); } catch (e) { say(errText(e), "bad"); all = []; }
     draw();
+    // reading each map's start positions takes a moment the first time; the list is usable meanwhile
+    invoke("maps_players").then((c) => { counts = c; draw(); }).catch(() => { counts = {}; draw(); });
   }
   refreshers.add(reloadOrganiser);
   reloadOrganiser();
   const el = h("div", { class: "stack" },
     summary,
     h("div", { class: "organiser-bar" }, search, packSel, segs),
+    chips,
+    h("div", { class: "mapresultrow" }, result, h("div", { class: "row" }, clear, sortSel)),
     h("div", { class: "row" }, on, off, del),
     empty, list, h("div", { class: "row" }, more));
   return { el, dispose: () => refreshers.delete(reloadOrganiser) };

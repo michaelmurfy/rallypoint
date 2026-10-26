@@ -36,6 +36,7 @@ const handlers = {
     { id: "gentool-3v3", name: "3v3 maps", description: "The ranked three-on-three maps.", size_mb: 4 },
     { id: "epic-showdown-707", name: "Epic Showdown 707 map pack", description: "R1ckhy's collection of 780 community maps. Everything starts switched off: pick the maps you want in the organiser.", size_mb: 248, manual: true, start_disabled: true }] }),
   maps_organiser: () => state.orgMaps,
+  maps_players: async () => { await new Promise((r) => setTimeout(r, 500)); const o = {}; state.orgMaps.forEach((m, i) => { o[m.name] = /Mission/.test(m.name) ? 0 : [2, 2, 4, 3, 6, 8][i % 6]; }); return o; },
   maps_set_enabled: ({ names, enabled }) => { let n = 0; state.orgMaps.forEach((m) => { if (names.includes(m.name)) { m.enabled = enabled; n++; } }); return n; },
   maps_delete: ({ names }) => { const before = state.orgMaps.length; state.orgMaps = state.orgMaps.filter((m) => !names.includes(m.name)); return before - state.orgMaps.length; },
   maps_open_pack_page: () => {},

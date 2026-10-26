@@ -617,6 +617,18 @@ async fn maps_delete(app: tauri::AppHandle, names: Vec<String>) -> Result<usize,
     tauri::async_runtime::spawn_blocking(move || maporg::delete(&dir, &lib, &names)).await.map_err(|e| e.to_string())?
 }
 
+/// How many players each map is for (its start positions), read once per map and remembered.
+#[tauri::command]
+async fn maps_players(app: tauri::AppHandle) -> Result<std::collections::BTreeMap<String, u8>, String> {
+    let (dir, lib) = (maps_dir(&app)?, map_library(&app)?);
+    tauri::async_runtime::spawn_blocking(move || {
+        let maps: Vec<_> = maporg::list(&dir, &lib).into_iter().map(|m| { let p = if m.enabled { dir.join(&m.name) } else { lib.join("disabled").join(&m.name) }; (m.name, p) }).collect();
+        mapview::counts(&maps, &lib.join("players.json"))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// A map's preview picture and start positions, whether it is switched on or off.
 #[tauri::command]
 async fn map_view(app: tauri::AppHandle, name: String) -> Result<mapview::MapView, String> {
@@ -790,7 +802,7 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
             launch_game
