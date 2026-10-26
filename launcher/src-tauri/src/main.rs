@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, selfupdate, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -589,6 +589,17 @@ async fn maps_delete(app: tauri::AppHandle, names: Vec<String>) -> Result<usize,
     tauri::async_runtime::spawn_blocking(move || maporg::delete(&dir, &lib, &names)).await.map_err(|e| e.to_string())?
 }
 
+/// A map's preview picture and start positions, whether it is switched on or off.
+#[tauri::command]
+async fn map_view(app: tauri::AppHandle, name: String) -> Result<mapview::MapView, String> {
+    if !maporg::is_safe_name(&name) {
+        return Err("not a map name".into());
+    }
+    let (on, off) = (maps_dir(&app)?.join(&name), map_library(&app)?.join("disabled").join(&name));
+    let dir = [on, off].into_iter().find(|d| d.is_dir()).ok_or("that map isn't installed")?;
+    tauri::async_runtime::spawn_blocking(move || mapview::view(&name, &dir)).await.map_err(|e| e.to_string())?
+}
+
 /// Open the pack's own page (for packs that cannot be fetched automatically).
 #[tauri::command]
 fn maps_open_pack_page(id: String) -> Result<(), String> {
@@ -751,7 +762,7 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_set_enabled, maps_delete, maps_open_pack_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
             launch_game

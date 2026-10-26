@@ -10,6 +10,7 @@ pub mod graphics;
 pub mod icons;
 pub mod launch;
 pub mod maporg;
+pub mod mapview;
 pub mod maps;
 pub mod mods;
 pub mod proc;

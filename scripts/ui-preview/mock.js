@@ -39,6 +39,16 @@ const handlers = {
   maps_set_enabled: ({ names, enabled }) => { let n = 0; state.orgMaps.forEach((m) => { if (names.includes(m.name)) { m.enabled = enabled; n++; } }); return n; },
   maps_delete: ({ names }) => { const before = state.orgMaps.length; state.orgMaps = state.orgMaps.filter((m) => !names.includes(m.name)); return before - state.orgMaps.length; },
   maps_open_pack_page: () => {},
+  map_view: ({ name }) => {
+    const w = 128, h = 128, px = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const k = (y * w + x) * 4, n = Math.sin(x / 9) * Math.cos(y / 11) * 40;
+      px[k] = 70 + n; px[k + 1] = 110 + n * 1.3; px[k + 2] = 60 + n * .5; px[k + 3] = 255;
+    }
+    let bin = ""; for (let k = 0; k < px.length; k++) bin += String.fromCharCode(px[k]);
+    const solo = name.includes("Mission");
+    return { name, image_w: w, image_h: h, rgba: btoa(bin), size_kb: 190, info: { width: 2800, height: 2400, starts: solo ? [] : [{ number: 1, x: .18, y: .42 }, { number: 2, x: .18, y: .2 }, { number: 3, x: .82, y: .8 }, { number: 4, x: .82, y: .58 }] } };
+  },
   maps_install_pack: () => { state.mapJob = { tick: 0 }; },
   maps_status: () => { const j = state.mapJob; if (!j) return { phase: "Idle", percent: 0, message: "", installed: 0 }; j.tick++; if (j.tick < 10) return { phase: "Downloading", percent: j.tick * 8, message: `Downloading All ranked maps (${j.tick * 5} MB so far)`, installed: 0 }; state.mapCount = 96; return { phase: "Done", percent: 100, message: "96 maps installed", installed: 96 }; },
   maps_cancel: () => { state.mapJob = null; },

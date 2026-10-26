@@ -361,6 +361,78 @@ function mapsCard() {
   return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); } };
 }
 
+/** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
+function openMapViewer(entries, start) {
+  let i = start, token = 0;
+  const canvas = h("canvas", { class: "mapview-canvas", width: 384, height: 384, role: "img", "aria-label": "Map preview" });
+  const title = h("h2", {});
+  const facts = h("p", { class: "muted small" });
+  const note = h("p", { class: "muted", role: "status" });
+  const prev = h("button", { class: "btn", onclick: () => go(-1) }, "Previous");
+  const next = h("button", { class: "btn", onclick: () => go(1) }, "Next");
+  const close = h("button", { class: "btn primary", onclick: () => finish() }, "Close");
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
+    h("div", { class: "wizard mapviewer" },
+      h("div", { class: "wiz-head" }, title, facts),
+      h("div", { class: "wiz-body" }, canvas, note),
+      h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next), close)));
+  const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
+  function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
+  function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function paint(v) {
+    const info = v.info;
+    // the picture is square; draw it at the map's own proportions, fitted into the box
+    const ratio = info ? info.width / info.height : 1;
+    const cw = ratio >= 1 ? 384 : Math.round(384 * ratio), ch = ratio >= 1 ? Math.round(384 / ratio) : 384;
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, cw, ch);
+    if (v.rgba) {
+      const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
+      for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
+      const src = document.createElement("canvas");
+      src.width = v.image_w; src.height = v.image_h;
+      src.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(src, 0, 0, cw, ch);
+    }
+    if (info) {
+      ctx.font = "700 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      for (const st of info.starts) {
+        const x = st.x * cw, y = (1 - st.y) * ch;
+        ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2);
+        ctx.fillStyle = css("--accent"); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = css("--text"); ctx.stroke();
+        ctx.fillStyle = css("--accent-ink"); ctx.fillText(String(st.number), x, y + 1);
+      }
+    }
+  }
+  async function show() {
+    const m = entries[i], mine = ++token;
+    title.textContent = m.name;
+    facts.textContent = `${m.pack} · ${m.enabled ? "switched on" : "switched off"} · ${i + 1} of ${entries.length}`;
+    prev.disabled = i === 0; next.disabled = i === entries.length - 1;
+    note.textContent = "Loading…";
+    try {
+      const v = await invoke("map_view", { name: m.name });
+      if (mine !== token) return;
+      paint(v);
+      const n = v.info ? v.info.starts.length : 0;
+      note.textContent = [
+        v.info ? `${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)} cells` : "Size unknown",
+        n ? `${n} start position${n === 1 ? "" : "s"}` : "no start positions (a mission or solo map)",
+        v.rgba ? null : "this map has no preview picture",
+        v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`,
+      ].filter(Boolean).join(" · ");
+    } catch (e) { if (mine === token) note.textContent = "Couldn't read this map: " + errText(e); }
+  }
+  document.addEventListener("keydown", onKey);
+  document.getElementById("root").append(overlay);
+  show();
+  close.focus();
+}
+
 /** Every map, on or off: pick the ones the game should show. Switching a map off moves it aside; nothing is deleted. */
 function mapOrganiser() {
   const LIMIT = 150;
@@ -396,7 +468,9 @@ function mapOrganiser() {
         try { await invoke("maps_set_enabled", { names: [m.name], enabled: box.checked }); m.enabled = box.checked; row.classList.toggle("on", m.enabled); drawSummary(); }
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
-      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "muted small" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`));
+      const idx = v.indexOf(m);
+      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+        h("button", { class: "btn small ghost", "aria-label": `Preview ${m.name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx); } }, "Preview"));
       return row;
     }));
     more.hidden = v.length <= shown;
