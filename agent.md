@@ -45,7 +45,7 @@ Rallypoint: cross-platform (macOS, Windows, Linux) launcher and multiplayer stac
 - No new dependencies when std or serde does it (sha2 is the exception: don't hand-roll crypto).
 
 ## Roadmap
-1. Verify in a real game: widescreen/HiDPI (0001), two-machine play through the relay (0002), Steam download with a real account, Windows engine data lookup (cwd vs registry).
+1. Verified in a real game: widescreen/HiDPI (0001), Steam download with a real account, two-machine play through the relay (a Mac and a Windows PC played a game through it on 2026-10-26, with a harmless-looking checksum difference at frame 0 in ~33 static objects' stored height; the sync logs match frame for frame otherwise). Still to verify: Windows engine data lookup (cwd vs registry) and longer games.
 2. Linux engine; more catalog mods (needs verified pages); loose-file mods (no `.big`).
    (was 2) GeneralsX (https://github.com/fbraz3/GeneralsX) already targets Linux x86_64 (DXVK/Vulkan, SDL3, OpenAL) from the same TheSuperHackers base; the likely route is basing the Linux build on it rather than porting our own renderer. It publishes no discrete fix list, so cherry-picking means reading its commit history for the specific area (macOS/net/rendering fixes) and porting by hand.
 3. Determinism (macOS arm64 vs Windows x86 desync): `-ffp-contract=off`, deterministic trig, RNG audit; headless engine on the server as a per-frame CRC referee.
