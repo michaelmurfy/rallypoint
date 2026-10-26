@@ -1,0 +1,20 @@
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+index ef4656c..2f2c246 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+@@ -913,7 +913,14 @@ Real BaseHeightMapRenderObjClass::getHeightMapHeight(Real x, Real y, Coord3D* no
+ 			normal->y = 0.0f;
+ 			normal->z = 1.0f;
+ 		}
+-		return getClipHeight(ix, iy) * MAP_HEIGHT_SCALE;
++		// Rallypoint: clamp into the *logic* height map, as the rest of this function does. getClipHeight() reads m_map, the
++		// client's copy, which differs with the screen (widescreen terrain draw size), so two players got different heights
++		// here for objects placed off the map, and their games went out of sync at frame 0.
++		Int cx = ix, cy = iy;
++		const Int xMax = xExtent - 1, yMax = logicHeightMap->getYExtent() - 1;
++		if (cx < 0) cx = 0; else if (cx > xMax) cx = xMax;
++		if (cy < 0) cy = 0; else if (cy > yMax) cy = yMax;
++		return logicHeightMap->getDataPtr()[cx + cy*xExtent] * MAP_HEIGHT_SCALE;
+ 	}
+ 
+ 	const UnsignedByte* data = logicHeightMap->getDataPtr();
