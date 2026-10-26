@@ -1,5 +1,6 @@
 # Rallypoint server and development tasks. `make help` lists everything.
 COMPOSE ?= docker compose
+BUILD = $(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml
 .DEFAULT_GOAL := help
 -include .env
 
@@ -27,17 +28,17 @@ geo: ## Download the IP lists for ALLOWED_COUNTRIES (done automatically by up/up
 	done
 
 up: config geo ## Start the server from the released image (RELAY_TAG=0.2.0-beta.4 pins a version)
-	$(COMPOSE) up -d
+	@$(COMPOSE) up -d || { echo "Could not get the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build; }
 	@echo "Rallypoint server is running on UDP port $${PORT:-7777}"
 
 dev: config geo ## Build the server from this checkout and start it
-	$(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml up -d --build
+	$(BUILD) up -d --build
 
 down: ## Stop the server
 	$(COMPOSE) down
 
 restart: config geo ## Apply .env changes
-	$(COMPOSE) up -d --force-recreate
+	@$(COMPOSE) up -d --force-recreate || { echo "Could not get the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build --force-recreate; }
 
 logs: ## Follow the server log
 	$(COMPOSE) logs -f --tail=100 relay
@@ -51,8 +52,7 @@ status: ## Show whether the server is running
 update: ## Pull the latest released image and config, refresh country lists, restart
 	git pull --ff-only
 	$(MAKE) geo
-	$(COMPOSE) pull
-	$(COMPOSE) up -d
+	@if $(COMPOSE) pull; then $(COMPOSE) up -d; else echo "Could not pull the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build; fi
 
 test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server
