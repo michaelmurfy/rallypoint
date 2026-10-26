@@ -169,7 +169,7 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .chevs i:first-child { clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%); }
 .chevs i.done { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
 .chevs i.now { background: var(--accent); }
-.wiz-body { padding: 20px 24px; overflow-y: auto; display: grid; gap: 14px; align-content: start; }
+.wiz-body { padding: 20px 24px; overflow-y: auto; display: grid; gap: 14px; align-content: start; min-height: 0; }
 .wiz-foot { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .wiz-body .card { background: var(--bg); }
 .intro { display: grid; grid-template-columns: 112px 1fr; gap: 26px; align-items: start; padding: 6px 0; }
@@ -231,5 +231,6 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .addons { margin-left: 22px; }
 .warn-text { color: var(--warn-ink); }
 .whatsnew { width: min(520px, 100%); }
-.whatsnew .wiz-body { overflow: auto; }
-.whatsnew .notes { white-space: pre-wrap; margin: 0; }
+.whatsnew .notes { display: grid; gap: 10px; }
+.whatsnew .notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.whatsnew .notes code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }

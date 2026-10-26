@@ -55,13 +55,22 @@ pub fn mac_script(pid: u32, new_app: &Path, target: &Path) -> String {
 }
 
 /// Wait for the launcher to quit, run the NSIS installer silently, and start the launcher again.
-pub fn win_script(pid: u32, setup: &Path, exe: &Path) -> String {
+/// The installer result is written to `log` first, and the previous launcher is started even when the
+/// installer fails, so a failed update still leaves the app open.
+pub fn win_script(pid: u32, setup: &Path, exe: &Path, log: &Path) -> String {
+    let (setup, exe, log) = (ps_quote(&setup.to_string_lossy()), ps_quote(&exe.to_string_lossy()), ps_quote(&log.to_string_lossy()));
     format!(
-        "Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
-         Start-Process -FilePath {} -ArgumentList '/S' -Wait\n\
-         Start-Process -FilePath {}\n",
-        ps_quote(&setup.to_string_lossy()),
-        ps_quote(&exe.to_string_lossy())
+        "$log = {log}\n\
+         function Note([string]$m) {{ Add-Content -LiteralPath $log -Value $m }}\n\
+         Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
+         Start-Sleep -Milliseconds 400\n\
+         try {{\n\
+           $p = Start-Process -FilePath {setup} -ArgumentList '/S' -Wait -PassThru\n\
+           Note \"installer $($p.ExitCode)\"\n\
+         }} catch {{\n\
+           Note $_.Exception.Message\n\
+         }}\n\
+         Start-Process -FilePath {exe}\n"
     )
 }
 
@@ -111,7 +120,18 @@ fn spawn_detached(mut cmd: Command) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000 | 0x0000_0008); // CREATE_NO_WINDOW | DETACHED_PROCESS
+        // DETACHED_PROCESS makes PowerShell exit before -File runs, so the launcher would close and never
+        // come back. CREATE_NO_WINDOW hides the console. Breakaway lets the helper outlive this process
+        // when Windows has put us in a job; if the job forbids it, try again without that flag.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if cmd.spawn().is_ok() {
+            return Ok(());
+        }
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
     #[cfg(unix)]
     {
@@ -145,7 +165,8 @@ pub fn apply(installer: &Path, work: &Path) -> Result<bool, String> {
     #[cfg(windows)]
     {
         let script = work.join("apply-update.ps1");
-        std::fs::write(&script, win_script(pid, installer, &exe)).map_err(|e| e.to_string())?;
+        let log = work.join("apply-update.log");
+        std::fs::write(&script, win_script(pid, installer, &exe, &log)).map_err(|e| e.to_string())?;
         let mut c = Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"]).arg(&script);
         spawn_detached(c)?;
@@ -173,8 +194,9 @@ mod tests {
         let s = mac_script(42, Path::new("/t/it's/New.app"), Path::new("/Apps/Rally point.app"));
         assert!(s.contains("kill -0 42") && s.contains("'/t/it'\\''s/New.app'") && s.contains("'/Apps/Rally point.app'"));
         assert!(s.contains("open '/Apps/Rally point.app'"));
-        let w = win_script(7, Path::new("C:\\Users\\O'Neil\\setup.exe"), Path::new("C:\\App\\r.exe"));
+        let w = win_script(7, Path::new("C:\\Users\\O'Neil\\setup.exe"), Path::new("C:\\App\\r.exe"), Path::new("C:\\App\\apply-update.log"));
         assert!(w.contains("-Id 7") && w.contains("'C:\\Users\\O''Neil\\setup.exe'") && w.contains("'/S'"));
+        assert!(w.contains("'C:\\App\\apply-update.log'") && w.contains("Start-Process -FilePath 'C:\\App\\r.exe'"));
     }
 
     #[test]
@@ -189,5 +211,30 @@ mod tests {
         assert_eq!(take_marker(&d, "0.2.0"), None, "stale marker from an update that didn't happen");
         assert!(!marker(&d).exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The flag combination that used to be passed (CREATE_NO_WINDOW | DETACHED_PROCESS) starts PowerShell and
+    /// then exits before -File runs. This fails if that regression comes back.
+    #[cfg(windows)]
+    #[test]
+    fn hidden_helper_runs_the_script() {
+        let dir = std::env::temp_dir().join(format!("gen-selfupd-helper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("ran.txt");
+        let script = dir.join("helper.ps1");
+        std::fs::write(&script, format!("Set-Content -LiteralPath '{}' -Value ran\n", marker.display())).unwrap();
+        let mut c = Command::new("powershell");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"]).arg(&script);
+        spawn_detached(c).unwrap();
+        let ran = (0..30).any(|_| {
+            if marker.is_file() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ran, "the helper exited before the script ran");
     }
 }

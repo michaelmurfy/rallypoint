@@ -34,7 +34,7 @@ const handlers = {
   set_check_updates: ({ on }) => { state.cfg.check_updates = on; },
   update_check: async () => (await new Promise((r) => setTimeout(r, 1200)), hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
   update_install: async () => { await new Promise((r) => setTimeout(r, 1500)); return "Restarting…"; },
-  whats_new_take: async () => hash.includes("whatsnew") ? { version: "0.3.0", notes: "## Highlights\n- Seamless updates\n- Multiplayer fixes" } : null,
+  whats_new_take: async () => hash.includes("whatsnew") ? { version: "0.3.0", notes: "## Highlights\n\nStill a **prerelease**.\n\n- **Seamless updates.** The app installs the new version and opens again by itself.\n- **Multiplayer fixes.** Sync logs now name the frame that diverged.\n- A `code` word stays monospaced.\n\n## Also in this build\n\n- Smoother pages.\n- No autocorrect in text fields.\n\n---\n\n## Earlier\n\n" + Array.from({ length: 12 }, (_, i) => `- Note ${i + 1} is long enough that the dialog has to scroll instead of clipping the last lines.`).join("\n") } : null,
   open_release_page: () => {},
   detect_games: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Generals - Zero Hour", zero_hour: true }] : []),
   check_game_dir: ({ path }) => (path.includes("ZeroHour") ? { ok: true, message: "Zero Hour found" } : path.trim() ? { ok: false, message: "No Zero Hour files in that folder (INIZH.big is missing)" } : { ok: false, message: "Choose the folder that contains INIZH.big" }),
