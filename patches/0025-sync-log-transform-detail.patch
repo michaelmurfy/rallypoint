@@ -1,0 +1,50 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+index d6144eb..b554856 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+@@ -30,6 +30,7 @@
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+ 
+ 
++#include "Common/CRCDebug.h"
+ #include "Common/DataChunk.h"
+ #include "Common/GameState.h"
+ #include "Common/MapObject.h"
+@@ -1498,6 +1499,12 @@ void makeAlignToNormalMatrix( Real angle, const Coord3D& pos, const Coord3D& nor
+ 	mtx.Set(  x.x, y.x, z.x, pos.x,
+ 							x.y, y.y, z.y, pos.y,
+ 							x.z, y.z, z.z, pos.z );
++
++	// Rallypoint: sync-log detail, to see which input of an object's transform differs between machines.
++	DUMPREAL(angle);
++	DUMPCOORD3D(&normal);
++	DUMPCOORD3D(&x);
++	DUMPCOORD3D(&y);
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+@@ -1520,6 +1527,7 @@ PathfindLayerEnum TerrainLogic::alignOnTerrain( Real angle, const Coord3D& pos,
+ 	makeAlignToNormalMatrix(angle, pos, terrainNormal, mtx);
+ 	if (stickToGround)
+ 		mtx.Set_Z_Translation(terrainAtPos);
++	DUMPREAL(terrainAtPos);
+ 
+ 	return layer;
+ }
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+index e6abb24..f0177a6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+@@ -4009,11 +4009,8 @@ void Object::crc( Xfer *xfer )
+ #ifdef DEBUG_CRC
+ 	if (doLogging)
+ 	{
+-#if RETAIL_COMPATIBLE_CRC
+-		tmp.format("m_objectUpgradesCompleted: %I64X, ", m_objectUpgradesCompleted);
+-#else
++		// Rallypoint: the retail form passed a class through "%I64X", which printed garbage (Windows) or nothing (macOS).
+ 		tmp.format("m_objectUpgradesCompleted: %s, ", m_objectUpgradesCompleted.toHexString().str());
+-#endif
+ 		logString.concat(tmp);
+ 	}
+ #endif // DEBUG_CRC

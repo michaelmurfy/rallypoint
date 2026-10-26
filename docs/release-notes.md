@@ -1,3 +1,12 @@
+## Rallypoint 0.2.0-beta.6
+
+Still a **prerelease**. A diagnostic build for the multiplayer desync.
+
+- **Sync logs show more.** Beta.5 still went out of sync at the very start of a game, in the rotation and height of objects that sit on slopes (command centres, derricks, fences). The logs now record the inputs of those, so the next comparison can name the exact value that differs between Windows and macOS. The upgrades field in the logs is fixed too.
+- No other changes. Please keep Settings > Multiplayer sync logs on, play until the game desyncs, and send both machines' `sync-logs` folders.
+
+---
+
 ## Rallypoint 0.2.0-beta.5
 
 Still a **prerelease**.
