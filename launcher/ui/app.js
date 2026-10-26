@@ -7,6 +7,8 @@ const invoke = (cmd, args) => tauri.core.invoke(cmd, args);
 // ---------------------------------------------------------------- helpers
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
+  // Server names, rooms, paths and codes: the webview must not autocorrect, capitalise, spell-check or autofill them.
+  if (tag === "input" || tag === "textarea") for (const [k, v] of [["autocomplete", "off"], ["autocorrect", "off"], ["autocapitalize", "off"], ["spellcheck", "false"]]) el.setAttribute(k, v);
   for (const [k, v] of Object.entries(props || {})) {
     if (v == null || v === false) continue;
     if (k === "class") el.className = v;
@@ -144,11 +146,11 @@ function renderUpdate() {
   if (!u || store.updateDismissed) return fill(host);
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
-    store.updateNote = "Downloading the installer…";
+    store.updateNote = "Downloading the update. Rallypoint will restart by itself…";
     renderUpdate();
     try { store.updateNote = await invoke("update_install"); } catch (e) { store.updateNote = errText(e); }
     renderUpdate();
-  } }, "Download and open installer");
+  } }, "Update and restart");
   fill(host, h("div", { class: "banner stack updatebar" },
     h("div", {}, h("b", {}, `Rallypoint ${u.latest} is available`),
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
@@ -173,10 +175,10 @@ function updatesCard() {
   const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
-    fb.busy("Downloading the installer…");
+    fb.busy("Downloading the update. Rallypoint will restart by itself…");
     try { fb.ok(await invoke("update_install")); } catch (e) { fb.bad(errText(e)); }
     install.disabled = false;
-  } }, "Download and open installer");
+  } }, "Update and restart");
   const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
   const check = h("button", { class: "btn", onclick: async () => {
     check.disabled = true;
@@ -949,6 +951,17 @@ function openWizard() {
   render();
 }
 
+/** Shown once, on the first start after an update. */
+function showWhatsNew(w) {
+  const close = () => overlay.remove();
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": `What's new in ${w.version}` },
+    h("div", { class: "wizard whatsnew" },
+      h("div", { class: "wiz-head" }, h("h2", {}, `Rallypoint ${w.version}`), h("p", { class: "muted small" }, "You're up to date. Here's what changed.")),
+      h("div", { class: "wiz-body" }, h("p", { class: "notes" }, w.notes.trim() || "No release notes were published for this version.")),
+      h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Continue"))));
+  document.getElementById("root").append(overlay);
+}
+
 // ---------------------------------------------------------------- start
 async function start() {
   store.cfg = await invoke("get_config");
@@ -965,6 +978,7 @@ async function start() {
   }, 1000);
   if (!store.cfg.setup_done) openWizard();
   if (store.cfg.check_updates !== false) checkUpdate();
+  invoke("whats_new_take").then((w) => { if (w) showWhatsNew(w); }).catch(() => {});
 
   // Dropping a file or folder on the window installs it as a mod.
   try {
