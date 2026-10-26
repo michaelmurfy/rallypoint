@@ -1,0 +1,18 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+index f0177a6..da76353 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+@@ -3989,6 +3989,13 @@ void Object::crc( Xfer *xfer )
+ 		tmp.format("getTransformMatrix(): %8.8X, ", tmpXfer.getCRC());
+ 		tmpXfer.close();
+ 		logString.concat(tmp);
++		{
++			// Rallypoint: the matrix itself, so two machines' logs show which element differs, not only that the CRC does.
++			UnsignedInt m[12];
++			memcpy(m, getTransformMatrix(), sizeof(m));
++			tmp.format("matrix: %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X, ", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
++			logString.concat(tmp);
++		}
+ 	}
+ #endif // DEBUG_CRC
+ 

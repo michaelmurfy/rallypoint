@@ -1,3 +1,10 @@
+## Rallypoint 0.3.6
+
+- **More detail in the sync logs.** The game now writes the first terrain placements and each object's full position and rotation into the sync logs and `engine.log`, to find why a few static map objects differ between a Mac and a Windows PC. Nothing changes in how the game plays, so 0.3.5 and 0.3.6 players can still join each other.
+- **README:** the beta wording is gone, and multiplayer is listed as played Windows against Windows as well as cross-platform.
+
+---
+
 ## Rallypoint 0.3.5
 
 - **Map viewer.** On the Maps page, **Preview** on any map (switched on or off) shows it the way the game does: its preview picture at the map's proportions with the numbered start positions on it, plus the map's size in cells and its player count. Previous and Next, or the arrow keys, move through the list you are looking at.

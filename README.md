@@ -4,7 +4,7 @@
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
-> Single player works on macOS and Windows and has been played on both, and a multiplayer game between a Mac and a Windows PC through the relay has been played (it still reports a small checksum difference at the start; see [Multiplayer](#multiplayer)). See [What works](#what-works) for an honest list of what is and isn't done.
+> Single player works on macOS and Windows and has been played on both, and multiplayer through the relay has been played Windows against Windows and cross-platform between a Mac and a Windows PC (the cross-platform game still reports a small checksum difference at the start; see [Multiplayer](#multiplayer)). See [What works](#what-works) for an honest list of what is and isn't done.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
 
@@ -19,7 +19,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 - **Stays up to date.** The launcher checks GitHub for a newer release when it starts and, if you agree, downloads the update, verifies it, closes itself, swaps the new version in and reopens with a "What's new" screen (macOS and Windows).
 - **Graphics options.** A camera distance setting (zoom out further than the original game allows) and one button for the community's high-quality settings (shadows, soft water, trees, particles) from the graphics fix, with your original `Options.ini` backed up.
 - **Help when something goes wrong.** *Settings → Troubleshooting* checks your game files and the original Generals, and shows the game's last crash report and what it printed. Results appear next to the button you pressed, not in pop-ups.
-- **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet. A game between a Mac and a Windows PC through the relay has been played; the relay, the encryption and the connection diagnostics are built and in use (see below).
+- **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet. Games through the relay have been played Windows against Windows and cross-platform between a Mac and a Windows PC; the relay, the encryption and the connection diagnostics are built and in use (see below).
 
 ## What works
 
@@ -32,7 +32,8 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 | Mods (Shockwave, Shockwave Chaos, Cold War Crisis) | ✅ | ✅ | – |
 | Relay server | – | – | ✅ (Docker or binary) |
 | Encrypted relay traffic, server diagnostics | ✅ tested between the launcher and a real server | ✅ same code | – |
-| Multiplayer game through the relay | ✅ played against a Windows PC | ✅ played against a Mac | – |
+| Multiplayer through the relay, Windows against Windows | – | ✅ played | – |
+| Multiplayer through the relay, cross-platform (macOS against Windows) | ✅ played against a Windows PC | ✅ played against a Mac | – |
 
 Legend: ✅ works and has been played or tried, ⏳ built but not yet played end to end, ❌ missing.
 
@@ -109,7 +110,7 @@ On by default on macOS and Windows: any resolution, ultrawide, Retina. Menus, th
 
 ## Multiplayer
 
-**Status: played, with one known quirk.** A multiplayer game between a Mac and a Windows PC through the relay has been played. The relay server, the encryption, the server key checks and the connection diagnostics are built and in use, and the game only ever sees the relay's own address range while you are connected. The quirk: the first checksum check still reports a difference, because a few static map objects (command centres, derricks, fences) are stored with a slightly different height on the two machines; the rest of the game matches frame for frame in the sync logs, and the game carried on and finished. The cause is still being tracked down, so keep *Multiplayer sync logs* on if you want to help.
+**Status: played, cross-platform and Windows against Windows, with one known quirk.** Games through the relay have been played between two Windows PCs and between a Mac and a Windows PC. The relay server, the encryption, the server key checks and the connection diagnostics are built and in use, and the game only ever sees the relay's own address range while you are connected. The quirk, cross-platform games only: the first checksum check still reports a difference, because a few static map objects (command centres, derricks, fences) are stored with a slightly different height on the two machines; the rest of the game matches frame for frame in the sync logs, and the game carried on and finished. The cause is still being tracked down, so keep *Multiplayer sync logs* on if you want to help.
 
 Games between macOS and Windows use the same simulation math on both (a deterministic maths library and strict floating point settings), and the lobby refuses to let in a player whose game data or Rallypoint simulation version differs, instead of starting a game that goes out of sync. If a game still goes out of sync, turn on *Settings → Multiplayer sync logs* on both machines, play again, and use **Compare with another player…** to see exactly where the two games first differed.
 
@@ -186,7 +187,7 @@ Releases are built only when a version tag is pushed (`make release VERSION=0.3.
 
 ## Known limitations
 
-- Multiplayer through the relay has been played between a Mac and a Windows PC, but only in small tests: expect rough edges, and the first checksum check still reports a difference (see [Multiplayer](#multiplayer)).
+- Multiplayer through the relay has been played between two Windows PCs and between a Mac and a Windows PC, but only in small tests: expect rough edges, and the first checksum check still reports a difference (see [Multiplayer](#multiplayer)).
 - No Linux engine (Proton or Wine is a possible future route) and no Intel Mac engine.
 - Mods can't be downloaded from inside the launcher: you download from the mod's page and choose the file.
 - Planned but not started: saving and loading multiplayer games, controlling allied units, and co-op (sharing one player and its units).
