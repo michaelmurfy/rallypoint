@@ -1,0 +1,126 @@
+# TheSuperHackers/GeneralsGameCode 82f4b857a: 2026-06-18 bugfix(crc): Fix spurious mismatches for disconnected players at low CRC intervals (#2796)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/Generals/Code/GameEngine/Include/GameLogic/GameLogic.h b/Generals/Code/GameEngine/Include/GameLogic/GameLogic.h
+index 0d497ffb400..f8c1388e32b 100644
+--- a/Generals/Code/GameEngine/Include/GameLogic/GameLogic.h
++++ b/Generals/Code/GameEngine/Include/GameLogic/GameLogic.h
+@@ -383,7 +383,8 @@ class GameLogic : public SubsystemInterface, public Snapshot
+ 
+ 	// CRC cache system -----------------------------------------------------------------------------
+ 	UnsignedInt	m_CRC;																			///< Cache of previous CRC value
+-	std::map<Int, UnsignedInt> m_cachedCRCs;								///< CRCs we've seen this frame
++	typedef std::map<Int, UnsignedInt> CachedCRCMap;
++	CachedCRCMap m_cachedCRCs;															///< CRCs we've seen this frame
+ 	Bool m_shouldValidateCRCs;															///< Should we validate CRCs this frame?
+ 	//-----------------------------------------------------------------------------------------------
+ 	//Bool m_loadingScene;
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index be7d76d2894..6571a9d2acc 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -2338,15 +2338,26 @@ void GameLogic::processCommandList( CommandList *list )
+ 			}
+ 			else
+ 			{
+-				//DEBUG_LOG(("Comparing %d CRCs on frame %d", m_cachedCRCs.size(), m_frame));
+-				std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin();
+-				Int validatorCRC = crcIt->second;
+-				//DEBUG_LOG(("Validator CRC from player %d is %8.8X", crcIt->first, validatorCRC));
+-				while (++crcIt != m_cachedCRCs.end())
++				Bool hasReferenceCRC = FALSE;
++				UnsignedInt referenceCRC = 0;
++
++				for (CachedCRCMap::const_iterator it = m_cachedCRCs.begin(); it != m_cachedCRCs.end(); ++it)
+ 				{
+-					Int validatedCRC = crcIt->second;
+-					//DEBUG_LOG(("CRC to validate is from player %d: %8.8X", crcIt->first, validatedCRC));
+-					if (validatorCRC != validatedCRC)
++					// TheSuperHackers @bugfix Caball009 14/06/2026 Check if player is still connected,
++					// to avoid spurious mismatches at low CRC intervals, e.g. every frame.
++					if (!TheNetwork->isPlayerConnected(it->first))
++						continue;
++
++					const UnsignedInt crc = it->second;
++
++					if (!hasReferenceCRC)
++					{
++						hasReferenceCRC = TRUE;
++						referenceCRC = crc;
++						continue;
++					}
++
++					if (referenceCRC != crc)
+ 					{
+ 						DEBUG_CRASH(("CRC mismatch!"));
+ 						sawCRCMismatch = TRUE;
+@@ -2359,7 +2370,7 @@ void GameLogic::processCommandList( CommandList *list )
+ 		{
+ #ifdef DEBUG_LOGGING
+ 			DEBUG_LOG(("CRC Mismatch - saw %d CRCs from %d players", m_cachedCRCs.size(), numPlayers));
+-			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
++			for (CachedCRCMap::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
+ 			{
+ 				Player *player = ThePlayerList->getNthPlayer(crcIt->first);
+ 				DEBUG_LOG(("CRC from player %d (%ls) = %X", crcIt->first,
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
+index 5a59dbd2abe..60f5fb22e7c 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
+@@ -390,7 +390,8 @@ class GameLogic : public SubsystemInterface, public Snapshot
+ 
+ 	// CRC cache system -----------------------------------------------------------------------------
+ 	UnsignedInt	m_CRC;																			///< Cache of previous CRC value
+-	std::map<Int, UnsignedInt> m_cachedCRCs;								///< CRCs we've seen this frame
++	typedef std::map<Int, UnsignedInt> CachedCRCMap;
++	CachedCRCMap m_cachedCRCs;															///< CRCs we've seen this frame
+ 	Bool m_shouldValidateCRCs;															///< Should we validate CRCs this frame?
+ 	//-----------------------------------------------------------------------------------------------
+ 	//Bool m_loadingScene;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 622aeb5da10..8fcf237274b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -2664,15 +2664,26 @@ void GameLogic::processCommandList( CommandList *list )
+ 			}
+ 			else
+ 			{
+-				//DEBUG_LOG(("Comparing %d CRCs on frame %d", m_cachedCRCs.size(), m_frame));
+-				std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin();
+-				Int validatorCRC = crcIt->second;
+-				//DEBUG_LOG(("Validator CRC from player %d is %8.8X", crcIt->first, validatorCRC));
+-				while (++crcIt != m_cachedCRCs.end())
++				Bool hasReferenceCRC = FALSE;
++				UnsignedInt referenceCRC = 0;
++
++				for (CachedCRCMap::const_iterator it = m_cachedCRCs.begin(); it != m_cachedCRCs.end(); ++it)
+ 				{
+-					Int validatedCRC = crcIt->second;
+-					//DEBUG_LOG(("CRC to validate is from player %d: %8.8X", crcIt->first, validatedCRC));
+-					if (validatorCRC != validatedCRC)
++					// TheSuperHackers @bugfix Caball009 14/06/2026 Check if player is still connected,
++					// to avoid spurious mismatches at low CRC intervals, e.g. every frame.
++					if (!TheNetwork->isPlayerConnected(it->first))
++						continue;
++
++					const UnsignedInt crc = it->second;
++
++					if (!hasReferenceCRC)
++					{
++						hasReferenceCRC = TRUE;
++						referenceCRC = crc;
++						continue;
++					}
++
++					if (referenceCRC != crc)
+ 					{
+ 						DEBUG_CRASH(("CRC mismatch!"));
+ 						sawCRCMismatch = TRUE;
+@@ -2685,7 +2696,7 @@ void GameLogic::processCommandList( CommandList *list )
+ 		{
+ #ifdef DEBUG_LOGGING
+ 			DEBUG_LOG(("CRC Mismatch - saw %d CRCs from %d players", m_cachedCRCs.size(), numPlayers));
+-			for (std::map<Int, UnsignedInt>::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
++			for (CachedCRCMap::const_iterator crcIt = m_cachedCRCs.begin(); crcIt != m_cachedCRCs.end(); ++crcIt)
+ 			{
+ 				Player *player = ThePlayerList->getNthPlayer(crcIt->first);
+ 				DEBUG_LOG(("CRC from player %d (%ls) = %X", crcIt->first,

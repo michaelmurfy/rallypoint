@@ -1,0 +1,14 @@
+# TheSuperHackers/GeneralsGameCode 4a4a1b23f: 2026-10-15 fix(lanapi): Delete the lobby player when they leave the lobby (#3499)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+index 00d33114a86..3e0ea192991 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPIhandlers.cpp
+@@ -575,6 +575,7 @@ void LANAPI::handleRequestLobbyLeave( LANMessage *msg, UnsignedInt senderIP )
+ 			if (player->getIP() == senderIP)
+ 			{
+ 				removePlayer(player);
++				delete player;
+ 				OnPlayerList(m_lobbyPlayers);
+ 				break;
+ 			}

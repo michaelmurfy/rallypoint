@@ -1,0 +1,29 @@
+# TheSuperHackers/GeneralsGameCode 50f27e057: 2026-08-05 fix(spectregunship): Decouple particle system in SpectreGunshipUpdate::update from logic crc (#3055)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpectreGunshipUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpectreGunshipUpdate.cpp
+index e9d29e47845..b2368da9f35 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpectreGunshipUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpectreGunshipUpdate.cpp
+@@ -615,8 +615,13 @@ UpdateSleepTime SpectreGunshipUpdate::update()
+ 
+ 
+           // GATTLING TARGETING LOGIC------------------------------------------
++#if RETAIL_COMPATIBLE_CRC
++				  // TheSuperHackers @fix The particle system is now decoupled from the logic crc
+ 				  const ParticleSystemTemplate *tmp = data->m_gattlingStrafeFXParticleSystem;
+ 				  if (tmp && gattling && gattling->testStatus( OBJECT_STATUS_IS_FIRING_WEAPON) )
++#else
++				  if (gattling && gattling->testStatus( OBJECT_STATUS_IS_FIRING_WEAPON) )
++#endif
+ 				  {
+ 
+ 
+@@ -649,7 +654,7 @@ UpdateSleepTime SpectreGunshipUpdate::update()
+ 			{
+ 
+ 				// This makes the client smoke effects of the gattling cannon strafing the ground toward the attack position
+-						  ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(tmp);
++						  ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(data->m_gattlingStrafeFXParticleSystem);
+ 						  if (sys)
+ 				{
+ 				  Coord3D impactPosition;
