@@ -1,3 +1,19 @@
+## Rallypoint 0.2.0-beta.3
+
+Still a **prerelease**. Mostly about finding the multiplayer desync.
+
+- **Multiplayer sync logs now really work.** Beta.2 still wrote nothing because the engine's build files compiled the log out. Turn on Settings > Multiplayer sync logs on both machines, play until the game goes out of sync, then use Compare. Logs are now taken every 10 frames for the first 300.
+- **Cold War Crisis** is in the mod list (download the manual-install .zip from ModDB and choose it). It is a total conversion: ticking it on the Play page unticks Shockwave and Chaos and switches them off.
+- **A nicer mod picker** on the Play page, and tidier mod cards.
+- **Smoother interface:** pages and the setup wizard ease in, and the blank bar that stayed pinned at the top while scrolling is gone.
+- **No autocorrect** in the launcher's text fields.
+- **Windows:** desync checksums are written to the launcher log.
+- **Server:** the relay now logs joins, leaves, timeouts, refusals and each desync verdict.
+
+Known gaps are unchanged: multiplayer can still go out of sync, and resyncing a player to the host is not built.
+
+---
+
 ## Rallypoint 0.2.0-beta.2
 
 Still a **prerelease**. A small build to get the multiplayer sync logs working.
