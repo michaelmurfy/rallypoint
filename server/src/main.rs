@@ -153,6 +153,9 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
                     // A failed send (unreachable peer, full buffer) must never take the server down.
                     let _ = sock.send_to(&out, to);
                 }
+                for line in server.take_events() {
+                    eprintln!("[{}] {line}", uptime(now));
+                }
                 // Persist auto-issued serials right away so a restart keeps them (and the reload below sees them).
                 for s in server.take_new_serials() {
                     let saved = std::fs::OpenOptions::new().create(true).append(true).open(file).and_then(|mut f| writeln!(f, "{s} auto"));
@@ -165,7 +168,15 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
         if now != last_tick {
             last_tick = now;
             server.expire(now);
+            for line in server.take_events() {
+                eprintln!("[{}] {line}", uptime(now));
+            }
             reload(&mut server);
         }
     }
+}
+
+/// Seconds since start as `1h02m03s`, for log lines (the container log adds wall-clock time).
+fn uptime(s: u64) -> String {
+    format!("{}h{:02}m{:02}s", s / 3600, s / 60 % 60, s % 60)
 }
