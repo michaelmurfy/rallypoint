@@ -349,3 +349,6 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .mod .stack.tight { gap: 6px; }
 .mod h3 { font-size: 15px; }
 .mod-links { margin-top: -2px; }
+
+.navmeta { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 2px 0 0 15px; font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.35; }
+.navmeta .ok { color: var(--ok-ink); } .navmeta .warn { color: var(--warn-ink); } .navmeta .bad { color: var(--bad-ink); }
