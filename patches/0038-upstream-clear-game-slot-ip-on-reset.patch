@@ -1,0 +1,14 @@
+# TheSuperHackers/GeneralsGameCode 12a9b944b: 2026-09-18 fix(gameinfo): Clear GameSlot IP on reset (#3311)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/Core/GameEngine/Source/GameNetwork/GameInfo.cpp b/Core/GameEngine/Source/GameNetwork/GameInfo.cpp
+index fe823e29f9a..d7ec6355124 100644
+--- a/Core/GameEngine/Source/GameNetwork/GameInfo.cpp
++++ b/Core/GameEngine/Source/GameNetwork/GameInfo.cpp
+@@ -69,6 +69,7 @@ void GameSlot::reset()
+ 	m_NATBehavior = FirewallHelperClass::FIREWALL_TYPE_SIMPLE;
+ 	m_lastFrameInGame = 0;
+ 	m_disconnected = FALSE;
++	m_IP = 0;
+ 	m_port = 0;
+ 	m_isMuted = FALSE;
+ 	m_hasSavedOriginalSetup = FALSE;

@@ -1,0 +1,412 @@
+# TheSuperHackers/GeneralsGameCode 9a402fbe2: 2026-05-25 fix(particlesys): Decouple particle systems from logic crc (#2742)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/Core/GameEngine/Include/Common/RandomValue.h b/Core/GameEngine/Include/Common/RandomValue.h
+index 8cc97d5d844..572a3b713e5 100644
+--- a/Core/GameEngine/Include/Common/RandomValue.h
++++ b/Core/GameEngine/Include/Common/RandomValue.h
+@@ -35,4 +35,24 @@ extern void InitRandom( UnsignedInt seed );
+ extern UnsignedInt GetGameLogicRandomSeed();   ///< Get the seed (used for replays)
+ extern UnsignedInt GetGameLogicRandomSeedCRC();///< Get the seed (used for CRCs)
+ 
++struct RandomValueClass
++{
++	virtual Int GetRandomValueInt( Int lo, Int hi, const char *file, Int line ) const = 0;
++	virtual Real GetRandomValueReal( Real lo, Real hi, const char *file, Int line ) const = 0;
++};
++struct LogicRandomValueClass final : RandomValueClass
++{
++	virtual Int GetRandomValueInt( Int lo, Int hi, const char *file, Int line ) const override;
++	virtual Real GetRandomValueReal( Real lo, Real hi, const char *file, Int line ) const override;
++};
++struct ClientRandomValueClass final : RandomValueClass
++{
++	virtual Int GetRandomValueInt( Int lo, Int hi, const char *file, Int line ) const override;
++	virtual Real GetRandomValueReal( Real lo, Real hi, const char *file, Int line ) const override;
++};
++
++// use these macros to access the random value functions
++#define RandomValueInt(randomValueClass, lo, hi) randomValueClass.GetRandomValueInt( lo, hi, __FILE__, __LINE__ )
++#define RandomValueReal(randomValueClass, lo, hi) randomValueClass.GetRandomValueReal( lo, hi, __FILE__, __LINE__ )
++
+ //--------------------------------------------------------------------------------------------------------------
+diff --git a/Core/GameEngine/Source/Common/RandomValue.cpp b/Core/GameEngine/Source/Common/RandomValue.cpp
+index d5317a52852..6e52d4f8f91 100644
+--- a/Core/GameEngine/Source/Common/RandomValue.cpp
++++ b/Core/GameEngine/Source/Common/RandomValue.cpp
+@@ -465,3 +465,24 @@ Real GameLogicRandomVariable::getValue() const
+ 			return 0.0f;
+ 	}
+ }
++
++
++Int LogicRandomValueClass::GetRandomValueInt( Int lo, Int hi, const char *file, Int line ) const
++{
++	return GetGameLogicRandomValue(lo, hi, file, line);
++}
++
++Real LogicRandomValueClass::GetRandomValueReal( Real lo, Real hi, const char *file, Int line ) const
++{
++	return GetGameLogicRandomValueReal(lo, hi, file, line);
++}
++
++Int ClientRandomValueClass::GetRandomValueInt( Int lo, Int hi, const char *file, Int line ) const
++{
++	return GetGameClientRandomValue(lo, hi, file, line);
++}
++
++Real ClientRandomValueClass::GetRandomValueReal( Real lo, Real hi, const char *file, Int line ) const
++{
++	return GetGameClientRandomValueReal(lo, hi, file, line);
++}
+diff --git a/Generals/Code/GameEngine/Include/Common/Geometry.h b/Generals/Code/GameEngine/Include/Common/Geometry.h
+index 88dcd9555d2..e743afa1672 100644
+--- a/Generals/Code/GameEngine/Include/Common/Geometry.h
++++ b/Generals/Code/GameEngine/Include/Common/Geometry.h
+@@ -31,6 +31,7 @@
+ 
+ #include "Lib/BaseType.h"
+ #include "Common/AsciiString.h"
++#include "Common/RandomValue.h"
+ #include "Common/Snapshot.h"
+ 
+ class INI;
+@@ -171,9 +172,8 @@ class GeometryInfo : public Snapshot
+ 	/// get the 2d bounding box
+ 	void get2DBounds(const Coord3D& geomCenter, Real angle, Region2D& bounds	) const;
+ 
+-	/// note that the pt is generated using game logic random, not game client random!
+-	void makeRandomOffsetWithinFootprint(Coord3D& pt) const;
+-	void makeRandomOffsetOnPerimeter(Coord3D& pt) const; //Chooses a random point on the extent border.
++	void makeRandomOffsetWithinFootprint(Coord3D& pt, const RandomValueClass& random = LogicRandomValueClass()) const;
++	void makeRandomOffsetOnPerimeter(Coord3D& pt) const; ///< Chooses a random point on the extent border. Uses game logic random!
+ 
+ 	void clipPointToFootprint(const Coord3D& geomCenter, Coord3D& ptToClip) const;
+ 
+diff --git a/Generals/Code/GameEngine/Source/Common/System/Geometry.cpp b/Generals/Code/GameEngine/Source/Common/System/Geometry.cpp
+index f33da731b42..2e4c35a2421 100644
+--- a/Generals/Code/GameEngine/Source/Common/System/Geometry.cpp
++++ b/Generals/Code/GameEngine/Source/Common/System/Geometry.cpp
+@@ -376,7 +376,7 @@ Bool GeometryInfo::isPointInFootprint(const Coord3D& geomCenter, const Coord3D&
+ }
+ 
+ //=============================================================================
+-void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
++void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt, const RandomValueClass& random) const
+ {
+ 	switch(m_type)
+ 	{
+@@ -390,14 +390,14 @@ void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
+ 			Real distSqr;
+ 			do
+ 			{
+-				pt.x = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
+-				pt.y = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
++				pt.x = RandomValueReal(random, -m_majorRadius, m_majorRadius);
++				pt.y = RandomValueReal(random, -m_majorRadius, m_majorRadius);
+ 				pt.z = 0.0f;
+ 				distSqr = sqr(pt.x) + sqr(pt.y);
+ 			} while (distSqr > maxDistSqr);
+ #else
+-			Real radius = GameLogicRandomValueReal(0.0f, m_boundingCircleRadius);
+-			Real angle = GameLogicRandomValueReal(-PI, PI);
++			Real radius = RandomValueReal(random, 0.0f, m_boundingCircleRadius);
++			Real angle = RandomValueReal(random, -PI, PI);
+ 			pt.x = radius * Cos(angle);
+ 			pt.y = radius * Sin(angle);
+ 			pt.z = 0.0f;
+@@ -407,8 +407,8 @@ void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
+ 
+ 		case GEOMETRY_BOX:
+ 		{
+-			pt.x = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
+-			pt.y = GameLogicRandomValueReal(-m_minorRadius, m_minorRadius);
++			pt.x = RandomValueReal(random, -m_majorRadius, m_majorRadius);
++			pt.y = RandomValueReal(random, -m_minorRadius, m_minorRadius);
+ 			pt.z = 0.0f;
+ 			break;
+ 		}
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp b/Generals/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
+index a78a1b4ddd5..c9837afe55f 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
+@@ -253,7 +253,7 @@ void TransitionDamageFX::onDelete()
+ /** Given an FXLoc info struct, return the effect position that we are supposed to use.
+ 	* The position is local to to the object */
+ //-------------------------------------------------------------------------------------------------
+-static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw )
++static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw, const RandomValueClass &random = LogicRandomValueClass() )
+ {
+ 
+ 	DEBUG_ASSERTCRASH( locInfo, ("getLocalEffectPos: locInfo is null") );
+@@ -290,7 +290,7 @@ static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw )
+ 				return locInfo->loc;
+ 
+ 			// pick one of the bone positions
+-			Int pick = GameLogicRandomValue( 0, boneCount - 1 );
++			Int pick = RandomValueInt( random, 0, boneCount - 1 );
+ 			return positions[ pick ];
+ 
+ 		}
+@@ -387,6 +387,11 @@ void TransitionDamageFX::onBodyDamageStateChange( const DamageInfo* damageInfo,
+ 				if( lastDamageInfo == nullptr ||
+ 						getDamageTypeFlag( modData->m_damageParticleTypes, lastDamageInfo->in.m_damageType ) )
+ 				{
++#if RETAIL_COMPATIBLE_CRC
++					// TheSuperHackers @fix The particle system is now decoupled from the logic crc
++					// and the side effects on the logic random seed values are preserved for retail compatibility.
++					getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw, LogicRandomValueClass() );
++#endif
+ 
+ 					// create a new particle system based on the template provided
+ 					ParticleSystem* pSystem = TheParticleSystemManager->createParticleSystem( pSystemT );
+@@ -394,7 +399,7 @@ void TransitionDamageFX::onBodyDamageStateChange( const DamageInfo* damageInfo,
+ 					{
+ 
+ 						// get the what is the position we're going to played the effect at
+-						pos = getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw );
++						pos = getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw, ClientRandomValueClass() );
+ 
+ 						//
+ 						// set position on system given any bone position provided, the bone position is
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
+index e7bd1b54f78..ca7736e5c86 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
+@@ -235,14 +235,24 @@ void EMPUpdate::doDisableAttack()
+ 
+ 					for (UnsignedInt e = 0 ; e < emitterCount; ++e)
+ 					{
++#if RETAIL_COMPATIBLE_CRC
++						// TheSuperHackers @fix The particle system is now decoupled from the logic crc
++						// and the side effects on the logic random seed values are preserved for retail compatibility.
++						{
++							Coord3D offs = {0,0,0};
++							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, LogicRandomValueClass() );
++							GameLogicRandomValue(3, victimHeight);
++							GameLogicRandomValue(1, 100);
++						}
++#endif
+ 
+ 						ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(tmp);
+ 
+ 						if (sys)
+ 						{
+ 							Coord3D offs = {0,0,0};
+-							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs );
+-							offs.z = GameLogicRandomValue(3, victimHeight);
++							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, ClientRandomValueClass() );
++							offs.z = GameClientRandomValue(3, victimHeight);
+ 
+ 							//This puts all the sparks within a quadrahemicycloid (rectangular dome) volume
+ 							//The same shape as a four cornered camping dome tent, for those with less Greek
+@@ -259,7 +269,7 @@ void EMPUpdate::doDisableAttack()
+ 							sys->attachToObject(curVictim);
+ 							sys->setPosition( &offs );
+ 							sys->setSystemLifetime(MAX(0, data->m_disabledDuration - 30));
+-							sys->setInitialDelay(GameLogicRandomValue(1,100));
++							sys->setInitialDelay(GameClientRandomValue(1,100));
+ 						}
+ 					}
+ 				}
+diff --git a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
+index 453331703eb..95c568a029c 100644
+--- a/Generals/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
++++ b/Generals/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
+@@ -1263,11 +1263,20 @@ void SpecialAbilityUpdate::triggerAbilityEffect()
+ 				const ParticleSystemTemplate *tmp = data->m_disableFXParticleSystem;
+ 				if (tmp)
+ 				{
++#if RETAIL_COMPATIBLE_CRC
++					// TheSuperHackers @fix The particle system is now decoupled from the logic crc
++					// and the side effects on the logic random seed values are preserved for retail compatibility.
++					{
++						Coord3D offs = {0,0,0};
++						target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, LogicRandomValueClass() );
++					}
++#endif
++
+ 					ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(tmp);
+ 					if (sys)
+ 					{
+ 						Coord3D offs = {0,0,0};
+-						target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs );
++						target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, ClientRandomValueClass() );
+ 
+ 						sys->attachToObject(target);
+ 						sys->setPosition( &offs );
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/Geometry.h b/GeneralsMD/Code/GameEngine/Include/Common/Geometry.h
+index 221ca370ce0..907b1ae72cb 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/Geometry.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/Geometry.h
+@@ -31,6 +31,7 @@
+ 
+ #include "Lib/BaseType.h"
+ #include "Common/AsciiString.h"
++#include "Common/RandomValue.h"
+ #include "Common/Snapshot.h"
+ 
+ class INI;
+@@ -171,9 +172,8 @@ class GeometryInfo : public Snapshot
+ 	/// get the 2d bounding box
+ 	void get2DBounds(const Coord3D& geomCenter, Real angle, Region2D& bounds	) const;
+ 
+-	/// note that the pt is generated using game logic random, not game client random!
+-	void makeRandomOffsetWithinFootprint(Coord3D& pt) const;
+-	void makeRandomOffsetOnPerimeter(Coord3D& pt) const; //Chooses a random point on the extent border.
++	void makeRandomOffsetWithinFootprint(Coord3D& pt, const RandomValueClass& random = LogicRandomValueClass()) const;
++	void makeRandomOffsetOnPerimeter(Coord3D& pt) const; ///< Chooses a random point on the extent border. Uses game logic random!
+ 
+ 	void clipPointToFootprint(const Coord3D& geomCenter, Coord3D& ptToClip) const;
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/Geometry.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/Geometry.cpp
+index b69c01de560..1f927ae2615 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/Geometry.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/Geometry.cpp
+@@ -376,7 +376,7 @@ Bool GeometryInfo::isPointInFootprint(const Coord3D& geomCenter, const Coord3D&
+ }
+ 
+ //=============================================================================
+-void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
++void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt, const RandomValueClass& random) const
+ {
+ 	switch(m_type)
+ 	{
+@@ -390,14 +390,14 @@ void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
+ 			Real distSqr;
+ 			do
+ 			{
+-				pt.x = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
+-				pt.y = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
++				pt.x = RandomValueReal(random, -m_majorRadius, m_majorRadius);
++				pt.y = RandomValueReal(random, -m_majorRadius, m_majorRadius);
+ 				pt.z = 0.0f;
+ 				distSqr = sqr(pt.x) + sqr(pt.y);
+ 			} while (distSqr > maxDistSqr);
+ #else
+-			Real radius = GameLogicRandomValueReal(0.0f, m_boundingCircleRadius);
+-			Real angle = GameLogicRandomValueReal(-PI, PI);
++			Real radius = RandomValueReal(random, 0.0f, m_boundingCircleRadius);
++			Real angle = RandomValueReal(random, -PI, PI);
+ 			pt.x = radius * Cos(angle);
+ 			pt.y = radius * Sin(angle);
+ 			pt.z = 0.0f;
+@@ -407,8 +407,8 @@ void GeometryInfo::makeRandomOffsetWithinFootprint(Coord3D& pt) const
+ 
+ 		case GEOMETRY_BOX:
+ 		{
+-			pt.x = GameLogicRandomValueReal(-m_majorRadius, m_majorRadius);
+-			pt.y = GameLogicRandomValueReal(-m_minorRadius, m_minorRadius);
++			pt.x = RandomValueReal(random, -m_majorRadius, m_majorRadius);
++			pt.y = RandomValueReal(random, -m_minorRadius, m_minorRadius);
+ 			pt.z = 0.0f;
+ 			break;
+ 		}
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
+index 9e201c1508f..ce57bd0a2f6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Damage/TransitionDamageFX.cpp
+@@ -253,7 +253,7 @@ void TransitionDamageFX::onDelete()
+ /** Given an FXLoc info struct, return the effect position that we are supposed to use.
+ 	* The position is local to to the object */
+ //-------------------------------------------------------------------------------------------------
+-static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw )
++static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw, const RandomValueClass &random = LogicRandomValueClass() )
+ {
+ 
+ 	DEBUG_ASSERTCRASH( locInfo, ("getLocalEffectPos: locInfo is null") );
+@@ -290,7 +290,7 @@ static Coord3D getLocalEffectPos( const FXLocInfo *locInfo, Drawable *draw )
+ 				return locInfo->loc;
+ 
+ 			// pick one of the bone positions
+-			Int pick = GameLogicRandomValue( 0, boneCount - 1 );
++			Int pick = RandomValueInt( random, 0, boneCount - 1 );
+ 			return positions[ pick ];
+ 
+ 		}
+@@ -387,6 +387,11 @@ void TransitionDamageFX::onBodyDamageStateChange( const DamageInfo* damageInfo,
+ 				if( lastDamageInfo == nullptr ||
+ 						getDamageTypeFlag( modData->m_damageParticleTypes, lastDamageInfo->in.m_damageType ) )
+ 				{
++#if RETAIL_COMPATIBLE_CRC
++					// TheSuperHackers @fix The particle system is now decoupled from the logic crc
++					// and the side effects on the logic random seed values are preserved for retail compatibility.
++					getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw, LogicRandomValueClass() );
++#endif
+ 
+ 					// create a new particle system based on the template provided
+ 					ParticleSystem* pSystem = TheParticleSystemManager->createParticleSystem( pSystemT );
+@@ -394,7 +399,7 @@ void TransitionDamageFX::onBodyDamageStateChange( const DamageInfo* damageInfo,
+ 					{
+ 
+ 						// get the what is the position we're going to played the effect at
+-						pos = getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw );
++						pos = getLocalEffectPos( &modData->m_particleSystem[ newState ][ i ].locInfo, draw, ClientRandomValueClass() );
+ 
+ 						//
+ 						// set position on system given any bone position provided, the bone position is
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
+index aba51b4c2ee..d07e08795d1 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/EMPUpdate.cpp
+@@ -304,14 +304,24 @@ void EMPUpdate::doDisableAttack()
+ 
+ 					for (UnsignedInt e = 0 ; e < emitterCount; ++e)
+ 					{
++#if RETAIL_COMPATIBLE_CRC
++						// TheSuperHackers @fix The particle system is now decoupled from the logic crc
++						// and the side effects on the logic random seed values are preserved for retail compatibility.
++						{
++							Coord3D offs = {0,0,0};
++							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, LogicRandomValueClass() );
++							GameLogicRandomValue(3, victimHeight);
++							GameLogicRandomValue(1, 100);
++						}
++#endif
+ 
+ 						ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(tmp);
+ 
+ 						if (sys)
+ 						{
+ 							Coord3D offs = {0,0,0};
+-							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs );
+-							offs.z = GameLogicRandomValue(3, victimHeight);
++							curVictim->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, ClientRandomValueClass() );
++							offs.z = GameClientRandomValue(3, victimHeight);
+ 
+ 							//This puts all the sparks within a quadrahemicycloid (rectangular dome) volume
+ 							//The same shape as a four cornered camping dome tent, for those with less Greek
+@@ -328,7 +338,7 @@ void EMPUpdate::doDisableAttack()
+ 							sys->attachToObject(curVictim);
+ 							sys->setPosition( &offs );
+ 							sys->setSystemLifetime(MAX(0, data->m_disabledDuration - 30));
+-							sys->setInitialDelay(GameLogicRandomValue(1,100));
++							sys->setInitialDelay(GameClientRandomValue(1,100));
+ 						}
+ 					}
+ 				}
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
+index fbbc907f31b..ba596b32152 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/SpecialAbilityUpdate.cpp
+@@ -1400,11 +1400,20 @@ void SpecialAbilityUpdate::triggerAbilityEffect()
+         const ParticleSystemTemplate *tmp = data->m_disableFXParticleSystem;
+         if (tmp)
+         {
++#if RETAIL_COMPATIBLE_CRC
++          // TheSuperHackers @fix The particle system is now decoupled from the logic crc
++          // and the side effects on the logic random seed values are preserved for retail compatibility.
++          {
++            Coord3D offs = {0,0,0};
++            target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, LogicRandomValueClass() );
++          }
++#endif
++
+           ParticleSystem *sys = TheParticleSystemManager->createParticleSystem(tmp);
+           if (sys)
+           {
+             Coord3D offs = {0,0,0};
+-            target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs );
++            target->getGeometryInfo().makeRandomOffsetWithinFootprint( offs, ClientRandomValueClass() );
+ 
+             sys->attachToObject(target);
+             sys->setPosition( &offs );

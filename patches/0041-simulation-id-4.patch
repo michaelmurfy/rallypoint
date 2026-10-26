@@ -1,0 +1,13 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 3ee26d8..77d83d3 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1301,7 +1301,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 3;
++		static const UnsignedInt kRallypointSimulationId = 4;
+ 		const UnsignedInt idBlock[2] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));

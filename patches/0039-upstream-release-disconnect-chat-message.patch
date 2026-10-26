@@ -1,0 +1,15 @@
+# TheSuperHackers/GeneralsGameCode a8464bcff: 2026-10-15 fix(network): Release the disconnect chat message after sending it (#3498)
+# Upstream fix, GPL-3.0 with EA's additional terms (see patches/LICENSE.md).
+diff --git a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+index e7454c1f89a..c7d5432514d 100644
+--- a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
++++ b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+@@ -2247,6 +2247,8 @@ void ConnectionManager::sendDisconnectChat(UnicodeString text) {
+ 
+ 	sendLocalCommandDirect(msg, 0xff ^ (1 << m_localSlot));
+ 	processDisconnectChat(msg);
++
++	msg->detach();
+ }
+ 
+ UnsignedShort ConnectionManager::sendFileAnnounce(AsciiString path, UnsignedByte playerMask)
