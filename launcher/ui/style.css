@@ -185,6 +185,8 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .live { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .live.ok { color: var(--ok-ink); } .live.bad { color: var(--bad-ink); }
 .page-status { min-height: 20px; margin: -6px 0 4px; position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 2px 0; }
+/* Idle, the bar must not stay pinned: it would be an empty strip that content scrolls under. */
+.page-status:has(.live:empty) { position: static; background: none; }
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--surface-2); border-top-color: var(--rose); animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--muted); } }
