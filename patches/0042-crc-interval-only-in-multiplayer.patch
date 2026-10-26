@@ -1,0 +1,24 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 0198bb4..44a53a7 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -3820,10 +3820,15 @@ void GameLogic::update()
+ 	// Rallypoint: sync logs ask for a checksum every 10 frames, but only the first 300 frames are written out. Taking one
+ 	// every 10 frames for the rest of the game costs a pass over every object ten times as often, which is felt as a
+ 	// stutter. After frame 300 the normal interval applies. It depends only on the frame, so every player agrees.
+-	Int crcInterval = TheGameInfo->getCRCInterval();
+-	if (crcInterval < 100 && m_frame > 300)
+-		crcInterval = 100;
+-	Bool generateForMP = (isMPGameOrReplay && (m_frame % crcInterval) == 0);
++	// TheGameInfo only exists in a multiplayer game or replay: the menu's background scene and skirmish run this too.
++	Bool generateForMP = FALSE;
++	if (isMPGameOrReplay)
++	{
++		Int crcInterval = TheGameInfo->getCRCInterval();
++		if (crcInterval < 100 && m_frame > 300)
++			crcInterval = 100;
++		generateForMP = (m_frame % crcInterval) == 0;
++	}
+ #ifdef DEBUG_CRC
+ 	Bool generateForSolo = isSoloGameOrReplay && ((m_frame && (m_frame%100 == 0)) ||
+ 		(getFrame() >= TheCRCFirstFrameToLog && getFrame() < TheCRCLastFrameToLog && ((m_frame % REPLAY_CRC_INTERVAL) == 0)));

@@ -1,6 +1,7 @@
 ## Rallypoint 0.3.4
 
 - **Fixes from the upstream game code.** The engine is based on the open-source community project TheSuperHackers/GeneralsGameCode, and 539 newer upstream commits had never been merged. This release takes the ones that apply cleanly: particle effects no longer affect the game's random numbers (a likely cause of Windows and Mac games drifting apart), checksum checks no longer give false alarms at the short intervals the sync logs use, the LAN lobby removes a player who leaves, and a few network clean-ups. `docs/upstream-fixes.md` lists what was taken and what could not be applied yet.
+- **Fixes the game not starting.** Version 0.3.3 crashed as soon as the game began, on macOS and Windows: a change meant for multiplayer ran in the main menu, where there is no multiplayer game. Use this release, not 0.3.3.
 - **Update every player together:** the game version changes, so players on older builds cannot join games with this one.
 
 ---
