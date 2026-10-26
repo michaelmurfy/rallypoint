@@ -1,0 +1,20 @@
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index 0c09cf3..b0f2533 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -356,6 +356,7 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
+ 					return HTCLIENT;
+ 				break;
+ 
++#ifdef WM_NCCALCSIZE // the macOS Win32 shim has no non-client messages (and no frame to put back)
+ 			//-------------------------------------------------------------------------
+ 			case WM_NCCALCSIZE:
+ 			case WM_NCPAINT:
+@@ -364,6 +365,7 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
+ 				if (TheGlobalData && !TheGlobalData->m_windowed)
+ 					return message == WM_NCACTIVATE ? TRUE : 0;
+ 				break;
++#endif
+ 
+ 			//-------------------------------------------------------------------------
+ 			case WM_POWERBROADCAST:
