@@ -1,0 +1,112 @@
+diff --git a/Core/GameEngine/Include/GameNetwork/RelayWire.h b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+index e0d58b4..c89e7f3 100644
+--- a/Core/GameEngine/Include/GameNetwork/RelayWire.h
++++ b/Core/GameEngine/Include/GameNetwork/RelayWire.h
+@@ -11,7 +11,7 @@
+ namespace RelayWire
+ {
+ 
+-enum Tag : uint8_t { TagBcast = 4, TagData = 5, TagBind = 7, TagCrc = 15, TagDesync = 16 };
++enum Tag : uint8_t { TagBcast = 4, TagData = 5, TagBind = 7, TagCrc = 15, TagDesync = 16, TagAuth = 17 };
+ static const size_t HEADER = 9; // tag + vip(4) + src port(2) + dst port(2)
+ 
+ struct Config
+@@ -20,6 +20,8 @@ struct Config
+ 	uint32_t agentIp; // host order
+ 	uint16_t agentPort;
+ 	uint32_t vip;     // host order
++	bool hasToken;
++	uint8_t token[16]; // GEN_RELAY_TOKEN: proves to the agent that we are the engine the launcher started
+ };
+ 
+ inline bool parseIp(const char *s, uint32_t &ip)
+@@ -31,9 +33,26 @@ inline bool parseIp(const char *s, uint32_t &ip)
+ 	return true;
+ }
+ 
+-inline Config parseConfig(const char *relay, const char *vip)
++inline bool parseToken(const char *s, uint8_t *out)
+ {
+-	Config c = { false, 0, 0, 0 };
++	if (!s || strlen(s) != 32)
++		return false;
++	for (int i = 0; i < 16; i++)
++	{
++		unsigned v;
++		char pair[3] = { s[i * 2], s[i * 2 + 1], 0 };
++		char *end = nullptr;
++		v = (unsigned)strtoul(pair, &end, 16);
++		if (!end || *end != 0)
++			return false;
++		out[i] = (uint8_t)v;
++	}
++	return true;
++}
++
++inline Config parseConfig(const char *relay, const char *vip, const char *token = nullptr)
++{
++	Config c = {};
+ 	unsigned port = 0;
+ 	char host[64];
+ 	if (!relay || !vip || sscanf(relay, "%63[0-9.]:%u", host, &port) != 2 || port == 0 || port > 65535)
+@@ -42,13 +61,14 @@ inline Config parseConfig(const char *relay, const char *vip)
+ 	{
+ 		c.agentPort = (uint16_t)port;
+ 		c.on = true;
++		c.hasToken = parseToken(token, c.token);
+ 	}
+ 	return c;
+ }
+ 
+ inline const Config &config()
+ {
+-	static const Config c = parseConfig(getenv("GEN_RELAY"), getenv("GEN_RELAY_VIP"));
++	static const Config c = parseConfig(getenv("GEN_RELAY"), getenv("GEN_RELAY_VIP"), getenv("GEN_RELAY_TOKEN"));
+ 	return c;
+ }
+ 
+@@ -69,6 +89,14 @@ inline size_t encode(uint8_t *out, size_t cap, uint32_t dstIp, uint16_t srcPort,
+ 	return HEADER + n;
+ }
+ 
++// Engine -> agent, first from every socket the engine uses: the agent ignores a local address until it has seen this.
++inline size_t encodeAuth(uint8_t *out, const uint8_t *token)
++{
++	out[0] = TagAuth;
++	memcpy(out + 1, token, 16);
++	return 17;
++}
++
+ inline size_t encodeBind(uint8_t *out, uint16_t port)
+ {
+ 	out[0] = TagBind;
+diff --git a/Core/GameEngine/Source/GameNetwork/udp.cpp b/Core/GameEngine/Source/GameNetwork/udp.cpp
+index b29c3d0..13cced5 100644
+--- a/Core/GameEngine/Source/GameNetwork/udp.cpp
++++ b/Core/GameEngine/Source/GameNetwork/udp.cpp
+@@ -214,6 +214,10 @@ Int UDP::Bind(UnsignedInt IP,UnsignedShort Port)
+     agent.sin_family = AF_INET;
+     agent.sin_addr.s_addr = htonl(relay.agentIp);
+     agent.sin_port = htons(relay.agentPort);
++    // The agent only listens to sockets that have proven they belong to the engine it started.
++    uint8_t authPkt[17];
++    const size_t an = RelayWire::encodeAuth(authPkt, relay.token);
++    sendto(fd,(const char *)authPkt,(int)an,0,(struct sockaddr *)&agent,sizeof(agent));
+     sendto(fd,(const char *)bindPkt,(int)n,0,(struct sockaddr *)&agent,sizeof(agent));
+   }
+ 
+@@ -333,6 +337,14 @@ void RelayWire_ReportCrc(uint32_t frame, uint32_t crc, bool host)
+   to.sin_family = AF_INET;
+   to.sin_addr.s_addr = htonl(relay.agentIp);
+   to.sin_port = htons(relay.agentPort);
++  static bool authed = false;
++  if (!authed)
++  {
++    uint8_t authPkt[17];
++    const size_t an = RelayWire::encodeAuth(authPkt, relay.token);
++    sendto(fd, (const char *)authPkt, (int)an, 0, (struct sockaddr *)&to, sizeof(to));
++    authed = true;
++  }
+   sendto(fd, (const char *)pkt, (int)n, 0, (struct sockaddr *)&to, sizeof(to));
+ }
+ 

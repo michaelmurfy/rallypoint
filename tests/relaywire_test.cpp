@@ -45,9 +45,19 @@ int main()
 	assert(!decodeDesync(nine, sizeof(nine), d));            // more than eight players
 	assert(!decodeDesync(golden, sizeof(golden), d));        // a data packet is not a verdict
 
+	// Auth matches Packet::Auth (bytes 0..15 as the token).
+	uint8_t token[16];
+	assert(parseToken("000102030405060708090a0b0c0d0e0f", token));
+	n = encodeAuth(out, token);
+	assert(n == 17 && out[0] == 17 && out[1] == 0 && out[16] == 15);
+	assert(!parseToken("0001", token) && !parseToken(nullptr, token) && !parseToken("zz0102030405060708090a0b0c0d0e0f", token));
+
 	// Env parsing.
 	Config c = parseConfig("127.0.0.1:47770", "10.77.0.2");
 	assert(c.on && c.agentIp == 0x7F000001 && c.agentPort == 47770 && c.vip == ((10u << 24) | (77u << 16) | 2u));
+	assert(!c.hasToken);
+	c = parseConfig("127.0.0.1:47770", "10.77.0.2", "000102030405060708090a0b0c0d0e0f");
+	assert(c.hasToken && c.token[15] == 15);
 	assert(!parseConfig(nullptr, "10.77.0.2").on);
 	assert(!parseConfig("127.0.0.1:0", "10.77.0.2").on);
 	assert(!parseConfig("127.0.0.1:5", "10.77.0.999").on);

@@ -1,3 +1,15 @@
+## Rallypoint 0.2.0-beta.7
+
+Still a **prerelease**. Security fixes from a review.
+
+- **Update the server and every launcher together.** The login handshake changed, so old launchers cannot join a new server and new launchers cannot join an old one. Run `make update` on your server after installing this version.
+- **Relay:** a malformed sync report could crash the relay and every room on it; fixed. A recorded login can no longer be replayed from another address to lock a player out. The country limit now refuses private addresses unless `ALLOW_PRIVATE=true` (behind Docker, proxied IPv6 clients looked private and all got through), and judges IPv4 clients on an IPv6 socket by their IPv4 address.
+- **Launcher:** mod and map archives containing links are refused before anything is unpacked. A server only ever receives the serial it issued (the saved serial is kept for your current server, otherwise you sign up again automatically). Other programs on your computer can no longer take over the connection to the game. A forged server-key packet can't drop a connected player. Mod installers can no longer exhaust memory.
+
+Multiplayer through the relay still hasn't been played from start to finish.
+
+---
+
 ## Rallypoint 0.2.0-beta.6
 
 Still a **prerelease**. A diagnostic build for the multiplayer desync.

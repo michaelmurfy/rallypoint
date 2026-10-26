@@ -115,7 +115,12 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
     if countries.is_empty() {
         eprintln!("country limit: none");
     } else {
-        let allow_private = env("ALLOW_PRIVATE", "true") != "false";
+        // Off unless asked for. Behind Docker's userland proxy (IPv6 clients, some setups) every client appears to come from
+        // the bridge gateway, 172.x, a "private" address: letting those through would let everyone past the country limit.
+        let allow_private = env("ALLOW_PRIVATE", "false") == "true";
+        if allow_private && std::path::Path::new("/.dockerenv").exists() {
+            eprintln!("country limit: ALLOW_PRIVATE=true inside Docker lets through anyone whose address Docker rewrites to its own (IPv6 clients, userland proxy)");
+        }
         let (filter, warnings) = geo::load(std::path::Path::new(&env("GEO_DIR", "/data/geo")), &countries, allow_private);
         for w in warnings {
             eprintln!("country limit: {w}");

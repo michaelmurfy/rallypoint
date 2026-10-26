@@ -145,6 +145,8 @@ pub struct Agent {
     server_key: Arc<Mutex<Option<Key>>>,
     learned: Arc<Mutex<Option<Key>>>,
     pinned: bool,
+    /// What the engine must present (`Packet::Auth`) before the agent listens to it.
+    token: [u8; 16],
     crypto: Arc<Mutex<Option<Arc<Crypto>>>>,
     relay: UdpSocket,
     stop: Arc<AtomicBool>,
@@ -185,6 +187,7 @@ impl Agent {
         // bytes to / from the relay, for the traffic rates
         let bytes: Arc<[AtomicU64; 2]> = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
         let (serial, room, verifier) = (serial.to_string(), room.to_string(), room_verifier(room, password));
+        let token = secure::random_token();
 
         // local -> relay
         let l2r = {
@@ -192,9 +195,18 @@ impl Agent {
                 (relay.try_clone()?, local.try_clone()?, status.clone(), stop.clone(), ports.clone(), crypto.clone(), bytes.clone());
             std::thread::spawn(move || {
                 let mut buf = [0u8; 2048];
+                // Local addresses that proved (with the token) they are the engine we started. Any other process on this
+                // machine, even another user's, can send to the loopback port; it must not bind ports or inject traffic.
+                let mut engine: std::collections::HashSet<SocketAddr> = std::collections::HashSet::new();
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((n, from)) = local.recv_from(&mut buf) else { continue };
                     match Packet::decode(&buf[..n]) {
+                        Some(Packet::Auth { token: t }) => {
+                            if t == token && engine.len() < 8 {
+                                engine.insert(from);
+                            }
+                        }
+                        Some(_) if !engine.contains(&from) => {}
                         // The tunnel is for the game only: its two ports and datagrams the engine made.
                         Some(Packet::Bind { port }) if GAME_PORTS.contains(&port) => {
                             ports.lock().unwrap().insert(port, from);
@@ -246,6 +258,9 @@ impl Agent {
                     if let Ok(n) = relay.recv(&mut buf) {
                         last_rx = Instant::now();
                         match Wire::decode(&buf[..n]) {
+                            // Unsigned, so only meaningful while we are still finding out who the server is. Once a session
+                            // exists a forged one (spoofed source, guessed port) must not be able to drop it.
+                            Some(Wire::KeyReply { .. }) if crypto.lock().unwrap().is_some() => {}
                             Some(Wire::KeyReply { key }) => {
                                 let mut known = server_key.lock().unwrap();
                                 match *known {
@@ -261,7 +276,14 @@ impl Agent {
                                     _ => {}
                                 }
                             }
-                            Some(Wire::Challenge { cookie: c }) => cookie = c, // the next tick resends with it
+                            // The first message is bound to this cookie (see `secure::client_start`), so a new cookie means building
+                            // it again. Ignored once connected.
+                            Some(Wire::Challenge { cookie: c }) if crypto.lock().unwrap().is_none() => {
+                                if c != cookie {
+                                    cookie = c;
+                                    pending = None;
+                                }
+                            }
                             Some(Wire::Hs2 { msg }) => {
                                 if let Some((_, p)) = pending.take() {
                                     match p.finish(&msg) {
@@ -344,14 +366,19 @@ impl Agent {
                                 let _ = relay.send(&Wire::KeyRequest.encode()); // first visit: learn who we are talking to
                             }
                             Some(k) => {
-                                if pending.is_none() {
-                                    let first = if serial.is_empty() { Packet::Register } else { Packet::Hello { serial: serial.clone(), room: room.clone(), verifier } };
-                                    if let Ok((msg, p)) = secure::client_start(&k, &first) {
-                                        pending = Some((msg, p));
+                                if cookie == [0; 16] {
+                                    // No cookie yet: a first message of the right size only asks for one, its content is ignored.
+                                    let _ = relay.send(&Wire::Hs1 { cookie, msg: vec![0; 80] }.encode());
+                                } else {
+                                    if pending.is_none() {
+                                        let first = if serial.is_empty() { Packet::Register } else { Packet::Hello { serial: serial.clone(), room: room.clone(), verifier } };
+                                        if let Ok((msg, p)) = secure::client_start(&k, &first, &cookie) {
+                                            pending = Some((msg, p));
+                                        }
                                     }
-                                }
-                                if let Some((msg, _)) = &pending {
-                                    let _ = relay.send(&Wire::Hs1 { cookie, msg: msg.clone() }.encode());
+                                    if let Some((msg, _)) = &pending {
+                                        let _ = relay.send(&Wire::Hs1 { cookie, msg: msg.clone() }.encode());
+                                    }
                                 }
                                 // A pinned server that does not answer may be a different one: ask who it is.
                                 if pinned.is_some() && attempts % 4 == 0 {
@@ -383,7 +410,12 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, issued, server_key, learned, pinned: pinned.is_some(), crypto, relay, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, issued, server_key, learned, pinned: pinned.is_some(), token, crypto, relay, stop, threads: vec![l2r, r2l] })
+    }
+
+    /// The token to give the engine (`GEN_RELAY_TOKEN`), in hex.
+    pub fn token_hex(&self) -> String {
+        self.token.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// The serial the server issued to us, once; the caller must store it.

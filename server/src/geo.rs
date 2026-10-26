@@ -55,6 +55,12 @@ impl IpFilter {
         if !self.enabled {
             return true;
         }
+        // A dual-stack socket reports IPv4 clients as ::ffff:a.b.c.d; judge those by their IPv4 address. Real IPv6 is
+        // refused: the zone files only cover IPv4.
+        let ip = match ip {
+            IpAddr::V6(a) => a.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        };
         let IpAddr::V4(v4) = ip else { return false };
         let n = u32::from(v4);
         if self.allow_private && PRIVATE.iter().any(|&(s, e)| n >= s && n <= e) {
@@ -110,6 +116,10 @@ mod tests {
         let f = IpFilter::new(vec![], true);
         assert!(f.allows(ip("192.168.1.5")) && f.allows(ip("127.0.0.1")) && f.allows(ip("10.1.2.3")) && f.allows(ip("172.20.0.1")));
         assert!(!f.allows(ip("8.8.8.8")) && !f.allows(ip("::1")));
+        // IPv4 clients of a dual-stack socket are judged by their IPv4 address; other IPv6 is never let through
+        assert!(f.allows(ip("::ffff:192.168.1.5")) && !f.allows(ip("::ffff:8.8.8.8")) && !f.allows(ip("2001:db8::1")));
+        let nz = IpFilter::new(parse_cidrs("1.2.3.0/24\n"), false);
+        assert!(nz.allows(ip("::ffff:1.2.3.4")) && !nz.allows(ip("2001:db8::1")));
         assert!(!IpFilter::new(vec![], false).allows(ip("127.0.0.1")));
         assert!(IpFilter::disabled().allows(ip("8.8.8.8")));
     }

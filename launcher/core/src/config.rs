@@ -1,4 +1,5 @@
-//! Launcher settings. The serial is a credential the user never sees: stored with 0600 perms on unix and never logged.
+//! Launcher settings. A serial is a credential the user never sees: stored with 0600 perms on unix and never logged.
+//! Each server issues its own, and one is only ever sent to the server that issued it.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -6,6 +7,12 @@ use std::path::Path;
 pub struct Config {
     /// Relay server `host:port`.
     pub server: String,
+    /// The serial each server issued, keyed by `host:port` as typed, lower case. A serial sent to a different
+    /// server would let its operator join the first server as this player.
+    #[serde(default)]
+    pub serials: std::collections::BTreeMap<String, String>,
+    /// Before serials were kept per server there was only this one; `load` moves it into `serials` and clears it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub serial: String,
     /// Game data folder (the one with the `.big` files); empty = use whatever Steam detection finds.
     #[serde(default)]
@@ -45,7 +52,29 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Config {
-        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        let mut c: Config = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        c.migrate_serial();
+        c
+    }
+
+    /// The old single serial belongs to the server it was issued by, which is not recorded. It is only kept when the
+    /// current server is one whose identity was saved (a server we have signed up with); otherwise it is dropped,
+    /// which costs one automatic sign-up, instead of being sent to a server that never issued it.
+    fn migrate_serial(&mut self) {
+        let old = std::mem::take(&mut self.serial);
+        let key = self.server.to_lowercase();
+        if !old.is_empty() && !key.is_empty() && self.server_keys.contains_key(&key) {
+            self.serials.entry(key).or_insert(old);
+        }
+    }
+
+    /// The serial to join `server` with; empty means sign up first.
+    pub fn serial_for(&self, server: &str) -> &str {
+        self.serials.get(&server.to_lowercase()).map(String::as_str).unwrap_or("")
+    }
+
+    pub fn set_serial(&mut self, server: &str, serial: String) {
+        self.serials.insert(server.to_lowercase(), serial);
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -77,11 +106,13 @@ mod tests {
     #[test]
     fn roundtrip_and_permissions() {
         let p = std::env::temp_dir().join(format!("gen-cfg-{}/config.json", std::process::id()));
-        assert!(Config::load(&p).serial.is_empty()); // missing file -> default
-        let c = Config { server: "play.example:7777".into(), serial: "55BC-E547-64E4-5A53".into(), ..Default::default() };
+        assert!(Config::load(&p).serial_for("play.example:7777").is_empty()); // missing file -> default
+        let mut c = Config { server: "play.example:7777".into(), ..Default::default() };
+        c.set_serial("Play.Example:7777", "55BC-E547-64E4-5A53".into());
         c.save(&p).unwrap();
         let back = Config::load(&p);
-        assert_eq!((back.server.as_str(), back.serial.as_str()), ("play.example:7777", "55BC-E547-64E4-5A53"));
+        assert_eq!((back.server.as_str(), back.serial_for("PLAY.example:7777")), ("play.example:7777", "55BC-E547-64E4-5A53"));
+        assert_eq!(back.serial_for("other.example:7777"), "", "a serial is only for the server that issued it");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -96,5 +127,24 @@ mod tests {
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         }
         std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_old_single_serial_moves_only_to_a_server_we_know() {
+        let dir = std::env::temp_dir().join(format!("gen-cfg-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // the current server has a saved identity: the serial is kept for it, and the legacy field disappears on save
+        std::fs::write(&p, r#"{"server":"A.example:7777","serial":"AAAA-AAAA","server_keys":{"a.example:7777":"00"}}"#).unwrap();
+        let c = Config::load(&p);
+        assert_eq!(c.serial_for("a.example:7777"), "AAAA-AAAA");
+        c.save(&p).unwrap();
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("\"serial\":"));
+        // a server we never signed up with must not receive it
+        std::fs::write(&p, r#"{"server":"b.example:7777","serial":"AAAA-AAAA"}"#).unwrap();
+        let c = Config::load(&p);
+        assert_eq!((c.serial_for("b.example:7777"), c.serial.as_str()), ("", ""));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

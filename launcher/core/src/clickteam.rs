@@ -53,52 +53,52 @@ struct Entry {
     path: String,
 }
 
-fn bunzip(payload: &[u8], expected: usize) -> Result<Vec<u8>, String> {
-    let mut out = vec![0u8; expected];
-    let mut got = 0;
-    let mut dec = BzDecoder::new(payload);
-    while got < expected {
-        match dec.read(&mut out[got..]) {
-            Ok(0) => break,
-            Ok(n) => got += n,
-            Err(e) => return Err(format!("couldn't decompress the installer ({e})")),
-        }
+/// The file list is a few hundred kilobytes at most; a block claiming more is a decompression bomb.
+const MAX_LIST: u64 = 64 << 20;
+/// All the files of one installer together. Shockwave is about 3 GB.
+const MAX_TOTAL: u64 = 12 << 30;
+
+/// Copy a decoder's output to `sink`, never more than `expected` bytes (one more is read to notice an overrun), so a
+/// block that claims a small size cannot unpack to a huge one and nothing is allocated up front from a header value.
+/// `expected` 0 means the block did not say; `MAX_LIST` applies then.
+fn copy_limited(dec: impl Read, sink: &mut impl std::io::Write, expected: u64) -> Result<u64, String> {
+    let limit = if expected == 0 { MAX_LIST } else { expected };
+    let n = std::io::copy(&mut dec.take(limit + 1), sink).map_err(|e| format!("couldn't decompress the installer ({e})"))?;
+    if expected > 0 && n != expected {
+        return Err(format!("installer block decompressed to {n} bytes, expected {expected}"));
     }
-    if got != expected {
-        return Err(format!("installer block decompressed to {got} bytes, expected {expected}"));
+    if n > limit {
+        return Err("installer block is larger than it claims".into());
     }
-    Ok(out)
+    Ok(n)
 }
 
-fn inflate(payload: &[u8], expected: usize) -> Result<Vec<u8>, String> {
-    let raw = if payload.len() >= 2 && payload[0] == 0x78 { &payload[2..] } else { payload };
-    let mut out = Vec::new();
-    DeflateDecoder::new(raw).read_to_end(&mut out).map_err(|e| format!("couldn't decompress the installer ({e})"))?;
-    if expected > 0 && out.len() > expected {
-        out.truncate(expected);
+/// Decode `payload` (`method`: 0 stored, 1 deflate, 2 bzip2) into `sink`.
+fn decode_into(method: u8, payload: &[u8], expected: u64, sink: &mut impl std::io::Write) -> Result<(), String> {
+    match method {
+        0 => {
+            let plain = payload.get(..expected as usize).ok_or("an installer block is truncated")?;
+            sink.write_all(plain).map_err(|e| e.to_string())
+        }
+        1 => {
+            let raw = if payload.len() >= 2 && payload[0] == 0x78 { &payload[2..] } else { payload };
+            copy_limited(DeflateDecoder::new(raw), sink, expected).map(|_| ())
+        }
+        2 => copy_limited(BzDecoder::new(payload), sink, expected).map(|_| ()),
+        _ => Err("this installer uses a compression Rallypoint can't read".into()),
     }
-    if expected > 0 && out.len() != expected {
-        return Err(format!("installer block decompressed to {} bytes, expected {expected}", out.len()));
-    }
-    Ok(out)
 }
 
 fn decompress_block(block: &[u8]) -> Result<Vec<u8>, String> {
     let mut r = Rd { d: block, p: 0 };
-    let expected = r.u32().ok_or("truncated installer block")? as usize;
+    let expected = r.u32().ok_or("truncated installer block")? as u64;
     let method = r.u8().ok_or("truncated installer block")?;
-    let payload = &block[r.p..];
-    match method {
-        0 => {
-            if payload.len() < expected {
-                return Err("uncompressed installer block is short".into());
-            }
-            Ok(payload[..expected].to_vec())
-        }
-        1 => inflate(payload, expected),
-        2 => bunzip(payload, expected),
-        _ => Err("this installer uses a compression Rallypoint can't read".into()),
+    if expected > MAX_LIST {
+        return Err("the installer's file list is implausibly large".into());
     }
+    let mut out = Vec::new();
+    decode_into(method, &block[r.p..], expected, &mut out)?;
+    Ok(out)
 }
 
 /// A path inside the archive that stays under the destination. Installer launchers are dropped.
@@ -401,13 +401,15 @@ fn write_entry(data: &[u8], data_at: usize, e: &Entry, dest: &Path) -> Result<()
     let mut r = Rd { d: bytes, p: 0 };
     let method = r.u8().ok_or_else(|| format!("{} is truncated", e.path))?;
     let payload = bytes.get(r.p..).unwrap_or(&[]);
-    let plain = match method {
-        0 => payload.get(..e.uncompressed as usize).ok_or_else(|| format!("{} is truncated", e.path))?.to_vec(),
-        1 => inflate(payload, e.uncompressed as usize)?,
-        2 => bunzip(payload, e.uncompressed as usize)?,
-        _ => return Err(format!("{} uses a compression Rallypoint can't read", e.path)),
-    };
-    std::fs::write(&to, plain).map_err(|err| err.to_string())?;
+    // Straight to disk, so a file is never held in memory twice and a bomb stops at the size it claimed.
+    let file = std::fs::File::create(&to).map_err(|err| err.to_string())?;
+    let mut sink = std::io::BufWriter::new(file);
+    let done = decode_into(method, payload, e.uncompressed as u64, &mut sink).and_then(|_| std::io::Write::flush(&mut sink).map_err(|err| err.to_string()));
+    if let Err(err) = done {
+        drop(sink);
+        let _ = std::fs::remove_file(&to);
+        return Err(format!("{}: {err}", e.path));
+    }
     Ok(())
 }
 
@@ -440,7 +442,12 @@ pub fn extract_into(exe: &Path, dest: &Path) -> Result<(), String> {
     let data_at = data_at(&data, at).ok_or("the installer has a file list but no file data")?;
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let mut wrote = 0usize;
+    let mut total = 0u64;
     for e in &entries {
+        total += e.uncompressed as u64;
+        if total > MAX_TOTAL {
+            return Err("the installer unpacks to more data than Rallypoint will write".into());
+        }
         let before = rel_path(&e.path).is_some();
         write_entry(&data, data_at, e, dest)?;
         wrote += before as usize;
@@ -534,6 +541,28 @@ pub(crate) fn sample_installer(big_name: &str, big: &[u8], launcher_name: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decompression_bomb_stops_at_the_size_it_claimed() {
+        use std::io::Write;
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        enc.write_all(&vec![0u8; 8 << 20]).unwrap();
+        let bomb = enc.finish().unwrap();
+        assert!(bomb.len() < 20_000, "8 MB of zeros packs small");
+        // claims 1000 bytes, holds 8 MB: refused, and only 1001 bytes were ever produced
+        let mut sink = Vec::new();
+        assert!(decode_into(1, &bomb, 1000, &mut sink).is_err());
+        assert!(sink.len() <= 1001);
+        // claims 4 GB, holds 8 MB: refused without allocating 4 GB up front
+        let mut sink = Vec::new();
+        assert!(decode_into(1, &bomb, u32::MAX as u64, &mut sink).unwrap_err().contains("expected"));
+        assert!(sink.len() <= 8 << 20);
+        // a block header claiming a huge file list is refused outright
+        let mut block = (u32::MAX).to_le_bytes().to_vec();
+        block.push(1);
+        block.extend_from_slice(&bomb);
+        assert!(decompress_block(&block).unwrap_err().contains("implausibly"));
+    }
 
     #[test]
     fn unpacks_archives_and_drops_the_launcher() {

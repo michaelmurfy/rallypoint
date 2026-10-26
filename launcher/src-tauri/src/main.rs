@@ -19,6 +19,9 @@ struct Watch {
     id: String,
     since: SystemTime,
 }
+/// The server (lower case `host:port`) the running agent was started for.
+#[derive(Default)]
+struct RelayServer(Mutex<String>);
 #[derive(Default)]
 struct ModWatch(Mutex<Option<Watch>>);
 #[derive(Default)]
@@ -282,7 +285,7 @@ fn set_setup_done(app: tauri::AppHandle, done: bool) -> Result<(), String> {
 
 /// Joins `room` on the relay, creating it with `password` if nobody is in it. Signing up with the server is automatic.
 #[tauri::command]
-fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, password: String) -> Result<(), String> {
+fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, relay_server: tauri::State<RelayServer>, password: String) -> Result<(), String> {
     let c = Config::load(&config_path(&app)?);
     if c.server.is_empty() {
         return Err("Enter the server address first".into());
@@ -291,7 +294,8 @@ fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, password: St
         return Err("Enter a room name first".into());
     }
     let pinned = c.server_keys.get(&c.server.to_lowercase()).and_then(|k| generals_proto::secure::from_hex(k));
-    let agent = Agent::start(&c.server, &c.serial, &c.room, &password, pinned).map_err(|e| e.to_string())?;
+    let agent = Agent::start(&c.server, c.serial_for(&c.server), &c.room, &password, pinned).map_err(|e| e.to_string())?;
+    *relay_server.0.lock().unwrap() = c.server.to_lowercase(); // what the agent was started for, whatever the settings say later
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent leaves its room
     Ok(())
 }
@@ -318,7 +322,7 @@ fn relay_diagnostics(relay: tauri::State<Relay>) -> Option<generals_core::agent:
 }
 
 #[tauri::command]
-fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
+fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>, relay_server: tauri::State<RelayServer>) -> String {
     use generals_proto::Reason::*;
     let guard = relay.0.lock().unwrap();
     // First connect: the server signed us up behind the scenes; keep the result for next time.
@@ -326,12 +330,13 @@ fn relay_status(app: tauri::AppHandle, relay: tauri::State<Relay>) -> String {
         let (serial, key) = (a.take_issued(), a.take_learned_key());
         if serial.is_some() || key.is_some() {
             let mut c = Config::load(&path);
+            let server = relay_server.0.lock().unwrap().clone();
             if let Some(serial) = serial {
-                c.serial = serial;
+                c.set_serial(&server, serial);
             }
             // First visit to this server: remember who it is, so a different one answering later is caught.
             if let Some(key) = key {
-                c.server_keys.insert(c.server.to_lowercase(), generals_proto::secure::to_hex(&key));
+                c.server_keys.insert(server, generals_proto::secure::to_hex(&key));
             }
             let _ = c.save(&path);
         }
@@ -597,6 +602,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
+    let relay_cfg_on = relay_cfg.is_some();
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
         sync_logs: if Config::load(&config_path(&app)?).sync_logs {
@@ -618,6 +624,12 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
+            // The agent only listens to an engine that presents this (other local processes can reach its port).
+            if relay_cfg_on {
+                if let Some(t) = relay.0.lock().unwrap().as_ref().map(|a| a.token_hex()) {
+                    env.push(("GEN_RELAY_TOKEN".to_string(), t));
+                }
+            }
             // Zero Hour also reads the base game's files.
             if let Some(b) = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base)) {
                 env.push(("GEN_GENERALS_PATH".to_string(), b.to_string_lossy().to_string()));
@@ -646,6 +658,7 @@ fn main() {
     tauri::Builder::default()
         .manage(Relay::default())
         .manage(Downloads::default())
+        .manage(RelayServer::default())
         .manage(ModWatch::default())
         .manage(Updates::default())
         .manage(MapJobs::default())
