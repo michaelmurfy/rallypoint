@@ -7,7 +7,7 @@ use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip,
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -193,10 +193,40 @@ pub struct Agent {
     pinned: bool,
     /// What the engine must present (`Packet::Auth`) before the agent listens to it.
     token: [u8; 16],
+    /// Raised each time the launcher starts an engine: the engines of earlier games are forgotten (see `EngineSet`).
+    engine_epoch: Arc<AtomicU32>,
     crypto: Arc<Mutex<Option<Arc<Crypto>>>>,
     relay: UdpSocket,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+}
+
+/// The local addresses that proved (with the token) they belong to the engine we started. A game opens several sockets
+/// (lobby, game, checksums); only a bounded number are admitted, and a new game starts from an empty set.
+#[derive(Default)]
+struct EngineSet {
+    addrs: std::collections::HashSet<SocketAddr>,
+    epoch: u32,
+}
+
+impl EngineSet {
+    /// Returns true when a new game began since the last call (and the set was emptied).
+    fn new_epoch(&mut self, epoch: u32) -> bool {
+        if epoch == self.epoch {
+            return false;
+        }
+        self.epoch = epoch;
+        self.addrs.clear();
+        true
+    }
+    fn admit(&mut self, from: SocketAddr) {
+        if self.addrs.len() < 16 {
+            self.addrs.insert(from);
+        }
+    }
+    fn contains(&self, a: &SocketAddr) -> bool {
+        self.addrs.contains(a)
+    }
 }
 
 /// Send `p` encrypted, if a session exists.
@@ -237,22 +267,28 @@ impl Agent {
         let bytes: Arc<[AtomicU64; 2]> = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
         let (serial, room, verifier) = (serial.to_string(), room.to_string(), room_verifier(room, password));
         let token = secure::random_token();
+        let engine_epoch = Arc::new(AtomicU32::new(0));
 
         // local -> relay
         let l2r = {
             let (relay, local, status, stop, ports, crypto, bytes) =
                 (relay.try_clone()?, local.try_clone()?, status.clone(), stop.clone(), ports.clone(), crypto.clone(), bytes.clone());
+            let epoch = engine_epoch.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 2048];
                 // Local addresses that proved (with the token) they are the engine we started. Any other process on this
                 // machine, even another user's, can send to the loopback port; it must not bind ports or inject traffic.
-                let mut engine: std::collections::HashSet<SocketAddr> = std::collections::HashSet::new();
+                let mut engine = EngineSet::default();
                 while !stop.load(Ordering::Relaxed) {
                     let Ok((n, from)) = local.recv_from(&mut buf) else { continue };
+                    // A new game was started: the sockets of the one before are gone, and so are the ports bound to them.
+                    if engine.new_epoch(epoch.load(Ordering::Relaxed)) {
+                        ports.lock().unwrap().clear();
+                    }
                     match Packet::decode(&buf[..n]) {
                         Some(Packet::Auth { token: t }) => {
-                            if t == token && engine.len() < 8 {
-                                engine.insert(from);
+                            if t == token {
+                                engine.admit(from);
                             }
                         }
                         Some(_) if !engine.contains(&from) => {}
@@ -482,7 +518,7 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, crypto, relay, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, stop, threads: vec![l2r, r2l] })
     }
 
     /// Where the connection is and what to check, for the Online page.
@@ -499,6 +535,13 @@ impl Agent {
             address_changed: p.address_changed,
             hint: connect_hint(stage, p.replies, waited, &self.address),
         }
+    }
+
+    /// The launcher is starting an engine: forget the ones of earlier games. Each engine opens several sockets and the
+    /// agent only listens to a few, so after a couple of games without reconnecting the next game's sockets were refused:
+    /// the lobby worked (its sockets came first) and the game never loaded.
+    pub fn new_engine(&self) {
+        self.engine_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The token to give the engine (`GEN_RELAY_TOKEN`), in hex.
@@ -548,6 +591,28 @@ impl Drop for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_game_gets_its_sockets_admitted_however_many_games_came_before() {
+        let sock = |p: u16| -> SocketAddr { format!("127.0.0.1:{p}").parse().unwrap() };
+        let mut e = EngineSet::default();
+        // four games of four sockets each, without reconnecting: the old limit of eight refused the third game
+        for game in 1..=4u32 {
+            assert_eq!(e.new_epoch(game), true);
+            for k in 0..4u16 {
+                let a = sock(40000 + game as u16 * 10 + k);
+                e.admit(a);
+                assert!(e.contains(&a), "game {game} socket {k}");
+            }
+            assert!(!e.contains(&sock(40000 + (game as u16 - 1) * 10)) || game == 1, "the earlier game's socket is forgotten");
+            assert!(!e.new_epoch(game));
+        }
+        // a flood from one process is still bounded
+        for p in 0..100u16 {
+            e.admit(sock(50000 + p));
+        }
+        assert!(e.addrs.len() <= 16);
+    }
 
     #[test]
     fn explains_why_it_cannot_connect() {
