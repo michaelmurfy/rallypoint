@@ -1,3 +1,9 @@
+## Rallypoint 0.3.1
+
+Rallypoint 0.3.0 was never published: its macOS build failed to compile. This release has everything in it (see 0.3.0 below) plus the fix, so use this one. As before, **update the server and every launcher together**.
+
+---
+
 ## Rallypoint 0.3.0
 
 The first release that is no longer marked as a prerelease. Multiplayer between macOS and Windows has not yet been played from start to finish, so please keep Settings > Multiplayer sync logs on and report what you find.
