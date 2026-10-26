@@ -1,0 +1,44 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWMath/wwmath.h b/Core/Libraries/Source/WWVegas/WWMath/wwmath.h
+index 5004f67..4486d39 100644
+--- a/Core/Libraries/Source/WWVegas/WWMath/wwmath.h
++++ b/Core/Libraries/Source/WWVegas/WWMath/wwmath.h
+@@ -349,7 +349,7 @@ WWINLINE long WWMath::Float_To_Long(double f)
+ // Cos
+ // ----------------------------------------------------------------------------
+ 
+-#if defined(_MSC_VER) && defined(_M_IX86)
++#if 0 // Rallypoint: the x87 version gives different results from the portable one, which broke multiplayer between Windows and macOS
+ WWINLINE float WWMath::Cos(float val)
+ {
+ 	float retval;
+@@ -371,7 +371,7 @@ WWINLINE float WWMath::Cos(float val)
+ // Sin
+ // ----------------------------------------------------------------------------
+ 
+-#if defined(_MSC_VER) && defined(_M_IX86)
++#if 0 // Rallypoint: the x87 version gives different results from the portable one, which broke multiplayer between Windows and macOS
+ WWINLINE float WWMath::Sin(float val)
+ {
+ 	float retval;
+@@ -609,7 +609,7 @@ WWINLINE int WWMath::Float_To_Int_Floor (const float& f)
+ // Inverse square root
+ // ----------------------------------------------------------------------------
+ 
+-#if defined(_MSC_VER) && defined(_M_IX86)
++#if 0 // Rallypoint: the x87 version gives different results from the portable one, which broke multiplayer between Windows and macOS
+ WWINLINE float WWMath::Inv_Sqrt(float a)
+ {
+ 	float retval;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 1ed8ada..3ee26d8 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1301,7 +1301,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 2;
++		static const UnsignedInt kRallypointSimulationId = 3;
+ 		const UnsignedInt idBlock[2] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));
