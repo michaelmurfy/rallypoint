@@ -2,6 +2,8 @@
 
 - **The server runs on ARM.** The Docker image is now multi-architecture (x86_64, arm64 and armv7), so `make up` works on a Raspberry Pi 3, 4 or 5 and on ARM cloud servers. Each release also has plain server downloads for Linux x86_64, arm64 and armv7, macOS (Apple silicon) and Windows.
 - **A tidier connection readout.** Under "Online" in the bottom-left corner, ping, players in your room and packet loss now sit in a small panel of three readings instead of loose text, and nothing shows under "Offline" any more (it used to print "null").
+---
+
 ## Rallypoint 0.4.2
 
 - **Changing games no longer breaks the lobby.** Starting the game a second or third time without disconnecting and reconnecting (Shockwave, then Zero Hour) left you able to see each other in the lobby while the game never loaded. Rallypoint only listened to the first few network sockets the games opened, so a later game's were ignored; each new game now starts fresh.
