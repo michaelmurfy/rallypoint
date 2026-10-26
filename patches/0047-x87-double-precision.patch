@@ -1,0 +1,215 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/detmath.h b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
+index 3338a1d..d62b2ba 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/detmath.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/detmath.h
+@@ -12,11 +12,40 @@
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
++#if defined(_MSC_VER) && defined(_M_IX86)
++#include <float.h>
++#endif
+ 
+ namespace DetMath
+ {
+ namespace detail
+ {
++	// The game sets the x87 unit to 24-bit precision (setFPMode), which is right for float arithmetic but turns every
++	// double operation compiled to x87 instructions into a single-precision one: on 2026-10-26 the game logged
++	// DetMath::sin(0x3F490FDB) = 0x3FE6A09E80000000 on Windows against 0x3FE6A09E6ECB41FE on macOS, and an AI-placed
++	// building ended one ulp apart. Every double function below runs at 53-bit precision, then puts the setting back.
++	// (Nothing happens where doubles are computed with SSE2 or on ARM.)
++#if defined(_MSC_VER) && defined(_M_IX86)
++	struct DoublePrecision
++	{
++		unsigned saved;
++		bool changed;
++		DoublePrecision() : saved(0), changed(false)
++		{
++			const unsigned cw = _controlfp(0, 0);
++			if ((cw & _MCW_PC) != _PC_53)
++			{
++				saved = cw & _MCW_PC;
++				_controlfp(_PC_53, _MCW_PC);
++				changed = true;
++			}
++		}
++		~DoublePrecision() { if (changed) _controlfp(saved, _MCW_PC); }
++	};
++#else
++	struct DoublePrecision { DoublePrecision() {} };
++#endif
++
+ 	// Plain helpers instead of std::isinf & co: some platform headers define those (and PI) as macros.
+ 	inline bool isNaN(double x) { return x != x; }
+ 	inline bool isInf(double x) { return x > 1.7976931348623157e308 || x < -1.7976931348623157e308; }
+@@ -137,6 +166,7 @@ namespace detail
+ 
+ inline double sin(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || detail::isInf(x)) return detail::quietNaN();
+ 	double r;
+ 	const int q = detail::reduce(x, r);
+@@ -151,6 +181,7 @@ inline double sin(double x)
+ 
+ inline double cos(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || detail::isInf(x)) return detail::quietNaN();
+ 	double r;
+ 	const int q = detail::reduce(x, r);
+@@ -165,6 +196,7 @@ inline double cos(double x)
+ 
+ inline double tan(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || detail::isInf(x)) return detail::quietNaN();
+ 	double r;
+ 	const int q = detail::reduce(x, r);
+@@ -174,6 +206,7 @@ inline double tan(double x)
+ 
+ inline double atan(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x) return x;
+ 	const double ax = std::fabs(x);
+ 	double a;
+@@ -188,6 +221,7 @@ inline double atan(double x)
+ 
+ inline double atan2(double y, double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || y != y) return detail::quietNaN();
+ 	if (y == 0.0)
+ 		return detail::signBit(x) ? (detail::signBit(y) ? -detail::K_PI : detail::K_PI) : y;
+@@ -212,6 +246,7 @@ inline double atan2(double y, double x)
+ 
+ inline double asin(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || std::fabs(x) > 1.0) return detail::quietNaN();
+ 	if (x == 1.0) return detail::K_PIO2;
+ 	if (x == -1.0) return -detail::K_PIO2;
+@@ -220,12 +255,14 @@ inline double asin(double x)
+ 
+ inline double acos(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x || std::fabs(x) > 1.0) return detail::quietNaN();
+ 	return atan2(std::sqrt((1.0 - x) * (1.0 + x)), x);
+ }
+ 
+ inline double exp(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x) return x;
+ 	if (x > 709.0) return detail::posInf();
+ 	if (x < -745.0) return 0.0;
+@@ -259,6 +296,7 @@ inline double exp(double x)
+ 
+ inline double log(double x)
+ {
++	detail::DoublePrecision precision;
+ 	if (x != x) return x;
+ 	if (x < 0.0) return detail::quietNaN();
+ 	if (x == 0.0) return -detail::posInf();
+@@ -295,6 +333,7 @@ inline double log(double x)
+ 
+ inline double pow(double x, double y)
+ {
++	detail::DoublePrecision precision;
+ 	if (y == 0.0 || x == 1.0) return 1.0;
+ 	if (x != x || y != y) return detail::quietNaN();
+ 	if (y == 2.0) return x * x; // the game's own use: distances squared
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index d8bf711..91b8f0d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -56,6 +56,7 @@
+ #include "GameLogic/AI.h"
+ #include "GameLogic/TerrainLogic.h"
+ #include "Lib/trig.h"
++#include "GameLogic/FPUControl.h"
+ #include "detmath.h"
+ #include "GameLogic/Weapon.h"
+ #include "GameLogic/Module/BodyModule.h"
+@@ -1291,7 +1292,9 @@ static UnsignedInt mathFingerprint()
+ 		Hash() : h(2166136261u) {}
+ 		void mix(float v) { UnsignedInt b; memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 16777619u; } }
+ 	};
+-	Hash trig, inverse, expo, matrix;
++	// the simulation runs with the FPU set like this, so the fingerprint does too
++	setFPMode();
++	Hash trig, inverse, expo, matrix, doubles;
+ 	UnsignedInt lcg = 12345u;
+ 	const float knownAngles[2] = { 0.78539818525f, -2.6354470253f };
+ 	for (int i = 0; i < 4098; ++i)
+@@ -1308,6 +1311,12 @@ static UnsignedInt mathFingerprint()
+ 		const float pos = 0.001f + (x < 0 ? -x : x);
+ 		expo.mix(DetMath::expf(unit * 8.0f)); expo.mix(DetMath::logf(pos)); expo.mix(DetMath::powf(pos, 0.5f + unit * 0.4f));
+ 		expo.mix((float)sqrt((double)pos)); expo.mix(sqrtf(pos));
++		{
++			// the double flavours the game logic calls (the 53-bit results, as 32-bit halves)
++			const double xd = (double)x * 0.37, pd = (double)pos;
++			const double ds[7] = { DetMath::sin(xd), DetMath::cos(xd), DetMath::atan2(xd, pd), DetMath::exp(unit * 5.0), DetMath::log(pd), DetMath::pow(pd, 0.3), (xd * pd + 0.1) / (pd + 1.0) };
++			for (int k = 0; k < 7; ++k) { UnsignedInt w[2]; memcpy(w, &ds[k], 8); doubles.h ^= w[0]; doubles.h *= 16777619u; doubles.h ^= w[1]; doubles.h *= 16777619u; }
++		}
+ 		if (i < 512)
+ 		{
+ 			Coord3D pos3 = { 100.0f, 200.0f, 0.0f }, up = { 0.0f, 0.0f, 1.0f }, slope = { 0.2f, -0.1f, 0.9746794f };
+@@ -1317,11 +1326,11 @@ static UnsignedInt mathFingerprint()
+ 			for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c) { matrix.mix(m[r][c]); matrix.mix(m2[r][c]); }
+ 		}
+ 	}
+-	const UnsignedInt parts[4] = { trig.h, inverse.h, expo.h, matrix.h };
+-	fprintf(stderr, "[env] math fingerprint: sin/cos/tan %08X, inverse trig %08X, exp/log/pow/sqrt %08X, object matrices %08X\n", parts[0], parts[1], parts[2], parts[3]);
++	const UnsignedInt parts[5] = { trig.h, inverse.h, expo.h, matrix.h, doubles.h };
++	fprintf(stderr, "[env] math fingerprint: sin/cos/tan %08X, inverse trig %08X, exp/log/pow/sqrt %08X, object matrices %08X, double precision %08X\n", parts[0], parts[1], parts[2], parts[3], parts[4]);
+ 	fflush(stderr);
+ 	UnsignedInt all = 2166136261u;
+-	for (int i = 0; i < 4; ++i) { all ^= parts[i]; all *= 16777619u; }
++	for (int i = 0; i < 5; ++i) { all ^= parts[i]; all *= 16777619u; }
+ 	return all;
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 5c11583..d971103 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -1203,6 +1203,18 @@ static void logFloatEnvironment()
+ 		memcpy(&d0, &ds, 8); memcpy(&d1, &dc, 8);
+ 		fprintf(stderr, "[env] angle %08X: Sin %08X Cos %08X, DetMath double sin %016llX cos %016llX, libm sinf %08X cosf %08X\n", angleBits[i], o0, o1, d0, d1, c0, c1);
+ 	}
++	{
++		// Double arithmetic as the game runs it: 1/3 should be 3FD5555555555555 and (1/3)*3 exactly 1. At x87 24-bit
++		// precision they are single precision values.
++		volatile double d1 = 1.0, d3 = 3.0, dp = 0.1;
++		double third = d1 / d3, back = third * d3, tenth = dp * dp;
++		unsigned long long b0, b1, b2;
++		memcpy(&b0, &third, 8); memcpy(&b1, &back, 8); memcpy(&b2, &tenth, 8);
++#if defined(_MSC_VER) && defined(_M_IX86)
++		fprintf(stderr, "[env] x87 control word %08X, _M_IX86_FP %d\n", (unsigned)_controlfp(0, 0), (int)_M_IX86_FP);
++#endif
++		fprintf(stderr, "[env] double probes: 1/3 %016llX, (1/3)*3 %016llX, 0.1*0.1 %016llX (should be 3FD5555555555555, 3FF0000000000000, 3F847AE147AE147C)\n", b0, b1, b2);
++	}
+ 	fflush(stderr);
+ }
+ 
+diff --git a/cmake/compilers.cmake b/cmake/compilers.cmake
+index e63161f..a958d92 100644
+--- a/cmake/compilers.cmake
++++ b/cmake/compilers.cmake
+@@ -51,6 +51,12 @@ if (NOT IS_VS6_BUILD)
+         add_compile_options(/Zc:__cplusplus)
+         # Strict IEEE float semantics (the default, stated so it is not changed by accident): multiplayer needs identical bits.
+         add_compile_options(/fp:precise)
++        # SSE2 for floats and doubles on 32-bit x86 (also the compiler's default; stated so it stays that way): the x87
++        # unit runs at the 24-bit precision the game sets, which makes doubles single precision and differ from other
++        # platforms. See DetMath::detail::DoublePrecision.
++        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
++            add_compile_options(/arch:SSE2)
++        endif()
+     else()
+         add_compile_options(-Wsuggest-override)
+     endif()

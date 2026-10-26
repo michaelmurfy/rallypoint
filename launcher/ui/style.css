@@ -275,9 +275,9 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .organiser-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .organiser-bar input[type=text] { flex: 1 1 200px; width: auto; }
 .organiser-bar select { width: auto; max-width: 240px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 32px; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-height: 28px; }
 .chiplabel { margin-right: 4px; }
-.chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; font-size: 13px; padding: 4px 11px; border-radius: 999px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease); }
+.chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; font-size: 12px; padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease); }
 .chip:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 24%, transparent); }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -291,7 +291,7 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .seg:hover { color: var(--text); }
 .seg[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .maplist { display: grid; max-height: max(460px, 62vh); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-btn); background: var(--bg); }
-.maprow { display: grid; grid-template-columns: auto 1fr 180px 76px 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
+.maprow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
 .maprow:first-child { border-top: 0; }
 .maprow:hover { background: var(--surface-2); }
 .maprow.on { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
@@ -329,3 +329,26 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .setting-ctl input[type=text] { width: 12em; }
 .row:empty, .setting-desc:empty { display: none; }
 .setting-text > .muted:empty { display: none; }
+
+/* ---- maps: one bordered list with its own header (count, sort) and footer (bulk actions) ---- */
+.organiser { display: grid; gap: 14px; }
+.organiser h2 { font-size: 18px; }
+.chipcount { margin-left: 6px; font-weight: 500; opacity: .7; }
+.chip[aria-pressed="true"] .chipcount { opacity: .85; }
+.listbox { border: 1px solid var(--line); border-radius: var(--r-btn); background: var(--bg); overflow: hidden; display: grid; }
+.listhead, .listfoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; background: var(--surface); }
+.listhead { border-bottom: 1px solid var(--line); }
+.listfoot { border-top: 1px solid var(--line); }
+.listhead select { width: auto; height: 28px; font-size: 12px; padding-right: 30px; background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; }
+.listbox .maplist { border: 0; border-radius: 0; max-height: max(420px, 56vh); }
+.maptext { display: grid; min-width: 0; line-height: 1.3; }
+.maptext .mapname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapplayers { color: var(--text); min-width: 4.8em; text-align: right; }
+.row.center { justify-content: center; }
+
+.mod .stack.tight { gap: 6px; }
+.mod h3 { font-size: 15px; }
+.mod-links { margin-top: -2px; }
+
+.navmeta { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 2px 0 0 15px; font-size: 11px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.35; }
+.navmeta .ok { color: var(--ok-ink); } .navmeta .warn { color: var(--warn-ink); } .navmeta .bad { color: var(--bad-ink); }
