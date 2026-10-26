@@ -9,6 +9,7 @@ pub mod extract;
 pub mod graphics;
 pub mod icons;
 pub mod launch;
+pub mod maporg;
 pub mod maps;
 pub mod mods;
 pub mod proc;

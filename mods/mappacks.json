@@ -30,5 +30,17 @@
     "homepage": "https://www.gentool.net/download/",
     "zip_url": "https://www.gentool.net/download/Maps_3v3_ZH.zip",
     "size_mb": 4
+  },
+  {
+    "id": "epic-showdown-707",
+    "name": "Epic Showdown 707 map pack",
+    "description": "R1ckhy's collection of 780 community maps (no-money, survival, 1v1 to 6 player). Everything starts switched off: pick the maps you want in the organiser.",
+    "homepage": "https://www.moddb.com/mods/cc-epic-showdown-707-mappack",
+    "license": "",
+    "zip_url": "",
+    "manual": true,
+    "start_disabled": true,
+    "subdirs": [],
+    "size_mb": 248
   }
 ]

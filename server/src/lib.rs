@@ -121,6 +121,8 @@ pub struct Server {
     bad_passwords: HashMap<IpAddr, (u64, u32)>,
     new_serials: Vec<String>,
     sync: HashMap<String, RoomSync>,
+    /// serial -> virtual address last used in each room, kept while the room lives.
+    room_vips: HashMap<String, HashMap<String, u8>>,
     all_signups: Vec<u64>,
     bad_serials: HashMap<IpAddr, (u64, u32)>,
     version: String,
@@ -187,6 +189,7 @@ impl Server {
             bad_passwords: HashMap::new(),
             new_serials: vec![],
             sync: HashMap::new(),
+            room_vips: HashMap::new(),
             all_signups: vec![],
             bad_serials: HashMap::new(),
             version: String::new(),
@@ -334,6 +337,7 @@ impl Server {
         }
         self.rooms.retain(|name, _| used.contains(name));
         self.sync.retain(|name, _| used.contains(name));
+        self.room_vips.retain(|name, _| used.contains(name));
         for l in lines {
             self.note(l);
         }
@@ -406,6 +410,13 @@ impl Server {
         };
         let Ok((reply, crypto)) = pending.reply(&answer) else { return vec![] };
         if let Some(j) = join {
+            if let Some(old) = j.replaces {
+                if let Some(o) = self.sessions.remove(&old) {
+                    self.hs_cache.remove(&old);
+                    self.note(format!("takeover: {} rejoined room '{}' from {} (was {})", fmt_vip(o.vip), o.room, from, old));
+                }
+            }
+            self.room_vips.entry(j.room.clone()).or_default().insert(j.serial.clone(), j.vip[3]);
             let new_room = self.rooms.insert(j.room.clone(), j.verifier).is_none();
             let n = self.sessions.values().filter(|s| s.room == j.room).count() + 1;
             let tail = &j.serial[j.serial.len().saturating_sub(4)..];
@@ -593,11 +604,13 @@ impl Server {
         if self.sessions.remove(&from).is_some() {
             self.gc_rooms();
         }
-        if self.sessions.values().any(|s| s.serial == serial) {
-            return Err(Reason::InUse);
-        }
+        // The same serial joining again (from a new address after a network change, or because the old session is stale
+        // and the server has not noticed yet) takes over its old session instead of being refused: being locked out of
+        // a room for the 30 s the server needs to forget a dead session was how a lobby went "stale" until a manual
+        // disconnect and reconnect. Whoever holds the serial and the room password could join anyway.
+        let replaces = self.sessions.iter().find(|(_, s)| s.serial == serial).map(|(a, _)| *a);
         let ip = rate_key(from.ip());
-        if self.sessions.keys().filter(|a| rate_key(a.ip()) == ip).count() >= SESSIONS_PER_IP {
+        if self.sessions.keys().filter(|a| Some(**a) != replaces && rate_key(a.ip()) == ip).count() >= SESSIONS_PER_IP {
             return Err(Reason::RateLimited);
         }
         if self.bad_passwords.get(&ip).is_some_and(|&(t, n)| now.saturating_sub(t) < PASSWORD_WINDOW_SECS && n >= PASSWORD_TRIES) {
@@ -616,14 +629,17 @@ impl Server {
             None if self.rooms.len() >= MAX_ROOMS => return Err(Reason::Full),
             None => {}
         }
-        let used: HashSet<u8> = self.sessions.values().filter(|s| s.room == room).map(|s| s.vip[3]).collect();
+        let used: HashSet<u8> = self.sessions.iter().filter(|(a, s)| Some(**a) != replaces && s.room == room).map(|(_, s)| s.vip[3]).collect();
         if used.len() >= ROOM_SIZE {
             return Err(Reason::RoomFull);
         }
-        let Some(n) = (1..=254u8).find(|n| !used.contains(n)) else {
+        // A returning player gets the virtual address they had: the game was started knowing it, and the other players'
+        // lobbies refer to it, so a different one leaves them talking past each other.
+        let remembered = self.room_vips.get(&room).and_then(|m| m.get(&serial)).copied().filter(|n| !used.contains(n));
+        let Some(n) = remembered.or_else(|| (1..=254u8).find(|n| !used.contains(n))) else {
             return Err(Reason::RoomFull);
         };
-        Ok(Join { serial, room, verifier, vip: [VIP_PREFIX[0], VIP_PREFIX[1], VIP_PREFIX[2], n] })
+        Ok(Join { serial, room, verifier, vip: [VIP_PREFIX[0], VIP_PREFIX[1], VIP_PREFIX[2], n], replaces })
     }
 }
 
@@ -633,6 +649,8 @@ struct Join {
     room: String,
     verifier: Verifier,
     vip: Vip,
+    /// The player's own older session, which this one takes over.
+    replaces: Option<SocketAddr>,
 }
 
 #[cfg(test)]
@@ -740,7 +758,7 @@ mod tests {
         assert_eq!(w.join(addr(1), hello("CCC", "r", ""), 0), Packet::Reject(Reason::Revoked));
         assert_eq!(w.quick(addr(1), "AAA", "r", 0), [10, 77, 0, 1]);
         // a second address cannot reuse the serial
-        assert_eq!(w.join(addr(2), hello("AAA", "r", ""), 1), Packet::Reject(Reason::InUse));
+        // ...it takes over the old session instead (see below)
         // the same address restarting (new handshake) takes its own session over
         assert_eq!(w.quick(addr(1), "AAA", "r", 2), [10, 77, 0, 1]);
     }
@@ -1143,6 +1161,30 @@ mod tests {
         assert!(log.contains("DESYNC room 'r' frame 200") && log.contains("10.77.0.2=00000002 (odd)") && log.contains("host 10.77.0.1; certain; 1 frames agreed"), "{log}");
         assert!(log.contains("leave: 10.77.0.1") && log.contains("room 'r' closed: 1 checked frames agreed (last 100), 1 desync verdicts"), "{log}");
         assert!(w.s.take_events().is_empty(), "drained");
+    }
+
+    /// A network change gives the player a new source address while the server still holds the old session. The rejoin
+    /// takes the old session over and keeps the virtual address, so the game started with it and the others' lobbies stay valid.
+    #[test]
+    fn a_rejoining_player_takes_over_and_keeps_their_virtual_address() {
+        let mut w = World::standard();
+        assert_eq!(w.quick(addr(1), "AAA", "r", 0), [10, 77, 0, 1]);
+        assert_eq!(w.quick(addr(2), "BBB", "r", 0), [10, 77, 0, 2]);
+        // BBB reappears from a new address while the old one is still registered
+        assert_eq!(w.quick(addr(22), "BBB", "r", 5), [10, 77, 0, 2]);
+        assert_eq!(w.s.sessions.len(), 2, "the old session is gone");
+        let to_b = w.recipients(addr(1), Packet::Data { vip: [10, 77, 0, 2], src_port: 8088, dst_port: 8088, payload: game_packet(b"x") }, 6);
+        assert_eq!(to_b, [addr(22)], "traffic follows the new address");
+        // BBB and DDD drop out while AAA stays; DDD comes back first and still gets .3, not the lower free .2
+        let mut w = World::standard();
+        w.quick(addr(1), "AAA", "r", 0);
+        w.quick(addr(2), "BBB", "r", 0);
+        w.quick(addr(3), "DDD", "r", 0);
+        w.send(addr(1), Packet::Ping, SESSION_TIMEOUT_SECS);
+        w.s.expire(SESSION_TIMEOUT_SECS + 5);
+        assert_eq!(w.s.sessions.len(), 1, "only AAA is left");
+        assert_eq!(w.quick(addr(3), "DDD", "r", SESSION_TIMEOUT_SECS + 6), [10, 77, 0, 3]);
+        assert_eq!(w.quick(addr(2), "BBB", "r", SESSION_TIMEOUT_SECS + 7), [10, 77, 0, 2]);
     }
 
     #[test]

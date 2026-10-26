@@ -145,6 +145,9 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
     // Housekeeping (expiry, reading the serial file) runs once a second, not once per datagram: a flood of
     // packets must not be able to make each one trigger a scan of every session or a stat() of the file.
     let (mut last_tick, mut last_hello_reload) = (u64::MAX, u64::MAX);
+    // How long handling a datagram takes: a relay that stalls even briefly stalls every lockstep game through it.
+    // One summary line a minute while there is traffic, and a line at once for anything slower than 5 ms.
+    let mut load = Load::default();
     loop {
         let now = start.elapsed().as_secs();
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
@@ -154,7 +157,12 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
                     last_hello_reload = now;
                     reload(&mut server);
                 }
-                for (to, out) in server.handle(from, &buf[..n], now) {
+                let began = Instant::now();
+                let outs = server.handle(from, &buf[..n], now);
+                if let Some(slow) = load.record(began.elapsed(), now) {
+                    eprintln!("[{}] slow: handling one datagram took {slow:.1} ms", uptime(now));
+                }
+                for (to, out) in outs {
                     // A failed send (unreachable peer, full buffer) must never take the server down.
                     let _ = sock.send_to(&out, to);
                 }
@@ -177,7 +185,43 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
                 eprintln!("[{}] {line}", uptime(now));
             }
             reload(&mut server);
+            if let Some(line) = load.minute(now) {
+                eprintln!("[{}] {line}", uptime(now));
+            }
         }
+    }
+}
+
+/// Handling-time figures for the datagrams of the current minute.
+#[derive(Default)]
+struct Load {
+    since: u64,
+    packets: u64,
+    total_us: u128,
+    max_us: u128,
+}
+
+impl Load {
+    /// Counts one datagram; returns its time in ms when that is slow enough to report immediately.
+    fn record(&mut self, took: Duration, now: u64) -> Option<f64> {
+        if self.packets == 0 {
+            self.since = now;
+        }
+        let us = took.as_micros();
+        self.packets += 1;
+        self.total_us += us;
+        self.max_us = self.max_us.max(us);
+        (us > 5_000).then(|| us as f64 / 1000.0)
+    }
+
+    /// The summary line once a minute has passed since the first datagram of the window, then starts a new window.
+    fn minute(&mut self, now: u64) -> Option<String> {
+        if self.packets == 0 || now.saturating_sub(self.since) < 60 {
+            return None;
+        }
+        let line = format!("traffic: {} datagrams in {}s, handling average {} us, slowest {} us", self.packets, now - self.since, self.total_us / self.packets as u128, self.max_us);
+        *self = Load::default();
+        Some(line)
     }
 }
 

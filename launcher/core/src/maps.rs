@@ -21,7 +21,14 @@ pub struct MapPack {
     pub homepage: String,
     #[serde(default)]
     pub license: String,
+    #[serde(default)]
     pub zip_url: String,
+    /// No download link Rallypoint may use (the site blocks it): the player gets the file from `homepage` and chooses it.
+    #[serde(default)]
+    pub manual: bool,
+    /// Big collections: the maps are added switched off, for the player to pick from in the organiser.
+    #[serde(default)]
+    pub start_disabled: bool,
     /// Folders inside the zip whose subfolders are maps. Empty means: look for map folders anywhere in the zip.
     #[serde(default)]
     pub subdirs: Vec<String>,
@@ -32,7 +39,7 @@ pub fn load_packs(json: &str) -> Result<Vec<MapPack>, serde_json::Error> {
     serde_json::from_str(json)
 }
 
-fn is_map_file(p: &Path) -> bool {
+pub(crate) fn is_map_file(p: &Path) -> bool {
     p.extension().map(|e| e.eq_ignore_ascii_case("map")).unwrap_or(false)
 }
 
@@ -118,8 +125,9 @@ fn temp_dir(work: &Path, tag: &str) -> PathBuf {
     work.join(format!(".maps-{tag}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)))
 }
 
-/// Install maps from an archive or a folder the user chose. Returns how many maps were added.
-pub fn install_from_path(src: &Path, maps_dir: &Path, work: &Path) -> Result<usize, String> {
+/// Install maps from an archive or a folder the user chose into the organiser: `pack` names where they came from, and they
+/// start switched on or off as `start_enabled` says. Returns how many maps were added.
+pub fn install_from_path(src: &Path, maps_dir: &Path, lib: &Path, work: &Path, pack: &str, start_enabled: bool) -> Result<usize, String> {
     let tmp = temp_dir(work, "in");
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let result = (|| {
@@ -130,7 +138,7 @@ pub fn install_from_path(src: &Path, maps_dir: &Path, work: &Path) -> Result<usi
             gather_loose(&tmp)?;
             tmp.clone()
         };
-        let mut found = find_maps(&root, 5);
+        let mut found = find_maps(&root, 6);
         if src.is_dir() && found.is_empty() {
             gather_loose_copy_check(&root)?;
         }
@@ -138,7 +146,7 @@ pub fn install_from_path(src: &Path, maps_dir: &Path, work: &Path) -> Result<usi
             return Err("No maps were found in that. A map is a folder with a .map file inside".to_string());
         }
         found.dedup_by(|a, b| a.1 == b.1);
-        let (n, skipped) = install_maps(&found, maps_dir)?;
+        let (n, skipped) = crate::maporg::add(&found, maps_dir, lib, pack, start_enabled)?;
         if n == 0 {
             return Err(format!("None of those {skipped} map folders have names the game can use"));
         }
@@ -183,7 +191,7 @@ fn set(state: &Arc<Mutex<MapState>>, phase: Phase, percent: f32, message: &str, 
 }
 
 /// Download `pack.zip_url`, unpack it, and copy its maps in. `proto` is curl's protocol restriction ("=https").
-fn run_pack(pack: &MapPack, maps_dir: &Path, work: &Path, proto: &str, state: &Arc<Mutex<MapState>>, cancelled: &Arc<AtomicBool>) -> Result<usize, String> {
+fn run_pack(pack: &MapPack, maps_dir: &Path, lib: &Path, work: &Path, proto: &str, state: &Arc<Mutex<MapState>>, cancelled: &Arc<AtomicBool>) -> Result<usize, String> {
     std::fs::create_dir_all(work).map_err(|e| e.to_string())?;
     let tmp = temp_dir(work, &pack.id);
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
@@ -237,23 +245,23 @@ fn run_pack(pack: &MapPack, maps_dir: &Path, work: &Path, proto: &str, state: &A
         if found.is_empty() {
             return Err("The download didn't contain the expected maps".into());
         }
-        install_maps(&found, maps_dir).map(|(n, _)| n)
+        crate::maporg::add(&found, maps_dir, lib, &pack.name, !pack.start_disabled).map(|(n, _)| n)
     })();
     let _ = std::fs::remove_dir_all(&tmp);
     result
 }
 
 impl MapJob {
-    pub fn start(pack: MapPack, maps_dir: PathBuf, work: PathBuf) -> MapJob {
-        Self::start_with(pack, maps_dir, work, "=https")
+    pub fn start(pack: MapPack, maps_dir: PathBuf, lib: PathBuf, work: PathBuf) -> MapJob {
+        Self::start_with(pack, maps_dir, lib, work, "=https")
     }
 
-    fn start_with(pack: MapPack, maps_dir: PathBuf, work: PathBuf, proto: &'static str) -> MapJob {
+    fn start_with(pack: MapPack, maps_dir: PathBuf, lib: PathBuf, work: PathBuf, proto: &'static str) -> MapJob {
         let state: Arc<Mutex<MapState>> = Arc::default();
         let cancelled = Arc::new(AtomicBool::new(false));
         set(&state, Phase::Downloading, 0.0, "Starting…", 0);
         let (s, c) = (state.clone(), cancelled.clone());
-        std::thread::spawn(move || match run_pack(&pack, &maps_dir, &work, proto, &s, &c) {
+        std::thread::spawn(move || match run_pack(&pack, &maps_dir, &lib, &work, proto, &s, &c) {
             Ok(n) => set(&s, Phase::Done, 100.0, &format!("{n} maps installed"), n),
             Err(m) if m == "cancelled" => set(&s, Phase::Idle, 0.0, "", 0),
             Err(m) => set(&s, Phase::Failed, 0.0, &m, 0),
@@ -298,7 +306,8 @@ mod tests {
         let packs = load_packs(include_str!("../../../mods/mappacks.json")).unwrap();
         assert!(packs.len() >= 4 && packs.iter().any(|p| p.id == "gentool-all"));
         for p in &packs {
-            assert!(p.zip_url.starts_with("https://www.gentool.net/download/") || p.zip_url.starts_with("https://github.com/"), "{}", p.id);
+            // A pack the player fetches from the site's own page (it blocks automated downloads) has no link to use.
+            assert!(if p.manual { p.zip_url.is_empty() } else { p.zip_url.starts_with("https://www.gentool.net/download/") || p.zip_url.starts_with("https://github.com/") }, "{}", p.id);
             assert!(p.homepage.starts_with("https://"), "{}", p.id);
             assert!(p.subdirs.iter().all(|s| !s.contains("..") && !s.starts_with('/')), "{}", p.id);
             assert!(p.size_mb > 0, "{}", p.id);
@@ -328,11 +337,11 @@ mod tests {
         write(&t.join("src/Beta/Beta.map"), "3");
         let maps = t.join("Maps");
         write(&maps.join("Alpha ZH v1/old.txt"), "stale");
-        assert_eq!(install_from_path(&t.join("src"), &maps, &t.join("work")).unwrap(), 2);
+        assert_eq!(install_from_path(&t.join("src"), &maps, &t.join("lib"), &t.join("work"), "Test", true).unwrap(), 2);
         assert_eq!(count_maps(&maps), 2);
         assert!(!maps.join("Alpha ZH v1/old.txt").exists(), "an older copy is replaced");
         assert!(maps.join("Alpha ZH v1/Alpha ZH v1.str").is_file());
-        assert!(install_from_path(&t.join("work"), &maps, &t.join("work")).unwrap_err().contains("No maps"));
+        assert!(install_from_path(&t.join("work"), &maps, &t.join("lib"), &t.join("work"), "Test", true).unwrap_err().contains("No maps"));
         std::fs::remove_dir_all(t).unwrap();
     }
 
@@ -353,7 +362,7 @@ mod tests {
         let zip = t.join("one.zip");
         std::fs::write(&zip, make_zip(&[("Lone Map.map", b"m"), ("Lone Map.tga", b"t"), ("Lone Map.ini", b"i"), ("readme.txt", b"r")])).unwrap();
         let maps = t.join("Maps");
-        match install_from_path(&zip, &maps, &t.join("work")) {
+        match install_from_path(&zip, &maps, &t.join("lib"), &t.join("work"), "Test", true) {
             Err(e) if e.contains("no tool") => return, // no unzip-capable tool here
             r => assert_eq!(r.unwrap(), 1),
         }
@@ -369,8 +378,8 @@ mod tests {
         let t = temp("flat");
         let zip = t.join("m.zip");
         std::fs::write(&zip, make_zip(&[("Maps/Alpha ZH v1/Alpha ZH v1.map", b"m"), ("Maps/Alpha ZH v1/Alpha ZH v1.tga", b"t"), ("Beta ZH v2/Beta ZH v2.map", b"m"), ("notes.txt", b"n")])).unwrap();
-        let pack = MapPack { id: "f".into(), name: "Flat".into(), description: String::new(), homepage: String::new(), license: String::new(), zip_url: format!("file://{}", zip.display()), subdirs: vec![], size_mb: 1 };
-        let job = MapJob::start_with(pack, t.join("Maps"), t.join("work"), "=file");
+        let pack = MapPack { id: "f".into(), name: "Flat".into(), description: String::new(), homepage: String::new(), license: String::new(), zip_url: format!("file://{}", zip.display()), manual: false, start_disabled: false, subdirs: vec![], size_mb: 1 };
+        let job = MapJob::start_with(pack, t.join("Maps"), t.join("lib"), t.join("work"), "=file");
         let mut s = job.state();
         for _ in 0..200 {
             s = job.state();
@@ -400,9 +409,9 @@ mod tests {
             ("Repo-main/candidate/Unfinished/Unfinished.map", b"m"),
             ("Repo-main/README.md", b"r"),
         ])).unwrap();
-        let pack = MapPack { id: "t".into(), name: "Test".into(), description: String::new(), homepage: String::new(), license: "MIT".into(), zip_url: format!("file://{}", zip.display()), subdirs: vec!["release/maps_1v1_zh".into(), "release/maps_fun_zh".into()], size_mb: 1 };
+        let pack = MapPack { id: "t".into(), name: "Test".into(), description: String::new(), homepage: String::new(), license: "MIT".into(), zip_url: format!("file://{}", zip.display()), manual: false, start_disabled: false, subdirs: vec!["release/maps_1v1_zh".into(), "release/maps_fun_zh".into()], size_mb: 1 };
         let maps = t.join("Maps");
-        let job = MapJob::start_with(pack, maps.clone(), t.join("work"), "=file");
+        let job = MapJob::start_with(pack, maps.clone(), t.join("lib"), t.join("work"), "=file");
         let mut s = job.state();
         for _ in 0..200 {
             s = job.state();
@@ -426,8 +435,8 @@ mod tests {
     #[test]
     fn a_failed_download_reports_a_clear_message() {
         let t = temp("fail");
-        let pack = MapPack { id: "t".into(), name: "Test".into(), description: String::new(), homepage: String::new(), license: "MIT".into(), zip_url: "file:///nonexistent/none.zip".into(), subdirs: vec!["x".into()], size_mb: 1 };
-        let job = MapJob::start_with(pack, t.join("Maps"), t.join("work"), "=file");
+        let pack = MapPack { id: "t".into(), name: "Test".into(), description: String::new(), homepage: String::new(), license: "MIT".into(), zip_url: "file:///nonexistent/none.zip".into(), manual: false, start_disabled: false, subdirs: vec!["x".into()], size_mb: 1 };
+        let job = MapJob::start_with(pack, t.join("Maps"), t.join("lib"), t.join("work"), "=file");
         let mut s = job.state();
         for _ in 0..200 {
             s = job.state();

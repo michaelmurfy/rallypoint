@@ -1,7 +1,27 @@
 //! Launcher settings. A serial is a credential the user never sees: stored with 0600 perms on unix and never logged.
+//! A room password is stored only when the player asks for it to be remembered with a saved server.
 //! Each server issues its own, and one is only ever sent to the server that issued it.
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Longest name the game's lobby takes (`g_lanPlayerNameLength`).
+pub const PLAYER_NAME_MAX: usize = 12;
+
+/// A lobby name the game can show: printable ASCII only (the game reads it as plain bytes), trimmed, at most 12 characters.
+pub fn clean_player_name(s: &str) -> String {
+    let kept: String = s.chars().filter(|c| c.is_ascii() && !c.is_ascii_control()).collect();
+    kept.trim().chars().take(PLAYER_NAME_MAX).collect::<String>().trim().to_string()
+}
+
+/// This computer's name as a default lobby name (`Michaels-MacBook-Pro.local` becomes `Michaels-MacBook-Pro`).
+pub fn machine_name() -> String {
+    let raw = std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::process::Command::new("hostname").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .unwrap_or_default();
+    let name = clean_player_name(raw.split('.').next().unwrap_or(""));
+    if name.is_empty() { "Player".into() } else { name }
+}
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -35,6 +55,13 @@ pub struct Config {
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
     pub camera_height: u32,
+    /// The name other players see in the game's LAN lobby. Empty means this computer's name.
+    #[serde(default)]
+    pub player_name: String,
+    /// Room passwords the player chose to remember, keyed by `server|room` (lower case). Never sent anywhere but to
+    /// that server's own handshake, and never given back to the page: it only learns that one is saved.
+    #[serde(default)]
+    pub room_passwords: std::collections::BTreeMap<String, String>,
     /// Identity keys of relay servers seen before (hex, keyed by `host:port` as typed, lower case). A server
     /// that later answers with a different key is refused until the player chooses to trust it.
     #[serde(default)]
@@ -65,6 +92,30 @@ impl Config {
         let key = self.server.to_lowercase();
         if !old.is_empty() && !key.is_empty() && self.server_keys.contains_key(&key) {
             self.serials.entry(key).or_insert(old);
+        }
+    }
+
+    /// The lobby name to start the game with: the one the player set, else this computer's name.
+    pub fn lobby_name(&self) -> String {
+        let own = clean_player_name(&self.player_name);
+        if own.is_empty() { machine_name() } else { own }
+    }
+
+    fn room_key(server: &str, room: &str) -> String {
+        format!("{}|{}", server.trim().to_lowercase(), room.trim().to_lowercase())
+    }
+
+    /// The remembered password for this server and room, if the player saved one.
+    pub fn room_password(&self, server: &str, room: &str) -> Option<&str> {
+        self.room_passwords.get(&Self::room_key(server, room)).map(String::as_str).filter(|p| !p.is_empty())
+    }
+
+    pub fn set_room_password(&mut self, server: &str, room: &str, password: &str) {
+        let key = Self::room_key(server, room);
+        if password.is_empty() {
+            self.room_passwords.remove(&key);
+        } else {
+            self.room_passwords.insert(key, password.to_string());
         }
     }
 
@@ -146,5 +197,28 @@ mod tests {
         let c = Config::load(&p);
         assert_eq!((c.serial_for("b.example:7777"), c.serial.as_str()), ("", ""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remembers_a_room_password_per_server_and_room_only_when_asked() {
+        let mut c = Config::default();
+        assert_eq!(c.room_password("play.example:7777", "lan"), None);
+        c.set_room_password("Play.Example:7777", " LAN ", "hunter2");
+        assert_eq!(c.room_password("play.example:7777", "lan"), Some("hunter2"));
+        assert_eq!(c.room_password("play.example:7777", "other"), None, "not shared between rooms");
+        assert_eq!(c.room_password("other.example:7777", "lan"), None, "nor between servers");
+        c.set_room_password("play.example:7777", "lan", "");
+        assert_eq!(c.room_password("play.example:7777", "lan"), None, "an empty password forgets it");
+    }
+
+    #[test]
+    fn lobby_names_are_plain_short_and_default_to_the_computer() {
+        assert_eq!(clean_player_name("  Mike \u{1F600}the\tGreat  "), "Mike theGrea", "emoji and tabs are dropped, 12 characters kept");
+        assert_eq!(clean_player_name(&"x".repeat(40)).len(), PLAYER_NAME_MAX);
+        assert_eq!(clean_player_name("   "), "");
+        let mut c = Config::default();
+        assert!(!c.lobby_name().is_empty(), "falls back to the computer's name");
+        c.player_name = "Col. Mike".into();
+        assert_eq!(c.lobby_name(), "Col. Mike");
     }
 }

@@ -58,7 +58,7 @@ Rallypoint needs the folder that contains `INIZH.big` (Zero Hour's data).
 
 The first time you open Rallypoint, a short **setup wizard** helps you find or download your game files, choose a display setting, and optionally add mods and maps. Online play is set up later from the **Online** tab. You can run the wizard again from **Settings**.
 
-On the Play tab choose a mod (optional), a resolution (it defaults to your screen's native pixels) and fullscreen, then press **Play** for the full menu, or **Quick Skirmish** to drop straight into a match against the AI.
+On the Play tab pick the **game** from the drop-down (Zero Hour, or an installed mod such as Shockwave, Shockwave Chaos or Cold War Crisis), tick any **extra mods** you want on top of it, choose a resolution (it defaults to your screen's native pixels) and fullscreen, then press **Play** for the full menu, or **Quick Skirmish** to drop straight into a match against the AI. Mods that Rallypoint installs for you, such as the sharp command-bar icons (Control Bar HD), are tagged **Bundled** on the Mods tab and load with every game.
 
 ### Mods
 
@@ -66,7 +66,7 @@ Open the **Mods** tab.
 
 1. Press **Open download page** on a mod. Your browser opens the mod's official page; download it (choose the full release).
 2. Back in Rallypoint press **Choose file…** (a `.zip`, `.7z`, `.rar`, `.tar.gz` or an installer `.exe`) or **Choose folder…** (for example the folder a Windows installer installed into). That card shows a spinner while it installs and flips to *Installed*. Nothing watches your Downloads folder and there is nothing to wait for. You can also drop a file or folder anywhere on the Mods page, or paste its path.
-3. Tick the mods you want on the Play tab. Several can load at once; an add-on is laid over the mod it needs.
+3. Pick the game on the Play tab. Mods listed by Rallypoint (Shockwave, Chaos, Cold War Crisis) are in the drop-down; an add-on such as Chaos is laid over the mod it needs, and Cold War Crisis, a total conversion, can't be combined with the other two. Mods you added from a file or folder are tick boxes on top of the chosen game.
 
 Mods are kept in the `Mods` folder inside Rallypoint's data directory and can be removed from the Mods tab (**Open mods folder** shows you where).
 
@@ -95,7 +95,9 @@ Setup downloads GenTool's sharp command-bar icons (Control Bar HD) and loads the
 
 ### Maps
 
-Zero Hour looks for maps in `Documents/Command and Conquer Generals Zero Hour Data/Maps`. On the **Mods** tab (and in the setup wizard) the **Maps** section installs map packs from [GenTool's download page](https://www.gentool.net/download/): all ranked maps (56 MB), or just the 1v1, 2v2 or 3v3 sets. **Add maps from a file** or **Add a folder of maps** handles any other pack: Rallypoint finds the map folders inside and copies them over. GenTool itself is a Windows-only add-on and isn't needed or installed.
+Zero Hour looks for maps in `Documents/Command and Conquer Generals Zero Hour Data/Maps`. The **Maps** tab has two parts. **Get more maps** installs map packs from [GenTool's download page](https://www.gentool.net/download/) (all ranked maps, or just the 1v1, 2v2 or 3v3 sets), or the [Epic Showdown 707 map pack](https://www.moddb.com/mods/cc-epic-showdown-707-mappack): open its page, download it, and choose the file (ModDB does not allow automatic downloads). **Add maps from a file** or **Add a folder of maps** takes any other pack: Rallypoint finds the map folders inside.
+
+**Your maps** is the map organiser. A big pack can bury the few maps you want in the game's list, so it is added with every map **switched off**: search, filter by pack, and tick the maps you want, or switch on or off everything shown. A map you switch off is moved aside (to `<app data>/GeneralsZH/MapLibrary`), not deleted, and moved back when you switch it on. Changes apply the next time the game starts. GenTool itself is a Windows-only add-on and isn't needed or installed.
 
 ### Updates
 
@@ -111,7 +113,7 @@ On by default on macOS and Windows: any resolution, ultrawide, Retina. Menus, th
 
 Games between macOS and Windows use the same simulation math on both (a deterministic maths library and strict floating point settings), and the lobby refuses to let in a player whose game data or Rallypoint simulation version differs, instead of starting a game that goes out of sync. If a game still goes out of sync, turn on *Settings → Multiplayer sync logs* on both machines, play again, and use **Compare with another player…** to see exactly where the two games first differed.
 
-Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game.
+Players connect to a Rallypoint server. In the launcher's **Online** box enter the server address, a room name and a room password, then press **Connect** and use the game's LAN lobby. Everyone who uses the same room and password lands in the same game. **Save server** keeps the server and room in a list, and with *Remember the password* ticked the password too, so one press of **Connect** rejoins. A saved password is kept in Rallypoint's settings file on your computer (readable only by you) and is never shown again. Your **player name** in the game's lobby is set on the same page; until you set one it is your computer's name. If it can't connect, the page says what it tried and what to check (a wrong address or port, a firewall blocking UDP, a wrong room password, a full room). When the server goes quiet Rallypoint rejoins by itself and keeps your address in the room, so the lobby doesn't go empty; if it ever does change, the page tells you to restart the game.
 
 Everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305), including the serial, the room and the password proof. The first time you connect to a server the launcher remembers its identity key; if a different server ever answers at that address, it refuses to connect and asks you. The server keeps its key in its data volume (`serials.key`): back it up, because a new key makes every player see a changed identity. Compare the fingerprint from `make key` with the one shown on the Online tab to be sure of a server the first time.
 
@@ -121,7 +123,7 @@ While you are connected the Online tab shows how it is going: your latency, jitt
 
 ### Run a server
 
-Needs Docker, `make`, and one open **UDP** port (7777 by default).
+Needs Docker on Linux, `make`, and one open **UDP** port (7777 by default; open it in the host's firewall). The container uses the host's network, so game packets don't pass through Docker's NAT and proxy, which adds delay.
 
 ```bash
 git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint

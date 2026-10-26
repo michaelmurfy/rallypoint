@@ -7,8 +7,11 @@ services:
     env_file: .env
     environment:
       GEO_DIR: /geo
-    ports:
-      - "${PORT:-7777}:7777/udp"
+      GENERALS_BIND: 0.0.0.0:${PORT:-7777}
+    # The host's network (Linux): a published UDP port goes through Docker's NAT and a userland proxy, which adds a hop
+    # and delay to every game packet and hides the players' real addresses from the country limit. Open the UDP port in
+    # the host's firewall.
+    network_mode: host
     volumes:
       - relay-data:/data
       - ./data/geo:/geo:ro
