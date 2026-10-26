@@ -92,9 +92,20 @@ main { overflow-y: auto; padding: 28px 34px 44px; }
 label.field { display: grid; gap: 5px; align-content: start; font-weight: 600; font-size: 13px; }
 label.field > span { color: var(--muted); font-weight: 600; }
 input[type=text], input[type=password], input[type=number], select {
-  width: 100%; padding: 9px 11px; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit;
+  width: 100%; padding: 9px 11px; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; line-height: 1.5;
 }
 input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+/* One look for drop-downs on every system: the native control is small and out of place on macOS, and on Windows its
+   arrow sits hard against the right edge. The arrow is two gradients, so it follows the theme. */
+select {
+  appearance: none; -webkit-appearance: none; cursor: pointer; line-height: 1.5; padding-right: 36px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 19px) 50%, calc(100% - 14px) 50%;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+  transition: border-color .12s var(--ease);
+}
+select:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); }
+select option { background: var(--surface); color: var(--text); }
 input[type=number] { width: 7em; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 16px; border-radius: var(--r-btn); border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font: inherit; font-weight: 650; cursor: pointer; transition: background .12s var(--ease), transform .08s var(--ease); }
 .btn:hover { background: color-mix(in srgb, var(--surface-2) 82%, var(--text)); }
@@ -266,15 +277,20 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .seg:hover { color: var(--text); }
 .seg[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .maplist { display: grid; max-height: 460px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r-btn); background: var(--bg); }
-.maprow { display: grid; grid-template-columns: auto 1fr 200px 64px; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
+.maprow { display: grid; grid-template-columns: auto 1fr 200px 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
 .maprow:first-child { border-top: 0; }
 .maprow:hover { background: var(--surface-2); }
 .maprow.on { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
 .mapname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.maprow > :last-child { text-align: right; }
+.mapsize { text-align: right; }
 .mappack-tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maprow input { appearance: none; width: 18px; height: 18px; margin: 0; border-radius: 5px; border: 1.5px solid var(--muted); background: none; display: grid; place-items: center; cursor: pointer; transition: background .12s var(--ease), border-color .12s var(--ease); }
 .maprow input::after { content: ""; width: 9px; height: 5px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg) scale(0); transition: transform .12s var(--ease); }
 .maprow input:checked { background: var(--accent); border-color: var(--accent); }
 .maprow input:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
 .maprow:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ---- map preview ---- */
+.wizard.mapviewer { width: min(480px, 100%); animation: rise .22s var(--ease); }
+.mapviewer .wiz-body { justify-items: center; }
+.mapview-canvas { max-width: 100%; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); }

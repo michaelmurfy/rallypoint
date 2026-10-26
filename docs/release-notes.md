@@ -1,3 +1,9 @@
+## Rallypoint 0.3.5
+
+- **Map viewer.** On the Maps page, **Preview** on any map (switched on or off) shows it the way the game does: its preview picture at the map's proportions with the numbered start positions on it, plus the map's size in cells and its player count. Previous and Next, or the arrow keys, move through the list you are looking at.
+
+---
+
 ## Rallypoint 0.3.4
 
 - **Fixes from the upstream game code.** The engine is based on the open-source community project TheSuperHackers/GeneralsGameCode, and 539 newer upstream commits had never been merged. This release takes the ones that apply cleanly: particle effects no longer affect the game's random numbers (a likely cause of Windows and Mac games drifting apart), checksum checks no longer give false alarms at the short intervals the sync logs use, the LAN lobby removes a player who leaves, and a few network clean-ups. `docs/upstream-fixes.md` lists what was taken and what could not be applied yet.

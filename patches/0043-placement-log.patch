@@ -1,0 +1,24 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+index 728ed2c..626d1df 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+@@ -1540,6 +1540,19 @@ PathfindLayerEnum TerrainLogic::alignOnTerrain( Real angle, const Coord3D& pos,
+ 		}
+ 	}
+ 
++	{
++		// Rallypoint: the first 60 placements at a real position (the 12 above are all at 0,0,0, before any terrain is
++		// loaded), with the terrain normal, to see which object and which step differ between machines.
++		static int placed = 0;
++		if (stickToGround && placed < 60 && TheGameLogic && TheGameLogic->isInGame() && (pos.x != 0.0f || pos.y != 0.0f))
++		{
++			placed++;
++			UnsignedInt px, py, hz, nz;
++			memcpy(&px, &pos.x, 4); memcpy(&py, &pos.y, 4); memcpy(&hz, &terrainAtPos, 4); memcpy(&nz, &terrainNormal.z, 4);
++			fprintf(stderr, "[sync-hm] placed %d: pos %08X %08X, height %08X, normal z %08X, layer %d, frame %d\n", placed, px, py, hz, nz, (int)layer, (int)TheGameLogic->getFrame());
++		}
++	}
++
+ 	return layer;
+ }
+ 
