@@ -308,7 +308,9 @@ pub fn compose(mods_dir: &Path, base: &str, addon: &str) -> Result<PathBuf, Stri
 }
 
 pub fn downloads_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| PathBuf::from(h).join("Downloads"))
+    // Windows keeps the profile in USERPROFILE; HOME there, when set at all, is whatever a tool made of it.
+    let home = if cfg!(windows) { std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) } else { std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) };
+    home.map(|h| PathBuf::from(h).join("Downloads"))
 }
 
 const PARTIAL: [&str; 6] = [".crdownload", ".part", ".download", ".tmp", ".opdownload", ".partial"];
