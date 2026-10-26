@@ -4,7 +4,7 @@
 
 A cross-platform launcher and multiplayer relay for **Command & Conquer: Generals – Zero Hour**: native on macOS and Windows, with a relay server so you can play "LAN" games over the internet.
 
-> **Beta.** Single player works on macOS and Windows and has been played on both, and a multiplayer game between a Mac and a Windows PC through the relay has been played (it still reports a small checksum difference at the start; see [Multiplayer](#multiplayer)). See [What works](#what-works-in-02-beta) for an honest list of what is and isn't done.
+> Single player works on macOS and Windows and has been played on both, and a multiplayer game between a Mac and a Windows PC through the relay has been played (it still reports a small checksum difference at the start; see [Multiplayer](#multiplayer)). See [What works](#what-works) for an honest list of what is and isn't done.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
 
@@ -21,7 +21,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 - **Help when something goes wrong.** *Settings → Troubleshooting* checks your game files and the original Generals, and shows the game's last crash report and what it printed. Results appear next to the button you pressed, not in pop-ups.
 - **Internet multiplayer through your own server.** Pick a room name and password in the launcher and play the game's normal LAN lobby over the internet. A game between a Mac and a Windows PC through the relay has been played; the relay, the encryption and the connection diagnostics are built and in use (see below).
 
-## What works in 0.2 Beta
+## What works
 
 | | macOS (Apple Silicon) | Windows | Linux |
 |---|---|---|---|
@@ -172,7 +172,7 @@ cd launcher/src-tauri && cargo tauri build                         # needs the e
 
 Building the engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --preset apple-arm64-release`, target `z_generals`; Windows: `cmake --preset win32`). Details for contributors and AI agents are in [`agent.md`](agent.md).
 
-Releases are built only when a version tag is pushed (`make release VERSION=0.2.0-beta.1`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
+Releases are built only when a version tag is pushed (`make release VERSION=0.3.5`), never on ordinary pushes; see `.github/workflows/release.yml`. Routine pushes run just the fast tests.
 
 ### Layout
 
