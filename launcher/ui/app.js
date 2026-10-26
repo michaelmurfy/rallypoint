@@ -1088,10 +1088,17 @@ function syncCard() {
     } catch (e) { fb.bad(errText(e)); }
     compare.disabled = false;
   } }, "Compare with another player…");
+  const bundle = h("button", { class: "btn primary", onclick: async () => {
+    bundle.disabled = true; fb.busy("Collecting the logs…");
+    try { const p = await invoke("make_debug_bundle"); fb.ok(`Saved ${p}. Send it to the developer.`); } catch (e) { fb.bad(errText(e)); }
+    bundle.disabled = false;
+  } }, "Download debug logs");
   return h("div", { class: "card" }, h("h2", {}, "Multiplayer sync logs"),
-    h("p", { class: "muted" }, "If a game says it went out of sync, both players record logs of the first ten seconds, then compare them to see exactly where they first differed."),
+    h("p", { class: "muted" }, "If a game crashes or goes out of sync, both players send their debug logs. They record the first ten seconds of every game in detail, so the developer can see exactly where the two games first differed."),
     h("label", { class: "switch" }, on, "Record sync logs while I play"),
-    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open the logs folder"), compare, fb.el),
+    h("div", { class: "row" }, bundle, fb.el),
+    h("p", { class: "muted small" }, "One zip in your Downloads folder: the game's log and the last game's log, the sync logs, your settings (never passwords or keys), the game's crash report and last replay. Nothing is sent anywhere by itself."),
+    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open the logs folder"), compare),
     result);
 }
 

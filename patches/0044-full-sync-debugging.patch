@@ -1,0 +1,281 @@
+diff --git a/Core/GameEngine/Include/GameClient/TerrainVisual.h b/Core/GameEngine/Include/GameClient/TerrainVisual.h
+index 5c679b5..7e51af5 100644
+--- a/Core/GameEngine/Include/GameClient/TerrainVisual.h
++++ b/Core/GameEngine/Include/GameClient/TerrainVisual.h
+@@ -286,6 +286,7 @@ public:
+   virtual void addSeismicSimulation( const SeismicSimulationNode& sim ) = 0;
+ #endif
+   virtual WorldHeightMap* getLogicHeightMap() {return nullptr;};
++  virtual UnsignedInt getLogicHeightHash() {return 0;}	///< Rallypoint: hash of every height, for the sync log
+   virtual WorldHeightMap* getClientHeightMap() {return nullptr;};
+   ////////////////////////////////////////////////////
+   ////////////////////////////////////////////////////
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+index a04280a..1def425 100644
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -112,6 +112,8 @@ void outputCRCDebugLines()
+ Int lastCRCDebugFrame = 0;
+ Int lastCRCDebugIndex = 0;
+ extern Bool inCRCGen;
++// Rallypoint: part of the current frame's lines is already in its file (the buffer was full before the frame ended).
++static Bool frameFileStarted = FALSE;
+ 
+ void CRCDebugStartNewGame()
+ {
+@@ -137,6 +139,7 @@ void CRCDebugStartNewGame()
+ 	numDebugStrings = 0;
+ 	lastCRCDebugFrame = 0;
+ 	lastCRCDebugIndex = 0;
++	frameFileStarted = FALSE;
+ }
+ 
+ static void outputCRCDebugLinesPerFrame()
+@@ -146,16 +149,16 @@ static void outputCRCDebugLinesPerFrame()
+ 	AsciiString fname;
+ 	fname.format("%s/DebugFrame_%06d.txt", g_saveDebugCRCPerFrameDir.str(), lastCRCDebugFrame);
+ #if defined(__APPLE__)
+-	FILE *fp = fopen(::apple_path::normalize(fname.str()), "wt");
++	FILE *fp = fopen(::apple_path::normalize(fname.str()), frameFileStarted ? "at" : "wt");
+ #else
+-	FILE *fp = fopen(fname.str(), "wt");
++	FILE *fp = fopen(fname.str(), frameFileStarted ? "at" : "wt");
+ #endif
++	// Rallypoint: a full buffer is written out and emptied (addCRCDebugLineInternal), so the lines are always 0..next.
+ 	int start = 0;
+ 	int end = nextDebugString;
+-	if (numDebugStrings >= MaxStrings)
+-		start = nextDebugString - MaxStrings;
+ 	nextDebugString = 0;
+ 	numDebugStrings = 0;
++	frameFileStarted = FALSE;
+ 	if (!fp)
+ 	{
+ 		static Bool told = FALSE;
+@@ -245,7 +248,17 @@ static void addCRCDebugLineInternal(bool count, const char *fmt, va_list args)
+ 	++nextDebugString;
+ 	++numDebugStrings;
+ 	if (nextDebugString == MaxStrings)
+-		nextDebugString = 0;
++	{
++		// Rallypoint: frame 0 alone has more lines than the buffer holds, and the ring dropped its first part, which is
++		// where the objects are created. Write what we have and carry on, so the file is complete.
++		if (g_saveDebugCRCPerFrame)
++		{
++			outputCRCDebugLinesPerFrame();
++			frameFileStarted = TRUE;
++		}
++		else
++			nextDebugString = 0;
++	}
+ }
+ 
+ void addCRCDebugLine(const char *fmt, ...)
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTerrainVisual.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTerrainVisual.h
+index 8d2a1a4..9efa594 100644
+--- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTerrainVisual.h
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DTerrainVisual.h
+@@ -132,6 +132,7 @@ public:
+   virtual void addSeismicSimulation( const SeismicSimulationNode& sim );
+ #endif
+   virtual WorldHeightMap* getLogicHeightMap() override {return m_logicHeightMap;};
++  virtual UnsignedInt getLogicHeightHash() override;
+   virtual WorldHeightMap* getClientHeightMap() override
+   {
+ #ifdef DO_SEISMIC_SIMULATIONS
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DTerrainVisual.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DTerrainVisual.cpp
+index 963cd2b..6ec7bfa 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DTerrainVisual.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DTerrainVisual.cpp
+@@ -63,6 +63,7 @@
+ #include "WW3D2/coltype.h"
+ #include "WW3D2/coltest.h"
+ #include "WW3D2/assetmgr.h"
++#include "Common/CRCDebug.h"
+ 
+ 
+ 
+@@ -883,6 +884,18 @@ Bool W3DTerrainVisual::getWaterGridHeight( Real worldX, Real worldY, Real *heigh
+ 
+ // ------------------------------------------------------------------------------------------------
+ // ------------------------------------------------------------------------------------------------
++UnsignedInt W3DTerrainVisual::getLogicHeightHash()
++{
++	if (!m_logicHeightMap)
++		return 0;
++	UnsignedInt h = 2166136261u;
++	const UnsignedByte *d = m_logicHeightMap->getDataPtr();
++	const Int n = m_logicHeightMap->getXExtent() * m_logicHeightMap->getYExtent();
++	for (Int k = 0; k < n; k++)
++		h = (h ^ d[k]) * 16777619u;
++	return h;
++}
++
+ void W3DTerrainVisual::setRawMapHeight(const ICoord2D *gridPos, Int height)
+ {
+   // This method writes to the m_logicHeightMap member,
+@@ -897,6 +910,8 @@ void W3DTerrainVisual::setRawMapHeight(const ICoord2D *gridPos, Int height)
+  		//if (m_logicHeightMap->getHeight(x,y) != height) //ML changed to prevent scissoring with roads
+  		if (m_logicHeightMap->getHeight(x,y) > height)
+ 		{
++			// Rallypoint: every cell that is lowered, in order (a building, a road, a bib), for the sync log.
++			addCRCDebugLineNoCounter("HeightMap lowered: cell %d %d from %d to %d", (int)x, (int)y, (int)m_logicHeightMap->getHeight(x,y), (int)height);
+ 			m_logicHeightMap->setRawHeight(x, y, height);
+ 			m_terrainRenderObject->staticLightingChanged(); // OOH! this could benefit from the new Seismic update code
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+index 626d1df..e384539 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+@@ -2674,6 +2674,13 @@ void TerrainLogic::flattenTerrain(Object *obj)
+ 	}
+ 
+ 	const Coord3D *pos = obj->getPosition();
++	{
++		// Rallypoint: what goes into flattening the ground under this structure.
++		UnsignedInt px, py, pz, ma, mi;
++		Real major = obj->getGeometryInfo().getMajorRadius(), minor = obj->getGeometryInfo().getMinorRadius();
++		memcpy(&px, &pos->x, 4); memcpy(&py, &pos->y, 4); memcpy(&pz, &pos->z, 4); memcpy(&ma, &major, 4); memcpy(&mi, &minor, 4);
++		addCRCDebugLine("Flatten %s id %d: pos %08X %08X %08X, geometry %d, radii %08X %08X", obj->getTemplate()->getName().str(), (int)obj->getID(), px, py, pz, (int)obj->getGeometryInfo().getGeomType(), ma, mi);
++	}
+ 	switch(obj->getGeometryInfo().getGeomType())
+ 	{
+ 		case GEOMETRY_BOX:
+@@ -2744,6 +2751,12 @@ void TerrainLogic::flattenTerrain(Object *obj)
+ 			// not raise.  jba
+ 			Int centerHeight = REAL_TO_INT_FLOOR(getGroundHeight(pos->x, pos->y)/MAP_HEIGHT_SCALE);
+ 			if (rawDataHeight>centerHeight) rawDataHeight = centerHeight;
++			{
++				UnsignedInt an, cb, sb, x0, x1, y0, y1, tb;
++				memcpy(&an, &angle, 4); memcpy(&cb, &c, 4); memcpy(&sb, &s, 4);
++				memcpy(&x0, &minX, 4); memcpy(&x1, &maxX, 4); memcpy(&y0, &minY, 4); memcpy(&y1, &maxY, 4); memcpy(&tb, &totalHeight, 4);
++				addCRCDebugLine("Flatten box: angle %08X cos %08X sin %08X, x %08X..%08X, y %08X..%08X, samples %d, total %08X, raw %d, center %d", an, cb, sb, x0, x1, y0, y1, (int)numSamples, tb, (int)rawDataHeight, (int)centerHeight);
++			}
+ 
+ 			for (i=iMin.x; i<=iMax.x; i++) {
+ 				for (j=0; j<=iMax.y; j++) {
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+index f0177a6..da76353 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Object.cpp
+@@ -3989,6 +3989,13 @@ void Object::crc( Xfer *xfer )
+ 		tmp.format("getTransformMatrix(): %8.8X, ", tmpXfer.getCRC());
+ 		tmpXfer.close();
+ 		logString.concat(tmp);
++		{
++			// Rallypoint: the matrix itself, so two machines' logs show which element differs, not only that the CRC does.
++			UnsignedInt m[12];
++			memcpy(m, getTransformMatrix(), sizeof(m));
++			tmp.format("matrix: %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X %8.8X, ", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
++			logString.concat(tmp);
++		}
+ 	}
+ #endif // DEBUG_CRC
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 44a53a7..2b84450 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -118,6 +118,8 @@ struct QuitGameException {};
+ 
+ DECLARE_PERF_TIMER(SleepyMaintenance)
+ 
++#include <cfloat>
++#include <cmath>
+ #include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.
+ // If defined, the game times various units.
+ #ifdef DO_UNIT_TIMINGS
+@@ -1132,8 +1134,65 @@ void GameLogic::setGameMode( GameMode mode )
+ /** Entry point for starting a new game, the engine is already in clean state at this
+ 	* point and ready to load up with all the data */
+ // ------------------------------------------------------------------------------------------------
++
++// Rallypoint: one sync-log line per map object, with what went in (map z, ground height) and what came out (position and
++// the whole matrix), so two machines' logs name the object and the step where they part.
++static void logMapObjectPlaced(const MapObject *m, const Object *obj, const Coord3D *pos, Real angle)
++{
++	UnsignedInt mz, px, py, pz, an;
++	Real mapZ = m->getLocation()->z;
++	memcpy(&mz, &mapZ, 4); memcpy(&px, &pos->x, 4); memcpy(&py, &pos->y, 4); memcpy(&pz, &pos->z, 4); memcpy(&an, &angle, 4);
++	if (obj)
++	{
++		UnsignedInt t[12];
++		memcpy(t, obj->getTransformMatrix(), sizeof(t));
++		addCRCDebugLine("MapObject %s id %d: map z %08X, pos %08X %08X %08X, angle %08X, matrix %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
++			m->getName().str(), (int)obj->getID(), mz, px, py, pz, an, t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11]);
++	}
++	else
++		addCRCDebugLine("MapObject %s (prop): map z %08X, pos %08X %08X %08X, angle %08X", m->getName().str(), mz, px, py, pz, an);
++}
++
++// Rallypoint: what this machine's floating point does, so two machines' logs can be compared without a debugger.
++// The probes go through volatiles so the compiler cannot fold them.
++static void logFloatEnvironment()
++{
++	static Bool done = FALSE;
++	if (done)
++		return;
++	done = TRUE;
++	volatile float a = 1.1f, b = 3.7f, c = -4.07f, big = 16777217.0f, ang = 0.7f;
++	float fused = a * b + c;
++	float root = (float)sqrt((double)(a * b));
++	float big1 = big + 1.0f;
++	float s = (float)Sin(ang), co = (float)Cos(ang);
++	float ls = sinf(ang), lc = cosf(ang);
++	UnsignedInt v[7];
++	memcpy(&v[0], &fused, 4); memcpy(&v[1], &root, 4); memcpy(&v[2], &big1, 4);
++	memcpy(&v[3], &s, 4); memcpy(&v[4], &co, 4); memcpy(&v[5], &ls, 4); memcpy(&v[6], &lc, 4);
++#if defined(_MSC_VER)
++	const char *compiler = "msvc";
++	int compilerVersion = (int)_MSC_VER;
++#elif defined(__clang__)
++	const char *compiler = "clang";
++	int compilerVersion = (int)__clang_major__;
++#else
++	const char *compiler = "other";
++	int compilerVersion = 0;
++#endif
++#ifdef FLT_EVAL_METHOD
++	int evalMethod = (int)FLT_EVAL_METHOD;
++#else
++	int evalMethod = -1;
++#endif
++	fprintf(stderr, "[env] compiler %s %d, FLT_EVAL_METHOD %d, sizeof(long) %d, sizeof(void*) %d, sizeof(wchar_t) %d\n", compiler, compilerVersion, evalMethod, (int)sizeof(long), (int)sizeof(void*), (int)sizeof(wchar_t));
++	fprintf(stderr, "[env] float probes: a*b+c %08X, sqrt %08X, 2^24+1+1 %08X, Sin(0.7) %08X, Cos(0.7) %08X, libm sinf %08X, libm cosf %08X\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
++	fflush(stderr);
++}
++
+ void GameLogic::startNewGame( Bool loadingSaveGame )
+ {
++	logFloatEnvironment();
+ 	try
+ 	{
+ 		tryStartNewGame(loadingSaveGame);
+@@ -1925,6 +1984,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
+ 				}
+ 			}
+ 			if (isProp || (isFluff && forceFluffToProp)) {
++				logMapObjectPlaced(pMapObj, nullptr, &pos, angle);
+ 				TheTerrainVisual->addProp(thingTemplate, &pos, angle);
+ 				continue;
+ 			}
+@@ -1947,6 +2007,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
+ 				}
+ 				obj->setOrientation(angle);
+ 				obj->setPosition( &pos );
++				logMapObjectPlaced(pMapObj, obj, &pos, angle);
+ 
+ 				// Do this after positioning the object, because we may place objects in response to keys
+ 				// in the map object properties.
+@@ -4269,6 +4330,11 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
+ 	if (isInGameLogicUpdate())
+ 	{
+ 		CRCGEN_LOG(("CRC after objects for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
++		if (TheTerrainVisual)
++		{
++			// Rallypoint: a height map that changed between machines shows here, not only in an object's transform.
++			CRCGEN_LOG(("Logic height map hash for frame %d is 0x%8.8X", m_frame, TheTerrainVisual->getLogicHeightHash()));
++		}
+ 	}
+ 
+ 	if (isInGameLogicUpdate())

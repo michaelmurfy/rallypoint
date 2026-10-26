@@ -1,6 +1,7 @@
 ## Rallypoint 0.3.6
 
-- **More detail in the sync logs.** The game now writes the first terrain placements and each object's full position and rotation into the sync logs and `engine.log`, to find why a few static map objects differ between a Mac and a Windows PC. Nothing changes in how the game plays, so 0.3.5 and 0.3.6 players can still join each other.
+- **Download debug logs.** Settings > Multiplayer sync logs has a **Download debug logs** button. It saves one zip in your Downloads folder with the game's log (and the one before), the sync logs, your settings without any passwords or keys, the game's crash report and the last replay. Send it to the developer after a crash or a desync. Nothing is sent by itself.
+- **Sync logs are on for new installs** and are now complete: they used to lose the start of the first frame, which is where the map's objects are created. They also record every map object, the terrain flattening under buildings and this machine's floating-point behaviour, to find why a few static objects differ between a Mac and a Windows PC. Nothing changes in how the game plays, so 0.3.5 and 0.3.6 players can still join each other.
 - **README:** the beta wording is gone, and multiplayer is listed as played Windows against Windows as well as cross-platform.
 
 ---
