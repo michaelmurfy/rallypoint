@@ -1,0 +1,34 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 2b84450..5c11583 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -119,6 +119,7 @@ struct QuitGameException {};
+ DECLARE_PERF_TIMER(SleepyMaintenance)
+ 
+ #include <cfloat>
++#include "detmath.h"
+ #include <cmath>
+ #include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.
+ // If defined, the game times various units.
+@@ -1187,6 +1188,21 @@ static void logFloatEnvironment()
+ #endif
+ 	fprintf(stderr, "[env] compiler %s %d, FLT_EVAL_METHOD %d, sizeof(long) %d, sizeof(void*) %d, sizeof(wchar_t) %d\n", compiler, compilerVersion, evalMethod, (int)sizeof(long), (int)sizeof(void*), (int)sizeof(wchar_t));
+ 	fprintf(stderr, "[env] float probes: a*b+c %08X, sqrt %08X, 2^24+1+1 %08X, Sin(0.7) %08X, Cos(0.7) %08X, libm sinf %08X, libm cosf %08X\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
++	// The two angles of the first cross-platform comparison where Windows and macOS stored a different last bit in a
++	// tree's rotation: what our Sin/Cos, the double behind them and this platform's own sinf/cosf return for each.
++	const UnsignedInt angleBits[2] = { 0x3F490FDBu, 0xC028AB2Bu };
++	for (int i = 0; i < 2; i++)
++	{
++		float ang2;
++		memcpy(&ang2, &angleBits[i], 4);
++		float ours[2] = { (float)Sin(ang2), (float)Cos(ang2) }, crt[2] = { sinf(ang2), cosf(ang2) };
++		double ds = DetMath::sin((double)ang2), dc = DetMath::cos((double)ang2);
++		UnsignedInt o0, o1, c0, c1;
++		unsigned long long d0, d1;
++		memcpy(&o0, &ours[0], 4); memcpy(&o1, &ours[1], 4); memcpy(&c0, &crt[0], 4); memcpy(&c1, &crt[1], 4);
++		memcpy(&d0, &ds, 8); memcpy(&d1, &dc, 8);
++		fprintf(stderr, "[env] angle %08X: Sin %08X Cos %08X, DetMath double sin %016llX cos %016llX, libm sinf %08X cosf %08X\n", angleBits[i], o0, o1, d0, d1, c0, c1);
++	}
+ 	fflush(stderr);
+ }
+ 
