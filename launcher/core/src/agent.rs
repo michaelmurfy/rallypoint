@@ -23,7 +23,51 @@ const TICK: Duration = Duration::from_millis(500);
 const PING_EVERY: Duration = Duration::from_secs(2);
 /// Pings kept for latency and loss: about a minute.
 const WINDOW: usize = 30;
-const SILENCE_LIMIT: Duration = Duration::from_secs(20);
+/// How long the relay may stay silent before the agent joins again. The server forgets a quiet client after 30 s,
+/// and a returning serial takes over its old session, so rejoining early is safe and shortens a dead lobby.
+const SILENCE_LIMIT: Duration = Duration::from_secs(8);
+
+/// Where the connection is, for the Online page when it cannot connect (or lost the server).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Connection {
+    /// The address the server name resolved to.
+    pub address: String,
+    pub stage: String,
+    pub waited_secs: u64,
+    /// Datagrams received from the server so far.
+    pub replies: u32,
+    /// Times the agent had to join again after the server went quiet.
+    pub reconnects: u32,
+    /// The server gave this player a different virtual address after rejoining: a running game still uses the old one.
+    pub address_changed: bool,
+    /// What to check, in plain words. Empty while all is well or too early to say.
+    pub hint: String,
+}
+
+/// What to tell a player who is not connected yet, from what the agent has seen.
+pub fn connect_hint(stage: &str, replies: u32, waited_secs: u64, address: &str) -> String {
+    if stage == "connected" || waited_secs < 6 {
+        return String::new();
+    }
+    if replies == 0 {
+        return format!("Nothing has answered from {address} in {waited_secs} seconds. Check the server address and port, that the server is running, and that no firewall or router is blocking UDP to that port.");
+    }
+    match stage {
+        "asking for the server's identity" => format!("{address} answers, but not with its identity, so it may not be a Rallypoint server."),
+        _ if waited_secs >= 15 => format!("{address} answers, but signing in to the room has not finished after {waited_secs} seconds. The server may be busy, or a network device may be dropping some of the replies."),
+        _ => String::new(),
+    }
+}
+
+#[derive(Default)]
+struct Progress {
+    started: Option<Instant>,
+    replies: u32,
+    stage: &'static str,
+    reconnects: u32,
+    first_vip: Option<Vip>,
+    address_changed: bool,
+}
 
 /// What the relay says about itself, for display.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -140,6 +184,8 @@ pub struct Agent {
     pub local: SocketAddr,
     health: Arc<Mutex<Health>>,
     status: Arc<Mutex<Status>>,
+    progress: Arc<Mutex<Progress>>,
+    address: String,
     issued: Arc<Mutex<Option<String>>>,
     /// The relay's identity key: the one we pinned, or the one learned on first contact.
     server_key: Arc<Mutex<Option<Key>>>,
@@ -168,7 +214,8 @@ impl Agent {
     /// with it, only that relay can complete the join, and a different one is reported as `ServerKeyChanged`.
     /// Without it (first visit) the key is fetched and offered through `take_learned_key` to be saved.
     pub fn start(server: &str, serial: &str, room: &str, password: &str, pinned: Option<Key>) -> io::Result<Agent> {
-        let server = server.to_socket_addrs()?.next().ok_or_else(|| io::Error::other("server address does not resolve"))?;
+        let raw = server;
+        let server = server.to_socket_addrs().map_err(|e| io::Error::other(format!("can't find a server called {raw:?}: check the address ({e})")))?.next().ok_or_else(|| io::Error::other(format!("can't find a server called {raw:?}: check the address")))?;
         let relay = UdpSocket::bind("0.0.0.0:0")?;
         relay.connect(server)?; // also makes the kernel drop datagrams from anyone else
         relay.set_read_timeout(Some(TICK))?;
@@ -177,6 +224,8 @@ impl Agent {
         let local_addr = local.local_addr()?;
 
         let status = Arc::new(Mutex::new(Status::Connecting));
+        let progress: Arc<Mutex<Progress>> = Arc::new(Mutex::new(Progress { started: Some(Instant::now()), stage: "contacting the server", ..Default::default() }));
+        let address = server.to_string();
         let stop = Arc::new(AtomicBool::new(false));
         let issued: Arc<Mutex<Option<String>>> = Arc::default();
         let server_key: Arc<Mutex<Option<Key>>> = Arc::new(Mutex::new(pinned));
@@ -240,8 +289,8 @@ impl Agent {
 
         // relay -> local, plus handshake and keepalive
         let r2l = {
-            let (relay, status, stop, issued, health, bytes, server_key, learned, crypto) =
-                (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone());
+            let (relay, status, stop, issued, health, bytes, server_key, learned, crypto, progress) =
+                (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone(), progress.clone());
             std::thread::spawn(move || {
                 let mut serial = serial;
                 let mut cookie: Cookie = [0; 16];
@@ -257,6 +306,7 @@ impl Agent {
                     }
                     if let Ok(n) = relay.recv(&mut buf) {
                         last_rx = Instant::now();
+                        progress.lock().unwrap().replies += 1;
                         match Wire::decode(&buf[..n]) {
                             // Unsigned, so only meaningful while we are still finding out who the server is. Once a session
                             // exists a forged one (spoofed source, guessed port) must not be able to drop it.
@@ -290,6 +340,15 @@ impl Agent {
                                         Ok((Packet::Welcome { vip }, c)) => {
                                             *crypto.lock().unwrap() = Some(Arc::new(c));
                                             *status.lock().unwrap() = Status::Connected(vip);
+                                            {
+                                                let mut p = progress.lock().unwrap();
+                                                p.stage = "connected";
+                                                match p.first_vip {
+                                                    None => p.first_vip = Some(vip),
+                                                    Some(first) if first != vip => p.address_changed = true,
+                                                    _ => {}
+                                                }
+                                            }
                                             attempts = 0;
                                         }
                                         Ok((Packet::Issued { serial: s }, _)) if serial.is_empty() => {
@@ -361,6 +420,12 @@ impl Agent {
                     if !connected {
                         attempts += 1;
                         let key = *server_key.lock().unwrap();
+                        {
+                            let mut p = progress.lock().unwrap();
+                            if p.stage != "joining the room again" {
+                                p.stage = if key.is_none() { "asking for the server's identity" } else { "signing in to the room" };
+                            }
+                        }
                         match key {
                             None => {
                                 let _ = relay.send(&Wire::KeyRequest.encode()); // first visit: learn who we are talking to
@@ -391,6 +456,13 @@ impl Agent {
                         *status.lock().unwrap() = Status::Connecting;
                         *crypto.lock().unwrap() = None;
                         pending = None;
+                        {
+                            let mut p = progress.lock().unwrap();
+                            p.reconnects += 1;
+                            p.stage = "joining the room again";
+                            p.started = Some(Instant::now());
+                            p.replies = 0;
+                        }
                     } else if last_ping.elapsed() > PING_EVERY {
                         health.lock().unwrap().ping_sent(Instant::now());
                         send_sealed(&relay, &crypto, &Packet::Ping);
@@ -410,7 +482,23 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, issued, server_key, learned, pinned: pinned.is_some(), token, crypto, relay, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, crypto, relay, stop, threads: vec![l2r, r2l] })
+    }
+
+    /// Where the connection is and what to check, for the Online page.
+    pub fn connection(&self) -> Connection {
+        let p = self.progress.lock().unwrap();
+        let waited = p.started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let stage = if matches!(*self.status.lock().unwrap(), Status::Connected(_)) { "connected" } else { p.stage };
+        Connection {
+            address: self.address.clone(),
+            stage: stage.to_string(),
+            waited_secs: waited,
+            replies: p.replies,
+            reconnects: p.reconnects,
+            address_changed: p.address_changed,
+            hint: connect_hint(stage, p.replies, waited, &self.address),
+        }
     }
 
     /// The token to give the engine (`GEN_RELAY_TOKEN`), in hex.
@@ -460,6 +548,16 @@ impl Drop for Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explains_why_it_cannot_connect() {
+        assert_eq!(connect_hint("contacting the server", 0, 3, "1.2.3.4:7777"), "", "too early to say");
+        assert!(connect_hint("contacting the server", 0, 8, "1.2.3.4:7777").contains("Nothing has answered from 1.2.3.4:7777"));
+        assert!(connect_hint("asking for the server's identity", 2, 8, "x").contains("may not be a Rallypoint server"));
+        assert!(connect_hint("signing in to the room", 5, 20, "x").contains("signing in to the room has not finished"));
+        assert_eq!(connect_hint("connected", 9, 100, "x"), "");
+    }
+
 
     #[test]
     fn latency_jitter_and_loss_from_pings() {

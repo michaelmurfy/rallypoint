@@ -1,0 +1,43 @@
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+index c9a7734..1071ad7 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
+@@ -900,6 +900,8 @@ Real BaseHeightMapRenderObjClass::getHeightMapHeight(Real x, Real y, Coord3D* no
+ 			for (Int k = 0; k < n; k++)
+ 				h = (h ^ d[k]) * 16777619u;
+ 			addCRCDebugLineNoCounter("HeightMap: extent %d x %d, border %d, hash %08X, is client map %d", logicHeightMap->getXExtent(), logicHeightMap->getYExtent(), logicHeightMap->getBorderSizeInline(), h, (int)(logicHeightMap == m_map));
++			// The sync log keeps only the last 64000 lines of a frame, which drops this; engine.log keeps it.
++			fprintf(stderr, "[sync-hm] height map: extent %d x %d, border %d, hash %08X, is client map %d, first bytes %u %u %u %u\n", logicHeightMap->getXExtent(), logicHeightMap->getYExtent(), logicHeightMap->getBorderSizeInline(), h, (int)(logicHeightMap == m_map), d[0], d[1], d[2], d[3]);
+ 		}
+ 		if (logging && offMapLogged < 6)
+ 		{
+@@ -914,6 +916,7 @@ Real BaseHeightMapRenderObjClass::getHeightMapHeight(Real x, Real y, Coord3D* no
+ 				memcpy(&xb, &x, 4);
+ 				memcpy(&yb, &y, 4);
+ 				addCRCDebugLineNoCounter("HeightMap off-map lookup: x %08X y %08X ix %d iy %d", xb, yb, ix2, iy2); // client calls may add lines too, so no counter
++				fprintf(stderr, "[sync-hm] off-map lookup: x %08X y %08X ix %d iy %d clipped byte %u\n", xb, yb, ix2, iy2, (unsigned)logicHeightMap->getDataPtr()[(ix2 < 0 ? 0 : ix2 > logicHeightMap->getXExtent()-1 ? logicHeightMap->getXExtent()-1 : ix2) + (iy2 < 0 ? 0 : iy2 > logicHeightMap->getYExtent()-1 ? logicHeightMap->getYExtent()-1 : iy2) * logicHeightMap->getXExtent()]);
+ 			}
+ 		}
+ 	}
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+index b554856..728ed2c 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Map/TerrainLogic.cpp
+@@ -1528,6 +1528,17 @@ PathfindLayerEnum TerrainLogic::alignOnTerrain( Real angle, const Coord3D& pos,
+ 	if (stickToGround)
+ 		mtx.Set_Z_Translation(terrainAtPos);
+ 	DUMPREAL(terrainAtPos);
++	{
++		// Rallypoint: the first terrain-sticking placements, in engine.log (the sync log's window drops them).
++		static int logged = 0;
++		if (stickToGround && logged < 12 && TheCRCFirstFrameToLog >= 0 && TheGameLogic && TheGameLogic->isInGame())
++		{
++			logged++;
++			UnsignedInt px, py, pz, hz;
++			memcpy(&px, &pos.x, 4); memcpy(&py, &pos.y, 4); memcpy(&pz, &pos.z, 4); memcpy(&hz, &terrainAtPos, 4);
++			fprintf(stderr, "[sync-hm] stick to ground: pos %08X %08X %08X, height %08X, layer %d, frame %d\n", px, py, pz, hz, (int)layer, (int)TheGameLogic->getFrame());
++		}
++	}
+ 
+ 	return layer;
+ }

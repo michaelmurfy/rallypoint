@@ -149,10 +149,11 @@ fn bad_and_duplicate_serials_are_rejected() {
     assert_eq!(wait(&bad, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::UnknownSerial as u8));
     let revoked = start(&server, "CCC");
     assert_eq!(wait(&revoked, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::Revoked as u8));
+    // The same serial again (a restarted launcher, or a new network address) takes over its old session with the same virtual address.
     let first = start(&server, "AAA");
-    wait(&first, |s| matches!(s, Status::Connected(_)));
+    let vip = wait(&first, |s| matches!(s, Status::Connected(_)));
     let second = start(&server, "AAA");
-    assert_eq!(wait(&second, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
+    assert_eq!(wait(&second, |s| matches!(s, Status::Connected(_))), vip);
     stop.store(true, Ordering::Relaxed);
 }
 
@@ -165,9 +166,10 @@ fn client_without_serial_gets_one_automatically() {
     assert_eq!(serial.len(), 19); // XXXX-XXXX-XXXX-XXXX
     assert_eq!(a.take_issued(), None); // handed out once
 
-    // The stored serial is what the next launch presents; the same serial cannot be used twice at once.
+    // The stored serial is what the next launch presents; it takes over the old session instead of being locked out.
+    let before = a.status();
     let again = start(&server, &serial);
-    assert_eq!(wait(&again, |s| matches!(s, Status::Rejected(_))), Status::Rejected(Reason::InUse as u8));
+    assert_eq!(wait(&again, |s| matches!(s, Status::Connected(_))), before);
     drop(a);
 
     // A second client gets a different serial.

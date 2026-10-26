@@ -224,6 +224,26 @@ fn run_extract(tool: &Tool, archive: &Path, dest: &Path) -> Result<(), String> {
     out(&mut cmd).map(|_| ())
 }
 
+/// Archives made on other systems can carry read-only folders and files; left that way they cannot be moved or removed
+/// (and a copy keeps the bits). The owner gets read and write on everything that was unpacked.
+#[cfg(unix)]
+fn make_writable(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(rd) = std::fs::read_dir(root) else { return };
+    let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755));
+    for e in rd.flatten() {
+        let Ok(ty) = e.file_type() else { continue };
+        if ty.is_dir() {
+            make_writable(&e.path());
+        } else if ty.is_file() {
+            let mode = e.metadata().map(|m| m.permissions().mode()).unwrap_or(0o644);
+            let _ = std::fs::set_permissions(e.path(), std::fs::Permissions::from_mode(mode | 0o600));
+        }
+    }
+}
+#[cfg(not(unix))]
+fn make_writable(_root: &Path) {}
+
 /// Reject symlinks and anything that resolves outside `root`.
 fn check_tree(root: &Path) -> Result<(), String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -266,6 +286,7 @@ pub fn extract(archive: &Path, dest: &Path) -> Result<(), String> {
                 return Err(format!("the archive contains a symbolic link ({link}), which isn't allowed; refusing to unpack it"));
             }
             run_extract(&tool, archive, dest)?;
+            make_writable(dest);
             check_tree(dest)
         })();
         match attempt {
@@ -290,6 +311,22 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Folders and files that arrive read-only (zips made on other systems) are made writable, so they can be moved and removed.
+    #[cfg(unix)]
+    #[test]
+    fn unpacked_read_only_trees_become_removable() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = std::env::temp_dir().join(format!("gen-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(t.join("a/b")).unwrap();
+        std::fs::write(t.join("a/b/f.txt"), "x").unwrap();
+        std::fs::set_permissions(t.join("a/b/f.txt"), std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(t.join("a/b"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::set_permissions(t.join("a"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        make_writable(&t);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
 
     #[test]
     fn spots_links_in_each_tools_listing() {

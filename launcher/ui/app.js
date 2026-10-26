@@ -24,6 +24,7 @@ const ICONS = {
   play: "M8 5v14l11-7z",
   mods: "M12 2 2 7l10 5 10-5-10-5zm0 11.5L4.6 9.8 2 11l10 5 10-5-2.6-1.2L12 13.5zm0 4-7.4-3.7L2 15l10 5 10-5-2.6-1.2L12 17.5z",
   online: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-3a15.7 15.7 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8zM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4zM4.3 14a8.200 8.200 0 0 1 0-4h3.400a16.500 16.500 0 0 0 0 4H4.300zm.8 2h3a15.700 15.700 0 0 0 1.400 3.600A8 8 0 0 1 5.100 16zm3-8h-3a8 8 0 0 1 4.400-3.600A15.700 15.700 0 0 0 8.100 8zM12 20c-.8-1.200-1.500-2.500-1.900-4h3.800c-.4 1.500-1.100 2.800-1.900 4zm2.300-6H9.700a14.700 14.700 0 0 1 0-4h4.600a14.700 14.700 0 0 1 0 4zm.2 5.600c.6-1.100 1.100-2.300 1.400-3.600h3a8 8 0 0 1-4.400 3.600zm1.800-5.600a16.500 16.500 0 0 0 0-4h3.400a8.200 8.200 0 0 1 0 4h-3.400z",
+  maps: "M20.5 3l-.2.1L15 5.2 9 3 3.400 4.900a.5.5 0 0 0-.4.5v15.100a.5.5 0 0 0 .5.5l.2-.1L9 18.800l6 2.100 5.600-1.900a.5.5 0 0 0 .4-.5V3.500a.5.5 0 0 0-.5-.5zM15 19l-6-2.100V5l6 2.100V19z",
   settings: "M19.400 13a7.500 7.500 0 0 0 0-2l2.100-1.600-2-3.400-2.500 1a7.600 7.600 0 0 0-1.700-1L15 3.300h-4L10.700 6a7.600 7.600 0 0 0-1.700 1l-2.500-1-2 3.400L6.600 11a7.500 7.500 0 0 0 0 2l-2.100 1.600 2 3.400 2.500-1c.5.400 1.100.7 1.700 1l.3 2.700h4l.3-2.700c.6-.3 1.200-.6 1.700-1l2.500 1 2-3.400L19.400 13zM13 15.500a3.500 3.500 0 1 1 0-7 3.500 3.500 0 0 1 0 7z",
   check: "M9 16.200 4.800 12l-1.400 1.400L9 19 21 7l-1.400-1.400z",
   plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
@@ -69,6 +70,17 @@ function liveStatus() {
   return api;
 }
 
+/** A centred notice with a spinner for something that takes a moment and has no progress to show (starting the game). */
+function busyOverlay(text) {
+  const label = h("span", {}, text);
+  const el = h("div", { class: "busy-overlay", role: "status", "aria-live": "polite" }, h("div", { class: "busy-card" }, h("span", { class: "spin big", "aria-hidden": "true" }), label));
+  document.getElementById("root").append(el);
+  return {
+    set: (t) => { label.textContent = t; },
+    close: () => { el.classList.add("leaving"); setTimeout(() => el.remove(), 200); },
+  };
+}
+
 /** Page-wide feedback goes in the line under the page title; the setup wizard (no page line) falls back to a toast. */
 let pageStatus = null;
 function say(text, kind) {
@@ -111,34 +123,41 @@ async function loadMods() {
 }
 
 const needsOf = (m) => (m.addon_for ? (store.mods.catalog.find((b) => b.id === m.addon_for) || {}).name || null : null);
-const installedMods = () => [...store.mods.catalog.filter((m) => m.installed).map((m) => ({ folder: m.path, name: m.name, needs: needsOf(m), id: m.id, conflicts: m.conflicts || [] })), ...store.mods.other.map((o) => ({ folder: o.folder, name: o.folder }))].filter((m) => m.folder !== ICON_FOLDER);
-const selectedFolders = () => {
-  const have = new Set(installedMods().map((m) => m.folder));
+
+/** The games you can start: Zero Hour itself, and each listed mod (Shockwave, Chaos, Cold War Crisis...) that is installed. */
+const GAME_ZH = "zh";
+function gameChoices() {
+  return [
+    { id: GAME_ZH, name: "Zero Hour", folder: null, installed: true, note: "The original game" },
+    ...store.mods.catalog.map((m) => ({
+      id: m.id, name: m.name, folder: m.path, installed: !!m.installed,
+      note: m.conflicts && m.conflicts.length ? "Total conversion, plays on its own" : m.addon_for ? `Plays on top of ${needsOf(m)}` : "Overhaul mod",
+    })),
+  ];
+}
+/** The chosen game; falls back to Zero Hour when the saved choice is no longer installed. A pre-dropdown saved selection is carried over. */
+function selectedGame() {
+  const p = prefs.get(), all = gameChoices();
+  const byId = all.find((g) => g.id === p.game && g.installed);
+  if (byId) return byId;
+  const legacy = all.find((g) => g.folder && g.installed && (p.mods || []).includes(g.folder));
+  return legacy || all[0];
+}
+/** Mods installed from a file or folder (not listed in the catalog) are the extras, ticked on top of the chosen game. */
+const extraMods = () => store.mods.other.filter((o) => o.folder !== ICON_FOLDER).map((o) => ({ folder: o.folder, name: o.folder, mb: o.mb }));
+function selectedExtras() {
+  const have = new Set(extraMods().map((m) => m.folder));
   return (prefs.get().mods || []).filter((f) => have.has(f));
-};
-/** Catalog ids a folder brings in: itself and, for an add-on, the mod it is laid over. */
-function idsFor(folder) {
-  const m = store.mods.catalog.find((c) => c.path === folder);
-  return m ? [m.id, ...(m.addon_for ? [m.addon_for] : [])] : [];
 }
-const conflictsOf = (folder) => (store.mods.catalog.find((c) => c.path === folder) || {}).conflicts || [];
-/** Name of a ticked mod that rules this one out (a total conversion rules out what it replaces), or null. */
-function blockedBy(folder) {
-  const mine = idsFor(folder);
-  const hit = selectedFolders().find((f) => f !== folder && conflictsOf(f).some((id) => mine.includes(id)));
-  return hit ? (installedMods().find((m) => m.folder === hit) || {}).name || hit : null;
-}
-function toggleMod(folder, on) {
-  const mine = conflictsOf(folder);
-  // Ticking a total conversion unticks the mods it can't be played with.
-  const cur = selectedFolders().filter((f) => f !== folder && !(on && idsFor(f).some((id) => mine.includes(id))));
+function toggleExtra(folder, on) {
+  const cur = selectedExtras().filter((f) => f !== folder);
   prefs.set({ mods: on ? [...cur, folder] : cur });
-  notifyMods(); // other tiles may have been unticked or ruled out
+  notifyMods();
 }
+/** What the engine loads, bottom layer first: the bundled icons, the chosen game, then the ticked extras. */
 function launchFolders() {
-  const folders = selectedFolders();
-  if (store.mods.other.some((o) => o.folder === ICON_FOLDER)) return [ICON_FOLDER, ...folders];
-  return folders;
+  const g = selectedGame();
+  return [...(store.mods.other.some((o) => o.folder === ICON_FOLDER) ? [ICON_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...selectedExtras()];
 }
 let iconsJob = null;
 /** Sharp command-bar icons. Setup downloads them on its own; they load with every game. */
@@ -276,7 +295,7 @@ async function loadMaps() {
   notifyMods();
 }
 /** Pick an archive or folder of maps, in the Downloads folder, and add it. */
-async function pickMaps(directory) {
+async function pickMaps(directory, packId) {
   let picked;
   try {
     const dl = await invoke("downloads_dir").catch(() => null);
@@ -289,11 +308,14 @@ async function pickMaps(directory) {
   if (!picked) return;
   say("Adding maps…", "busy");
   try {
-    const n = await invoke("maps_install_path", { path: typeof picked === "string" ? picked : picked.path });
-    say(`${n} map${n === 1 ? "" : "s"} added`, "ok");
+    const n = await invoke("maps_install_path", { path: typeof picked === "string" ? picked : picked.path, pack: packId || null });
+    const pack = packId && (store.maps.packs.find((p) => p.id === packId) || {});
+    say(pack && pack.start_disabled ? `${n} maps added to your library. Choose the ones you want on the Maps page.` : `${n} map${n === 1 ? "" : "s"} added`, "ok");
   } catch (e) { say(errText(e), "bad"); }
   loadMaps();
+  notifyMaps();
 }
+const notifyMaps = () => refreshers.forEach((f) => f.name === "reloadOrganiser" && f());
 /** Map packs to install with one button, plus adding your own. Used on the Mods page and in the wizard. */
 function mapsCard() {
   let timer = null;
@@ -308,7 +330,11 @@ function mapsCard() {
     info.textContent = m.count ? `${m.count} map${m.count === 1 ? "" : "s"} installed in ${m.dir}` : "No extra maps installed yet.";
     fill(list, m.packs.map((p) => h("div", { class: "mappack" },
       h("div", {}, h("h3", {}, p.name), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
-      h("button", { class: "btn small", onclick: () => start(p) }, "Install"))));
+      p.manual
+        ? h("div", { class: "row" },
+          h("button", { class: "btn small", onclick: () => invoke("maps_open_pack_page", { id: p.id }).catch((e) => say(errText(e), "bad")) }, "Open download page"),
+          h("button", { class: "btn small", onclick: () => pickMaps(false, p.id) }, "Choose the file…"))
+        : h("button", { class: "btn small", onclick: () => start(p) }, "Install"))));
   }
   async function start(p) {
     try { await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { say(errText(e), "bad"); }
@@ -333,6 +359,91 @@ function mapsCard() {
       h("button", { class: "btn small", onclick: () => pickMaps(false) }, "Add maps from a file…"),
       h("button", { class: "btn small", onclick: () => pickMaps(true) }, "Add a folder of maps…")));
   return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); } };
+}
+
+/** Every map, on or off: pick the ones the game should show. Switching a map off moves it aside; nothing is deleted. */
+function mapOrganiser() {
+  const LIMIT = 150;
+  let all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
+  const summary = h("p", { class: "muted" });
+  const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
+  const packSel = h("select", { "aria-label": "Show maps from", onchange: () => { pack = packSel.value; shown = LIMIT; draw(); } });
+  const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
+  const segs = h("div", { class: "segs", role: "group", "aria-label": "Show" }, seg("all", "All"), seg("on", "On"), seg("off", "Off"));
+  const list = h("div", { class: "maplist" });
+  const more = h("button", { class: "btn small", hidden: true, onclick: () => { shown += LIMIT; draw(); } }, "Show more");
+  const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on those shown");
+  const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off those shown");
+  const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete those shown");
+  const empty = h("div", { class: "notice", hidden: true });
+  const visible = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!pack || m.pack === pack) && (view === "all" || (view === "on") === m.enabled));
+  function drawSummary() {
+    const n = all.filter((m) => m.enabled).length;
+    summary.textContent = all.length ? `${all.length} map${all.length === 1 ? "" : "s"}, ${n} switched on. Changes apply the next time the game starts.` : "";
+  }
+  function draw() {
+    const packs = [...new Set(all.map((m) => m.pack))].sort();
+    if (pack && !packs.includes(pack)) pack = "";
+    packSel.replaceChildren(new Option("All packs", ""), ...packs.map((p) => new Option(`${p} (${all.filter((m) => m.pack === p).length})`, p)));
+    packSel.value = pack;
+    segs.querySelectorAll(".seg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+    const v = visible();
+    drawSummary();
+    empty.hidden = !!v.length;
+    fill(empty, all.length ? "No maps match." : h("span", {}, "No maps yet. Install a pack above, or add your own maps from a file or folder."));
+    fill(list, v.slice(0, shown).map((m) => {
+      const box = h("input", { type: "checkbox", checked: m.enabled, "aria-label": `Use ${m.name}`, onchange: async () => {
+        try { await invoke("maps_set_enabled", { names: [m.name], enabled: box.checked }); m.enabled = box.checked; row.classList.toggle("on", m.enabled); drawSummary(); }
+        catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
+      } });
+      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack), h("span", { class: "muted small" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`));
+      return row;
+    }));
+    more.hidden = v.length <= shown;
+    more.textContent = `Show more (${v.length - shown} left)`;
+    [on, off, del].forEach((b) => { b.disabled = !v.length; });
+    del.textContent = confirmDelete ? `Click again to delete ${v.length} map${v.length === 1 ? "" : "s"}` : "Delete those shown";
+  }
+  async function bulk(enabled) {
+    const names = visible().filter((m) => m.enabled !== enabled).map((m) => m.name);
+    if (!names.length) return;
+    on.disabled = off.disabled = true;
+    try {
+      const n = await invoke("maps_set_enabled", { names, enabled });
+      all.forEach((m) => { if (names.includes(m.name)) m.enabled = enabled; });
+      say(`${n} map${n === 1 ? "" : "s"} switched ${enabled ? "on" : "off"}`, "ok");
+    } catch (e) { say(errText(e), "bad"); }
+    draw();
+  }
+  async function remove() {
+    if (!confirmDelete) { confirmDelete = true; draw(); setTimeout(() => { confirmDelete = false; draw(); }, 4000); return; }
+    confirmDelete = false;
+    const names = visible().map((m) => m.name);
+    try { const n = await invoke("maps_delete", { names }); say(`${n} map${n === 1 ? "" : "s"} deleted`, "ok"); } catch (e) { say(errText(e), "bad"); }
+    await reloadOrganiser();
+  }
+  async function reloadOrganiser() {
+    try { all = await invoke("maps_organiser"); } catch (e) { say(errText(e), "bad"); all = []; }
+    draw();
+  }
+  refreshers.add(reloadOrganiser);
+  reloadOrganiser();
+  const el = h("div", { class: "stack" },
+    summary,
+    h("div", { class: "organiser-bar" }, search, packSel, segs),
+    h("div", { class: "row" }, on, off, del),
+    empty, list, h("div", { class: "row" }, more));
+  return { el, dispose: () => refreshers.delete(reloadOrganiser) };
+}
+
+function mapsPage() {
+  const packs = mapsCard();
+  const org = mapOrganiser();
+  const el = h("div", { class: "page" },
+    h("div", { class: "page-head" }, h("h1", {}, "Maps")),
+    h("div", { class: "card" }, h("h2", {}, "Your maps"), org.el),
+    h("details", { class: "card help", open: true }, h("summary", {}, "Get more maps"), packs.el));
+  return { el, dispose: () => { packs.dispose(); org.dispose(); } };
 }
 
 // ---------------------------------------------------------------- components
@@ -499,7 +610,10 @@ function watchBanner() {
 function playPage() {
   const p = prefs.get();
   const nat = nativeRes();
-  const picks = h("div", { class: "picks", role: "group", "aria-label": "Mods" });
+  const picks = h("div", { class: "picks", role: "group", "aria-label": "Extra mods" });
+  const game = h("select", { "aria-label": "Game to play" });
+  const gameNote = h("span", { class: "muted small" });
+  const extrasField = h("div", { class: "field" }, h("span", {}, "Extra mods"), picks, h("span", { class: "muted small" }, "Loaded on top of the game above."));
   const resSel = h("select", { "aria-label": "Resolution" });
   const cw = h("input", { type: "number", min: 640, value: nat.w, "aria-label": "Width" });
   const ch = h("input", { type: "number", min: 480, value: nat.h, "aria-label": "Height" });
@@ -518,15 +632,19 @@ function playPage() {
   const size = () => (resSel.value === "native" ? nat : resSel.value === "custom" ? { w: +cw.value, h: +ch.value } : (([w, hh]) => ({ w: +w, h: +hh }))(resSel.value.split("x")));
 
   function fillMods() {
-    const mods = installedMods();
-    fill(picks, mods.length ? mods.map((m) => {
-      const on = selectedFolders().includes(m.folder);
-      const blocker = on ? null : blockedBy(m.folder);
-      const box = h("input", { type: "checkbox", checked: on, disabled: !!blocker, onchange: () => toggleMod(m.folder, box.checked) });
-      const note = blocker ? `Can't be played with ${blocker}` : m.needs ? `Add-on for ${m.needs}` : m.conflicts && m.conflicts.length ? "Total conversion, plays on its own" : "";
-      return h("label", { class: "tile" + (on ? " on" : "") + (blocker ? " off" : "") }, box, h("span", { class: "tile-text" }, h("b", {}, m.name), note ? h("span", { class: "muted small" }, note) : null));
-    }) : h("p", { class: "muted small" }, "No mods installed yet. Add some on the ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Mods page"), "."));
+    const games = gameChoices(), cur = selectedGame();
+    game.replaceChildren(...games.map((g) => { const o = new Option(g.installed ? g.name : `${g.name} (not installed)`, g.id); o.disabled = !g.installed; return o; }));
+    game.value = cur.id;
+    fill(gameNote, cur.note, games.some((g) => !g.installed) ? [" · ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Get more mods")] : null);
+    const extras = extraMods();
+    extrasField.hidden = !extras.length;
+    fill(picks, extras.map((m) => {
+      const on = selectedExtras().includes(m.folder);
+      const box = h("input", { type: "checkbox", checked: on, onchange: () => toggleExtra(m.folder, box.checked) });
+      return h("label", { class: "tile" + (on ? " on" : "") }, box, h("span", { class: "tile-text" }, h("b", {}, m.name), m.mb ? h("span", { class: "muted small" }, `${m.mb} MB`) : null));
+    }));
   }
+  game.addEventListener("change", () => { prefs.set({ game: game.value }); notifyMods(); });
   refreshers.add(fillMods); fillMods();
 
   function fillFiles() {
@@ -540,11 +658,14 @@ function playPage() {
     if (!store.cfg.game_dir) { openWizard(); return; }
     const { w, h: hh } = size();
     play.disabled = sk.disabled = true;
+    const busy = busyOverlay(skirmish ? "Starting a skirmish…" : "Starting the game…");
+    let started = false;
     try {
       await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: fs.checked, skirmish, raisedCamera: !!prefs.get().camera });
-      say(skirmish ? "Starting a skirmish…" : "Starting the game…", "ok");
+      started = true;
     } catch (e) { say(errText(e), "bad"); }
-    setTimeout(() => { play.disabled = sk.disabled = false; }, 2500);
+    // The game's own window takes a few seconds to appear; keep the notice up until then.
+    setTimeout(() => { busy.close(); play.disabled = sk.disabled = false; }, started ? 5000 : 0);
   }
 
   const el = h("div", { class: "page" },
@@ -555,17 +676,18 @@ function playPage() {
       h("div", { class: "row" }, play, sk)),
     h("div", { class: "card" },
       h("h3", {}, "Options"),
-      h("div", { class: "field" }, h("span", {}, "Mods"), picks),
-      h("label", { class: "field narrow" }, h("span", {}, "Resolution"), resSel),
+      h("div", { class: "grid2" },
+        h("label", { class: "field" }, h("span", {}, "Game"), game, gameNote),
+        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
+      extrasField,
       custom,
       h("label", { class: "switch" }, fs, "Fullscreen"),
       h("label", { class: "switch" }, cam, "Higher camera"),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. Mods that fit together load together; an add-on is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
+      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs. Higher camera is optional and stays off for a normal online view.")));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
 function modsPage() {
-  const maps = mapsCard();
   const body = h("div", { class: "stack" });
   const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
   const dropBusy = h("span", { class: "live busy", hidden: true, role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…");
@@ -595,15 +717,19 @@ function modsPage() {
           try { await invoke("mods_remove", { folder: o.folder }); say(o.folder + " removed"); } catch (e) { say(errText(e), "bad"); }
           loadMods();
         } }, "Remove");
-        return h("div", { class: "card" }, h("div", { class: "mod" }, h("div", {}, h("h3", {}, o.folder), h("p", { class: "muted small" }, `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)), rm));
+        const bundled = o.folder === ICON_FOLDER;
+        return h("div", { class: "card" }, h("div", { class: "mod" },
+          h("div", { class: "stack tight" },
+            h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Bundled", "ok") : null),
+            h("p", { class: "muted small" }, bundled ? "Sharp command-bar icons. Installed by Rallypoint and loaded with every game." : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
+          bundled ? null : rm));
       }));
   }
   refreshers.add(render); render();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
-    body, drop, help,
-    h("div", { class: "page-head" }, h("h1", {}, "Maps")), h("div", { class: "card" }, maps.el));
-  return { el, dispose: () => { refreshers.delete(render); maps.dispose(); } };
+    body, drop, help);
+  return { el, dispose: () => { refreshers.delete(render); } };
 }
 
 const DEFAULT_PORT = "7777";
@@ -637,12 +763,27 @@ const dur = (secs) => {
 };
 const rate = (kbps) => (kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbit/s` : `${kbps} kbit/s`);
 
+/** What each refusal means and what to do about it, keyed by the status text the launcher shows. */
+const WHY = {
+  "Wrong room password": "The room already exists with a different password. A room is created by the first player in and removed when everyone has left, so if nobody else is in it, pick a new password or another room name.",
+  "That room is full": "A room holds 8 players. Join another room.",
+  "Room names use letters, numbers, spaces, - _ . (max 32)": "Use only letters, numbers, spaces and - _ . in the room name, up to 32 characters.",
+  "This server's identity changed": "Rallypoint remembers each server's identity from your first visit. A different one is answering now. That is expected if the server's owner reinstalled it. If not, someone may be pretending to be that server.",
+  "Too many attempts, try again in a few minutes": "The server limits sign-in attempts from one address. Wait a few minutes before trying again.",
+  "Server is full": "The server has no space for another room right now.",
+  "This server is private": "This server only accepts players its owner has signed up. Ask them for access.",
+  "This computer can't join right now": "The server doesn't accept this computer's saved identity. If you were signed up on this server before, ask its owner whether your access was removed.",
+  "Rejected by server": "The server refused the sign-in without a specific reason.",
+};
+
 /** How the connection and the server are doing, refreshed while the Online page is open and we are connected. */
 function connectionCard() {
+  const tiles = h("div", { class: "stats" });
   const body = h("dl", { class: "diag" });
   const verdict = h("span", {});
-  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), body);
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), tiles, body);
   const row = (label, value, level) => [h("dt", {}, label), h("dd", { class: level || "" }, value)];
+  const tile = (label, value, level, sub) => h("div", { class: "stat " + (level || "") }, h("span", { class: "stat-value" }, value), h("span", { class: "stat-label" }, label), sub ? h("span", { class: "muted small" }, sub) : null);
   async function poll() {
     let d = null;
     try { d = await invoke("relay_diagnostics"); } catch { /* keep hidden */ }
@@ -654,12 +795,13 @@ function connectionCard() {
     const load = s ? (s.load_pct < 70 ? "ok" : s.load_pct < 90 ? "warn" : "bad") : null;
     const worst = [lat, loss, load].includes("bad") ? "bad" : [lat, loss, load].includes("warn") ? "warn" : lat ? "ok" : null;
     const why = [lat === "bad" && `latency ${d.avg_ms} ms`, loss === "bad" && `${d.loss_pct}% packet loss`, load === "bad" && `server ${s.load_pct}% full`].filter(Boolean).join(", ");
-    verdict.className = "live " + (worst === "ok" ? "ok" : worst === "bad" ? "bad" : "");
+    verdict.className = "pill " + (worst === "ok" ? "ok" : worst === "bad" ? "bad" : worst === "warn" ? "warn" : "");
     verdict.textContent = worst === "ok" ? "Good" : worst === "warn" ? "Fair" : worst === "bad" ? `Poor: ${why}` : "Measuring…";
+    fill(tiles,
+      tile("Latency", d.rtt_ms == null ? "…" : `${d.rtt_ms} ms`, lat, d.rtt_ms == null ? "" : `average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0}`),
+      tile("Packet loss", d.loss_pct == null ? "…" : `${d.loss_pct}%`, loss),
+      tile("Game traffic", rate(d.up_kbps + d.down_kbps), "", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`));
     fill(body,
-      row("Latency", d.rtt_ms == null ? "measuring…" : `${d.rtt_ms} ms (average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0})`, lat),
-      row("Packet loss", d.loss_pct == null ? "measuring…" : `${d.loss_pct}%`, loss),
-      row("Game traffic", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`),
       d.desync ? row("Sync check", d.desync.certain
         ? `Out of sync at frame ${d.desync.frame}: ${d.desync.players.filter((p) => p.odd).map((p) => p.vip).join(", ")} differ from ${d.desync.host ? "the host" : "the others"}`
         : `Out of sync at frame ${d.desync.frame}: the players disagree and the server cannot tell who is right`, "bad") : row("Sync check", "all players agree so far", "ok"),
@@ -684,29 +826,64 @@ function onlinePage() {
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
   const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room" });
   const pw = h("input", { type: "password", autocomplete: "off", "aria-label": "Room password" });
-  const status = h("div", { class: "row" });
-  const saved$ = h("div", {});
-  function drawServers() {
+  const remember = h("input", { type: "checkbox", checked: true });
+  const nameBox = h("input", { type: "text", maxlength: 12, placeholder: store.cfg.default_player_name || "Player", value: store.cfg.player_name || "", "aria-label": "Player name" });
+  const nameNote = h("span", { class: "muted small" });
+  const showName = (used) => { nameNote.textContent = `Other players see ${used} in the game's lobby.`; };
+  showName(store.cfg.player_name || store.cfg.default_player_name || "your computer's name");
+  nameBox.addEventListener("change", async () => {
+    try {
+      const used = await invoke("set_player_name", { name: nameBox.value });
+      store.cfg.player_name = nameBox.value.trim() === "" ? "" : used;
+      nameBox.value = store.cfg.player_name;
+      showName(used);
+    } catch (e) { say(errText(e), "bad"); }
+  });
+  const state = h("div", { class: "row" });
+  const problem = h("div", { class: "notice", role: "status", hidden: true });
+  const saved$ = h("div", { class: "card", hidden: true });
+  let lastError = "";
+  const key = (x) => ({ server: x.server, room: x.room || "" });
+  async function drawServers() {
     const list = loadServers();
-    fill(saved$, list.length ? [h("h2", {}, "Saved servers"), ...list.map((x, i) => {
+    saved$.hidden = !list.length;
+    let flags = [];
+    try { flags = await invoke("room_passwords_saved", { pairs: list.map((x) => [x.server, x.room || ""]) }); } catch { /* none known */ }
+    fill(saved$, h("h2", {}, "Saved servers"), h("div", { class: "rows" }, list.map((x, i) => {
       const sp = splitServer(x.server);
-      return h("div", { class: "mappack" },
-        h("div", {}, h("strong", {}, x.server), x.room ? h("span", { class: "muted small" }, `  room ${x.room}`) : null),
-        h("div", { class: "row" },
-          h("button", { class: "btn small", onclick: () => { server.value = sp.host; port.value = sp.port; room.value = x.room || ""; pw.focus(); } }, "Use"),
-          h("button", { class: "btn small ghost danger", onclick: () => { const l = loadServers(); l.splice(i, 1); storeServers(l); drawServers(); } }, "Remove")));
-    })] : []);
+      const has = !!flags[i];
+      const use = () => { server.value = sp.host; port.value = sp.port; room.value = x.room || ""; pw.value = ""; pw.placeholder = has ? "Saved password" : ""; if (!has) pw.focus(); };
+      return h("div", { class: "rowline" },
+        h("div", { class: "stack tight" }, h("strong", {}, x.server), h("span", { class: "muted small" }, x.room ? `Room ${x.room}` : "No room name")),
+        h("div", { class: "row" }, has ? pill("Password saved", "ok") : null,
+          h("button", { class: "btn small", onclick: () => { use(); if (has) btn.click(); } }, has ? "Connect" : "Use"),
+          h("button", { class: "btn small ghost danger", onclick: async () => {
+            const l = loadServers(); l.splice(i, 1); storeServers(l);
+            try { await invoke("room_password_save", { ...key(x), password: "" }); } catch { /* nothing saved */ }
+            drawServers();
+          } }, "Remove")));
+    })));
   }
-  const save = h("button", { class: "btn", onclick: () => {
+  const save = h("button", { class: "btn", onclick: async () => {
     const s = joinServer(server.value, port.value);
     if (!s.ok) return say(s.host ? "The port must be a number from 1 to 65535" : "Enter the server address first", "bad");
-    const l = loadServers().filter((x) => !(x.server === s.text && (x.room || "") === room.value.trim()));
-    l.push({ server: s.text, room: room.value.trim() });
-    storeServers(l); drawServers(); say("Server saved");
+    const r = room.value.trim();
+    const l = loadServers().filter((x) => !(x.server === s.text && (x.room || "") === r));
+    l.push({ server: s.text, room: r });
+    storeServers(l);
+    let withPw = false;
+    try {
+      if (remember.checked && pw.value) { await invoke("room_password_save", { server: s.text, room: r, password: pw.value }); withPw = true; }
+      else if (!remember.checked) await invoke("room_password_save", { server: s.text, room: r, password: "" });
+      else withPw = (await invoke("room_passwords_saved", { pairs: [[s.text, r]] }))[0];
+    } catch (e) { return say("Saved the server, but not the password: " + errText(e), "bad"); }
+    await drawServers();
+    say(withPw ? "Server and password saved" : "Server saved", "ok");
   } }, "Save server");
   drawServers();
   const btn = h("button", { class: "btn primary", onclick: async () => {
     try {
+      lastError = "";
       if (btn.dataset.mode === "disconnect") await invoke("relay_disconnect");
       else {
         const s = joinServer(server.value, port.value);
@@ -716,34 +893,55 @@ function onlinePage() {
         store.cfg.server = s.text; store.cfg.room = room.value.trim();
         await invoke("relay_connect", { password: pw.value });
       }
-    } catch (e) { say(errText(e), "bad"); }
+    } catch (e) { lastError = errText(e); say(lastError, "bad"); }
     refresh();
   } }, "Connect");
-  function refresh() {
+  async function refresh() {
     const s = store.relay;
-    const on = s === "Connecting..." || s.startsWith("Connected as");
+    const connected = s.startsWith("Connected as");
+    const on = s === "Connecting..." || connected;
     btn.textContent = on ? "Disconnect" : "Connect";
     btn.dataset.mode = on ? "disconnect" : "connect";
-    status.replaceChildren(pill(s, s.startsWith("Connected as") ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
+    state.replaceChildren(pill(s === "Connecting..." ? "Connecting…" : s, connected ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
+    // Why it is not working, in the words of what to check.
+    let c = null;
+    if (s === "Connecting...") { try { c = await invoke("relay_connection"); } catch { /* none */ } }
+    const lines = [];
+    if (lastError) lines.push(h("p", {}, lastError));
+    if (WHY[s]) lines.push(h("p", {}, h("b", {}, s + ". "), WHY[s]));
+    if (c && c.hint) lines.push(h("p", {}, c.hint));
+    if (c && !c.hint && c.waited_secs >= 3) lines.push(h("p", { class: "muted" }, `${c.stage[0].toUpperCase() + c.stage.slice(1)}… (${c.waited_secs} s, server at ${c.address})`));
+    if (c && c.reconnects) lines.push(h("p", { class: "muted" }, `The server went quiet and Rallypoint has rejoined ${c.reconnects} time${c.reconnects === 1 ? "" : "s"}.`));
+    if (connected) {
+      let cc = null; try { cc = await invoke("relay_connection"); } catch { /* none */ }
+      if (cc && cc.address_changed) lines.push(h("p", {}, h("b", {}, "Your address in the room changed. "), "A game that is already running still uses the old one. Close it and start it again so other players can see you."));
+      else if (cc && cc.reconnects) lines.push(h("p", { class: "muted" }, `Reconnected ${cc.reconnects} time${cc.reconnects === 1 ? "" : "s"} after the server went quiet. If the lobby looks empty, close the game and start it again.`));
+    }
     if (s === "This server's identity changed") {
-      status.append(h("button", { class: "btn small", onclick: async () => {
+      lines.push(h("div", { class: "row" }, h("button", { class: "btn small", onclick: async () => {
         try { await invoke("relay_forget_key"); await invoke("relay_disconnect"); say("Forgotten. Press Connect to trust the server as it is now.", "ok"); } catch (e) { say(errText(e), "bad"); }
         refresh();
-      } }, "Trust its new identity"));
-      status.append(h("span", { class: "muted small" }, "Expected if its owner reinstalled it. If not, someone may be pretending to be that server."));
+      } }, "Trust its new identity")));
     }
+    problem.hidden = !lines.length;
+    problem.className = "notice" + (connected ? "" : s === "Connecting..." ? " warn" : " bad");
+    fill(problem, lines);
   }
   refreshers.add(refresh); refresh();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Online")),
     h("div", { class: "card" },
+      h("div", { class: "row between" }, h("h2", {}, "Join a room"), state),
       h("p", { class: "muted" }, "Join a room on a Rallypoint server, then use the game's LAN lobby. Everyone in the same room with the same password ends up in the same game."),
       h("div", { class: "hostport" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Port"), port)),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
-      h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left."),
-      h("div", { class: "row" }, btn, save, status)),
+      h("label", { class: "field narrow" }, h("span", {}, "Player name"), nameBox, nameNote),
+      h("label", { class: "switch" }, remember, "Remember the password when I save this server"),
+      h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left. A saved password is kept in Rallypoint's settings file on this computer, readable only by you."),
+      h("div", { class: "row" }, btn, save),
+      problem),
     conn.el,
-    h("div", { class: "card" }, saved$));
+    saved$);
   return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
 }
 
@@ -839,7 +1037,7 @@ function settingsPage() {
 }
 
 // ---------------------------------------------------------------- shell
-const PAGES = { play: ["Play", "play", playPage], mods: ["Mods", "mods", modsPage], online: ["Online", "online", onlinePage], settings: ["Settings", "settings", settingsPage] };
+const PAGES = { play: ["Play", "play", playPage], mods: ["Mods", "mods", modsPage], maps: ["Maps", "maps", mapsPage], online: ["Online", "online", onlinePage], settings: ["Settings", "settings", settingsPage] };
 let current = null, sideFiles, sideNet;
 
 function go(name) {
@@ -941,7 +1139,7 @@ function openWizard() {
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, store.cfg.game_dir || "not set yet"),
         h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed") + (store.mods.other.some((o) => o.folder === ICON_FOLDER) ? ", sharp icons" : "") + (pr.camera ? ", higher camera" : "")),
-        h("dt", {}, "Mods"), h("dd", {}, selectedFolders().map((f) => installedMods().find((m) => m.folder === f)?.name || f).join(", ") || "none"),
+        h("dt", {}, "Game"), h("dd", {}, [selectedGame().name, ...selectedExtras()].join(", ")),
         h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added")),
       h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."),
       h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));

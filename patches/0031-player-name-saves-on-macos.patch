@@ -1,0 +1,174 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/QuotedPrintable.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/QuotedPrintable.cpp
+index 42a4214..d6302bd 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/QuotedPrintable.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/QuotedPrintable.cpp
+@@ -53,35 +53,45 @@ static int hexDigitToInt(char c)
+ }
+ 
+ // Convert unicode strings into ascii quoted-printable strings
++//
++// Rallypoint: the stored form is the string as 16-bit little-endian units, two bytes per unit, whatever size wchar_t has.
++// The original walked the string's memory two bytes at a time and stopped at two zero bytes, which is only the end of
++// the string when wchar_t is 16 bits wide. Where it is 32 bits (macOS) it stopped after the first character, so a
++// player name was saved as its first letter and read back as "M".
+ AsciiString UnicodeStringToQuotedPrintable(UnicodeString original)
+ {
+ 	static char dest[1024];
+-	const unsigned char *src = reinterpret_cast<const unsigned char *>(original.str());
+-	int i=0;
+-	while ( !(src[0]=='\0' && src[1]=='\0') && i<1021 )
++	int i = 0;
++	const WideChar *w = original.str();
++	for (; *w && i < 1017; ++w)
+ 	{
+-		if (!isalnum(*src))
+-		{
+-			dest[i++] = MAGIC_CHAR;
+-			dest[i++] = intToHexDigit((*src)>>4);
+-			dest[i++] = intToHexDigit((*src)&0xf);
+-		}
+-		else
+-		{
+-			dest[i++] = *src;
+-		}
+-		src ++;
+-		if (!isalnum(*src))
++		unsigned long c = static_cast<unsigned long>(*w);
++		unsigned units[2] = { static_cast<unsigned>(c & 0xFFFF), 0 };
++		int count = 1;
++		if (c > 0xFFFF)
+ 		{
+-			dest[i++] = MAGIC_CHAR;
+-			dest[i++] = intToHexDigit((*src)>>4);
+-			dest[i++] = intToHexDigit((*src)&0xf);
++			c -= 0x10000;
++			units[0] = 0xD800 + static_cast<unsigned>((c >> 10) & 0x3FF);
++			units[1] = 0xDC00 + static_cast<unsigned>(c & 0x3FF);
++			count = 2;
+ 		}
+-		else
++		for (int u = 0; u < count; ++u)
+ 		{
+-			dest[i++] = *src;
++			const unsigned char bytes[2] = { static_cast<unsigned char>(units[u] & 0xFF), static_cast<unsigned char>((units[u] >> 8) & 0xFF) };
++			for (int k = 0; k < 2; ++k)
++			{
++				if (!isalnum(bytes[k]))
++				{
++					dest[i++] = MAGIC_CHAR;
++					dest[i++] = intToHexDigit(bytes[k] >> 4);
++					dest[i++] = intToHexDigit(bytes[k] & 0xf);
++				}
++				else
++				{
++					dest[i++] = bytes[k];
++				}
++			}
+ 		}
+-		src ++;
+ 	}
+ 	dest[i] = '\0';
+ 
+@@ -113,17 +123,17 @@ AsciiString AsciiStringToQuotedPrintable(AsciiString original)
+ 	return dest;
+ }
+ 
+-// Convert ascii quoted-printable strings into unicode strings
++// Convert ascii quoted-printable strings into unicode strings (see UnicodeStringToQuotedPrintable for the stored form)
+ UnicodeString QuotedPrintableToUnicodeString(AsciiString original)
+ {
+ 	static WideChar dest[1024];
+-	int i=0;
++	unsigned char bytes[2048];
++	int n = 0;
+ 
+-	unsigned char *c = reinterpret_cast<unsigned char *>(dest);
+ 	const unsigned char *src = reinterpret_cast<const unsigned char *>(original.str());
+-
+-	while (*src && i<1023)
++	while (*src && n < 2046)
+ 	{
++		unsigned char value;
+ 		if (*src == MAGIC_CHAR)
+ 		{
+ 			if (src[1] == '\0')
+@@ -131,35 +141,41 @@ UnicodeString QuotedPrintableToUnicodeString(AsciiString original)
+ 				// string ends with MAGIC_CHAR
+ 				break;
+ 			}
+-			*c = hexDigitToInt(src[1]);
++			value = static_cast<unsigned char>(hexDigitToInt(src[1]));
+ 			src++;
+ 			if (src[1] != '\0')
+ 			{
+-				*c = *c<<4;
+-				*c = *c | hexDigitToInt(src[1]);
++				value = static_cast<unsigned char>(value << 4);
++				value = static_cast<unsigned char>(value | hexDigitToInt(src[1]));
+ 				src++;
+ 			}
+ 		}
+ 		else
+ 		{
+-			*c = *src;
++			value = *src;
+ 		}
+ 		src++;
+-		c++;
++		bytes[n++] = value;
+ 	}
+ 
+-	// Fixup odd-length strings
+-	if ((c-(unsigned char *)dest)%2)
+-	{
+-		// OK
+-	}
+-	else
++	// Pairs of bytes are 16-bit units; a surrogate pair is one character where wchar_t is wider than 16 bits.
++	int i = 0;
++	for (int k = 0; k + 1 < n && i < 1022; k += 2)
+ 	{
+-		*c = '\0';
+-		c++;
++		unsigned unit = bytes[k] | (static_cast<unsigned>(bytes[k + 1]) << 8);
++		if (sizeof(WideChar) > 2 && unit >= 0xD800 && unit < 0xDC00 && k + 3 < n)
++		{
++			unsigned low = bytes[k + 2] | (static_cast<unsigned>(bytes[k + 3]) << 8);
++			if (low >= 0xDC00 && low < 0xE000)
++			{
++				dest[i++] = static_cast<WideChar>(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00));
++				k += 2;
++				continue;
++			}
++		}
++		dest[i++] = static_cast<WideChar>(unit);
+ 	}
+-
+-	*c = 0;
++	dest[i] = 0;
+ 
+ 	return dest;
+ }
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanLobbyMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanLobbyMenu.cpp
+index 5132425..64a8fc5 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanLobbyMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanLobbyMenu.cpp
+@@ -97,6 +97,18 @@ UnicodeString LANPreferences::getUserName()
+ {
+ 	UnicodeString ret;
+ 
++	// Rallypoint: the launcher passes the player's name (Online page; this computer's name unless they set one).
++	if (const char *launcherName = getenv("GEN_PLAYER_NAME"))
++	{
++		AsciiString name(launcherName);
++		name.trim();
++		if (!name.isEmpty())
++		{
++			ret.translate(name);
++			return ret;
++		}
++	}
++
+ 	LANPreferences::const_iterator it = find("UserName");
+ 	if (it != end())
+ 	{

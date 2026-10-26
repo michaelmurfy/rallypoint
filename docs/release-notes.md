@@ -1,3 +1,15 @@
+## Rallypoint 0.3.3
+
+- **Play page:** pick the game from a drop-down (Zero Hour, Shockwave, Shockwave Chaos, Cold War Crisis) and tick any extra mods on top of it. A notice with a spinner now appears in the middle of the window while the game starts.
+- **Online page:** tidier, with saved servers that can remember the room password (one press of Connect rejoins), a player name for the game's lobby (it defaults to your computer's name; on macOS the lobby name was always "M" and is fixed), and plain explanations when it can't connect (wrong address or port, a firewall, a wrong password, a full room).
+- **Lobby going stale:** if the connection to the server drops, Rallypoint now rejoins within about 8 seconds, keeps your address in the room, and a restarted launcher takes over its old session instead of being locked out. Start the game again if the page says your address changed.
+- **Map organiser:** the new Maps page lists every map with search and pack filters and tick boxes, so a 780-map pack doesn't bury the ones you want. Adds the Epic Showdown 707 map pack (download it from ModDB and choose the file). Switched-off maps are moved aside, not deleted.
+- **Bundled mods** such as Control Bar HD are tagged "Bundled".
+- **Server:** runs on the host network (less delay per game packet), logs handling time, and a rejoining player keeps the same address. After `make update`, open the UDP port in the host firewall if you use one.
+- **Multiplayer sync:** more logging to find why a Windows and a Mac game still differ at the first frame (terrain height of objects at the edge of the map); the checksum interval returns to normal after the first 300 frames, which should remove stutter while sync logs are on.
+
+---
+
 ## Rallypoint 0.3.2
 
 A diagnostic build for the multiplayer desync. The Windows and macOS games still differ at the first frame, in the terrain height of objects that sit at the edge of a map (18.125 on the Mac, 25.0 on Windows). The sync logs now fingerprint the terrain height data and record the first off-map height lookups, so the next comparison shows whether the two machines load different height data or read it differently. Keep Settings > Multiplayer sync logs on. No server change.

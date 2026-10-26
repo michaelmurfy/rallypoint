@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, selfupdate, update};
+use generals_core::{agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -184,6 +184,9 @@ struct ConfigView {
     check_updates: bool,
     sync_logs: bool,
     camera_height: u32,
+    /// The lobby name the player chose (empty: none), and the one used then (this computer's name).
+    player_name: String,
+    default_player_name: String,
     version: &'static str,
     os: &'static str,
 }
@@ -201,9 +204,21 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         check_updates: !c.skip_update_check,
         sync_logs: c.sync_logs,
         camera_height,
+        player_name: c.player_name,
+        default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
         os: std::env::consts::OS,
     })
+}
+
+/// Set the name other players see in the game's lobby; an empty name goes back to this computer's name.
+#[tauri::command]
+fn set_player_name(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.player_name = generals_core::config::clean_player_name(&name);
+    c.save(&path).map_err(|e| e.to_string())?;
+    Ok(c.lobby_name())
 }
 
 #[tauri::command]
@@ -294,10 +309,34 @@ fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, relay_server
         return Err("Enter a room name first".into());
     }
     let pinned = c.server_keys.get(&c.server.to_lowercase()).and_then(|k| generals_proto::secure::from_hex(k));
+    // No password typed: use the one saved for this server and room, if any.
+    let password = if password.is_empty() { c.room_password(&c.server, &c.room).unwrap_or("").to_string() } else { password };
     let agent = Agent::start(&c.server, c.serial_for(&c.server), &c.room, &password, pinned).map_err(|e| e.to_string())?;
     *relay_server.0.lock().unwrap() = c.server.to_lowercase(); // what the agent was started for, whatever the settings say later
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent leaves its room
     Ok(())
+}
+
+/// Remember (or, with an empty password, forget) the room password for a saved server. The page never reads it back.
+#[tauri::command]
+fn room_password_save(app: tauri::AppHandle, server: String, room: String, password: String) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.set_room_password(&server, &room, &password);
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// Which of these (server, room) pairs have a remembered password.
+#[tauri::command]
+fn room_passwords_saved(app: tauri::AppHandle, pairs: Vec<(String, String)>) -> Result<Vec<bool>, String> {
+    let c = Config::load(&config_path(&app)?);
+    Ok(pairs.iter().map(|(s, r)| c.room_password(s, r).is_some()).collect())
+}
+
+/// Where the connection stands and what to check: shown while connecting, and after the server goes quiet.
+#[tauri::command]
+fn relay_connection(relay: tauri::State<Relay>) -> Option<generals_core::agent::Connection> {
+    relay.0.lock().unwrap().as_ref().map(|a| a.connection())
 }
 
 /// Forget the saved identity of the configured server, so the next connection trusts whatever answers (use after
@@ -477,6 +516,11 @@ fn maps_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().document_dir().map_err(|e| e.to_string())?.join(maps::USER_DATA_LEAF).join("Maps"))
 }
 
+/// Where switched-off maps wait: `<app data>/GeneralsZH/MapLibrary`.
+fn map_library(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("MapLibrary"))
+}
+
 #[derive(serde::Serialize)]
 struct MapsInfo {
     dir: String,
@@ -494,7 +538,10 @@ fn maps_info(app: tauri::AppHandle) -> Result<MapsInfo, String> {
 #[tauri::command]
 fn maps_install_pack(app: tauri::AppHandle, jobs: tauri::State<MapJobs>, id: String) -> Result<(), String> {
     let pack = maps::load_packs(MAP_PACKS_JSON).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == id).ok_or("unknown map pack")?;
-    let job = maps::MapJob::start(pack, maps_dir(&app)?, base(&app)?.join("tmp"));
+    if pack.manual {
+        return Err("This pack is downloaded from its own page: open the page, then choose the file you downloaded".into());
+    }
+    let job = maps::MapJob::start(pack, maps_dir(&app)?, map_library(&app)?, base(&app)?.join("tmp"));
     *jobs.0.lock().unwrap() = Some(job);
     Ok(())
 }
@@ -509,12 +556,47 @@ fn maps_cancel(jobs: tauri::State<MapJobs>) {
     *jobs.0.lock().unwrap() = None;
 }
 
-/// Add maps from an archive or folder the user chose or dropped.
+/// Add maps from an archive or folder the user chose or dropped. `pack` is the catalog pack it belongs to, if any: a big
+/// pack is added switched off, for the organiser. Anything else is added switched on under "Other maps".
 #[tauri::command]
-async fn maps_install_path(app: tauri::AppHandle, path: String) -> Result<usize, String> {
-    let (dir, work) = (maps_dir(&app)?, base(&app)?.join("tmp"));
+async fn maps_install_path(app: tauri::AppHandle, path: String, pack: Option<String>) -> Result<usize, String> {
+    let (dir, lib, work) = (maps_dir(&app)?, map_library(&app)?, base(&app)?.join("tmp"));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || maps::install_from_path(&PathBuf::from(path.trim()), &dir, &work)).await.map_err(|e| e.to_string())?
+    let known = match pack {
+        Some(id) => Some(maps::load_packs(MAP_PACKS_JSON).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == id).ok_or("unknown map pack")?),
+        None => None,
+    };
+    let (name, enabled) = known.map(|p| (p.name, !p.start_disabled)).unwrap_or_else(|| (maporg::OTHER.to_string(), true));
+    tauri::async_runtime::spawn_blocking(move || maps::install_from_path(&PathBuf::from(path.trim()), &dir, &lib, &work, &name, enabled)).await.map_err(|e| e.to_string())?
+}
+
+/// Every map, on or off, with its pack.
+#[tauri::command]
+async fn maps_organiser(app: tauri::AppHandle) -> Result<Vec<maporg::MapEntry>, String> {
+    let (dir, lib) = (maps_dir(&app)?, map_library(&app)?);
+    tauri::async_runtime::spawn_blocking(move || maporg::list(&dir, &lib)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn maps_set_enabled(app: tauri::AppHandle, names: Vec<String>, enabled: bool) -> Result<usize, String> {
+    let (dir, lib) = (maps_dir(&app)?, map_library(&app)?);
+    tauri::async_runtime::spawn_blocking(move || maporg::set_enabled(&dir, &lib, &names, enabled)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn maps_delete(app: tauri::AppHandle, names: Vec<String>) -> Result<usize, String> {
+    let (dir, lib) = (maps_dir(&app)?, map_library(&app)?);
+    tauri::async_runtime::spawn_blocking(move || maporg::delete(&dir, &lib, &names)).await.map_err(|e| e.to_string())?
+}
+
+/// Open the pack's own page (for packs that cannot be fetched automatically).
+#[tauri::command]
+fn maps_open_pack_page(id: String) -> Result<(), String> {
+    let pack = maps::load_packs(MAP_PACKS_JSON).map_err(|e| e.to_string())?.into_iter().find(|p| p.id == id).ok_or("unknown map pack")?;
+    if !pack.homepage.starts_with("https://") {
+        return Err("unexpected link".into());
+    }
+    open_url(&pack.homepage)
 }
 
 // ---- updates --------------------------------------------------------------------------------------
@@ -624,6 +706,8 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
+            // The name other players see in the lobby: the player's own, else this computer's.
+            env.push(("GEN_PLAYER_NAME".to_string(), Config::load(&config_path(&app)?).lobby_name()));
             // The agent only listens to an engine that presents this (other local processes can reach its port).
             if relay_cfg_on {
                 if let Some(t) = relay.0.lock().unwrap().as_ref().map(|a| a.token_hex()) {
@@ -665,10 +749,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel,
-            get_config, save_config, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path,
-            relay_connect, relay_disconnect, relay_forget_key, relay_status, relay_diagnostics,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_set_enabled, maps_delete, maps_open_pack_page,
+            relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
             launch_game
         ])
