@@ -131,8 +131,9 @@ make up
 | Command | What it does |
 |---|---|
 | `make config COUNTRIES=NZ` | Create `.env`, optionally limiting the server to one or more countries (`NZ`, `NZ,AU`) |
-| `make up` / `make down` / `make restart` | Start, stop, or apply changed settings |
-| `make update` | Pull the latest version, refresh the country lists, restart |
+| `make up` / `make down` / `make restart` | Start (pulling the released image `ghcr.io/michaelmurfy/rallypoint-relay`), stop, or apply changed settings |
+| `make update` | Pull the latest released image, refresh the country lists, restart |
+| `make dev` | Build the server from your checkout instead of pulling the released image |
 | `make logs` / `make status` | Watch the server |
 | `make key` | Show the server's identity fingerprint |
 

@@ -1,9 +1,8 @@
 # Use the Makefile (make up / down / update) rather than calling this directly.
 services:
   relay:
-    build:
-      context: .
-      dockerfile: server/Dockerfile
+    # The image CI builds for each release. `make dev` builds from this checkout instead (docker-compose.build.yml).
+    image: ghcr.io/michaelmurfy/rallypoint-relay:${RELAY_TAG:-latest}
     restart: unless-stopped
     env_file: .env
     environment:

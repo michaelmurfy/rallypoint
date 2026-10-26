@@ -1,0 +1,6 @@
+# Overlay for building the server from this checkout instead of pulling the released image: make dev
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: server/Dockerfile

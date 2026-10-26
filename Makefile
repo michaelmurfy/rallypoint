@@ -3,7 +3,7 @@ COMPOSE ?= docker compose
 .DEFAULT_GOAL := help
 -include .env
 
-.PHONY: help config geo up down restart logs status key update test release linux-client
+.PHONY: help config geo up dev down restart logs status key update test release linux-client
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  \033[1mmake %-9s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -26,15 +26,18 @@ geo: ## Download the IP lists for ALLOWED_COUNTRIES (done automatically by up/up
 	    || { rm -f data/geo/$$cc.zone.tmp; echo "could not download the list for $$cc"; exit 1; }; \
 	done
 
-up: config geo ## Build and start the server
-	$(COMPOSE) up -d --build
+up: config geo ## Start the server from the released image (RELAY_TAG=0.2.0-beta.4 pins a version)
+	$(COMPOSE) up -d
 	@echo "Rallypoint server is running on UDP port $${PORT:-7777}"
+
+dev: config geo ## Build the server from this checkout and start it
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 down: ## Stop the server
 	$(COMPOSE) down
 
 restart: config geo ## Apply .env changes
-	$(COMPOSE) up -d --build --force-recreate
+	$(COMPOSE) up -d --force-recreate
 
 logs: ## Follow the server log
 	$(COMPOSE) logs -f --tail=100 relay
@@ -45,10 +48,11 @@ key: ## Show the server's identity fingerprint (players check it the first time 
 status: ## Show whether the server is running
 	$(COMPOSE) ps
 
-update: ## Get the latest version, refresh country lists, restart
+update: ## Pull the latest released image and config, refresh country lists, restart
 	git pull --ff-only
 	$(MAKE) geo
-	$(COMPOSE) up -d --build --pull always
+	$(COMPOSE) pull
+	$(COMPOSE) up -d
 
 test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server
