@@ -1,0 +1,73 @@
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index 33aef9b..da661f6 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -301,6 +301,25 @@ static const char *messageToString(unsigned int message)
+ }
+ #endif
+ 
++// A fullscreen window is borderless (WS_POPUP). Moving it to another virtual desktop or monitor makes
++// Windows recalculate the frame and put a border back. Drop any frame styles it put back.
++static void keepFullscreenBorderless(HWND hWnd)
++{
++	if (!TheGlobalData || TheGlobalData->m_windowed || !hWnd)
++		return;
++	const LONG frame = WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
++	LONG style = GetWindowLong(hWnd, GWL_STYLE);
++	if (!(style & frame))
++		return;
++	static Bool busy = FALSE;
++	if (busy)
++		return;
++	busy = TRUE;
++	SetWindowLong(hWnd, GWL_STYLE, (style & ~frame) | WS_POPUP | WS_VISIBLE);
++	SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
++	busy = FALSE;
++}
++
+ // WndProc ====================================================================
+ /** Window Procedure */
+ //=============================================================================
+@@ -337,6 +356,15 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
+ 					return HTCLIENT;
+ 				break;
+ 
++			//-------------------------------------------------------------------------
++			case WM_NCCALCSIZE:
++			case WM_NCPAINT:
++			case WM_NCACTIVATE:
++				// Do not let Windows carve a caption or border back into the fullscreen window.
++				if (TheGlobalData && !TheGlobalData->m_windowed)
++					return message == WM_NCACTIVATE ? TRUE : 0;
++				break;
++
+ 			//-------------------------------------------------------------------------
+ 			case WM_POWERBROADCAST:
+ 				switch( wParam )
+@@ -417,6 +445,7 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
+ 			{
+ 				if (TheMouse)
+ 					TheMouse->refreshCursorCapture();
++				keepFullscreenBorderless(hWnd);
+ 
+ 				break;
+ 			}
+@@ -430,6 +459,7 @@ LRESULT CALLBACK WndProc( HWND hWnd, UINT message,
+ 
+ 				if (TheMouse)
+ 					TheMouse->refreshCursorCapture();
++				keepFullscreenBorderless(hWnd);
+ 
+ 				break;
+ 			}
+@@ -723,8 +753,8 @@ static Bool initializeAppWindows( HINSTANCE hInstance, Int nCmdShow, Bool runWin
+ 	windowStyle =  WS_POPUP|WS_VISIBLE;
+ 	if (runWindowed)
+ 		windowStyle |= WS_MINIMIZEBOX | WS_SYSMENU | WS_DLGFRAME | WS_CAPTION;
+-	else
+-		windowStyle |= WS_EX_TOPMOST | WS_SYSMENU;
++		// Fullscreen stays a bare popup. WS_SYSMENU makes Windows put the border back when the
++		// window moves to another virtual desktop or monitor. Topmost is SetWindowPos below.
+ 
+ 	RECT rect;
+ 	rect.left = 0;
