@@ -1,0 +1,50 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/Network.cpp b/Core/GameEngine/Source/GameNetwork/Network.cpp
+index 462485e..c839497 100644
+--- a/Core/GameEngine/Source/GameNetwork/Network.cpp
++++ b/Core/GameEngine/Source/GameNetwork/Network.cpp
+@@ -53,7 +53,7 @@
+ #include "GameClient/MessageBox.h"
+ 
+ 
+-#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
++#if defined(DEBUG_CRC) && defined(RTS_DEBUG)
+ Int NET_CRC_INTERVAL = 1;
+ #else
+ Int NET_CRC_INTERVAL = 100;
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index b32bfe2..ac632e2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -118,7 +118,7 @@
+ 
+ //-------------------------------------------------------------------------------------------------
+ 
+-#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
++#if defined(DEBUG_CRC) && defined(RTS_DEBUG)
+ class DeepCRCSanityCheck : public SubsystemInterface
+ {
+ public:
+@@ -528,7 +528,7 @@ void GameEngine::init()
+ 	#endif/////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ 
+-#if defined(DEBUG_CRC) && defined(DEBUG_LOGGING)
++#if defined(DEBUG_CRC) && defined(RTS_DEBUG)
+ 		initSubsystem(TheDeepCRCSanityCheck, "TheDeepCRCSanityCheck", MSGNEW("GameEngineSubystem") DeepCRCSanityCheck, nullptr);
+ #endif // DEBUG_CRC
+ 		initSubsystem(TheGameText, "TheGameText", CreateGameTextInterface(), nullptr);
+diff --git a/cmake/config-debug.cmake b/cmake/config-debug.cmake
+index 6ad501e..5303aa5 100644
+--- a/cmake/config-debug.cmake
++++ b/cmake/config-debug.cmake
+@@ -58,7 +58,9 @@ endif()
+ # crashes at the END OF EVERY MATCH (the victory/defeat screen never shows). Disable it through the
+ # header's own intended NO_DEBUG_CRC escape hatch while KEEPING debug logging. Toggle OFF to restore the
+ # network-sync CRC checking. This changes no game logic — it only removes a debug self-check.
+-option(RTS_DISABLE_DEBUG_CRC "Disable the DEBUG_CRC map-teardown sanity check (it crashes at match end under external control)" ON)
++# Rallypoint: OFF, because the per-frame sync log (-SaveDebugCRCPerFrame) needs DEBUG_CRC. The sanity check
++# itself stays out: GameEngine.cpp and Network.cpp only build it with RTS_DEBUG.
++option(RTS_DISABLE_DEBUG_CRC "Disable the DEBUG_CRC map-teardown sanity check (it crashes at match end under external control)" OFF)
+ if(RTS_DISABLE_DEBUG_CRC)
+     target_compile_definitions(core_config INTERFACE NO_DEBUG_CRC)
+ endif()

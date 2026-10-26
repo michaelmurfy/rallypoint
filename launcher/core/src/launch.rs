@@ -45,6 +45,8 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
     // The first ten seconds of simulation, frame by frame: enough to see where two players' games first differ.
     if let Some(dir) = &o.sync_logs {
         a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "300".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
+        // The game state is only written out when a checksum is taken (every 100 frames normally): every 10 narrows down where it went wrong.
+        a.extend(["-NetCRCInterval".into(), "10".into()]);
     }
     // EA and Generals logo movies. The engine's own -nologo; the menu scene stays.
     a.push("-nologo".into());
@@ -171,6 +173,7 @@ mod tests {
         let i = on.iter().position(|a| a == "-SaveDebugCRCPerFrame").unwrap();
         assert_eq!(on[i + 1], "/data/sync logs");
         assert!(on.windows(2).any(|w| w[0] == "-DebugCRCFromFrame" && w[1] == "0"));
+        assert!(on.windows(2).any(|w| w[0] == "-NetCRCInterval" && w[1] == "10"));
     }
 
     #[test]
