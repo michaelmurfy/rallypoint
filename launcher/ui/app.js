@@ -203,10 +203,17 @@ async function checkUpdate() {
 }
 
 /** Settings card: Check now with the answer beside it, and the install actions once there is something to install. */
+/** One line of a settings card: what it is and what it does on the left, its control on the right. */
+function setting(title, desc, ...controls) {
+  return h("div", { class: "setting" },
+    h("div", { class: "setting-text" }, h("div", { class: "setting-title" }, title), desc ? h("div", { class: "muted small" }, desc) : null),
+    h("div", { class: "setting-ctl" }, ...controls));
+}
+
 function updatesCard() {
   const fb = liveStatus();
-  const actions = h("div", { class: "row" });
-  const auto = h("input", { type: "checkbox", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
+  const actions = h("div", { class: "row end" });
+  const auto = h("input", { type: "checkbox", "aria-label": "Check for updates when Rallypoint starts", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
     fb.busy("Downloading the update. Rallypoint will restart by itself…");
@@ -224,15 +231,14 @@ function updatesCard() {
   } }, "Check now");
   function report() {
     const u = store.update;
-    fb.set(u ? `Rallypoint ${u.latest} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}` : "You have the latest version", u ? "ok" : "ok");
+    fb.set(u ? `Rallypoint ${u.latest} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}` : "You have the latest version", "ok");
     fill(actions, u && u.installer ? install : null, u ? notes : null);
   }
   if (store.update) report();
   return h("div", { class: "card" }, h("h2", {}, "Updates"),
-    h("p", { class: "muted" }, `You have Rallypoint ${store.cfg.version}.`),
-    h("div", { class: "row" }, check, fb.el),
+    setting(`Rallypoint ${store.cfg.version}`, fb.el, check),
     actions,
-    h("label", { class: "switch" }, auto, "Check for updates when Rallypoint starts"));
+    setting("Check when Rallypoint starts", null, h("label", { class: "switch" }, auto)));
 }
 
 // ---------------------------------------------------------------- mod downloads
@@ -895,19 +901,80 @@ const WHY = {
 };
 
 /** How the connection and the server are doing, refreshed while the Online page is open and we are connected. */
+// The connection's history for the graphs: a sample every 2 s while connected, kept while the app is open.
+const net = { hist: [], last: null };
+async function pollNet() {
+  let d = null;
+  try { d = await invoke("relay_diagnostics"); } catch { /* not connected */ }
+  if (!d) net.hist = [];
+  else {
+    net.hist.push({ rtt: d.rtt_ms, loss: d.loss_pct, up: d.up_kbps, down: d.down_kbps, load: d.server ? d.server.load_pct : null });
+    if (net.hist.length > 120) net.hist.shift();
+  }
+  net.last = d;
+  window.dispatchEvent(new Event("net"));
+}
+
+/** A small time-series chart on a canvas: filled areas or bars, a faint grid and nothing else to read. Colours come from the theme. */
+function drawChart(canvas, series, { floor = 1, max = null, bars = false } = {}) {
+  const w = canvas.clientWidth, hgt = canvas.clientHeight;
+  if (!w || !hgt) return 0;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(hgt * dpr); }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, hgt);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const vals = series.flatMap((s) => s.values.filter((v) => v != null));
+  const top = max ?? Math.max(floor, Math.ceil((Math.max(0, ...vals) * 1.15) / floor) * floor);
+  const pad = 3, N = Math.max(40, ...series.map((q) => q.values.length)), step = (w - 2) / (N - 1);
+  const x = (i, n) => w - 1 - (n - 1 - i) * step;
+  const y = (v) => hgt - pad - (Math.min(v, top) / top) * (hgt - pad * 2);
+  ctx.lineWidth = 1; ctx.strokeStyle = css("--line");
+  for (const f of [0, .5, 1]) { const gy = Math.round(hgt - pad - f * (hgt - pad * 2)) + .5; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
+  for (const s of series) {
+    const n = s.values.length;
+    if (!n) continue;
+    const color = css(s.color);
+    if (bars) {
+      ctx.fillStyle = color;
+      s.values.forEach((v, i) => { if (v) { const bh = Math.max(2, hgt - pad - y(v)); ctx.fillRect(x(i, n) - step / 2, hgt - pad - bh, Math.max(2, step - 1), bh); } });
+      continue;
+    }
+    ctx.beginPath();
+    let started = false, last = null;
+    s.values.forEach((v, i) => { if (v == null) return; if (!started) { ctx.moveTo(x(i, n), y(v)); started = true; } else ctx.lineTo(x(i, n), y(v)); last = [x(i, n), y(v)]; });
+    ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.strokeStyle = color;
+    if (s.dash) ctx.setLineDash([5, 4]);
+    ctx.stroke(); ctx.setLineDash([]);
+    if (s.fill && last) {
+      ctx.lineTo(last[0], hgt - pad); ctx.lineTo(x(s.values.findIndex((v) => v != null), n), hgt - pad); ctx.closePath();
+      ctx.globalAlpha = .16; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+    }
+    if (last) { ctx.beginPath(); ctx.arc(last[0] - 1.5, last[1], 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); }
+  }
+  return top;
+}
+
 function connectionCard() {
-  const tiles = h("div", { class: "stats" });
   const body = h("dl", { class: "diag" });
   const verdict = h("span", {});
-  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), tiles, body);
   const row = (label, value, level) => [h("dt", {}, label), h("dd", { class: level || "" }, value)];
-  const tile = (label, value, level, sub) => h("div", { class: "stat " + (level || "") }, h("span", { class: "stat-value" }, value), h("span", { class: "stat-label" }, label), sub ? h("span", { class: "muted small" }, sub) : null);
-  async function poll() {
-    let d = null;
-    try { d = await invoke("relay_diagnostics"); } catch { /* keep hidden */ }
+  // four graphs, built once and redrawn on every sample
+  const mk = (label, extra) => {
+    const value = h("span", { class: "stat-value" }), sub = h("span", { class: "muted small" }), canvas = h("canvas", { class: "chart", role: "img", "aria-label": `${label} over the last four minutes` });
+    const scale = h("span", { class: "muted small chart-scale" });
+    const el = h("div", { class: "stat" }, h("div", { class: "stat-head" }, h("span", { class: "stat-label" }, label), value), canvas, h("div", { class: "stat-foot" }, sub, scale), extra || null);
+    return { el, value, sub, canvas, scale, set(text, level) { value.textContent = text; el.className = "stat " + (level || ""); } };
+  };
+  const g = { lat: mk("Latency"), loss: mk("Packet loss"), traffic: mk("Game traffic"), load: mk("Server load") };
+  const charts = h("div", { class: "stats" }, g.lat.el, g.loss.el, g.traffic.el, g.load.el);
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Connection"), verdict), charts, body);
+  function draw() {
+    const d = net.last;
     card.hidden = !d;
     if (!d) return;
-    const s = d.server;
+    const hist = net.hist, s = d.server;
     const lat = d.rtt_ms == null ? null : d.avg_ms <= 60 ? "ok" : d.avg_ms <= 120 ? "warn" : "bad";
     const loss = d.loss_pct == null ? null : d.loss_pct === 0 ? "ok" : d.loss_pct < 3 ? "warn" : "bad";
     const load = s ? (s.load_pct < 70 ? "ok" : s.load_pct < 90 ? "warn" : "bad") : null;
@@ -915,10 +982,23 @@ function connectionCard() {
     const why = [lat === "bad" && `latency ${d.avg_ms} ms`, loss === "bad" && `${d.loss_pct}% packet loss`, load === "bad" && `server ${s.load_pct}% full`].filter(Boolean).join(", ");
     verdict.className = "pill " + (worst === "ok" ? "ok" : worst === "bad" ? "bad" : worst === "warn" ? "warn" : "");
     verdict.textContent = worst === "ok" ? "Good" : worst === "warn" ? "Fair" : worst === "bad" ? `Poor: ${why}` : "Measuring…";
-    fill(tiles,
-      tile("Latency", d.rtt_ms == null ? "…" : `${d.rtt_ms} ms`, lat, d.rtt_ms == null ? "" : `average ${d.avg_ms}, jitter ${d.jitter_ms ?? 0}`),
-      tile("Packet loss", d.loss_pct == null ? "…" : `${d.loss_pct}%`, loss),
-      tile("Game traffic", rate(d.up_kbps + d.down_kbps), "", `${rate(d.up_kbps)} up, ${rate(d.down_kbps)} down`));
+    g.lat.set(d.rtt_ms == null ? "…" : `${d.rtt_ms} ms`, lat);
+    g.lat.sub.textContent = d.rtt_ms == null ? "" : `average ${d.avg_ms} ms, jitter ${d.jitter_ms ?? 0} ms`;
+    g.loss.set(d.loss_pct == null ? "…" : `${d.loss_pct}%`, loss);
+    g.loss.sub.textContent = "of the last pings got no answer";
+    g.traffic.set(rate(d.up_kbps + d.down_kbps));
+    g.traffic.sub.textContent = `${rate(d.down_kbps)} down, ${rate(d.up_kbps)} up`;
+    g.load.set(s ? `${s.load_pct}%` : "…", load);
+    g.load.sub.textContent = s ? `${s.pps} packets/s, ${rate(s.kbps)}` : "waiting for the server";
+    const col = { ok: "--ok-ink", warn: "--warn-ink", bad: "--bad-ink" };
+    const t1 = drawChart(g.lat.canvas, [{ values: hist.map((p) => p.rtt), color: col[lat] || "--rose", fill: true }], { floor: 50 });
+    const t2 = drawChart(g.loss.canvas, [{ values: hist.map((p) => p.loss), color: col[loss] || "--rose" }], { floor: 5, bars: true });
+    const t3 = drawChart(g.traffic.canvas, [{ values: hist.map((p) => p.down), color: "--rose", fill: true }, { values: hist.map((p) => p.up), color: "--text", dash: true }], { floor: 20 });
+    const t4 = drawChart(g.load.canvas, [{ values: hist.map((p) => p.load), color: col[load] || "--rose", fill: true }], { max: 100 });
+    g.lat.scale.textContent = t1 ? `0 to ${t1} ms` : "";
+    g.loss.scale.textContent = t2 ? `0 to ${t2}%` : "";
+    g.traffic.scale.textContent = t3 ? `0 to ${rate(t3)}, dashed is up` : "";
+    g.load.scale.textContent = t4 ? "0 to 100%" : "";
     fill(body,
       d.desync ? row("Sync check", d.desync.certain
         ? `Out of sync at frame ${d.desync.frame}: ${d.desync.players.filter((p) => p.odd).map((p) => p.vip).join(", ")} differ from ${d.desync.host ? "the host" : "the others"}`
@@ -929,12 +1009,12 @@ function connectionCard() {
         row("Rooms in use", `${s.rooms} of ${s.max_rooms}`),
         row("Players online", `${s.players} of ${s.max_players}`),
         row("In your room", String(s.room_players)),
-        row("Server load", `${s.load_pct}%, relaying ${s.pps} packets/s (${rate(s.kbps)})`, load),
       ] : row("Server", "waiting for the server's numbers…"));
   }
-  poll();
-  const timer = setInterval(poll, 2000);
-  return { el: card, dispose: () => clearInterval(timer) };
+  window.addEventListener("net", draw);
+  window.addEventListener("resize", draw);
+  draw();
+  return { el: card, dispose: () => { window.removeEventListener("net", draw); window.removeEventListener("resize", draw); } };
 }
 
 function onlinePage() {
@@ -1050,14 +1130,13 @@ function onlinePage() {
     h("div", { class: "page-head" }, h("h1", {}, "Online")),
     h("div", { class: "card" },
       h("div", { class: "row between" }, h("h2", {}, "Join a room"), state),
-      h("p", { class: "muted" }, "Join a room on a Rallypoint server, then use the game's LAN lobby. Everyone in the same room with the same password ends up in the same game."),
       h("div", { class: "hostport" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Port"), port)),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
-      h("label", { class: "field narrow" }, h("span", {}, "Player name"), nameBox, nameNote),
-      h("label", { class: "switch" }, remember, "Remember the password when I save this server"),
-      h("p", { class: "muted small" }, "A room that doesn't exist yet is created with this password, and disappears when everyone has left. A saved password is kept in Rallypoint's settings file on this computer, readable only by you."),
-      h("div", { class: "row" }, btn, save),
-      problem),
+      h("div", { class: "row between" }, h("label", { class: "switch" }, remember, "Remember the password"), h("div", { class: "row" }, save, btn)),
+      problem,
+      h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
+        h("p", { class: "muted small" }, "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
+    h("div", { class: "card" }, h("h2", {}, "Your name"), setting("Name in the lobby", nameNote, nameBox)),
     conn.el,
     saved$);
   return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
@@ -1081,7 +1160,7 @@ function diagnosePanel() {
     } catch (e) { fb.bad(errText(e)); }
     run.disabled = false;
   } }, "Check my install");
-  return h("div", {}, h("p", { class: "muted" }, "If the game stops with \u201cYou have encountered a serious error\u201d, this checks for missing game files and a missing original Generals."), h("div", { class: "row" }, run, fb.el), out);
+  return h("div", { class: "stack" }, setting("Check my install", h("span", {}, "If the game stops with \u201cYou have encountered a serious error\u201d, this looks for missing game files and a missing original Generals. ", fb.el), run), out);
 }
 
 /** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
@@ -1101,19 +1180,18 @@ function graphicsCard() {
     fb.busy("Applying…");
     try { await invoke("graphics_apply_high"); fb.ok("Applied. Your original Options.ini is kept as Options.ini.rallypoint-backup."); } catch (e) { fb.bad(errText(e)); }
     apply.disabled = false;
-  } }, "Use high-quality settings");
+  } }, "Apply");
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
-    h("label", { class: "field" }, h("span", {}, "Camera distance"), camera),
-    h("p", { class: "muted small" }, "How far out you can zoom. The original game stops at 300."),
-    h("div", { class: "row" }, apply, fb.el),
-    h("p", { class: "muted small" }, "Turns on shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed."));
+    setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
+    setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
+    fb.el);
 }
 
-/** Settings card for finding out why a multiplayer game went out of sync. */
+/** Settings card for finding out why a multiplayer game crashed or went out of sync. */
 function syncCard() {
   const fb = liveStatus();
   const result = h("div", {});
-  const on = h("input", { type: "checkbox", checked: !!store.cfg.sync_logs, onchange: async () => {
+  const on = h("input", { type: "checkbox", "aria-label": "Record sync logs while I play", checked: !!store.cfg.sync_logs, onchange: async () => {
     try { await invoke("set_sync_logs", { on: on.checked }); store.cfg.sync_logs = on.checked; fb.ok(on.checked ? "On. The next game you start records its first ten seconds." : "Off."); } catch (e) { fb.bad(errText(e)); }
   } });
   const compare = h("button", { class: "btn", onclick: async () => {
@@ -1131,33 +1209,34 @@ function syncCard() {
       }
     } catch (e) { fb.bad(errText(e)); }
     compare.disabled = false;
-  } }, "Compare with another player…");
+  } }, "Compare…");
   const bundle = h("button", { class: "btn primary", onclick: async () => {
     bundle.disabled = true; fb.busy("Collecting the logs…");
     try { const p = await invoke("make_debug_bundle"); fb.ok(`Saved ${p}. Send it to the developer.`); } catch (e) { fb.bad(errText(e)); }
     bundle.disabled = false;
-  } }, "Download debug logs");
-  return h("div", { class: "card" }, h("h2", {}, "Multiplayer sync logs"),
-    h("p", { class: "muted" }, "If a game crashes or goes out of sync, both players send their debug logs. They record the first ten seconds of every game in detail, so the developer can see exactly where the two games first differed."),
-    h("label", { class: "switch" }, on, "Record sync logs while I play"),
-    h("div", { class: "row" }, bundle, fb.el),
-    h("p", { class: "muted small" }, "One zip in your Downloads folder: the game's log and the last game's log, the sync logs, your settings (never passwords or keys), the game's crash report and last replay. Nothing is sent anywhere by itself."),
-    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open the logs folder"), compare),
-    result);
+  } }, "Download");
+  return h("div", { class: "card" }, h("h2", {}, "Logs"),
+    setting("Record sync logs", "Writes the first ten seconds of every game in detail, so two players can see where their games first differed.", h("label", { class: "switch" }, on)),
+    setting("Debug logs", "One zip in your Downloads folder: game logs, sync logs, settings (never passwords or keys), crash report and last replay. Nothing is sent by itself.", bundle),
+    setting("Compare with another player", "Choose the zip of their sync-logs folder.", compare),
+    setting("Sync log folder", null, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open")),
+    fb.el, result);
 }
 
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
+    h("h3", { class: "section-title" }, "Game"),
     h("div", { class: "card" }, h("h2", {}, "Game files"), files.el),
     graphicsCard(),
+    h("h3", { class: "section-title" }, "Multiplayer"),
     syncCard(),
-    h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel()),
-    h("div", { class: "card" }, h("h2", {}, "Setup"), h("p", { class: "muted" }, "Walk through the first-run setup again."), h("div", { class: "row" }, h("button", { class: "btn", onclick: () => openWizard() }, "Run setup again"))),
+    h("h3", { class: "section-title" }, "Rallypoint"),
     updatesCard(),
-    h("div", { class: "card" }, h("h2", {}, "About"),
-      h("p", { class: "muted" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)));
+    h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
+      setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
+    h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`));
   return { el, dispose: files.dispose };
 }
 
@@ -1350,6 +1429,8 @@ async function start() {
   ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
   await loadMaps();
   go("play");
+  setInterval(pollNet, 2000);
+  pollNet();
   setInterval(async () => {
     try { store.relay = await invoke("relay_status"); } catch { /* keep the last status */ }
     updateSidebar();

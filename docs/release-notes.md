@@ -1,5 +1,7 @@
 ## Rallypoint 0.3.7
 
+- **Graphs on the Online page.** Latency, packet loss, game traffic and server load are drawn over the last few minutes while you are connected, coloured by how healthy each is.
+- **Calmer Settings and Online pages.** Settings is grouped (Game, Multiplayer, Rallypoint) with each setting on one line, its explanation on the left and its button or switch on the right. Buttons and fields share one height, the join form is two rows, and the explanations fold away.
 - **Easier to browse many maps.** Filter by number of players (2, 3, 4… or solo), sort by name, players or size, see "Showing 41 of 791" with one button to clear every filter, and a player count on each row. The first time, reading the start positions of every map takes a moment; the list works meanwhile and the answers are remembered. The preview window can also switch the map on or off, so you can step through maps and decide as you go.
 - **The map preview keeps one size.** The window no longer grows, shrinks or shifts as you step through maps; wide and tall maps sit centred in the same square.
 - **Sync logs stay off until you switch them on.** 0.3.6 turned them on for new installs; that is undone. They are in Settings > Multiplayer sync logs, next to Download debug logs.
