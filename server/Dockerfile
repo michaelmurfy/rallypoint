@@ -13,6 +13,8 @@ RUN printf '[workspace]\nresolver = "2"\nmembers = ["shared", "server"]\n' > Car
 FROM debian:stable-slim
 RUN useradd --system --uid 10001 relay && mkdir /data && chown relay /data
 COPY --from=build /src/target/release/rallypoint-server /usr/local/bin/rallypoint-server
+# Links the published GHCR package to this repository (and its public visibility and permissions).
+LABEL org.opencontainers.image.source="https://github.com/michaelmurfy/rallypoint" org.opencontainers.image.description="Rallypoint relay server" org.opencontainers.image.licenses="MIT"
 USER relay
 ENV GENERALS_SERIALS=/data/serials.txt GENERALS_BIND=0.0.0.0:7777
 VOLUME /data
