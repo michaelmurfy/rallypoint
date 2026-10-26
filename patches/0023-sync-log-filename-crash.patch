@@ -1,0 +1,19 @@
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+index 9c0bd53..a04280a 100644
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -201,7 +201,13 @@ void outputCRCDumpLines()
+ 
+ static AsciiString getFname(AsciiString path)
+ {
+-	return path.reverseFind('\\') + 1;
++	// Rallypoint: __FILE__ uses '/' on macOS. reverseFind() returns null when there is no '\\', and null + 1 was
++	// then passed to AsciiString(const char *), which crashed the first time a sync log line was written.
++	const char *s = path.str();
++	const char *slash = strrchr(s, '/');
++	const char *back = strrchr(s, '\\');
++	const char *cut = (slash && (!back || slash > back)) ? slash : back;
++	return cut ? AsciiString(cut + 1) : path;
+ }
+ 
+ static void addCRCDebugLineInternal(bool count, const char *fmt, va_list args)
