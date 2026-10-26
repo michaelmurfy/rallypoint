@@ -1192,6 +1192,32 @@ function graphicsCard() {
     fb.el);
 }
 
+/** Says what goes into the debug zip before it is made; the replay (it can hold chat) is only added if ticked. */
+function openBundleDialog(fb) {
+  const replay = h("input", { type: "checkbox" });
+  const go = h("button", { class: "btn primary", onclick: async () => {
+    go.disabled = true; finish(); fb.busy("Collecting the logs…");
+    try { const p = await invoke("make_debug_bundle", { includeReplay: replay.checked }); fb.ok(`Saved ${p}. Send it to the developer.`); } catch (e) { fb.bad(errText(e)); }
+  } }, "Create the zip");
+  const cancel = h("button", { class: "btn", onclick: () => finish() }, "Cancel");
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Debug logs" },
+    h("div", { class: "wizard bundledialog" },
+      h("div", { class: "wiz-head" }, h("h2", {}, "Debug logs")),
+      h("div", { class: "wiz-body" },
+        h("p", {}, "This makes one zip in your Downloads folder. Nothing is sent anywhere: you choose who gets it."),
+        h("div", { class: "stack tight" },
+          h("p", { class: "small" }, h("b", {}, "Included: "), "the game's last two logs, the sync logs, your settings, the game's crash report and options file, and a list of your game and mod files."),
+          h("p", { class: "small" }, h("b", {}, "Left out: "), "passwords, your server serial and keys, and your Steam account name. Your user name is replaced by <home> in the text files."),
+          h("p", { class: "small" }, h("b", {}, "Still in it: "), "the server and room names, and the other players' lobby names.")),
+        h("label", { class: "switch" }, replay, "Also include the last replay (it can contain the game's chat)")),
+      h("div", { class: "wiz-foot" }, cancel, go)));
+  const onKey = (e) => { if (e.key === "Escape") finish(); };
+  function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
+  document.addEventListener("keydown", onKey);
+  document.getElementById("root").append(overlay);
+  go.focus();
+}
+
 /** Settings card for finding out why a multiplayer game crashed or went out of sync. */
 function syncCard() {
   const fb = liveStatus();
@@ -1215,14 +1241,10 @@ function syncCard() {
     } catch (e) { fb.bad(errText(e)); }
     compare.disabled = false;
   } }, "Compare…");
-  const bundle = h("button", { class: "btn primary", onclick: async () => {
-    bundle.disabled = true; fb.busy("Collecting the logs…");
-    try { const p = await invoke("make_debug_bundle"); fb.ok(`Saved ${p}. Send it to the developer.`); } catch (e) { fb.bad(errText(e)); }
-    bundle.disabled = false;
-  } }, "Download");
+  const bundle = h("button", { class: "btn primary", onclick: () => openBundleDialog(fb) }, "Download");
   return h("div", { class: "card" }, h("h2", {}, "Logs"),
     setting("Record sync logs", "Writes the first ten seconds of every game in detail, so two players can see where their games first differed.", h("label", { class: "switch" }, on)),
-    setting("Debug logs", "One zip in your Downloads folder: game logs, sync logs, settings (never passwords or keys), crash report and last replay. Nothing is sent by itself.", bundle),
+    setting("Debug logs", "One zip in your Downloads folder with the game logs, sync logs, settings (never passwords or keys) and crash report. You see what goes in before it is made.", bundle),
     setting("Compare with another player", "Choose the zip of their sync-logs folder.", compare),
     setting("Sync log folder", null, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open")),
     fb.el, result);

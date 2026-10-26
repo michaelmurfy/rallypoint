@@ -358,3 +358,4 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .reading b i { font-style: normal; font-size: 10px; font-weight: 600; color: var(--muted); margin-left: 1px; }
 .reading > span { font-size: 10.5px; color: var(--muted); }
 .reading.ok b { color: var(--ok-ink); } .reading.warn b { color: var(--warn-ink); } .reading.bad b { color: var(--bad-ink); }
+.wizard.bundledialog { width: min(520px, 100%); }

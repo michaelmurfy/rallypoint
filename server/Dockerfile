@@ -3,7 +3,8 @@
 # One image for amd64, arm64 (Raspberry Pi 3/4/5 on a 64-bit OS, ARM cloud servers) and armv7 (32-bit Raspberry Pi OS):
 #   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -f server/Dockerfile .
 # The server is compiled on the build machine for each target (no emulation), so every platform builds in a minute or two.
-FROM --platform=$BUILDPLATFORM rust:1-slim AS build
+# Base images are pinned by digest (Dependabot proposes updates), so a moved tag cannot change what is built.
+FROM --platform=$BUILDPLATFORM rust:1-slim@sha256:1a939748a7cbab172de91a014e3804a97af1394a8c844faa67fce9401c4e40fb AS build
 ARG TARGETARCH
 ARG TARGETVARIANT
 # The release version, compiled into the server so it can report it.
@@ -13,9 +14,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+COPY Cargo.lock Cargo.lock
 COPY shared shared
 COPY server server
-# The full workspace includes the Tauri launcher; the server image only needs these two crates.
+# The full workspace includes the Tauri launcher; the server image only needs these two crates. The repository's lock file is
+# copied so every dependency stays at the version CI tested and audited (cargo drops the entries this smaller workspace
+# does not use, and keeps the rest).
 RUN set -e; \
     case "${TARGETARCH}${TARGETVARIANT}" in \
       amd64) T=x86_64-unknown-linux-gnu ;; \
@@ -34,7 +38,7 @@ FROM scratch AS binary
 COPY --from=build /out/rallypoint-server /rallypoint-server
 
 # No RUN here, so the image for another CPU can be assembled without emulating it.
-FROM debian:stable-slim
+FROM debian:stable-slim@sha256:a717a33469731894e77e912ea7d714e27c2dc38ee6554fd1a3102e92999cfc66
 COPY --from=build /out/rallypoint-server /usr/local/bin/rallypoint-server
 COPY --from=build --chown=10001:10001 /data /data
 # Links the published GHCR package to this repository (and its public visibility and permissions).
