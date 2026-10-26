@@ -1,3 +1,14 @@
+## Rallypoint 0.2.0-beta.5
+
+Still a **prerelease**.
+
+- **Fixes the Windows and macOS desync.** The sync logs showed the two games already differed at frame 0: Windows used its own sine, cosine and inverse square root, so every rotated object came out slightly different. Both now use the same code. **Everyone must update**: older builds can't join a game with this one.
+- **Server:** the relay image is linked to the repository on GHCR.
+
+Multiplayer through the relay still hasn't been played from start to finish, so please keep sync logs on and report what you find.
+
+---
+
 ## Rallypoint 0.2.0-beta.4
 
 Still a **prerelease**.
