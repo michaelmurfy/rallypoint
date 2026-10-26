@@ -43,7 +43,7 @@ function icon(name) {
 function toast(text, kind) {
   const t = h("div", { class: "toast " + (kind || "") }, text);
   document.getElementById("toasts").append(t);
-  setTimeout(() => t.remove(), kind === "bad" ? 9000 : 4500);
+  setTimeout(() => { t.classList.add("leaving"); setTimeout(() => t.remove(), 180); }, kind === "bad" ? 9000 : 4500);
 }
 
 /**
@@ -443,19 +443,22 @@ function modCard(m, compact) {
     // The player brings the files: nothing to wait for in the launcher.
     actions.append(
       h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"),
-      h("button", { class: "btn", onclick: () => choose(m.id, true) }, "Choose folder…"));
+      h("button", { class: "btn ghost", onclick: () => choose(m.id, true) }, "Choose folder…"));
   } else {
     actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
   }
   const missingBase = role.base && !role.base.installed && !m.installed;
   return h("div", { class: "card" + (role.base ? " addon" : "") },
     h("div", { class: "mod" },
-      h("div", {}, h("div", { class: "row" }, h("h3", {}, m.name), pill(role.pill, role.base ? "" : "ok")), h("p", { class: "muted" }, m.description), !compact ? h("p", { class: "small" + (missingBase ? " warn-text" : " muted") }, role.how) : null),
+      h("div", { class: "stack tight" },
+        h("div", { class: "row" }, h("h3", {}, m.name), role.base ? pill(role.pill) : null),
+        h("p", { class: "muted" }, m.description),
+        missingBase ? h("p", { class: "small warn-text" }, role.how) : null,
+        !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null),
       actions),
-    !compact && m.notes ? h("p", { class: "muted small" }, m.notes) : null,
-    h("div", { class: "row" },
-      m.pick && !m.installed && !busy ? h("button", { class: "btn small", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Open download page") : null,
-      h("button", { class: "btn small ghost", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
+    h("div", { class: "mod-links" },
+      m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
+      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
 }
 
 /** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
@@ -567,7 +570,6 @@ function modsPage() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
     fill(body,
       watchBanner(),
-      h("h2", {}, "Mods"),
       modGroups(),
       store.mods.other.length ? h("h2", {}, "Your other mods") : null,
       store.mods.other.map((o) => {
