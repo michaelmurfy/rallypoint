@@ -272,6 +272,11 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .busy-overlay.leaving { opacity: 0; }
 .busy-card { display: flex; align-items: center; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow); padding: 20px 26px; font-size: 16px; font-weight: 650; animation: rise .22s var(--ease); }
 .spin.big { width: 24px; height: 24px; border-width: 3px; }
+.busy-overlay.updating { background: rgba(2, 10, 13, .82); z-index: 30; }
+.update-card { display: grid; justify-items: center; gap: 10px; width: min(420px, 90vw); text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-float); box-shadow: var(--shadow); padding: 30px 34px; animation: rise .22s var(--ease); }
+.update-card h2 { margin: 6px 0 0; }
+.update-card progress { width: 100%; }
+.update-card p { margin: 0; }
 
 /* ---- map organiser ---- */
 .organiser-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

@@ -175,6 +175,34 @@ function ensureIcons() {
 }
 
 // ---------------------------------------------------------------- updates
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+/** Download, verify and install the update with the whole window given over to it: nothing else is useful meanwhile.
+ *  Returns the message from the backend when it could not restart by itself, or throws. */
+async function runUpdate() {
+  const title = h("h2", {}, `Updating Rallypoint${store.update ? " to " + store.update.latest : ""}`);
+  const status = h("p", { class: "muted", role: "status", "aria-live": "polite" }, "Starting…");
+  const bar = h("progress", { max: 100, value: 0 });
+  const detail = h("p", { class: "muted small" });
+  const el = h("div", { class: "busy-overlay updating", role: "dialog", "aria-modal": "true", "aria-label": "Updating Rallypoint" },
+    h("div", { class: "update-card" }, h("span", { class: "spin big", "aria-hidden": "true" }), title, status, bar, detail, h("p", { class: "muted small" }, "Rallypoint will restart by itself.")));
+  document.getElementById("root").append(el);
+  const tick = async () => {
+    const p = await invoke("update_progress").catch(() => null);
+    if (!p) return;
+    if (p.phase === "Downloading") {
+      status.textContent = "Downloading the update…";
+      if (p.total) { bar.value = Math.min(100, (p.done / p.total) * 100); detail.textContent = `${mb(p.done)} of ${mb(p.total)} MB`; } else { bar.removeAttribute("value"); detail.textContent = ""; }
+    } else if (p.phase === "Installing") {
+      status.textContent = "Installing the update…"; bar.removeAttribute("value"); detail.textContent = "";
+    } else if (p.phase === "Restarting") {
+      status.textContent = "Restarting…"; bar.removeAttribute("value"); detail.textContent = "";
+    }
+  };
+  const timer = setInterval(tick, 400);
+  try { return await invoke("update_install"); }
+  finally { clearInterval(timer); el.remove(); }
+}
+
 function renderUpdate() {
   const host = document.getElementById("updatehost");
   if (!host) return;
@@ -182,9 +210,8 @@ function renderUpdate() {
   if (!u || store.updateDismissed) return fill(host);
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
-    store.updateNote = "Downloading the update. Rallypoint will restart by itself…";
-    renderUpdate();
-    try { store.updateNote = await invoke("update_install"); } catch (e) { store.updateNote = errText(e); }
+    try { store.updateNote = await runUpdate(); } catch (e) { store.updateNote = errText(e); }
+    install.disabled = false;
     renderUpdate();
   } }, "Update and restart");
   fill(host, h("div", { class: "banner stack updatebar" },
@@ -218,8 +245,7 @@ function updatesCard() {
   const auto = h("input", { type: "checkbox", "aria-label": "Check for updates when Rallypoint starts", checked: store.cfg.check_updates !== false, onchange: () => { store.cfg.check_updates = auto.checked; invoke("set_check_updates", { on: auto.checked }); } });
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
-    fb.busy("Downloading the update. Rallypoint will restart by itself…");
-    try { fb.ok(await invoke("update_install")); } catch (e) { fb.bad(errText(e)); }
+    try { fb.ok(await runUpdate()); } catch (e) { fb.bad(errText(e)); }
     install.disabled = false;
   } }, "Update and restart");
   const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
