@@ -1,0 +1,92 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezFwdIterator.cpp b/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezFwdIterator.cpp
+index a4d3cc1..b4c97d2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezFwdIterator.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezFwdIterator.cpp
+@@ -46,6 +46,17 @@ BezFwdIterator::BezFwdIterator(Int stepsDesired, const BezierSegment *bezSeg)
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
++// Plain float maths in a fixed order: D3DXVec4Transform/Dot come from the d3dx DLL on Windows
++// (SSE or 3DNow! code) and from our shim on macOS, and they do not round alike.
++static void bezTransform(D3DXVECTOR4 *out, const D3DXVECTOR4 *v, const D3DXMATRIX *m)
++{
++	float x = v->x * m->m[0][0]; x = x + v->y * m->m[1][0]; x = x + v->z * m->m[2][0]; x = x + v->w * m->m[3][0];
++	float y = v->x * m->m[0][1]; y = y + v->y * m->m[1][1]; y = y + v->z * m->m[2][1]; y = y + v->w * m->m[3][1];
++	float z = v->x * m->m[0][2]; z = z + v->y * m->m[1][2]; z = z + v->z * m->m[2][2]; z = z + v->w * m->m[3][2];
++	float w = v->x * m->m[0][3]; w = w + v->y * m->m[1][3]; w = w + v->z * m->m[2][3]; w = w + v->w * m->m[3][3];
++	out->x = x; out->y = y; out->z = z; out->w = w;
++}
++
+ void BezFwdIterator::start()
+ {
+ 	mStep = 0;
+@@ -62,9 +73,9 @@ void BezFwdIterator::start()
+ 	D3DXVECTOR4 pz(mBezSeg.m_controlPoints[0].z, mBezSeg.m_controlPoints[1].z, mBezSeg.m_controlPoints[2].z, mBezSeg.m_controlPoints[3].z);
+ 
+ 	D3DXVECTOR4 cVec[3];
+-	D3DXVec4Transform(&cVec[0], &px, &BezierSegment::s_bezBasisMatrix);
+-	D3DXVec4Transform(&cVec[1], &py, &BezierSegment::s_bezBasisMatrix);
+-	D3DXVec4Transform(&cVec[2], &pz, &BezierSegment::s_bezBasisMatrix);
++	bezTransform(&cVec[0], &px, &BezierSegment::s_bezBasisMatrix);
++	bezTransform(&cVec[1], &py, &BezierSegment::s_bezBasisMatrix);
++	bezTransform(&cVec[2], &pz, &BezierSegment::s_bezBasisMatrix);
+ 
+ 	mCurrPoint = mBezSeg.m_controlPoints[0];
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezierSegment.cpp b/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezierSegment.cpp
+index c491126..f4a6834 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezierSegment.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/Bezier/BezierSegment.cpp
+@@ -96,6 +96,23 @@ BezierSegment::BezierSegment(Coord3D cp[4])
+ 
+ 
+ //-------------------------------------------------------------------------------------------------
++// Plain float maths in a fixed order: D3DXVec4Transform/Dot come from the d3dx DLL on Windows
++// (SSE or 3DNow! code) and from our shim on macOS, and they do not round alike.
++static void bezTransform(D3DXVECTOR4 *out, const D3DXVECTOR4 *v, const D3DXMATRIX *m)
++{
++	float x = v->x * m->m[0][0]; x = x + v->y * m->m[1][0]; x = x + v->z * m->m[2][0]; x = x + v->w * m->m[3][0];
++	float y = v->x * m->m[0][1]; y = y + v->y * m->m[1][1]; y = y + v->z * m->m[2][1]; y = y + v->w * m->m[3][1];
++	float z = v->x * m->m[0][2]; z = z + v->y * m->m[1][2]; z = z + v->z * m->m[2][2]; z = z + v->w * m->m[3][2];
++	float w = v->x * m->m[0][3]; w = w + v->y * m->m[1][3]; w = w + v->z * m->m[2][3]; w = w + v->w * m->m[3][3];
++	out->x = x; out->y = y; out->z = z; out->w = w;
++}
++
++static float bezDot(const D3DXVECTOR4 *a, const D3DXVECTOR4 *b)
++{
++	float r = a->x * b->x; r = r + a->y * b->y; r = r + a->z * b->z; r = r + a->w * b->w;
++	return r;
++}
++
+ void BezierSegment::evaluateBezSegmentAtT(Real tValue, Coord3D *outResult) const
+ 
+ {
+@@ -109,11 +126,11 @@ void BezierSegment::evaluateBezSegmentAtT(Real tValue, Coord3D *outResult) const
+ 	D3DXVECTOR4 zCoords(m_controlPoints[0].z, m_controlPoints[1].z, m_controlPoints[2].z, m_controlPoints[3].z);
+ 
+ 	D3DXVECTOR4 tResult;
+-	D3DXVec4Transform(&tResult, &tVec, &BezierSegment::s_bezBasisMatrix);
++	bezTransform(&tResult, &tVec, &BezierSegment::s_bezBasisMatrix);
+ 
+-	outResult->x = D3DXVec4Dot(&xCoords, &tResult);
+-	outResult->y = D3DXVec4Dot(&yCoords, &tResult);
+-	outResult->z = D3DXVec4Dot(&zCoords, &tResult);
++	outResult->x = bezDot(&xCoords, &tResult);
++	outResult->y = bezDot(&yCoords, &tResult);
++	outResult->z = bezDot(&zCoords, &tResult);
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index 91b8f0d..e5dde71 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 5;
++		static const UnsignedInt kRallypointSimulationId = 6;
+ 		const UnsignedInt idBlock[3] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));
