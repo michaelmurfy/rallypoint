@@ -1,0 +1,25 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index a160f56..e41cd8e 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -3292,6 +3292,12 @@ static inline MTLSamplerBorderColor PickBorderColor(unsigned argb)
+                             | ((dc->mipFilter  & 0x3) << 12)
+                             | ((anisoBucket    & 0x7) << 14)
+                             | ((borderBucket   & 0x3) << 17));
++    // The terrain atlas (XYZ|DIFFUSE|TEX2) packs tiles with borders, so its coarse mip levels blend neighbouring tiles
++    // and show up as a grid when the camera is far out. Stay on the first few levels. MTL_TERRAIN_LOD=<n> (default 2).
++    static float s_terrainLod = -1.0f;
++    if (s_terrainLod < 0.0f) { const char* e = getenv("MTL_TERRAIN_LOD"); s_terrainLod = e ? (float)atof(e) : 2.0f; }
++    const bool terrain = dc->fvf == 0x242;
++    if (terrain) key |= (1u << 19);
+     auto it = ctx->samplers.find(key);
+     if (it != ctx->samplers.end()) return it->second;
+ 
+@@ -3304,6 +3310,7 @@ static inline MTLSamplerBorderColor PickBorderColor(unsigned argb)
+                                            : MTLSamplerMipFilterNotMipmapped;
+     sd.sAddressMode = MapAddressMode(dc->addressU);
+     sd.tAddressMode = MapAddressMode(dc->addressV);
++    if (terrain) sd.lodMaxClamp = s_terrainLod;
+     // Anisotropy. Per DXMT pattern, only enable when the engine asked for
+     // ANISOTROPIC explicitly on min OR mag filter — otherwise leave at 1 so
+     // POINT/LINEAR draws don't pay the aniso fetch cost.
