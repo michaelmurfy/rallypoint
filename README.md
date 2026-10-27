@@ -33,7 +33,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 Rallypoint needs the folder with `INIZH.big`.
 
 - **Windows:** Steam installs are found automatically.
-- **macOS:** *Settings → Game files → Download from Steam*. Enter your Steam account and password. Rallypoint downloads Generals and Zero Hour (about 4 GB) with the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader). Approve the sign-in on your phone or type the code. The password is never saved, and the sign-in token the downloader keeps is deleted when the download ends. The account must own both games.
+- **macOS:** in *Settings → Game files* (or the setup wizard) open **Download them from Steam**. Enter your Steam account and password. Rallypoint downloads Generals and Zero Hour (about 4 GB) with the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader). Approve the sign-in on your phone or type the code. The password is never saved, and the sign-in token the downloader keeps is deleted when the download ends. The account must own both games.
 - **Already have them?** Point to the folder in the wizard or in *Settings → Game files*.
 
 ## Play
@@ -48,7 +48,7 @@ On the **Play** tab:
 
 ## Mods
 
-1. On the **Mods** tab press **Open download page** and download the mod from its official page.
+1. On the **Mods** tab press **Download page** under a mod and download it from its official page.
 2. Press **Choose file…** (`.zip`, `.7z`, `.rar`, `.tar.gz`, or an installer `.exe`) or **Choose folder…**. You can also drop it on the window.
 3. Pick it on the Play tab.
 
@@ -87,10 +87,10 @@ The **Maps** tab has two parts.
 
 If a game crashes or goes out of sync:
 
-1. Both players switch on **Settings → Multiplayer logs → Record sync logs**.
+1. Both players switch on **Settings → Multiplayer → Logs → Record sync logs**.
 2. Play again. The first ten seconds are logged frame by frame, then every 100 frames for the whole game.
 3. Each player presses **Download debug logs**. You see what goes in first; passwords, keys, your Steam name and your user name in paths are left out, and the replay is added only if you tick it.
-4. Send the zip. **Compare with another player…** shows where two games first differed.
+4. Send the zip. **Compare…** (same card) shows where two games first differed.
 
 *Settings → Troubleshooting* checks your game files and shows the game's last crash report.
 
