@@ -666,7 +666,7 @@ function mapOrganiser() {
       } });
       const idx = v.indexOf(m);
       const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
-        h("button", { class: "btn small ghost", "aria-label": `Preview ${m.name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, "Preview"));
+        h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
       return row;
     }));
     more.hidden = v.length <= shown;
@@ -719,6 +719,7 @@ function mapsPage() {
   const org = mapOrganiser();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps")),
+    h("div", { class: "card intro" }, h("span", { class: "introicon", "aria-hidden": "true" }, icon("play")), h("div", { class: "stack tight" }, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("details", { class: "card help", open: true }, h("summary", {}, "Get more maps"), packs.el));
   return { el, dispose: () => { packs.dispose(); org.dispose(); } };
@@ -937,13 +938,14 @@ function playPage() {
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
   const skAi = segmented("Quick Skirmish opponents", [["1", "1"], ["2", "2"], ["3", "3"]], String(Math.min(3, Math.max(1, prefs.get().skAi || 1))), (v) => prefs.set({ skAi: +v }));
   const skDiff = segmented("Quick Skirmish difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
-  // Quick Skirmish: its choices and its button together, in one block under Play
-  const skOptions = h("div", { class: "skcard" },
-    h("div", { class: "skhead" }, h("h3", {}, "Quick Skirmish"), h("span", { class: "muted small" }, "A match against the computer, started straight away")),
+  // Quick Skirmish: its own card, with a pointer to the full setup on the Maps page
+  const skOptions = h("div", { class: "card skcard" },
+    h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "A random match with a random map against the computer, started straight away.")),
     h("div", { class: "skoptions" },
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el),
-      sk));
+      sk),
+    h("p", { class: "tip" }, h("b", {}, "Tip"), h("span", {}, "To pick the map, your general, teams and where everyone starts, set up a skirmish under ", h("button", { class: "linkbtn", onclick: () => go("maps") }, "Maps"), ".")));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);
   resSel.append(new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...presets.filter(([w]) => w !== nat.w).map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)), new Option("Custom…", "custom"));
@@ -970,7 +972,7 @@ function playPage() {
 
   function fillFiles() {
     fill(files,
-      store.cfg.game_dir ? h("p", { class: "muted small" }, "Game files: " + store.cfg.game_dir) : h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet."),
+      store.cfg.game_dir ? h("p", { class: "muted small gamepath" }, store.cfg.game_dir) : h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet."),
       store.cfg.game_dir ? null : h("button", { class: "btn", onclick: () => openWizard() }, "Find or download game files"));
   }
   fillFiles();
@@ -985,9 +987,9 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game's menu.")),
-      files,
-      h("div", { class: "row" }, play), skOptions),
+      h("div", { class: "stack tight" }, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), files),
+      h("div", { class: "row heroact" }, play, h("span", { class: "muted small" }, "Opens the game's main menu."))),
+    skOptions,
     h("div", { class: "card" },
       h("h3", {}, "Options"),
       h("div", { class: "grid2" },
@@ -995,9 +997,10 @@ function playPage() {
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       extrasField,
       custom,
-      h("label", { class: "switch" }, fs, "Fullscreen"),
-      h("label", { class: "switch" }, cam, "Higher camera"),
-      h("details", { class: "help-inline" }, h("summary", {}, "About these options"), h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs. A higher camera is optional and stays off for a normal online view."))));
+      h("div", { class: "optlist" },
+        h("div", { class: "opt" }, h("label", { class: "switch" }, fs, "Fullscreen"), h("span", { class: "muted small" }, "Fill the screen instead of a window.")),
+        h("div", { class: "opt" }, h("label", { class: "switch" }, cam, "Higher camera"), h("span", { class: "muted small" }, "See further out. Leave it off for a normal online view."))),
+      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs.")));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
