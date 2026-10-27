@@ -105,6 +105,70 @@ pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>
     Ok(env)
 }
 
+/// One place at the table of a skirmish, as the map preview sets it up.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SlotSpec {
+    /// `player` (you, always first), `ai` or `closed`.
+    pub kind: String,
+    /// For an `ai`: easy, medium or brutal.
+    pub difficulty: Option<String>,
+    /// The general's internal name (`FactionChinaTankGeneral`); `None` is random.
+    pub faction: Option<String>,
+    /// Team 0 to 3; `None` is every one for themselves.
+    pub team: Option<u32>,
+    /// Start position 1 to 8 on the map; `None` is random.
+    pub start: Option<u32>,
+}
+
+/// The whole table for `GEN_AUTO_SLOTS`: `player,<general|random>,<team|-1>,<start|0>`, `ai,<difficulty>,<general|random>,<team|-1>,<start|0>`
+/// or `closed`, joined by `;`, you first. Generals must be ones the chosen game offers (`generals`), starts must not repeat.
+pub fn skirmish_slots_env(slots: &[SlotSpec], generals: &[crate::generals::General]) -> Result<String, String> {
+    if slots.len() < 2 || slots.len() > 8 {
+        return Err("a skirmish has 2 to 8 places".into());
+    }
+    if slots[0].kind != "player" {
+        return Err("you are the first place".into());
+    }
+    if !slots[1..].iter().any(|s| s.kind == "ai") {
+        return Err("a skirmish needs at least one computer opponent".into());
+    }
+    let mut starts = std::collections::HashSet::new();
+    let mut parts = vec![];
+    for s in slots {
+        if s.kind == "closed" {
+            parts.push("closed".to_string());
+            continue;
+        }
+        let faction = match &s.faction {
+            None => "random".to_string(),
+            Some(f) if generals.iter().any(|g| &g.id == f) => f.clone(),
+            Some(f) => return Err(format!("{f:?} isn't a general in this game")),
+        };
+        let team = match s.team {
+            None => "-1".to_string(),
+            Some(t) if t <= 3 => t.to_string(),
+            Some(_) => return Err("a team is 1 to 4".into()),
+        };
+        let start = match s.start {
+            None => "0".to_string(),
+            Some(n) if (1..=8).contains(&n) && starts.insert(n) => n.to_string(),
+            Some(_) => return Err("a start position is 1 to 8 and each can be taken once".into()),
+        };
+        match s.kind.as_str() {
+            "player" => parts.push(format!("player,{faction},{team},{start}")),
+            "ai" => {
+                let d = s.difficulty.as_deref().unwrap_or("easy");
+                if !["easy", "medium", "brutal"].contains(&d) {
+                    return Err("the difficulty is easy, medium or brutal".into());
+                }
+                parts.push(format!("ai,{d},{faction},{team},{start}"));
+            }
+            other => return Err(format!("{other:?} isn't a kind of place")),
+        }
+    }
+    Ok(parts.join(";"))
+}
+
 /// Is the network ready for the game? No relay at all means offline play, which is fine. A relay that has
 /// not accepted us yet would start the game on the wrong network (and fail with a socket error in the LAN
 /// lobby), so that is refused. Returns the agent address and our virtual IP to hand to the engine.
@@ -184,6 +248,25 @@ mod tests {
         assert!(skirmish_env(None, Some(0), None, None, have).is_err() && skirmish_env(None, Some(8), None, None, have).is_err());
         assert!(skirmish_env(None, None, Some("god mode"), None, have).is_err());
         assert!(skirmish_env(None, None, None, Some(0), have).is_err() && skirmish_env(None, None, None, Some(9), have).is_err());
+    }
+
+    #[test]
+    fn a_whole_skirmish_table_becomes_one_checked_setting() {
+        use crate::generals::General;
+        let gens = vec![General { id: "FactionAmerica".into(), name: "USA".into() }, General { id: "FactionChinaTankGeneral".into(), name: "Tank".into() }];
+        let spec = |kind: &str, d: Option<&str>, f: Option<&str>, team: Option<u32>, start: Option<u32>| SlotSpec { kind: kind.into(), difficulty: d.map(String::from), faction: f.map(String::from), team, start };
+        let table = vec![spec("player", None, Some("FactionAmerica"), Some(0), Some(2)), spec("ai", Some("brutal"), Some("FactionChinaTankGeneral"), Some(1), None), spec("ai", Some("easy"), None, None, Some(4)), spec("closed", None, None, None, None)];
+        assert_eq!(skirmish_slots_env(&table, &gens).unwrap(), "player,FactionAmerica,0,2;ai,brutal,FactionChinaTankGeneral,1,0;ai,easy,random,-1,4;closed");
+        let bad = |t: Vec<SlotSpec>| skirmish_slots_env(&t, &gens).is_err();
+        assert!(bad(vec![spec("player", None, None, None, None)]), "needs an opponent");
+        assert!(bad(vec![spec("ai", None, None, None, None), spec("ai", None, None, None, None)]), "you come first");
+        assert!(bad(vec![spec("player", None, Some("FactionNope"), None, None), spec("ai", None, None, None, None)]), "a general the game does not have");
+        assert!(bad(vec![spec("player", None, None, None, Some(1)), spec("ai", None, None, None, Some(1))]), "one start twice");
+        assert!(bad(vec![spec("player", None, None, None, Some(9)), spec("ai", None, None, None, None)]));
+        assert!(bad(vec![spec("player", None, None, Some(4), None), spec("ai", None, None, None, None)]));
+        assert!(bad(vec![spec("player", None, None, None, None), spec("ai", Some("godlike"), None, None, None)]));
+        assert!(bad(vec![spec("player", None, None, None, None), spec("zombie", None, None, None, None), spec("ai", None, None, None, None)]));
+        assert!(bad((0..9).map(|i| spec(if i == 0 { "player" } else { "ai" }, None, None, None, None)).collect()), "more than eight places");
     }
 
     #[test]

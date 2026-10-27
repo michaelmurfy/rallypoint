@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
+use generals_core::{generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -632,6 +632,15 @@ async fn maps_delete(app: tauri::AppHandle, names: Vec<String>) -> Result<usize,
     tauri::async_runtime::spawn_blocking(move || maporg::delete(&dir, &lib, &names)).await.map_err(|e| e.to_string())?
 }
 
+/// The generals the game offers with these mods laid over it (the game folder is the one on the Play page).
+#[tauri::command]
+async fn skirmish_generals(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<Vec<generals::General>, String> {
+    let cat = catalog()?;
+    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    let layers: Vec<PathBuf> = ordered.iter().map(|f| mods_dir(&app).map(|d| d.join(f))).collect::<Result<_, _>>()?;
+    tauri::async_runtime::spawn_blocking(move || generals::generals(&game_dir, &layers)).await.map_err(|e| e.to_string())
+}
+
 /// How many players each map is for (its start positions), read once per map and remembered.
 #[tauri::command]
 async fn maps_players(app: tauri::AppHandle) -> Result<std::collections::BTreeMap<String, u8>, String> {
@@ -731,7 +740,7 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
@@ -754,6 +763,14 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
+    // The whole table (you, each computer player with its general and team, start positions): checked against the generals this game and mod offer.
+    let skirmish_table = match &skirmish_slots {
+        Some(slots) => {
+            let layers: Vec<PathBuf> = ordered.iter().map(|f| mods_dir(&app).map(|d| d.join(f))).collect::<Result<_, _>>()?;
+            Some((launch::skirmish_slots_env(slots, &generals::generals(&game_dir, &layers))?, slots.iter().find(|s| s.kind == "ai").and_then(|s| s.difficulty.clone())))
+        }
+        None => None,
+    };
     let skirmish_env = launch::skirmish_env(skirmish_map.as_deref(), skirmish_ai, skirmish_difficulty.as_deref(), skirmish_start, |name| maps_dir(&app).map(|d| d.join(name).is_dir()).unwrap_or(false))?;
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
@@ -775,6 +792,10 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             if skirmish {
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
                 env.extend(skirmish_env.iter().cloned());
+                if let Some((table, diff)) = &skirmish_table {
+                    env.push(("GEN_AUTO_SLOTS".to_string(), table.clone()));
+                    env.push(("GEN_AUTO_DIFF".to_string(), diff.clone().unwrap_or_else(|| "easy".to_string())));
+                }
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             // The name other players see in the lobby: the player's own, else this computer's.
@@ -835,7 +856,7 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, whats_new_take, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
             launch_game
