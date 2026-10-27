@@ -80,7 +80,9 @@ main { overflow-y: auto; padding: 28px 34px 44px; }
 
 /* ---- surfaces: one lifted panel (the hero), the rest sit flat on tone ---- */
 .card { background: var(--surface); border-radius: var(--r-panel); padding: 18px 20px; display: grid; gap: 14px; }
-.card.hero { padding: 24px 26px; gap: 18px; border-radius: 16px; border: 1px solid var(--line); }
+.card.hero { padding: 26px 28px; gap: 20px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface) 65%); }
+.heroact { gap: 14px; }
+.gamepath { overflow-wrap: anywhere; }
 .card.hero h2 { font-size: 22px; font-weight: 750; letter-spacing: -.015em; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
@@ -389,8 +391,16 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .seg:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Quick Skirmish on the Play page: a block with its own heading, its choices and its button */
-.skcard { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--line); }
-.skhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.skcard { gap: 16px; }
+.tip { display: flex; gap: 12px; align-items: baseline; padding: 10px 14px; border-radius: 10px; background: var(--bg); font-size: 13px; color: var(--muted); }
+.tip b { color: var(--rose); font-size: 12px; }
+.optlist { display: grid; gap: 10px; }
+.opt { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.opt .switch { min-width: 150px; }
+.card.intro { display: flex; align-items: center; gap: 16px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, var(--surface)), var(--surface) 70%); }
+.introicon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+.introicon svg { width: 20px; height: 20px; fill: currentColor; }
+.maprow .btn svg { width: 14px; height: 14px; fill: currentColor; margin-right: 4px; }
 .skoptions { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center; }
 .skoptions > .btn { margin-left: auto; }
 .skrow .segs { justify-self: start; }
