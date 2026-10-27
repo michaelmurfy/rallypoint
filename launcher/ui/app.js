@@ -1431,7 +1431,7 @@ function openBundleDialog(fb) {
           h("p", { class: "small" }, h("b", {}, "Included: "), "the game's last two logs, the sync logs, your settings, the game's crash report and options file, and a list of your game and mod files."),
           h("p", { class: "small" }, h("b", {}, "Left out: "), "passwords, your server serial and keys, and your Steam account name. Your user name is replaced by <home> in the text files."),
           h("p", { class: "small" }, h("b", {}, "Still in it: "), "the server and room names, and the other players' lobby names.")),
-        h("label", { class: "switch" }, replay, "Also include the last replay (it can contain the game's chat)")),
+        h("label", { class: "switch" }, replay, "Also include the last replay and crash dump (they can contain the game's chat and some of its memory)")),
       h("div", { class: "wiz-foot" }, cancel, go)));
   const onKey = (e) => { if (e.key === "Escape") finish(); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }

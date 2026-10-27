@@ -94,6 +94,15 @@ jobs:
           name: engine-windows
           path: out/engine
           if-no-files-found: error
+      # Symbols for reading a crash dump (EIP to function). Kept as a workflow artifact only, never shipped to players.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-windows-symbols
+          path: |
+            engine/build/win32/GeneralsMD/Release/*.pdb
+            engine/build/win32/GeneralsMD/Release/*.map
+          if-no-files-found: ignore
+          retention-days: 90
 
   # ---- launcher app (engine bundled in as a resource) ----------------------------------------
   launcher:
