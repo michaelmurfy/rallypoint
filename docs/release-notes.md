@@ -1,5 +1,7 @@
 ## Rallypoint 0.4.5
 
+- **A slightly bigger window, and a roomier map preview.** The window opens larger (1080 × 780) so lists and settings need less scrolling, and the map preview shows a bigger picture with the skirmish options beside it instead of below it.
+- **Release pages stay short.** A release's notes now cover that release and the two before it, not the whole history.
 - **macOS: the keyboard works again after switching Space.** Going to another desktop or fullscreen app and back left the game window without keyboard focus, so Escape and the hotkeys did nothing (the mouse still worked). The game now takes keyboard focus back when you return, and checks it every frame.
 - **Sync logs cover the whole game.** After the first ten seconds, a log is now written at every checksum (every 100 frames), so a game that goes out of sync minutes in has logs of the frames around it, not only of the start. The zip stays small: it is text.
 - **Sync logs no longer need both players to match.** They used to add extra data to the checksum, so one player with sync logs on and the other off could see a false mismatch. They no longer do. It still helps if both players turn them on.
