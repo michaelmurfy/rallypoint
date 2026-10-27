@@ -1,0 +1,52 @@
+diff --git a/Core/GameEngine/Source/Common/System/UnicodeString.cpp b/Core/GameEngine/Source/Common/System/UnicodeString.cpp
+index 386778d..f56089b 100644
+--- a/Core/GameEngine/Source/Common/System/UnicodeString.cpp
++++ b/Core/GameEngine/Source/Common/System/UnicodeString.cpp
+@@ -390,10 +390,47 @@ void UnicodeString::format_va(const UnicodeString& format, va_list args)
+ }
+ 
+ // -----------------------------------------------------
++#if !defined(_WIN32)
++// On Windows a wide printf reads %s/%c as wide and %S/%C as narrow; elsewhere it is the other way
++// round, so a wide string passed to %s printed only its first character. Swap them.
++static void toPosixWideFormat(const WideChar* in, WideChar* out, size_t cap)
++{
++	size_t n = 0;
++	while (*in && n + 3 < cap)
++	{
++		if (*in != L'%') { out[n++] = *in++; continue; }
++		out[n++] = *in++;
++		if (*in == L'%') { out[n++] = *in++; continue; }
++		bool hasLen = false;
++		while (*in && n + 3 < cap && wcschr(L"-+ #0123456789.*hlLzjtI", *in))
++		{
++			if (*in == L'l' || *in == L'h') hasLen = true;
++			out[n++] = *in++;
++		}
++		if (*in == L's' || *in == L'c')
++		{
++			if (!hasLen) out[n++] = L'l';
++			out[n++] = *in++;
++		}
++		else if (*in == L'S' || *in == L'C')
++		{
++			out[n++] = (*in == L'S') ? L's' : L'c';
++			in++;
++		}
++	}
++	out[n] = 0;
++}
++#endif
++
+ void UnicodeString::format_va(const WideChar* format, va_list args)
+ {
+ 	validate();
+ 	WideChar buf[MAX_FORMAT_BUF_LEN];
++#if !defined(_WIN32)
++	WideChar fixed[MAX_FORMAT_BUF_LEN];
++	toPosixWideFormat(format, fixed, MAX_FORMAT_BUF_LEN);
++	format = fixed;
++#endif
+ 	const int result = vswprintf(buf, sizeof(buf)/sizeof(WideChar), format, args);
+ 	if (result >= 0)
+ 	{
