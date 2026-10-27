@@ -1,6 +1,6 @@
-## Rallypoint 0.4.7
+## Rallypoint 0.5.0
 
-Set up a full skirmish from the map preview, and every page uses the wider window (the app now opens at 1200 × 840).
+Set up a whole skirmish from the map preview, with Mac audio, names and Mac/Windows sync fixes. The app now opens at 1200 × 840 and every page uses the width.
 
 - **Full skirmish setup.** The map preview now sets up the whole match: you and up to seven computer players, each with a general, team and start position (or closed). Generals are read from the selected game or mod, so Shockwave shows its own. Switch the game from the same screen and the generals follow.
 - **Quieter Mac game audio.** Unit and weapon sounds now fade with distance and follow the volume sliders instead of always playing at full volume.
