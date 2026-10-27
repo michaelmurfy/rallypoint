@@ -298,6 +298,82 @@ pub fn decode_tga(d: &[u8]) -> Result<Image, String> {
     Ok(Image { w: w as u32, h: h as u32, rgba: px })
 }
 
+/// The picture inside a menu backdrop texture. The game keeps an 800 x 600 picture in the top-left corner of a 1024 x 1024
+/// texture (the rest is other art or empty), so take that corner, then trim black bars around a wide picture.
+pub fn crop_backdrop(img: &Image) -> Image {
+    let (mut x0, mut y0, mut x1, mut y1) = (0usize, 0usize, img.w as usize, img.h as usize);
+    if x1 >= 1024 && y1 >= 1024 {
+        x1 = 800;
+        y1 = 600;
+    }
+    let lit = |x: usize, y: usize| {
+        let p = (y * img.w as usize + x) * 4;
+        img.rgba[p] as u32 + img.rgba[p + 1] as u32 + img.rgba[p + 2] as u32 > 36
+    };
+    let (mut tx0, mut ty0, mut tx1, mut ty1) = (x1, y1, x0, y0);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if lit(x, y) {
+                tx0 = tx0.min(x);
+                tx1 = tx1.max(x + 1);
+                ty0 = ty0.min(y);
+                ty1 = ty1.max(y + 1);
+            }
+        }
+    }
+    // only trim when the picture is most of the corner: a mostly dark picture is not bars
+    if tx1 > tx0 && ty1 > ty0 && (tx1 - tx0) * 10 >= (x1 - x0) * 6 && (ty1 - ty0) * 10 >= (y1 - y0) * 3 {
+        (x0, y0, x1, y1) = (tx0, ty0, tx1, ty1);
+    }
+    let (w, h) = (x1 - x0, y1 - y0);
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in y0..y1 {
+        rgba.extend_from_slice(&img.rgba[(y * img.w as usize + x0) * 4..(y * img.w as usize + x1) * 4]);
+    }
+    Image { w: w as u32, h: h as u32, rgba }
+}
+
+/// A 24-bit BMP of `img`, shrunk by two (box filter) while it is wider than 640 pixels: a picture for an `<img>`, which
+/// cannot show a TGA.
+pub fn to_bmp(img: &Image) -> Vec<u8> {
+    let (mut w, mut h, mut px) = (img.w as usize, img.h as usize, img.rgba.clone());
+    while w > 640 && w % 2 == 0 && h % 2 == 0 {
+        let mut out = Vec::with_capacity(w / 2 * h / 2 * 4);
+        for y in 0..h / 2 {
+            for x in 0..w / 2 {
+                for c in 0..4 {
+                    let at = |dx: usize, dy: usize| px[((2 * y + dy) * w + 2 * x + dx) * 4 + c] as u32;
+                    out.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1)) / 4) as u8);
+                }
+            }
+        }
+        px = out;
+        w /= 2;
+        h /= 2;
+    }
+    let row = (w * 3).div_ceil(4) * 4;
+    let size = 54 + row * h;
+    let mut b = Vec::with_capacity(size);
+    b.extend_from_slice(b"BM");
+    b.extend_from_slice(&(size as u32).to_le_bytes());
+    b.extend_from_slice(&[0; 4]);
+    b.extend_from_slice(&54u32.to_le_bytes());
+    b.extend_from_slice(&40u32.to_le_bytes());
+    b.extend_from_slice(&(w as i32).to_le_bytes());
+    b.extend_from_slice(&(h as i32).to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&24u16.to_le_bytes());
+    b.extend_from_slice(&[0; 24]);
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = (y * w + x) * 4;
+            b.extend_from_slice(&[px[p + 2], px[p + 1], px[p]]);
+        }
+        b.resize(b.len() + row - w * 3, 0);
+    }
+    b
+}
+
 pub fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -509,5 +585,35 @@ mod tests {
         let info = v.info.expect("the map is read");
         assert_eq!(info.starts.len(), 4);
         assert_eq!((v.image_w, v.image_h), (128, 128));
+    }
+
+    #[test]
+    fn to_bmp_makes_a_bottom_up_24_bit_bitmap_and_shrinks_wide_pictures() {
+        let img = Image { w: 2, h: 2, rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 9, 9, 9, 255] };
+        let b = to_bmp(&img);
+        assert_eq!(&b[..2], b"BM");
+        assert_eq!(b.len(), 54 + 8 * 2);
+        assert_eq!(&b[54..57], &[255, 0, 0], "bottom row first, blue-green-red: the blue pixel");
+        let wide = Image { w: 1280, h: 4, rgba: vec![200; 1280 * 4 * 4] };
+        let s = to_bmp(&wide);
+        assert_eq!(u32::from_le_bytes(s[18..22].try_into().unwrap()), 640);
+    }
+
+    #[test]
+    fn crop_backdrop_takes_the_800_by_600_corner_and_trims_black_bars() {
+        let (w, h) = (1024usize, 1024usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        // a picture in the corner with black bars top and bottom (rows 100..500, columns 0..800)
+        for y in 100..500 {
+            for x in 0..800 {
+                rgba[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[200, 100, 50, 255]);
+            }
+        }
+        // other art outside the corner must be ignored
+        for x in 0..w {
+            rgba[((900 * w) + x) * 4..((900 * w) + x) * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+        let c = crop_backdrop(&Image { w: w as u32, h: h as u32, rgba });
+        assert_eq!((c.w, c.h), (800, 400));
     }
 }

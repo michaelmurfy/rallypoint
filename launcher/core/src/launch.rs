@@ -74,22 +74,28 @@ pub fn splash_bitmap(mod_dir: &Path) -> Option<std::path::PathBuf> {
     None
 }
 
-/// The game's own picture for the Play page: the mod's loading picture when it has one, else Zero Hour's from the game
-/// folder. Read from the player's files at run time (nothing of it ships with Rallypoint). Only a plain BMP of sane size.
-pub fn game_art(game_dir: &Path, mod_dir: Option<&Path>) -> Option<Vec<u8>> {
-    let candidates = mod_dir.and_then(splash_bitmap).into_iter().chain(Some(game_dir.join("Install_Final.bmp")));
-    for path in candidates {
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
+/// The game's own picture for the Play page, as the bytes of a BMP. `layers` are the mod folders being played, base first
+/// (Shockwave, then Chaos on top). From the top layer down, each gives its loose loading picture, else a menu picture from
+/// its archives; then Zero Hour's `Install_Final.bmp` from the game folder. Read from the player's files at run time
+/// (nothing of it ships with Rallypoint). Only a plain BMP of sane size, or a TGA that decodes.
+pub fn game_art(game_dir: &Path, layers: &[std::path::PathBuf]) -> Option<Vec<u8>> {
+    let bmp = |path: &Path| -> Option<Vec<u8>> {
+        let meta = std::fs::metadata(path).ok()?;
         if !meta.is_file() || meta.len() < 64 || meta.len() > 6 * 1024 * 1024 {
-            continue;
+            return None;
         }
-        if let Ok(bytes) = std::fs::read(&path) {
-            if bytes.starts_with(b"BM") {
-                return Some(bytes);
-            }
+        let bytes = std::fs::read(path).ok()?;
+        bytes.starts_with(b"BM").then_some(bytes)
+    };
+    for dir in layers.iter().rev() {
+        if let Some(b) = splash_bitmap(dir).and_then(|p| bmp(&p)) {
+            return Some(b);
+        }
+        if let Some(img) = crate::generals::menu_art(dir).and_then(|t| crate::mapview::decode_tga(&t).ok()) {
+            return Some(crate::mapview::to_bmp(&crate::mapview::crop_backdrop(&img)));
         }
     }
-    None
+    bmp(&game_dir.join("Install_Final.bmp"))
 }
 
 /// Environment for a skirmish started from the map list: the map (a folder in the game's Maps folder, which `exists` checks),
@@ -403,13 +409,13 @@ mod tests {
         let (game, modd) = (t.join("game"), t.join("mod"));
         std::fs::create_dir_all(&game).unwrap();
         std::fs::create_dir_all(&modd).unwrap();
-        assert!(game_art(&game, Some(&modd)).is_none());
+        assert!(game_art(&game, &[modd.clone()]).is_none());
         std::fs::write(game.join("Install_Final.bmp"), [b"BM".as_slice(), &[1u8; 100]].concat()).unwrap();
-        assert_eq!(game_art(&game, None).unwrap()[2], 1);
+        assert_eq!(game_art(&game, &[]).unwrap()[2], 1);
         std::fs::write(modd.join("Install_Final_shw.bmp"), [b"BM".as_slice(), &[2u8; 100]].concat()).unwrap();
-        assert_eq!(game_art(&game, Some(&modd)).unwrap()[2], 2, "the mod's picture wins");
+        assert_eq!(game_art(&game, &[modd.clone()]).unwrap()[2], 2, "the mod's picture wins");
         std::fs::write(modd.join("Install_Final_shw.bmp"), [b"PNG".as_slice(), &[2u8; 100]].concat()).unwrap();
-        assert_eq!(game_art(&game, Some(&modd)).unwrap()[2], 1, "not a BMP: fall back to the game's");
+        assert_eq!(game_art(&game, &[modd.clone()]).unwrap()[2], 1, "not a BMP: fall back to the game's");
         let _ = std::fs::remove_dir_all(t);
     }
 }

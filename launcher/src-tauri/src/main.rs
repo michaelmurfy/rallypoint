@@ -535,17 +535,20 @@ fn mods_remove(app: tauri::AppHandle, folder: String) -> Result<(), String> {
     mods::remove(&mods_dir(&app)?, &folder)
 }
 
-/// The picture for the Play page: the chosen game's own (a mod's loading picture, or Zero Hour's), as a data URL, read
-/// from the player's files. `None` when there is none.
+/// The picture for the Play page: the chosen game's own (a mod's loading or menu picture, or Zero Hour's), as a data URL,
+/// read from the player's files. `game_folders` are the mod folders being played, base first. `None` when there is none.
 #[tauri::command]
-async fn game_art(app: tauri::AppHandle, game_dir: String, game_folder: Option<String>) -> Result<Option<String>, String> {
-    let mod_dir = match game_folder.as_deref() {
-        Some(f) if maporg::is_safe_name(f) => Some(mods_dir(&app)?.join(f)),
-        Some(_) => return Err("unexpected mod folder".into()),
-        None => None,
-    };
+async fn game_art(app: tauri::AppHandle, game_dir: String, game_folders: Vec<String>) -> Result<Option<String>, String> {
+    let mods = mods_dir(&app)?;
+    let mut layers = vec![];
+    for f in &game_folders {
+        if !maporg::is_safe_name(f) {
+            return Err("unexpected mod folder".into());
+        }
+        layers.push(mods.join(f));
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        launch::game_art(std::path::Path::new(&game_dir), mod_dir.as_deref()).map(|b| format!("data:image/bmp;base64,{}", mapview::base64(&b)))
+        launch::game_art(std::path::Path::new(&game_dir), &layers).map(|b| format!("data:image/bmp;base64,{}", mapview::base64(&b)))
     })
     .await
     .map_err(|e| e.to_string())

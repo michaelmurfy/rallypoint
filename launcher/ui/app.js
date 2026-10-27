@@ -965,12 +965,12 @@ function playPage() {
   const art = [0, 1].map(() => h("img", { class: "heroart", alt: "", "aria-hidden": "true" }));
   let artKey = "", artFront = 0, hasArt = false;
   const paintArt = () => art.forEach((el, i) => el.classList.toggle("shown", hasArt && i === artFront));
-  async function loadArt(folder) {
-    const key = `${store.cfg.game_dir}|${folder || ""}`;
+  async function loadArt(folders) {
+    const key = `${store.cfg.game_dir}|${folders.join("/")}`;
     if (key === artKey) return;
     artKey = key;
     let url = null;
-    if (store.cfg.game_dir) { try { url = await invoke("game_art", { gameDir: store.cfg.game_dir, gameFolder: folder || null }); } catch { url = null; } }
+    if (store.cfg.game_dir) { try { url = await invoke("game_art", { gameDir: store.cfg.game_dir, gameFolders: folders }); } catch { url = null; } }
     if (key !== artKey) return; // the choice changed while it loaded
     hasArt = !!url;
     if (url) { artFront = 1 - artFront; art[artFront].src = url; }
@@ -1007,7 +1007,9 @@ function playPage() {
     fill(gameNote, cur.note, games.some((g) => !g.installed) ? [" · ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Get more mods")] : null);
     // what Play will start, at a glance
     heroTitle.textContent = cur.name;
-    loadArt(cur.folder);
+    // the mod folders being played, base first (Chaos plays on Shockwave), for the picture
+    const entry = store.mods.catalog.find((m) => m.id === cur.id), baseMod = entry && entry.addon_for ? store.mods.catalog.find((m) => m.id === entry.addon_for) : null;
+    loadArt([baseMod && baseMod.path, cur.folder].filter(Boolean));
     hero.classList.toggle("blue", cur.id === GAME_ZH); // Zero Hour is blue; the mods stay red
     const withExtras = extraMods().filter((m) => selectedExtras().includes(m.folder)).map((m) => m.name);
     heroSub.textContent = (cur.id === GAME_ZH ? "Command & Conquer: Generals – Zero Hour" : cur.note) + (withExtras.length ? `, with ${withExtras.join(" and ")}` : "");
