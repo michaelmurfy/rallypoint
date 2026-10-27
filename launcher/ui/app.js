@@ -719,7 +719,7 @@ function mapsPage() {
   const org = mapOrganiser();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps")),
-    h("div", { class: "card intro" }, h("span", { class: "introicon", "aria-hidden": "true" }, icon("play")), h("div", { class: "stack tight" }, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
+    h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("details", { class: "card help", open: true }, h("summary", {}, "Get more maps"), packs.el));
   return { el, dispose: () => { packs.dispose(); org.dispose(); } };
