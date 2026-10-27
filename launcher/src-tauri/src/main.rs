@@ -28,7 +28,7 @@ struct ModWatch(Mutex<Option<Watch>>);
 struct MapJobs(Mutex<Option<maps::MapJob>>);
 /// The newest release found by the last update check.
 #[derive(Default)]
-struct Updates(Mutex<Option<update::UpdateInfo>>);
+struct Updates(Mutex<Option<update::UpdateInfo>>, Mutex<&'static str>);
 
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
@@ -691,12 +691,15 @@ async fn update_install(app: tauri::AppHandle, updates: tauri::State<'_, Updates
     let info = updates.0.lock().unwrap().clone().ok_or("check for updates first")?;
     let data = base(&app)?;
     let (data2, info2) = (data.clone(), info.clone());
+    *updates.1.lock().unwrap() = "Downloading";
+    let phase = app.clone();
     let started = tauri::async_runtime::spawn_blocking(move || {
         // Into a folder only this user can use, not Downloads where any program of this user could swap the file after
         // it was checked; the checksum is checked again right before it is run.
         let work = data2.join("update");
         let file = update::download(&info2, &work.join("download"))?;
         file.unchanged()?;
+        *phase.state::<Updates>().1.lock().unwrap() = "Installing";
         if selfupdate::apply(&file.path, &work)? {
             selfupdate::save_marker(&data2, &selfupdate::WhatsNew { version: info2.latest.clone(), notes: info2.notes.clone() })?;
             Ok(None)
@@ -705,14 +708,49 @@ async fn update_install(app: tauri::AppHandle, updates: tauri::State<'_, Updates
         }
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    let started = match started {
+        Ok(v) => v,
+        Err(e) => {
+            *updates.1.lock().unwrap() = "";
+            return Err(e);
+        }
+    };
     match started {
-        Some(msg) => Ok(msg),
+        Some(msg) => {
+            *updates.1.lock().unwrap() = "";
+            Ok(msg)
+        }
         None => {
+            *updates.1.lock().unwrap() = "Restarting";
             app.exit(0);
             Ok("Restarting…".into())
         }
     }
+}
+
+#[derive(serde::Serialize)]
+struct UpdateProgress {
+    phase: String,
+    done: u64,
+    total: u64,
+}
+
+/// Where the running update is: what it is doing and, while downloading, how many bytes of the installer have arrived.
+#[tauri::command]
+fn update_progress(app: tauri::AppHandle, updates: tauri::State<Updates>) -> Result<UpdateProgress, String> {
+    let phase = updates.1.lock().unwrap().to_string();
+    let total = updates.0.lock().unwrap().as_ref().and_then(|u| u.asset.as_ref()).map(|a| a.size).unwrap_or(0);
+    let done = std::fs::read_dir(base(&app)?.join("update").join("download"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .max()
+        .unwrap_or(0);
+    Ok(UpdateProgress { phase, done, total })
 }
 
 /// Release notes to show once after an update.
@@ -855,7 +893,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
-            update_check, update_install, whats_new_take, open_release_page,
+            update_check, update_install, update_progress, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
