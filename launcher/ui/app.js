@@ -411,31 +411,34 @@ function openMapViewer(entries, start, onChange) {
   } });
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
   // Play a skirmish on this map: how many computer opponents (up to the map's other start positions) and how hard.
-  const opp = h("select", { "aria-label": "Computer opponents" });
-  const diff = h("select", { "aria-label": "Difficulty" }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
-  diff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
+  let oppValue = 1;
+  const opp = h("div", { class: "segs small", role: "group", "aria-label": "Computer opponents" });
+  const diff = segmented("Difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
   const play = h("button", { class: "btn primary", onclick: async () => {
     const m = entries[i];
     play.disabled = true;
     try {
       // a switched-off map is not in the game's folder: switch it on first
       if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; if (onChange) onChange(); }
-      prefs.set({ skAi: +opp.value, skDiff: diff.value });
-      if (await startGame({ skirmish: true, map: m.name, ai: +opp.value, difficulty: diff.value })) finish();
+      prefs.set({ skAi: oppValue, skDiff: diff.value });
+      if (await startGame({ skirmish: true, map: m.name, ai: oppValue, difficulty: diff.value })) finish();
     } catch (e) { note.textContent = errText(e); }
     play.disabled = false;
   } }, icon("play"), "Play skirmish");
   const skirmish = h("div", { class: "skirmishbar" },
-    h("label", { class: "field" }, h("span", {}, "Opponents"), opp),
-    h("label", { class: "field" }, h("span", {}, "Difficulty"), diff),
+    h("div", { class: "skgroup stacked" }, h("span", { class: "muted small" }, "Opponents"), opp),
+    h("div", { class: "skgroup stacked" }, h("span", { class: "muted small" }, "Difficulty"), diff.el),
     play);
-  opp.addEventListener("change", () => prefs.set({ skAi: +opp.value }));
+  function drawOpp(max) {
+    fill(opp, max ? Array.from({ length: max }, (_, k) => h("button", { class: "seg", type: "button", "aria-pressed": String(k + 1 === oppValue), onclick: () => { oppValue = k + 1; prefs.set({ skAi: oppValue }); drawOpp(max); } }, String(k + 1)))
+      : h("button", { class: "seg", type: "button", disabled: true }, "none"));
+  }
   function setSkirmish(starts) {
     const max = Math.min(7, Math.max(0, starts - 1));
-    opp.replaceChildren(...Array.from({ length: max }, (_, k) => new Option(String(k + 1), String(k + 1))));
-    const want = Math.min(max, Math.max(1, prefs.get().skAi || 1));
-    if (max) opp.value = String(want);
-    for (const el of [opp, diff, play]) el.disabled = !max;
+    oppValue = Math.min(Math.max(max, 1), Math.max(1, prefs.get().skAi || 1));
+    drawOpp(max);
+    diff.disable(!max);
+    play.disabled = !max;
     play.title = max ? "" : "This map has no start positions for a skirmish (a mission or solo map)";
   }
   setSkirmish(0);
@@ -805,6 +808,7 @@ function segmented(label, options, current, onPick) {
     onPick && onPick(value);
   } }, text));
   api.el = h("div", { class: "segs small", role: "group", "aria-label": label }, ...buttons);
+  api.disable = (off) => buttons.forEach((b) => { b.disabled = off; });
   return api;
 }
 
