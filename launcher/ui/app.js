@@ -392,12 +392,14 @@ function mapsCard() {
 }
 
 /** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas, .skirmishbar). */
-const MAP_VIEW = 480;
+const MAP_VIEW = 400;
 
 /** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
 function openMapViewer(entries, start, onChange) {
-  let i = start, token = 0, pick = null, shown = null; // pick: the start position you chose (1-based) or null for random; shown: what is on screen
-  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start position to play from it" });
+  let i = start, token = 0, active = 0, shown = null; // active: the row the next click on the map assigns a start position to
+  let generalsList = [];                              // what the chosen game and mod offer: [{ id, name }]
+  let rows = [];                                      // the skirmish table: one per place on this map
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start position to give it to the selected place" });
   const title = h("h2", {});
   const position = h("p", { class: "muted small" });
   const facts = h("dl", { class: "summary mapfacts" });
@@ -412,58 +414,85 @@ function openMapViewer(entries, start, onChange) {
   } });
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
 
-  // Skirmish: where you start, how many computer opponents (up to the map's other start positions) and how hard.
-  let oppValue = 1;
-  const where = h("div", { class: "segs small", role: "group", "aria-label": "Your start position" });
-  const opp = h("div", { class: "segs small", role: "group", "aria-label": "Computer opponents" });
-  const diff = segmented("Difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
+  // The game (Zero Hour or a mod) the skirmish is played with. Changing it changes the generals on offer.
+  const gameSel = h("select", { "aria-label": "Game", onchange: async () => { prefs.set({ game: gameSel.value }); notifyMods(); await loadGenerals(); drawTable(); paint(shown); } });
+  function drawGames() {
+    const cur = selectedGame();
+    gameSel.replaceChildren(...gameChoices().map((g) => { const o = new Option(g.installed ? g.name : `${g.name} (not installed)`, g.id); o.disabled = !g.installed; return o; }));
+    gameSel.value = cur.id;
+  }
+  async function loadGenerals() {
+    try { generalsList = await invoke("skirmish_generals", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }); } catch { generalsList = []; }
+    // a general the new game does not have goes back to random
+    for (const r of rows) if (r.faction && !generalsList.some((g) => g.id === r.faction)) r.faction = null;
+  }
+
+  // The table: you first, then one row per other place on the map.
+  const table = h("div", { class: "skgrid", role: "group", "aria-label": "Skirmish players" });
+  const diffs = [["easy", "Easy AI"], ["medium", "Medium AI"], ["brutal", "Brutal AI"]];
+  const sel = (label, options, value, onchange) => {
+    const el = h("select", { "aria-label": label, onchange: () => onchange(el.value) }, ...options.map(([v, t]) => new Option(t, v)));
+    el.value = value;
+    return el;
+  };
+  function newRows(places) {
+    const wantAi = Math.min(Math.max(1, prefs.get().skAi || 1), Math.max(0, places - 1)), diff = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
+    rows = Array.from({ length: places }, (_, k) => k === 0 ? { kind: "player", faction: null, team: null, start: null } : { kind: k <= wantAi ? "ai" : "closed", difficulty: diff, faction: null, team: null, start: null });
+    active = 0;
+  }
+  function drawTable() {
+    if (!rows.length) { fill(table, h("p", { class: "muted small" }, "This map has no start positions for a skirmish (a mission or solo map).")); updatePlay(); return; }
+    const header = h("div", { class: "skrowhead muted small" }, h("span", {}, "Player"), h("span", {}, "General"), h("span", {}, "Team"), h("span", {}, "Start"));
+    fill(table, header, rows.map((r, k) => {
+      const who = k === 0 ? h("span", { class: "skwho you" }, "You")
+        : sel(`Place ${k + 1}`, [...diffs, ["closed", "Closed"]], r.kind === "closed" ? "closed" : r.difficulty, (v) => { if (v === "closed") r.kind = "closed"; else { r.kind = "ai"; r.difficulty = v; prefs.set({ skDiff: v }); } drawTable(); paint(shown); });
+      const closed = r.kind === "closed";
+      const general = closed ? h("span", { class: "muted small" }, "") : sel(`General for place ${k + 1}`, [["", "Random"], ...generalsList.map((g) => [g.id, g.name])], r.faction || "", (v) => { r.faction = v || null; });
+      const team = closed ? h("span", {}) : sel(`Team for place ${k + 1}`, [["", "None"], ["0", "Team 1"], ["1", "Team 2"], ["2", "Team 3"], ["3", "Team 4"]], r.team == null ? "" : String(r.team), (v) => { r.team = v === "" ? null : +v; });
+      const startSel = closed ? h("span", {}) : sel(`Start for place ${k + 1}`, [["", "Random"], ...Array.from({ length: rows.length }, (_, n) => [String(n + 1), `Start ${n + 1}`])], r.start == null ? "" : String(r.start), (v) => assign(k, v === "" ? null : +v));
+      return h("div", { class: "skrow2" + (k === active ? " active" : "") + (closed ? " closed" : ""), onclick: () => { if (active !== k) { active = k; drawTable(); paint(shown); } } }, who, general, team, startSel);
+    }));
+    updatePlay();
+  }
+  // Give start position n to place k; whoever had it goes back to random.
+  function assign(k, n) {
+    if (n != null) rows.forEach((r, j) => { if (j !== k && r.start === n) r.start = null; });
+    rows[k].start = n;
+    drawTable(); paint(shown);
+  }
   const play = h("button", { class: "btn primary big", onclick: async () => {
     const m = entries[i];
     play.disabled = true;
     try {
       // a switched-off map is not in the game's folder: switch it on first
       if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; if (onChange) onChange(); }
-      prefs.set({ skAi: oppValue, skDiff: diff.value });
-      if (await startGame({ skirmish: true, map: m.name, ai: oppValue, difficulty: diff.value, start: pick })) finish();
+      const ai = rows.filter((r) => r.kind === "ai");
+      prefs.set({ skAi: ai.length, skDiff: ai[0].difficulty });
+      const slots = rows.map((r) => r.kind === "closed" ? { kind: "closed" } : { kind: r.kind, difficulty: r.kind === "ai" ? r.difficulty : null, faction: r.faction, team: r.team, start: r.start });
+      if (await startGame({ skirmish: true, map: m.name, slots })) finish();
     } catch (e) { note.textContent = errText(e); }
-    play.disabled = false;
+    updatePlay();
   } }, icon("play"), "Play skirmish");
-  const row = (label, control) => h("div", { class: "skrow" }, h("span", { class: "muted small" }, label), control);
-  const skirmish = h("div", { class: "skirmishbar" }, row("Your start", where), row("Opponents", opp), row("Difficulty", diff.el), play);
+  function updatePlay() {
+    const ai = rows.filter((r) => r.kind === "ai").length;
+    play.disabled = !ai;
+    play.title = !rows.length ? "This map has no start positions for a skirmish" : ai ? "" : "Give the computer at least one place";
+  }
 
-  function drawWhere(n) {
-    fill(where, n ? [["Random", null], ...Array.from({ length: n }, (_, k) => [String(k + 1), k + 1])].map(([text, v]) => h("button", { class: "seg", type: "button", "aria-pressed": String(pick === v), onclick: () => choose(v) }, text))
-      : h("button", { class: "seg", type: "button", disabled: true }, "none"));
-  }
-  function drawOpp(max) {
-    fill(opp, max ? Array.from({ length: max }, (_, k) => h("button", { class: "seg", type: "button", "aria-pressed": String(k + 1 === oppValue), onclick: () => { oppValue = k + 1; prefs.set({ skAi: oppValue }); drawOpp(max); } }, String(k + 1)))
-      : h("button", { class: "seg", type: "button", disabled: true }, "none"));
-  }
-  function setSkirmish(starts) {
-    const max = Math.min(7, Math.max(0, starts - 1));
-    oppValue = Math.min(Math.max(max, 1), Math.max(1, prefs.get().skAi || 1));
-    if (pick > starts) pick = null;
-    drawWhere(starts); drawOpp(max);
-    diff.disable(!max);
-    play.disabled = !max;
-    play.title = max ? "" : "This map has no start positions for a skirmish (a mission or solo map)";
-  }
-  function choose(v) { pick = pick === v ? null : v; drawWhere(shown && shown.info ? shown.info.starts.length : 0); if (shown) paint(shown); }
-  setSkirmish(0);
-
-  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Skirmish setup" },
     h("div", { class: "wizard mapviewer" },
-      h("div", { class: "wiz-head" }, title, position),
-      h("div", { class: "wiz-body mapbody" }, canvas, h("div", { class: "mapside" }, facts, note, skirmish)),
+      h("div", { class: "wiz-head" }, h("div", { class: "row between" }, h("div", {}, title, position), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Game"), gameSel))),
+      h("div", { class: "wiz-body mapbody" }, canvas, h("div", { class: "mapside" }, facts, note, table, play)),
       h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
-  const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
+  const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
-  function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; pick = null; show(); } }
+  function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   // Where the start markers are on the canvas, for drawing them and for clicks.
   let spots = [];
   function paint(v) {
+    if (!v) return;
     shown = v;
     const info = v.info;
     // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
@@ -489,24 +518,26 @@ function openMapViewer(entries, start, onChange) {
     if (info) {
       ctx.font = "700 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       for (const st of info.starts) {
-        const x = ox + st.x * cw, y = oy + (1 - st.y) * ch, chosen = pick === st.number;
+        const x = ox + st.x * cw, y = oy + (1 - st.y) * ch;
+        const owner = rows.findIndex((r) => r.kind !== "closed" && r.start === st.number);
         spots.push({ x, y, n: st.number });
-        if (chosen) { ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.fillStyle = css("--accent"); ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
-        ctx.beginPath(); ctx.arc(x, y, chosen ? 15 : 11, 0, Math.PI * 2);
-        ctx.fillStyle = css("--accent"); ctx.fill();
-        ctx.lineWidth = chosen ? 3 : 2; ctx.strokeStyle = css("--text"); ctx.stroke();
-        ctx.fillStyle = css("--accent-ink"); ctx.fillText(String(st.number), x, y + 1);
+        const mine = owner === 0, theirs = owner > 0;
+        if (mine) { ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.fillStyle = css("--accent"); ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
+        ctx.beginPath(); ctx.arc(x, y, mine ? 15 : 11, 0, Math.PI * 2);
+        ctx.fillStyle = theirs ? css("--surface") : css("--accent"); ctx.fill();
+        ctx.lineWidth = mine ? 3 : 2; ctx.strokeStyle = theirs ? css("--accent") : css("--text"); ctx.stroke();
+        ctx.fillStyle = theirs ? css("--text") : css("--accent-ink"); ctx.fillText(String(st.number), x, y + 1);
       }
     }
   }
-  // Click a start position on the picture to play from it (click it again for a random one).
+  // Click a start position on the picture to give it to the selected place in the table (again to make it random).
   const spotAt = (e) => {
     const r = canvas.getBoundingClientRect(), k = MAP_VIEW / r.width;
     const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
     return spots.find((s) => Math.hypot(s.x - x, s.y - y) <= 18);
   };
-  canvas.addEventListener("click", (e) => { const s = spotAt(e); if (s) choose(s.n); });
-  canvas.addEventListener("mousemove", (e) => { const s = spotAt(e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to play from here` : ""; });
+  canvas.addEventListener("click", (e) => { const s = spotAt(e); if (s && rows[active] && rows[active].kind !== "closed") assign(active, rows[active].start === s.n ? null : s.n); });
+  canvas.addEventListener("mousemove", (e) => { const s = spotAt(e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected place` : ""; });
 
   const fact = (k, v) => [h("dt", {}, k), h("dd", {}, v)];
   async function show(reload = true) {
@@ -518,13 +549,17 @@ function openMapViewer(entries, start, onChange) {
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
     note.textContent = "Loading…";
     fill(facts);
-    shown = null; spots = [];
-    setSkirmish(0);
+    shown = null; spots = []; rows = [];
+    drawTable();
     try {
       const v = await invoke("map_view", { name: m.name });
       if (mine !== token) return;
+      const places = v.info ? Math.min(8, v.info.starts.length) : 0;
+      newRows(places >= 2 ? places : 0);
+      await loadGenerals();
+      if (mine !== token) return;
       paint(v);
-      setSkirmish(v.info ? v.info.starts.length : 0);
+      drawTable();
       fillFacts(v, m);
     } catch (e) { if (mine === token) note.textContent = "Couldn't read this map: " + errText(e); }
   }
@@ -536,10 +571,11 @@ function openMapViewer(entries, start, onChange) {
       fact("Players", n ? String(n) : "none (a mission or solo map)"),
       fact("File", v ? (v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`) : "…"),
       fact("In the game", m.enabled ? "switched on" : "switched off"));
-    note.textContent = v && !v.rgba ? "This map has no preview picture." : n > 1 ? "Click a start position on the map to play from it." : "";
+    note.textContent = v && !v.rgba ? "This map has no preview picture." : n > 1 ? "Select a row, then click a start position on the map to give it to that place." : "";
   }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  drawGames();
   show();
   close.focus();
 }
@@ -848,14 +884,14 @@ function segmented(label, options, current, onPick) {
 
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
  *  goes straight into a skirmish. Returns whether the game was started. */
-async function startGame({ skirmish = false, map = null, ai = null, difficulty = null, start = null } = {}) {
+async function startGame({ skirmish = false, map = null, ai = null, difficulty = null, start = null, slots = null } = {}) {
   if (!store.cfg.game_dir) { openWizard(); return false; }
   const p = prefs.get(), nat = nativeRes();
   const { w, h: hh } = p.res === "native" ? nat : p.res === "custom" ? { w: p.cw || nat.w, h: p.ch || nat.h } : (([x, y]) => ({ w: +x, h: +y }))(String(p.res).split("x"));
   const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
   let started = false;
   try {
-    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start });
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSlots: slots });
     started = true;
   } catch (e) { say(errText(e), "bad"); }
   // The game's own window takes a few seconds to appear; keep the notice up until then.

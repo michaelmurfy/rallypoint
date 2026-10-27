@@ -36,6 +36,11 @@ const handlers = {
     { id: "gentool-3v3", name: "3v3 maps", description: "The ranked three-on-three maps.", size_mb: 4 },
     { id: "epic-showdown-707", name: "Epic Showdown 707 map pack", description: "R1ckhy's collection of 780 community maps. Everything starts switched off: pick the maps you want in the organiser.", size_mb: 248, manual: true, start_disabled: true }] }),
   maps_organiser: () => state.orgMaps,
+  skirmish_generals: async ({ modFolders }) => {
+    const base = [["FactionAmerica", "USA"], ["FactionChina", "China"], ["FactionGLA", "GLA"], ["FactionAmericaLaserGeneral", "USA Laser General"], ["FactionChinaTankGeneral", "China Tank General"], ["FactionGLAToxinGeneral", "GLA Toxin General"]];
+    const shock = [["FactionAmerica", "USA"], ["FactionChina", "China"], ["FactionGLA", "GLA"], ["FactionShockHero", "Shockwave Hero"], ["FactionShockElite", "Shockwave Elite"]];
+    return (modFolders || []).includes("Shockwave") ? shock.map(([id, name]) => ({ id, name })) : base.map(([id, name]) => ({ id, name }));
+  },
   maps_players: async () => { await new Promise((r) => setTimeout(r, 500)); const o = {}; state.orgMaps.forEach((m, i) => { o[m.name] = /Mission/.test(m.name) ? 0 : [2, 2, 4, 3, 6, 8][i % 6]; }); return o; },
   maps_set_enabled: ({ names, enabled }) => { let n = 0; state.orgMaps.forEach((m) => { if (names.includes(m.name)) { m.enabled = enabled; n++; } }); return n; },
   maps_delete: ({ names }) => { const before = state.orgMaps.length; state.orgMaps = state.orgMaps.filter((m) => !names.includes(m.name)); return before - state.orgMaps.length; },
@@ -87,7 +92,7 @@ const handlers = {
   relay_connection: () => (hash.includes("noanswer") ? { address: "203.0.113.5:7777", stage: "contacting the server", waited_secs: 14, replies: 0, reconnects: 0, address_changed: false, hint: "Nothing has answered from 203.0.113.5:7777 in 14 seconds. Check the server address and port, that the server is running, and that no firewall or router is blocking UDP to that port." } : { address: "203.0.113.5:7777", stage: "connected", waited_secs: 0, replies: 40, reconnects: 0, address_changed: false, hint: "" }),
   relay_status: () => (hash.includes("noanswer") ? "Connecting..." : hash.includes("wrongpw") ? "Wrong room password" : hash.includes("online") ? "Connected as 10.77.0.2" : "Offline"), relay_connect: () => {}, relay_disconnect: () => {},
   icons_install: () => { const row = { folder: "Control Bar HD", bigs: 2, mb: 7 }; if (!state.other.some((o) => o.folder === row.folder)) state.other.push(row); return row; },
-  launch_game: () => {},
+  launch_game: (a) => { window.__lastLaunch = a; },
 };
 window.__TAURI__ = {
   core: { invoke: async (cmd, args) => { if (!(cmd in handlers)) throw new Error("mock: no handler for " + cmd); return handlers[cmd](args || {}); } },
