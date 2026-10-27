@@ -12,7 +12,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 1. Download the installer from [Releases](../../releases).
 2. Open Rallypoint. The setup wizard finds or downloads your game files.
-3. Press **Play**, or **Quick Skirmish** to be in a match in seconds.
+3. Press **Play**, or **Start skirmish** under Quick Skirmish to be in a match in seconds.
 
 - **macOS (Apple Silicon only):** open the `.dmg`, drag Rallypoint to Applications. The first launch is blocked by Gatekeeper: right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
@@ -42,7 +42,7 @@ On the **Play** tab:
 
 - pick the game (Zero Hour or an installed mod) and any extra mods
 - pick a resolution (default: your screen's native size) and fullscreen
-- **Play** opens the full game; **Quick Skirmish** starts a match straight away with the opponents (1–3) and difficulty you choose
+- **Play** opens the full game; **Start skirmish** (in the Quick Skirmish block) starts a match straight away with the opponents (1–3) and difficulty you choose
 
 **Widescreen and HiDPI** are on by default: wide screens see more of the map instead of a zoomed-in one, and the menus, command bar and text scale together. Set `GEN_STRETCH=1` to get the original stretched look back. *Settings → Graphics* has camera distance and the community's high-quality graphics settings (your `Options.ini` is backed up first).
 
@@ -67,7 +67,7 @@ The **Maps** tab has two parts.
 
 - **Get more maps:** one-click packs from [GenTool](https://www.gentool.net/download/) (all ranked maps, or the 1v1, 2v2 or 3v3 set) and the [Epic Showdown 707 pack](https://www.moddb.com/mods/cc-epic-showdown-707-mappack) (download it, then choose the file). Any other archive or folder works too.
 - **Your maps:** search, filter by pack and player count, sort, and switch maps on or off. Big packs arrive switched off so they don't bury your list. Switched-off maps move to `<app data>/GeneralsZH/MapLibrary`; nothing is deleted until you delete it. Changes apply the next time the game starts.
-- **Preview** shows a map as the game does, with numbered start positions. Choose opponents and difficulty there and press **Play skirmish** to start on that map.
+- **Preview** shows a map as the game does, with numbered start positions. Click a start position to play from it (or leave it on Random), choose opponents and difficulty, and press **Play skirmish**.
 
 ## Play online
 

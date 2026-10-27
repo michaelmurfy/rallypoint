@@ -731,7 +731,7 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
@@ -754,7 +754,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
-    let skirmish_env = launch::skirmish_env(skirmish_map.as_deref(), skirmish_ai, skirmish_difficulty.as_deref(), |name| maps_dir(&app).map(|d| d.join(name).is_dir()).unwrap_or(false))?;
+    let skirmish_env = launch::skirmish_env(skirmish_map.as_deref(), skirmish_ai, skirmish_difficulty.as_deref(), skirmish_start, |name| maps_dir(&app).map(|d| d.join(name).is_dir()).unwrap_or(false))?;
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
         sync_logs: if Config::load(&config_path(&app)?).sync_logs {
