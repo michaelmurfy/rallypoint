@@ -1,5 +1,6 @@
 ## Rallypoint 0.4.6
 
+- **Update files clean themselves up.** Each time Rallypoint starts it removes what the updater left behind: the downloaded installer and the staging files in its own folder, and installer files named like Rallypoint's (`Rallypoint_0.4.5_x64-setup.exe`, `.dmg` and so on) in your Downloads folder for this version or older ones. An installer for a newer version that has not been run yet is kept, and so are other files.
 - **The Windows game's own log goes in the debug zip.** On Windows the game keeps most of its messages (pathfinding, network, AI) in `DebugLogFile.txt` next to the program, not in the log Rallypoint collects, so a Windows zip had far less than a Mac one. It is now included (with your user name removed), so the two sides of a desync can be compared line by line.
 
 ---
