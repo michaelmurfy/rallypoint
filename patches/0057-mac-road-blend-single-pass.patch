@@ -1,0 +1,19 @@
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
+index 285d8a4..16626ae 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
+@@ -2371,7 +2371,14 @@ Int RoadShader2Stage::init()
+ 	W3DShaders[W3DShaderManager::ST_ROAD_BASE_NOISE2]=&roadShader2Stage;
+ 	W3DShadersPassCount[W3DShaderManager::ST_ROAD_BASE_NOISE2]=1;
+ 	W3DShaders[W3DShaderManager::ST_ROAD_BASE_NOISE12]=&roadShader2Stage;
++#if defined(__APPLE__)
++	// The second pass multiplies the framebuffer by a colour built from two texture stages (BLENDCURRENTALPHA with
++	// the noise texture). The Metal backend only evaluates stage 0, so that colour came out black and the road and
++	// 3-way blend quads painted black boxes over the terrain. One pass leaves out the extra noise only.
++	W3DShadersPassCount[W3DShaderManager::ST_ROAD_BASE_NOISE12]=1;
++#else
+ 	W3DShadersPassCount[W3DShaderManager::ST_ROAD_BASE_NOISE12]=2;
++#endif
+ 
+ 	return TRUE;
+ }
