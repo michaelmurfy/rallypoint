@@ -4,6 +4,7 @@ Pick where you start. The map preview now lets you click a start position, and e
 
 - **Choose your start position.** Click a numbered start on the map preview (or use the Your start buttons) and **Play skirmish** puts you there. The computer players are placed around you. Leave it on Random for the old behaviour.
 - **A tidier map preview.** The picture is bigger, the map's facts (pack, size, players, file, on or off) are a short list, and your start, opponents and difficulty each get one clear row above a full-width Play skirmish button.
+- **Quick Skirmish is one block.** On the Play page its opponents, difficulty and **Start skirmish** button now sit together under their own heading, below Play.
 - **Pages use the whole window.** Lists, settings and forms stretch to the wider window instead of stopping at a narrow column.
 
 ## Rallypoint 0.4.6

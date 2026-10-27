@@ -879,13 +879,17 @@ function playPage() {
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
   const files = h("div", { class: "row between" });
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
-  const sk = h("button", { class: "btn big", onclick: () => launch(true) }, "Quick Skirmish");
+  const sk = h("button", { class: "btn", onclick: () => launch(true) }, icon("play"), "Start skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
   const skAi = segmented("Quick Skirmish opponents", [["1", "1"], ["2", "2"], ["3", "3"]], String(Math.min(3, Math.max(1, prefs.get().skAi || 1))), (v) => prefs.set({ skAi: +v }));
   const skDiff = segmented("Quick Skirmish difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
-  const skOptions = h("div", { class: "skoptions" },
-    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
-    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el));
+  // Quick Skirmish: its choices and its button together, in one block under Play
+  const skOptions = h("div", { class: "skcard" },
+    h("div", { class: "skhead" }, h("h3", {}, "Quick Skirmish"), h("span", { class: "muted small" }, "A match against the computer, started straight away")),
+    h("div", { class: "skoptions" },
+      h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
+      h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el),
+      sk));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);
   resSel.append(new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...presets.filter(([w]) => w !== nat.w).map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)), new Option("Custom…", "custom"));
@@ -927,9 +931,9 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game. Quick Skirmish starts straight away against the computer: choose how many opponents and how hard.")),
+      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game's menu.")),
       files,
-      h("div", { class: "row" }, play, sk), skOptions),
+      h("div", { class: "row" }, play), skOptions),
     h("div", { class: "card" },
       h("h3", {}, "Options"),
       h("div", { class: "grid2" },

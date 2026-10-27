@@ -12,7 +12,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 1. Download the installer from [Releases](../../releases).
 2. Open Rallypoint. The setup wizard finds or downloads your game files.
-3. Press **Play**, or **Quick Skirmish** to be in a match in seconds.
+3. Press **Play**, or **Start skirmish** under Quick Skirmish to be in a match in seconds.
 
 - **macOS (Apple Silicon only):** open the `.dmg`, drag Rallypoint to Applications. The first launch is blocked by Gatekeeper: right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
@@ -42,7 +42,7 @@ On the **Play** tab:
 
 - pick the game (Zero Hour or an installed mod) and any extra mods
 - pick a resolution (default: your screen's native size) and fullscreen
-- **Play** opens the full game; **Quick Skirmish** starts a match straight away with the opponents (1–3) and difficulty you choose
+- **Play** opens the full game; **Start skirmish** (in the Quick Skirmish block) starts a match straight away with the opponents (1–3) and difficulty you choose
 
 **Widescreen and HiDPI** are on by default: wide screens see more of the map instead of a zoomed-in one, and the menus, command bar and text scale together. Set `GEN_STRETCH=1` to get the original stretched look back. *Settings → Graphics* has camera distance and the community's high-quality graphics settings (your `Options.ini` is backed up first).
 
