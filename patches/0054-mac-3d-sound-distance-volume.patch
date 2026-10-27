@@ -1,0 +1,31 @@
+diff --git a/cmake/miles_apple/miles_apple.mm b/cmake/miles_apple/miles_apple.mm
+index 5cc7c9f..ffce9f2 100644
+--- a/cmake/miles_apple/miles_apple.mm
++++ b/cmake/miles_apple/miles_apple.mm
+@@ -1305,6 +1305,8 @@ void AIL_start_3D_sample(H3DSAMPLE sample) {
+         captured->player.playing.store(false);
+         if (captured->eosCallback) captured->eosCallback((H3DSAMPLE)captured);
+     });
++    // scheduleAndPlay resets the node to the undistanced volume.
++    apply3DPanAndVolumeForSource(s);
+ }
+ void AIL_stop_3D_sample(H3DSAMPLE sample) {
+     if (sample) stopAndDetach(&((Apple3DSample *)sample)->player);
+@@ -1322,7 +1324,7 @@ void AIL_set_3D_sample_volume(H3DSAMPLE sample, int v) {
+     if (!sample) return;
+     Apple3DSample *s = (Apple3DSample *)sample;
+     s->player.volume = v / 127.0f;
+-    if (s->player.node) s->player.node.volume = g_muted ? 0.0f : s->player.volume;
++    apply3DPanAndVolumeForSource(s);
+ }
+ #else
+ float AIL_3D_sample_volume(H3DSAMPLE sample) {
+@@ -1332,7 +1334,7 @@ void AIL_set_3D_sample_volume(H3DSAMPLE sample, float v) {
+     if (!sample) return;
+     Apple3DSample *s = (Apple3DSample *)sample;
+     s->player.volume = v;
+-    if (s->player.node) s->player.node.volume = g_muted ? 0.0f : v;
++    apply3DPanAndVolumeForSource(s);
+ }
+ #endif
+ 
