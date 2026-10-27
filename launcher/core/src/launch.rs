@@ -42,13 +42,12 @@ pub fn args(o: &LaunchOptions) -> Vec<String> {
         a.extend(["-mod".into(), m.clone()]);
     }
     a.extend(o.mod_args.iter().cloned());
-    // The first ten seconds of simulation, frame by frame: enough to see where two players' games first differ.
+    // The first ten seconds of simulation frame by frame, then every checksum frame (every 100) for the rest of the game: enough to see where two
+    // players' games first differ, at the start or minutes in. (The engine decides which frames to write; see CRCDebug.cpp.)
     if let Some(dir) = &o.sync_logs {
-        a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "300".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
+        a.extend(["-DebugCRCFromFrame".into(), "0".into(), "-DebugCRCUntilFrame".into(), "1000000".into(), "-SaveDebugCRCPerFrame".into(), dir.to_string_lossy().to_string()]);
         // Per-object lines, not only the frame total, so a desync log says which object diverged.
         a.push("-LogObjectCRCs".into());
-        // And each object's module data (what its behaviours contribute to the checksum), for when the objects look the same.
-        a.push("-CRCLogicModuleData".into());
         // The game state is only written out when a checksum is taken (every 100 frames normally): every 10 narrows down where it went wrong.
         a.extend(["-NetCRCInterval".into(), "10".into(), "-ReplayCRCInterval".into(), "10".into()]);
     }
@@ -229,7 +228,10 @@ mod tests {
         let i = on.iter().position(|a| a == "-SaveDebugCRCPerFrame").unwrap();
         assert_eq!(on[i + 1], "/data/sync logs");
         assert!(on.windows(2).any(|w| w[0] == "-DebugCRCFromFrame" && w[1] == "0"));
-        assert!(on.iter().any(|a| a == "-LogObjectCRCs") && on.iter().any(|a| a == "-CRCLogicModuleData"));
+        assert!(on.iter().any(|a| a == "-LogObjectCRCs"));
+        // module data would change the checksum itself, so one player with sync logs on and one with them off would see a false mismatch
+        assert!(!on.iter().any(|a| a == "-CRCLogicModuleData"));
+        assert!(on.windows(2).any(|w| w[0] == "-DebugCRCUntilFrame" && w[1] == "1000000"));
         assert!(on.windows(2).any(|w| w[0] == "-NetCRCInterval" && w[1] == "10"));
         assert!(on.windows(2).any(|w| w[0] == "-ReplayCRCInterval" && w[1] == "10"));
         let t = std::env::temp_dir().join(format!("gen-sync-{}", std::process::id()));

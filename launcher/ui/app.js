@@ -1321,7 +1321,7 @@ function syncCard() {
   } }, "Compare…");
   const bundle = h("button", { class: "btn primary", onclick: () => openBundleDialog(fb) }, "Download");
   return h("div", { class: "card" }, h("h2", {}, "Logs"),
-    setting("Record sync logs", "Writes the first ten seconds of every game in detail, so two players can see where their games first differed.", h("label", { class: "switch" }, on)),
+    setting("Record sync logs", "Writes the first ten seconds of every game in detail, then a snapshot every few seconds, so two players can see where their games first differed, even minutes in. Both players should have it on.", h("label", { class: "switch" }, on)),
     setting("Debug logs", "One zip in your Downloads folder with the game logs, sync logs, settings (never passwords or keys) and crash report. You see what goes in before it is made.", bundle),
     setting("Compare with another player", "Choose the zip of their sync-logs folder.", compare),
     setting("Sync log folder", null, h("button", { class: "btn", onclick: () => invoke("open_sync_logs_folder").catch((e) => fb.bad(errText(e))) }, "Open")),
