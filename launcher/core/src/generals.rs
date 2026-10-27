@@ -137,21 +137,22 @@ pub struct General {
     pub name: String,
 }
 
-/// `PlayerTemplate` blocks that can be chosen in a skirmish (`PlayableSide = Yes`), with the label of their display name.
+/// `PlayerTemplate` blocks that can be chosen in a skirmish (`PlayableSide = Yes`, and not the Boss General, which the
+/// game keeps out of its own lists), with the label of their display name.
 pub fn parse_templates(ini: &str) -> Vec<(String, Option<String>)> {
     let mut out = vec![];
-    let mut current: Option<(String, bool, Option<String>)> = None;
+    let mut current: Option<(String, bool, Option<String>, bool)> = None; // name, playable, label, is the Boss
     for line in ini.lines() {
         let l = line.split(';').next().unwrap_or("").trim();
         if let Some(rest) = l.strip_prefix("PlayerTemplate") {
             if rest.starts_with(char::is_whitespace) {
-                current = Some((rest.trim().to_string(), false, None));
+                current = Some((rest.trim().to_string(), false, None, false));
                 continue;
             }
         }
         if l.eq_ignore_ascii_case("End") {
-            if let Some((name, playable, label)) = current.take() {
-                if playable {
+            if let Some((name, playable, label, boss)) = current.take() {
+                if playable && !boss {
                     out.push((name, label));
                 }
             }
@@ -161,6 +162,8 @@ pub fn parse_templates(ini: &str) -> Vec<(String, Option<String>)> {
             let (k, v) = (k.trim(), v.trim());
             if k.eq_ignore_ascii_case("PlayableSide") {
                 c.1 = v.eq_ignore_ascii_case("yes");
+            } else if k.eq_ignore_ascii_case("Side") {
+                c.3 = v.eq_ignore_ascii_case("boss");
             } else if k.eq_ignore_ascii_case("DisplayName") {
                 c.2 = Some(v.to_string());
             }
@@ -240,7 +243,7 @@ mod tests {
         out
     }
 
-    const INI: &str = "PlayerTemplate FactionCivilian\n  Side = Civilian\n  PlayableSide = No\n  DisplayName = INI:FactionCivilian\nEnd\n\nPlayerTemplate FactionAmerica ; the USA\n  PlayableSide = Yes\n  DisplayName = INI:FactionAmerica\nEnd\nPlayerTemplate FactionChinaTankGeneral\n  PlayableSide = Yes\n  DisplayName = INI:FactionChinaTankGeneral\nEnd\n";
+    const INI: &str = "PlayerTemplate FactionCivilian\n  Side = Civilian\n  PlayableSide = No\n  DisplayName = INI:FactionCivilian\nEnd\n\nPlayerTemplate FactionAmerica ; the USA\n  PlayableSide = Yes\n  DisplayName = INI:FactionAmerica\nEnd\nPlayerTemplate FactionChinaTankGeneral\n  PlayableSide = Yes\n  DisplayName = INI:FactionChinaTankGeneral\nEnd\nPlayerTemplate FactionBossGeneral\n  Side = Boss\n  PlayableSide = Yes\n  DisplayName = INI:FactionBossGeneral\nEnd\n";
 
     #[test]
     fn reads_templates_and_names_from_archives_with_a_mod_on_top() {
