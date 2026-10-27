@@ -1,0 +1,71 @@
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+index 1def425..439945f 100644
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -46,9 +46,13 @@ static Int numDebugStrings = 0;
+ //static Int nextDumpString = 0;
+ //static Int numDumpStrings = 0;
+ 
++// Rallypoint: every frame is logged for the first 300 (where a start-up difference shows), and after that only the
++// frames a checksum is taken at (every 100), so a game that goes out of sync minutes in still has logs of the frames
++// around it without writing a file for every frame of the game.
+ #define IS_FRAME_OK_TO_LOG TheGameLogic->isInGame() && !TheGameLogic->isInShellGame() && !TheDebugIgnoreSyncErrors && \
+ 	TheCRCFirstFrameToLog >= 0 && TheCRCFirstFrameToLog <= TheGameLogic->getFrame() \
+-	&& TheGameLogic->getFrame() <= TheCRCLastFrameToLog
++	&& TheGameLogic->getFrame() <= TheCRCLastFrameToLog \
++	&& (TheGameLogic->getFrame() <= 300 || (TheGameLogic->getFrame() % 100) == 0)
+ 
+ CRCVerification::CRCVerification()
+ {
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index b9b859c..a160f56 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -1129,8 +1129,39 @@ static void CaptureInputEvent(NSEvent* event)
+     g_charQ.push_back(ch);
+ }
+ 
++// Keyboard events reach the game through the MetalView's keyDown: (the view must be the first responder of the key
++// window), unlike the mouse, which DrainEvents reads from the application. Going to another Space (the fullscreen window has
++// its own) and back left the window without key status or the view without first responder, so the keyboard, Escape
++// and the hotkeys stayed dead until the game was restarted. Called every frame and on every activation.
++static void ReclaimKeyboardFocus()
++{
++    NSView* v = g_inputView;
++    NSWindow* w = v ? v.window : nil;
++    if (!w) return;
++    if ([NSApp isActive] && !w.isKeyWindow && w.isVisible && !w.isMiniaturized)
++        [w makeKeyAndOrderFront:nil];
++    if (w.isKeyWindow && w.firstResponder != v)
++        [w makeFirstResponder:v];
++}
++
++static void InstallFocusObservers()
++{
++    static bool installed = false;
++    if (installed) return;
++    installed = true;
++    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
++    void (^reclaim)(NSNotification*) = ^(NSNotification* n) { (void)n; ReclaimKeyboardFocus(); };
++    for (NSNotificationName name in @[NSApplicationDidBecomeActiveNotification, NSWindowDidBecomeKeyNotification,
++                                       NSWindowDidBecomeMainNotification, NSWindowDidExitFullScreenNotification,
++                                       NSWindowDidEnterFullScreenNotification])
++        [nc addObserverForName:name object:nil queue:nil usingBlock:reclaim];
++    [[[NSWorkspace sharedWorkspace] notificationCenter] addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
++                                                                    object:nil queue:nil usingBlock:reclaim];
++}
++
+ static void DrainEvents()
+ {
++    ReclaimKeyboardFocus();
+     @autoreleasepool {
+         NSEvent* event;
+         while ((event = [NSApp nextEventMatchingMask:NSEventMaskAny
+@@ -1969,6 +2000,7 @@ static inline void DiagTexFree(void* tp) {
+         ctx->view   = view;
+         ctx->layer  = layer;
+         g_inputView = view;  // for input coordinate conversion (the MetalView)
++        InstallFocusObservers();
+         // Publish the engine pixel resolution so EventPoint can scale view-points
+         // → engine-pixels (HiDPI + screen-fit clamp).
+         g_engineW = width;
