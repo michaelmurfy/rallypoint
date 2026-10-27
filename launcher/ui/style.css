@@ -305,7 +305,7 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .maprow:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ---- map preview ---- */
-.wizard.mapviewer { width: min(980px, 100%); animation: rise .22s var(--ease); }
+.wizard.mapviewer { width: min(1040px, 100%); animation: rise .22s var(--ease); }
 .mapviewer .wiz-body { justify-items: center; }
 .mapviewer .mapbody { grid-template-columns: auto minmax(280px, 1fr); gap: 22px; justify-items: stretch; align-items: start; }
 .mapside { display: grid; gap: 16px; align-content: start; }
@@ -313,7 +313,7 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .mapviewer .wiz-head h2, .mapviewer .wiz-head p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mapviewer .wiz-head p { min-height: 1.5em; }
 .mapviewer .wiz-body p { min-height: 3em; }
-.mapview-canvas { width: 480px; height: 480px; max-width: 100%; aspect-ratio: 1; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); }
+.mapview-canvas { width: 400px; height: 400px; max-width: 100%; aspect-ratio: 1; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--bg); }
 
 /* ---- settings: a line is what it is on the left and its control on the right ---- */
 .section-title { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .02em; margin: 10px 0 -4px; }
@@ -394,3 +394,15 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .skoptions { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center; }
 .skoptions > .btn { margin-left: auto; }
 .skrow .segs { justify-self: start; }
+
+/* the skirmish table: one row per place on the map */
+.skgrid { display: grid; gap: 6px; }
+.skrowhead, .skrow2 { display: grid; grid-template-columns: minmax(96px, .9fr) minmax(130px, 1.6fr) minmax(86px, .8fr) minmax(86px, .8fr); gap: 8px; align-items: center; }
+.skrowhead { padding: 0 8px; }
+.skrow2 { padding: 4px 8px; border-radius: var(--r-btn); border: 1px solid transparent; cursor: pointer; }
+.skrow2.active { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+.skrow2.closed { opacity: .6; }
+.skrow2 select { height: 30px; font-size: 12.5px; padding-right: 26px; background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; min-width: 0; }
+.skwho { font-weight: 650; padding-left: 4px; }
+.mapviewer label.inline { display: inline-flex; align-items: center; gap: 8px; }
+.mapviewer .wiz-head select { height: 30px; width: auto; font-size: 12.5px; }

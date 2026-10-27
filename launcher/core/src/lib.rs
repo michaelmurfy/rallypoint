@@ -7,6 +7,7 @@ pub mod config;
 pub mod diagnose;
 pub mod engine;
 pub mod extract;
+pub mod generals;
 pub mod graphics;
 pub mod icons;
 pub mod launch;

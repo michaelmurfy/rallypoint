@@ -67,7 +67,7 @@ The **Maps** tab has two parts.
 
 - **Get more maps:** one-click packs from [GenTool](https://www.gentool.net/download/) (all ranked maps, or the 1v1, 2v2 or 3v3 set) and the [Epic Showdown 707 pack](https://www.moddb.com/mods/cc-epic-showdown-707-mappack) (download it, then choose the file). Any other archive or folder works too.
 - **Your maps:** search, filter by pack and player count, sort, and switch maps on or off. Big packs arrive switched off so they don't bury your list. Switched-off maps move to `<app data>/GeneralsZH/MapLibrary`; nothing is deleted until you delete it. Changes apply the next time the game starts.
-- **Preview** shows a map as the game does, with numbered start positions. Click a start position to play from it (or leave it on Random), choose opponents and difficulty, and press **Play skirmish**.
+- **Preview** shows a map as the game does, with numbered start positions. Set up the whole match: switch the game, then give each place a player (you, Easy/Medium/Brutal AI or closed), a general read from the game or mod, a team and a start position (click the map to assign one). Press **Play skirmish**.
 
 ## Play online
 

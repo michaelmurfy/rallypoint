@@ -1,0 +1,79 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index 6b2c8b8..c89aeab 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -639,6 +639,74 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 	}
+ 	}   // end else (default 1-human + AI setup, non-GEN_AUTO_BOTS)
+ 
++	// Rallypoint: GEN_AUTO_SLOTS is the whole skirmish table from the launcher's map preview, one place per `;`:
++	//   player,<general|random>,<team|-1>,<start|0>        (you, first)
++	//   ai,<easy|medium|brutal>,<general|random>,<team|-1>,<start|0>
++	//   closed
++	// <general> is a PlayerTemplate name (FactionChinaTankGeneral), <start> a 1-based start position, 0 random. It replaces the
++	// single opponent set up above.
++	if (const char *table = ::getenv("GEN_AUTO_SLOTS"))
++	{
++		char all[1024];
++		strncpy(all, table, sizeof(all) - 1);
++		all[sizeof(all) - 1] = 0;
++		Int slotIndex = 0;
++		char *cursor = all;
++		while (cursor && *cursor && slotIndex < MAX_SLOTS)
++		{
++			char *next = strchr(cursor, ';');
++			if (next)
++				*next++ = 0;
++			char *fields[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
++			int count = 0;
++			for (char *p = cursor; p && count < 6; )
++			{
++				fields[count++] = p;
++				char *comma = strchr(p, ',');
++				if (comma)
++					*comma++ = 0;
++				p = comma;
++			}
++			AsciiString kind = fields[0];
++			const int first = (kind == "ai") ? 2 : 1;   // index of the general field
++			GameSlot slot;
++			if (kind == "closed")
++			{
++				slot.setState(SLOT_CLOSED);
++			}
++			else
++			{
++				Int templateIndex = PLAYERTEMPLATE_RANDOM;
++				if (fields[first] && strcmp(fields[first], "random") != 0 && ThePlayerTemplateStore)
++				{
++					Int idx = ThePlayerTemplateStore->getTemplateNumByName(AsciiString(fields[first]));
++					if (idx >= 0)
++						templateIndex = idx;
++				}
++				const Int team = (fields[first + 1] ? atoi(fields[first + 1]) : -1);
++				const Int startPos = (fields[first + 2] ? atoi(fields[first + 2]) : 0);
++				if (kind == "player")
++				{
++					slot.setName(prefs.getUserName());
++					slot.setState(SLOT_PLAYER, prefs.getUserName());
++					slot.setColor(prefs.getPreferredColor());
++				}
++				else
++				{
++					AsciiString d = fields[1] ? fields[1] : "easy";
++					slot.setState(d == "brutal" ? SLOT_BRUTAL_AI : d == "medium" ? SLOT_MED_AI : SLOT_EASY_AI);
++				}
++				slot.setPlayerTemplate(templateIndex);
++				slot.setTeamNumber(team);   // after setState, which resets the team
++				if (startPos >= 1)
++					slot.setStartPos(startPos - 1);
++			}
++			TheSkirmishGameInfo->setSlot(slotIndex++, slot);
++			cursor = next;
++		}
++		DEBUG_LOG(("DebugAutoStartSkirmish: skirmish table of %d places from GEN_AUTO_SLOTS", slotIndex));
++	}
++
+ 	TheSkirmishGameInfo->setSeed(GetTickCount());
+ 	TheSkirmishGameInfo->setStartingCash( prefs.getStartingCash() );
+ 	TheSkirmishGameInfo->setSuperweaponRestriction( prefs.getSuperweaponRestricted() ? 1 : 0 );
