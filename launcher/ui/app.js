@@ -951,7 +951,7 @@ function playPage() {
   const picks = h("div", { class: "picks", role: "group", "aria-label": "Extra mods" });
   const game = h("select", { "aria-label": "Game to play" });
   const gameNote = h("span", { class: "muted small" });
-  const extrasField = h("div", { class: "field" }, h("span", { title: "Loaded on top of the game above" }, "Extra mods (loaded on top of the game)"), picks);
+  const extrasField = h("div", { class: "field" }, h("span", {}, "Extra mods"), picks, h("span", { class: "muted small" }, "Loaded on top of the game above."));
   const resSel = h("select", { "aria-label": "Resolution" });
   const cw = h("input", { type: "number", min: 640, value: nat.w, "aria-label": "Width" });
   const ch = h("input", { type: "number", min: 480, value: nat.h, "aria-label": "Height" });
@@ -1046,7 +1046,7 @@ function playPage() {
       h("h3", {}, "Options"),
       h("div", { class: "grid2" },
         h("label", { class: "field" }, h("span", {}, "Game"), game, gameNote),
-        h("label", { class: "field", title: "Any resolution works, including 4K and ultrawide" }, h("span", {}, "Resolution"), resSel)),
+        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       extrasField,
       custom,
       h("div", { class: "optlist" },
