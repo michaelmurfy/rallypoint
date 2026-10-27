@@ -959,6 +959,7 @@ function playPage() {
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
   const files = h("div", { class: "row between" });
+  const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn", onclick: () => launch(true) }, icon("play"), "Start skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
@@ -985,6 +986,10 @@ function playPage() {
     game.replaceChildren(...games.map((g) => { const o = new Option(g.installed ? g.name : `${g.name} (not installed)`, g.id); o.disabled = !g.installed; return o; }));
     game.value = cur.id;
     fill(gameNote, cur.note, games.some((g) => !g.installed) ? [" · ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Get more mods")] : null);
+    // what Play will start, at a glance
+    heroTitle.textContent = cur.name;
+    const withExtras = extraMods().filter((m) => selectedExtras().includes(m.folder)).map((m) => m.name);
+    heroSub.textContent = (cur.id === GAME_ZH ? "Command & Conquer: Generals – Zero Hour" : cur.note) + (withExtras.length ? `, with ${withExtras.join(" and ")}` : "");
     const extras = extraMods();
     extrasField.hidden = !extras.length;
     fill(picks, extras.map((m) => {
@@ -1013,7 +1018,7 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", { class: "stack tight" }, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), files),
+      h("div", { class: "stack tight" }, heroTitle, heroSub, files),
       h("div", { class: "row heroact" }, play, h("span", { class: "muted small" }, "Opens the game's main menu."))),
     skOptions,
     h("div", { class: "card" },
