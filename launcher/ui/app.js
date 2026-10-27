@@ -796,6 +796,18 @@ function watchBanner(id) {
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => choose(w.id, false) }, "Choose downloaded file…"), h("button", { class: "btn", onclick: cancelWatch }, "Cancel")));
 }
 
+/** A small row of buttons to pick one of a few values (a segmented control). `value` is the picked one. */
+function segmented(label, options, current, onPick) {
+  const api = { value: current };
+  const buttons = options.map(([value, text]) => h("button", { class: "seg", type: "button", "aria-pressed": String(value === current), onclick: () => {
+    api.value = value;
+    buttons.forEach((b, i) => b.setAttribute("aria-pressed", String(options[i][0] === value)));
+    onPick && onPick(value);
+  } }, text));
+  api.el = h("div", { class: "segs small", role: "group", "aria-label": label }, ...buttons);
+  return api;
+}
+
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
  *  goes straight into a skirmish. Returns whether the game was started. */
 async function startGame({ skirmish = false, map = null, ai = null, difficulty = null } = {}) {
@@ -831,12 +843,11 @@ function playPage() {
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn big", onclick: () => launch(true) }, "Quick Skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
-  const skAi = h("select", { "aria-label": "Quick Skirmish opponents", onchange: () => prefs.set({ skAi: +skAi.value }) }, ...[1, 2, 3].map((n) => new Option(String(n), String(n))));
-  skAi.value = String(Math.min(3, Math.max(1, prefs.get().skAi || 1)));
-  const skDiff = h("select", { "aria-label": "Quick Skirmish difficulty", onchange: () => prefs.set({ skDiff: skDiff.value }) }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
-  skDiff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
-  const skOptions = h("div", { class: "row skoptions" }, h("span", { class: "muted small" }, "Quick Skirmish:"),
-    h("label", { class: "inline" }, h("span", { class: "muted small" }, "opponents"), skAi), h("label", { class: "inline" }, h("span", { class: "muted small" }, "difficulty"), skDiff));
+  const skAi = segmented("Quick Skirmish opponents", [["1", "1"], ["2", "2"], ["3", "3"]], String(Math.min(3, Math.max(1, prefs.get().skAi || 1))), (v) => prefs.set({ skAi: +v }));
+  const skDiff = segmented("Quick Skirmish difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
+  const skOptions = h("div", { class: "skoptions" },
+    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
+    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);
   resSel.append(new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...presets.filter(([w]) => w !== nat.w).map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)), new Option("Custom…", "custom"));
