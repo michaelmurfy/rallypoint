@@ -74,6 +74,24 @@ pub fn splash_bitmap(mod_dir: &Path) -> Option<std::path::PathBuf> {
     None
 }
 
+/// The game's own picture for the Play page: the mod's loading picture when it has one, else Zero Hour's from the game
+/// folder. Read from the player's files at run time (nothing of it ships with Rallypoint). Only a plain BMP of sane size.
+pub fn game_art(game_dir: &Path, mod_dir: Option<&Path>) -> Option<Vec<u8>> {
+    let candidates = mod_dir.and_then(splash_bitmap).into_iter().chain(Some(game_dir.join("Install_Final.bmp")));
+    for path in candidates {
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() < 64 || meta.len() > 6 * 1024 * 1024 {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            if bytes.starts_with(b"BM") {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
 /// Environment for a skirmish started from the map list: the map (a folder in the game's Maps folder, which `exists` checks),
 /// how many computer opponents (1 to 7), how hard they are and which start position (1 to 8) the player takes. Anything else is refused: these come from the page.
 pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>, start: Option<u32>, exists: impl Fn(&str) -> bool) -> Result<Vec<(String, String)>, String> {
@@ -376,5 +394,22 @@ mod tests {
         let plain = command(Path::new("e"), Path::new("."), &LaunchOptions::default());
         assert!(!plain.get_envs().any(|(k, _)| k == "GEN_SPLASH"));
         let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn game_art_prefers_the_mods_picture_and_refuses_anything_but_a_bmp() {
+        let t = std::env::temp_dir().join(format!("gen-art-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let (game, modd) = (t.join("game"), t.join("mod"));
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::create_dir_all(&modd).unwrap();
+        assert!(game_art(&game, Some(&modd)).is_none());
+        std::fs::write(game.join("Install_Final.bmp"), [b"BM".as_slice(), &[1u8; 100]].concat()).unwrap();
+        assert_eq!(game_art(&game, None).unwrap()[2], 1);
+        std::fs::write(modd.join("Install_Final_shw.bmp"), [b"BM".as_slice(), &[2u8; 100]].concat()).unwrap();
+        assert_eq!(game_art(&game, Some(&modd)).unwrap()[2], 2, "the mod's picture wins");
+        std::fs::write(modd.join("Install_Final_shw.bmp"), [b"PNG".as_slice(), &[2u8; 100]].concat()).unwrap();
+        assert_eq!(game_art(&game, Some(&modd)).unwrap()[2], 1, "not a BMP: fall back to the game's");
+        let _ = std::fs::remove_dir_all(t);
     }
 }

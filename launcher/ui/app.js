@@ -960,6 +960,21 @@ function playPage() {
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
+  // The chosen game's own picture, read from the player's files, fading in from the right edge of the card.
+  const heroArt = h("img", { class: "heroart", alt: "", "aria-hidden": "true", hidden: true });
+  let artKey = "";
+  async function loadArt(folder) {
+    const key = `${store.cfg.game_dir}|${folder || ""}`;
+    if (key === artKey) return;
+    artKey = key;
+    heroArt.classList.remove("shown");
+    let url = null;
+    if (store.cfg.game_dir) { try { url = await invoke("game_art", { gameDir: store.cfg.game_dir, gameFolder: folder || null }); } catch { url = null; } }
+    if (key !== artKey) return; // the choice changed while it loaded
+    if (!url) { heroArt.hidden = true; return; }
+    heroArt.src = url; heroArt.hidden = false;
+    requestAnimationFrame(() => heroArt.classList.add("shown"));
+  }
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn", onclick: () => launch(true) }, icon("play"), "Start skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
@@ -988,6 +1003,7 @@ function playPage() {
     fill(gameNote, cur.note, games.some((g) => !g.installed) ? [" · ", h("button", { class: "linkbtn", onclick: () => go("mods") }, "Get more mods")] : null);
     // what Play will start, at a glance
     heroTitle.textContent = cur.name;
+    loadArt(cur.folder);
     const withExtras = extraMods().filter((m) => selectedExtras().includes(m.folder)).map((m) => m.name);
     heroSub.textContent = (cur.id === GAME_ZH ? "Command & Conquer: Generals – Zero Hour" : cur.note) + (withExtras.length ? `, with ${withExtras.join(" and ")}` : "");
     const extras = extraMods();
@@ -1018,7 +1034,8 @@ function playPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", { class: "stack tight" }, heroTitle, heroSub, files),
+      heroArt,
+      h("div", { class: "stack tight herotext" }, heroTitle, heroSub, files),
       h("div", { class: "row heroact" }, play, h("span", { class: "muted small" }, "Opens the game's main menu."))),
     skOptions,
     h("div", { class: "card" },

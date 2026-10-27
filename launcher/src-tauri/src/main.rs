@@ -535,6 +535,22 @@ fn mods_remove(app: tauri::AppHandle, folder: String) -> Result<(), String> {
     mods::remove(&mods_dir(&app)?, &folder)
 }
 
+/// The picture for the Play page: the chosen game's own (a mod's loading picture, or Zero Hour's), as a data URL, read
+/// from the player's files. `None` when there is none.
+#[tauri::command]
+async fn game_art(app: tauri::AppHandle, game_dir: String, game_folder: Option<String>) -> Result<Option<String>, String> {
+    let mod_dir = match game_folder.as_deref() {
+        Some(f) if maporg::is_safe_name(f) => Some(mods_dir(&app)?.join(f)),
+        Some(_) => return Err("unexpected mod folder".into()),
+        None => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        launch::game_art(std::path::Path::new(&game_dir), mod_dir.as_deref()).map(|b| format!("data:image/bmp;base64,{}", mapview::base64(&b)))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn open_mods_folder(app: tauri::AppHandle) -> Result<(), String> {
     open_folder(&mods_dir(&app)?)
@@ -896,7 +912,7 @@ fn main() {
             update_check, update_install, update_progress, whats_new_take, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
-            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, open_homepage, open_download_page, icons_install,
+            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install,
             launch_game
         ])
         .run(tauri::generate_context!())
