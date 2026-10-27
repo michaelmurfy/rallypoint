@@ -814,6 +814,15 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
 
 fn main() {
     tauri::Builder::default()
+        // Each start: clear out what the updater downloaded or staged for the version that is now running.
+        .setup(|app| {
+            if let Ok(data) = base(app.handle()) {
+                std::thread::spawn(move || {
+                    update::cleanup(&data, mods::downloads_dir().as_deref(), update::current_version());
+                });
+            }
+            Ok(())
+        })
         .manage(Relay::default())
         .manage(Downloads::default())
         .manage(RelayServer::default())
