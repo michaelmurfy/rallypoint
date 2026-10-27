@@ -1558,7 +1558,7 @@ function shell() {
   document.getElementById("root").append(h("div", { class: "app" },
     h("aside", { class: "sidebar" },
       h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("b", {}, "Rallypoint")),
-      nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet)),
+      nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
 }

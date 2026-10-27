@@ -286,9 +286,10 @@ pub fn installer_version(name: &str) -> Option<[u64; 3]> {
 }
 
 /// After an update: remove what the updater left behind. Everything in `<app data>/update` goes except the log of the last
-/// update (it says what happened if the update failed), and so do installers in the Downloads folder that are ours, by name,
-/// and for this version or an older one (they are obsolete the moment the app runs). Returns how many things were removed.
-pub fn cleanup(data: &Path, downloads: Option<&Path>, running: &str) -> usize {
+/// update (it says what happened if the update failed) and an installer for a newer version than the one running. The
+/// updater only ever works in that folder: it does not read or write the user's Downloads folder, which on macOS asks the
+/// user for permission each time. Returns how many things were removed.
+pub fn cleanup(data: &Path, running: &str) -> usize {
     let mut gone = 0;
     for e in std::fs::read_dir(data.join("update")).into_iter().flatten().flatten() {
         if e.file_name() == "apply-update.log" {
@@ -309,14 +310,6 @@ pub fn cleanup(data: &Path, downloads: Option<&Path>, running: &str) -> usize {
         let done = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
         if done.is_ok() {
             gone += 1;
-        }
-    }
-    if let (Some(dir), Some(now)) = (downloads, parse_version(running)) {
-        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if e.file_type().map(|t| t.is_file()).unwrap_or(false) && installer_version(&name).is_some_and(|v| v <= now.core) && std::fs::remove_file(e.path()).is_ok() {
-                gone += 1;
-            }
         }
     }
     gone
@@ -535,24 +528,18 @@ mod tests {
     fn what_the_updater_left_behind_is_removed_and_nothing_else() {
         let t = std::env::temp_dir().join(format!("gen-upd-clean-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&t);
-        let (data, dl) = (t.join("data"), t.join("Downloads"));
+        let data = t.join("data");
         std::fs::create_dir_all(data.join("update/download")).unwrap();
         std::fs::create_dir_all(data.join("update/stage/Rallypoint.app")).unwrap();
-        std::fs::create_dir_all(&dl).unwrap();
         for f in ["update/download/Rallypoint_0.4.5_aarch64.dmg", "update/download/Rallypoint_0.4.6_aarch64.dmg", "update/apply-update.sh", "update/stage/Rallypoint.app/x", "update/apply-update.log"] {
             std::fs::write(data.join(f), "x").unwrap();
         }
-        for f in ["Rallypoint_0.4.4_x64-setup.exe", "Rallypoint_0.4.5_x64-setup.exe", "Rallypoint_0.4.6_x64-setup.exe", "Rallypoint_0.4.3_aarch64.dmg.part", "holiday.dmg", "Rallypoint notes.txt"] {
-            std::fs::write(dl.join(f), "x").unwrap();
-        }
-        let n = cleanup(&data, Some(&dl), "0.4.5");
-        assert_eq!(n, 3 + 3, "the update folder's three entries and three older or current installers");
+        let n = cleanup(&data, "0.4.5");
+        assert_eq!(n, 3, "the update folder's three entries: the old installer, the script and the staged app");
         assert!(data.join("update/apply-update.log").exists(), "the log of the last update stays");
         assert!(!data.join("update/download/Rallypoint_0.4.5_aarch64.dmg").exists() && !data.join("update/stage").exists() && !data.join("update/apply-update.sh").exists());
         assert!(data.join("update/download/Rallypoint_0.4.6_aarch64.dmg").exists(), "an update that has not been installed yet is kept");
-        let left: Vec<String> = { let mut v: Vec<_> = std::fs::read_dir(&dl).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(); v.sort(); v };
-        assert_eq!(left, ["Rallypoint notes.txt", "Rallypoint_0.4.6_x64-setup.exe", "holiday.dmg"], "a newer installer and unrelated files are untouched");
-        assert_eq!(cleanup(&t.join("none"), None, "0.4.5"), 0);
+        assert_eq!(cleanup(&t.join("none"), "0.4.5"), 0);
         std::fs::remove_dir_all(t).unwrap();
     }
 }
