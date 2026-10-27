@@ -1,7 +1,7 @@
 //! The debug bundle: one zip with everything needed to work out why a game crashed or went out of sync. The player
 //! sends it; nothing leaves the machine by itself. Passwords, serials, tokens, server keys and the Steam account name are
 //! never put in it, the user's home folder is replaced by `<home>` in every text file, and the last replay (it can hold
-//! in-game chat) is only added when the player ticks it.
+//! in-game chat) and the newest crash dump (it holds some of the game's memory) are only added when the player ticks it.
 use crate::proc::quiet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -145,6 +145,12 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
     }
     if s.include_replay {
         copy_file(&s.game_data.join("Replays").join("LastReplay.rep"), &stage.join("game").join("LastReplay.rep"));
+        // Windows writes a small minidump (CrashMZ-*.dmp) and a huge full one (CrashFZ-*.dmp) per crash; only the small one is of use here.
+        for p in newest(&s.game_data.join("CrashDumps"), "crashmz", 1) {
+            if p.metadata().map(|m| m.len() <= 40 * 1024 * 1024).unwrap_or(false) {
+                copy_file(&p, &stage.join("game").join("crash-dump.dmp"));
+            }
+        }
     }
     if let Some(dir) = &s.engine_dir {
         for f in ["DebugLogFile.txt", "DebugLogFilePrev.txt"] {
@@ -260,6 +266,9 @@ mod tests {
         std::fs::write(data.join("Options.ini"), "Resolution = 1280 720").unwrap();
         std::fs::write(data.join("ReleaseCrashInfo.txt"), "crash").unwrap();
         std::fs::write(data.join("Replays/LastReplay.rep"), "rep").unwrap();
+        std::fs::create_dir_all(data.join("CrashDumps")).unwrap();
+        std::fs::write(data.join("CrashDumps/CrashMZ-20261028-091437-x.dmp"), "mini").unwrap();
+        std::fs::write(data.join("CrashDumps/CrashFZ-20261028-091437-x.dmp"), "full").unwrap();
         std::fs::create_dir_all(t.join("engine")).unwrap();
         std::fs::write(t.join("engine/DebugLogFile.txt"), "path failed in /Users/ann smith/x").unwrap();
         let s = Sources { base: base.clone(), game_data: data, game_dir: None, version: "9.9.9".into(), extra: vec![("relay".into(), "connected".into())], include_replay: false, home: Some(PathBuf::from("/Users/ann smith")), engine_dir: Some(t.join("engine")) };
@@ -273,13 +282,14 @@ mod tests {
         assert!(!std::fs::read_to_string(out.join("config.json")).unwrap().contains("secret"));
         let log = std::fs::read_to_string(out.join("engine.log")).unwrap();
         assert!(log.contains("-mod <home>/Library") && !log.contains("ann smith"), "{log}");
-        assert!(!out.join("game/LastReplay.rep").exists(), "the replay is only added when asked for");
+        assert!(!out.join("game/LastReplay.rep").exists() && !out.join("game/crash-dump.dmp").exists(), "the replay and crash dump are only added when asked for");
         let dbg = std::fs::read_to_string(out.join("engine-debug/DebugLogFile.txt")).unwrap();
         assert!(dbg.contains("<home>/x") && !dbg.contains("ann smith"), "{dbg}");
         let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: None, engine_dir: None } };
         let out2 = t.join("stage2");
         stage(&with, &out2, 0).unwrap();
         assert!(out2.join("game/LastReplay.rep").is_file());
+        assert_eq!(std::fs::read_to_string(out2.join("game/crash-dump.dmp")).unwrap(), "mini", "the small dump, not the full one");
         // The zip itself needs the system's tar or zip, which a bare build machine may lack.
         if let Ok(z) = create(&s, &t.join("out")) {
             assert!(z.metadata().unwrap().len() > 100 && z.to_string_lossy().ends_with(".zip"));

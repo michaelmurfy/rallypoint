@@ -63,6 +63,7 @@ const handlers = {
   set_check_updates: ({ on }) => { state.cfg.check_updates = on; },
   update_check: async () => (await new Promise((r) => setTimeout(r, 1200)), hash.includes("update") ? { current: "0.1.0-alpha.3", latest: "0.1.0-alpha.4", page: "https://github.com/michaelmurfy/rallypoint/releases/tag/v0.1.0-alpha.4", notes: "", size_mb: 9, installer: true } : null),
   update_install: async () => { window.__upd = Date.now(); await new Promise((r) => setTimeout(r, 7000)); window.__upd = 0; return "Restarting…"; },
+  game_art: (a) => { const c = a && a.gameFolder ? ["#d98a2b", "#7a3b1c"] : ["#3b7be0", "#14305f"]; return "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c[0]}"/><stop offset=".6" stop-color="${c[1]}"/><stop offset="1" stop-color="#101010"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><circle cx="560" cy="250" r="140" fill="#fff" opacity=".35"/><path d="M0 460 L180 330 L330 430 L520 300 L800 470 V600 H0Z" fill="#0c0c14"/></svg>`); },
   update_progress: () => {
     const t = window.__upd ? (Date.now() - window.__upd) / 1000 : 0, total = 46 * 1048576;
     return t < 4.5 ? { phase: "Downloading", done: Math.min(total, (t / 4.5) * total), total } : t < 6.2 ? { phase: "Installing", done: total, total } : { phase: "Restarting", done: total, total };

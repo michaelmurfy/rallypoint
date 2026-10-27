@@ -1,0 +1,16 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
+index 3357f4d..0bde269 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
+@@ -603,7 +603,10 @@ static void handleStartingCashSelection()
+ {
+   LANGameInfo *myGame = TheLAN->GetMyGame();
+ 
+-  if (myGame)
++  // Rallypoint: only the host's choice is the game's starting cash. A guest's drop-down is set from the host's options
++  // (and, on joining, from the guest's own saved value); letting that selection write the guest's copy gave a guest
++  // 420000 against the host's 10000 until the host changed the value again.
++  if (myGame && myGame->amIHost())
+   {
+     Int selIndex;
+     GadgetComboBoxGetSelectedPos(comboBoxStartingCash, &selIndex);
