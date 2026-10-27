@@ -7,6 +7,8 @@ Security hardening, from a review of the code.
 - **Your Steam sign-in is not kept.** Downloading the game from Steam used to leave a saved sign-in token on your computer for good. Rallypoint now gives the downloader a private folder for it and removes it when the download ends, however it ends. **Settings > Game files > Saved Steam sign-in > Forget** removes one an earlier version left. Your Steam password was never stored.
 - **Server image builds use the tested dependencies.** The Docker build keeps every library at the version CI tested, the base images are pinned by digest, and a weekly check looks for known vulnerabilities in the Rust libraries.
 
+- **Quick Skirmish uses your player name.** A skirmish now calls you what the Online page says (this computer's name unless you set one), like the LAN lobby, and a host name such as `pc.example.org` becomes `pc` everywhere instead of the whole network name.
+
 ---
 
 ## Rallypoint 0.4.3
