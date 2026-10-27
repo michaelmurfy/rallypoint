@@ -1,0 +1,20 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index a6f67f7..6b2c8b8 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -711,6 +711,15 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 		TheSkirmishGameInfo->setMapSize(md->m_filesize);
+ 	}
+ 
++	// Rallypoint: GEN_AUTO_START=N (the start position clicked in the launcher's map preview, 1 to the map's player count) puts
++	// the human on that start position; the computer players are placed around it by the game as usual.
++	if (const char *sp = ::getenv("GEN_AUTO_START"))
++	{
++		const int n = atoi(sp);
++		if (md && n >= 1 && n <= md->m_numPlayers)
++			TheSkirmishGameInfo->getSlot(0)->setStartPos(n - 1);
++	}
++
+ 	// Close empty slots / fit the map, then mark the game started.
+ 	TheSkirmishGameInfo->adjustSlotsForMap();
+ 	TheWritableGlobalData->m_mapName = TheSkirmishGameInfo->getMap();
