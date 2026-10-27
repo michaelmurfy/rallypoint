@@ -391,10 +391,13 @@ function mapsCard() {
   return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
 }
 
+/** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas, .skirmishbar). */
+const MAP_VIEW = 448;
+
 /** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
 function openMapViewer(entries, start, onChange) {
   let i = start, token = 0;
-  const canvas = h("canvas", { class: "mapview-canvas", width: 384, height: 384, role: "img", "aria-label": "Map preview" });
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview" });
   const title = h("h2", {});
   const facts = h("p", { class: "muted small" });
   const note = h("p", { class: "muted", role: "status" });
@@ -408,38 +411,41 @@ function openMapViewer(entries, start, onChange) {
   } });
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
   // Play a skirmish on this map: how many computer opponents (up to the map's other start positions) and how hard.
-  const opp = h("select", { "aria-label": "Computer opponents" });
-  const diff = h("select", { "aria-label": "Difficulty" }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
-  diff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
+  let oppValue = 1;
+  const opp = h("div", { class: "segs small", role: "group", "aria-label": "Computer opponents" });
+  const diff = segmented("Difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
   const play = h("button", { class: "btn primary", onclick: async () => {
     const m = entries[i];
     play.disabled = true;
     try {
       // a switched-off map is not in the game's folder: switch it on first
       if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; if (onChange) onChange(); }
-      prefs.set({ skAi: +opp.value, skDiff: diff.value });
-      if (await startGame({ skirmish: true, map: m.name, ai: +opp.value, difficulty: diff.value })) finish();
+      prefs.set({ skAi: oppValue, skDiff: diff.value });
+      if (await startGame({ skirmish: true, map: m.name, ai: oppValue, difficulty: diff.value })) finish();
     } catch (e) { note.textContent = errText(e); }
     play.disabled = false;
   } }, icon("play"), "Play skirmish");
   const skirmish = h("div", { class: "skirmishbar" },
-    h("label", { class: "field" }, h("span", {}, "Opponents"), opp),
-    h("label", { class: "field" }, h("span", {}, "Difficulty"), diff),
+    h("div", { class: "skgroup stacked" }, h("span", { class: "muted small" }, "Opponents"), opp),
+    h("div", { class: "skgroup stacked" }, h("span", { class: "muted small" }, "Difficulty"), diff.el),
     play);
-  opp.addEventListener("change", () => prefs.set({ skAi: +opp.value }));
+  function drawOpp(max) {
+    fill(opp, max ? Array.from({ length: max }, (_, k) => h("button", { class: "seg", type: "button", "aria-pressed": String(k + 1 === oppValue), onclick: () => { oppValue = k + 1; prefs.set({ skAi: oppValue }); drawOpp(max); } }, String(k + 1)))
+      : h("button", { class: "seg", type: "button", disabled: true }, "none"));
+  }
   function setSkirmish(starts) {
     const max = Math.min(7, Math.max(0, starts - 1));
-    opp.replaceChildren(...Array.from({ length: max }, (_, k) => new Option(String(k + 1), String(k + 1))));
-    const want = Math.min(max, Math.max(1, prefs.get().skAi || 1));
-    if (max) opp.value = String(want);
-    for (const el of [opp, diff, play]) el.disabled = !max;
+    oppValue = Math.min(Math.max(max, 1), Math.max(1, prefs.get().skAi || 1));
+    drawOpp(max);
+    diff.disable(!max);
+    play.disabled = !max;
     play.title = max ? "" : "This map has no start positions for a skirmish (a mission or solo map)";
   }
   setSkirmish(0);
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
     h("div", { class: "wizard mapviewer" },
       h("div", { class: "wiz-head" }, title, facts),
-      h("div", { class: "wiz-body" }, canvas, note, skirmish),
+      h("div", { class: "wiz-body mapbody" }, canvas, h("div", { class: "mapside" }, note, skirmish)),
       h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
   const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -450,11 +456,11 @@ function openMapViewer(entries, start, onChange) {
     // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
     // proportions, centred in it.
     const ratio = info ? info.width / info.height : 1;
-    const cw = ratio >= 1 ? 384 : Math.round(384 * ratio), ch = ratio >= 1 ? Math.round(384 / ratio) : 384;
-    const ox = Math.round((384 - cw) / 2), oy = Math.round((384 - ch) / 2);
-    canvas.width = 384; canvas.height = 384;
+    const cw = ratio >= 1 ? MAP_VIEW : Math.round(MAP_VIEW * ratio), ch = ratio >= 1 ? Math.round(MAP_VIEW / ratio) : MAP_VIEW;
+    const ox = Math.round((MAP_VIEW - cw) / 2), oy = Math.round((MAP_VIEW - ch) / 2);
+    canvas.width = MAP_VIEW; canvas.height = MAP_VIEW;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, 384, 384);
+    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, MAP_VIEW, MAP_VIEW);
     if (v.rgba) {
       const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
       for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
@@ -793,6 +799,19 @@ function watchBanner(id) {
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => choose(w.id, false) }, "Choose downloaded file…"), h("button", { class: "btn", onclick: cancelWatch }, "Cancel")));
 }
 
+/** A small row of buttons to pick one of a few values (a segmented control). `value` is the picked one. */
+function segmented(label, options, current, onPick) {
+  const api = { value: current };
+  const buttons = options.map(([value, text]) => h("button", { class: "seg", type: "button", "aria-pressed": String(value === current), onclick: () => {
+    api.value = value;
+    buttons.forEach((b, i) => b.setAttribute("aria-pressed", String(options[i][0] === value)));
+    onPick && onPick(value);
+  } }, text));
+  api.el = h("div", { class: "segs small", role: "group", "aria-label": label }, ...buttons);
+  api.disable = (off) => buttons.forEach((b) => { b.disabled = off; });
+  return api;
+}
+
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
  *  goes straight into a skirmish. Returns whether the game was started. */
 async function startGame({ skirmish = false, map = null, ai = null, difficulty = null } = {}) {
@@ -828,12 +847,11 @@ function playPage() {
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn big", onclick: () => launch(true) }, "Quick Skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
-  const skAi = h("select", { "aria-label": "Quick Skirmish opponents", onchange: () => prefs.set({ skAi: +skAi.value }) }, ...[1, 2, 3].map((n) => new Option(String(n), String(n))));
-  skAi.value = String(Math.min(3, Math.max(1, prefs.get().skAi || 1)));
-  const skDiff = h("select", { "aria-label": "Quick Skirmish difficulty", onchange: () => prefs.set({ skDiff: skDiff.value }) }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
-  skDiff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
-  const skOptions = h("div", { class: "row skoptions" }, h("span", { class: "muted small" }, "Quick Skirmish:"),
-    h("label", { class: "inline" }, h("span", { class: "muted small" }, "opponents"), skAi), h("label", { class: "inline" }, h("span", { class: "muted small" }, "difficulty"), skDiff));
+  const skAi = segmented("Quick Skirmish opponents", [["1", "1"], ["2", "2"], ["3", "3"]], String(Math.min(3, Math.max(1, prefs.get().skAi || 1))), (v) => prefs.set({ skAi: +v }));
+  const skDiff = segmented("Quick Skirmish difficulty", [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]], ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy", (v) => prefs.set({ skDiff: v }));
+  const skOptions = h("div", { class: "skoptions" },
+    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
+    h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);
   resSel.append(new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...presets.filter(([w]) => w !== nat.w).map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)), new Option("Custom…", "custom"));
