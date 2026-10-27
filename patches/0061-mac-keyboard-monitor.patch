@@ -1,0 +1,42 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index a160f56..fce6656 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -1138,10 +1138,15 @@ static void ReclaimKeyboardFocus()
+     NSView* v = g_inputView;
+     NSWindow* w = v ? v.window : nil;
+     if (!w) return;
+-    if ([NSApp isActive] && !w.isKeyWindow && w.isVisible && !w.isMiniaturized)
++    static int s_logged = 0;
++    if ([NSApp isActive] && !w.isKeyWindow && w.isVisible && !w.isMiniaturized) {
++        if (s_logged++ < 20) fprintf(stderr, "[mtl-focus] window was not key; making it key\n");
+         [w makeKeyAndOrderFront:nil];
+-    if (w.isKeyWindow && w.firstResponder != v)
++    }
++    if (w.isKeyWindow && w.firstResponder != v) {
++        if (s_logged++ < 20) fprintf(stderr, "[mtl-focus] view was not first responder (%s); taking it back\n", w.firstResponder ? [NSStringFromClass([w.firstResponder class]) UTF8String] : "none");
+         [w makeFirstResponder:v];
++    }
+ }
+ 
+ static void InstallFocusObservers()
+@@ -1157,6 +1162,19 @@ static void InstallFocusObservers()
+         [nc addObserverForName:name object:nil queue:nil usingBlock:reclaim];
+     [[[NSWorkspace sharedWorkspace] notificationCenter] addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
+                                                                     object:nil queue:nil usingBlock:reclaim];
++    // Whatever the first responder is, a key event aimed at the game window belongs to the game: hand it to the view
++    // ourselves (and eat it) when the view is not the one AppKit would deliver it to, instead of losing it.
++    [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged)
++                                          handler:^NSEvent*(NSEvent* e) {
++        NSView* v = g_inputView;
++        if (!v || !v.window || e.window != v.window || v.window.firstResponder == v) return e;
++        static int s_n = 0;
++        if (s_n++ < 20) fprintf(stderr, "[mtl-focus] key event reached the window while the view was not first responder; delivered anyway\n");
++        if (e.type == NSEventTypeKeyDown)      [v keyDown:e];
++        else if (e.type == NSEventTypeKeyUp)   [v keyUp:e];
++        else                                   [v flagsChanged:e];
++        return nil;
++    }];
+ }
+ 
+ static void DrainEvents()

@@ -1,0 +1,14 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
+index 70ecaee..4222520 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/RTS/Player.cpp
+@@ -4067,6 +4067,9 @@ void Player::crc( Xfer *xfer )
+ 
+ 	xfer->xferInt( &m_skillPoints );
+ 	xfer->xferInt( &m_sciencePurchasePoints );
++	// Rallypoint: these two feed the player checksum but were not in the sync log, so a mismatch that began here (Mac host,
++	// Windows client, frame 11100: objects and partition equal, PlayerList different) could not be traced.
++	CRCDEBUG_LOG(("Player %d skillPoints %d sciencePurchasePoints %d", m_playerIndex, m_skillPoints, m_sciencePurchasePoints));
+ 
+ }
+ 
