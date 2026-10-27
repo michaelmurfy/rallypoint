@@ -1,20 +1,16 @@
+## Rallypoint 0.5.1
+
+A tidier Play page and skirmish setup, and no more black patches on the Mac terrain.
+
+- **Skirmish setup is easier to find.** The Maps page opens with a banner, and every map has a clear **Skirmish** button.
+- **A calmer skirmish dialog.** Each player gets a colour that matches their start on the map, the map's details sit on one quiet line, and the map's on or off state is a single switch. Drop-downs no longer close on the first click.
+- **A tidier Play page.** Quick Skirmish is its own card ("a random match with a random map against the computer") with a tip pointing to Maps. Options explain themselves in one line each.
+- **No more black wedges on Mac terrain.** They covered slopes and roads, and came from the terrain's 3-way blend pass. The few tiles that used a second noise pass now use one.
+
 ## Rallypoint 0.5.0
 
-Set up a whole skirmish from the map preview, with Mac audio, names and Mac/Windows sync fixes. The app now opens at 1200 × 840 and every page uses the width.
-
-- **Full skirmish setup.** The map preview now sets up the whole match: you and up to seven computer players, each with a general, team and start position (or closed). Generals are read from the selected game or mod, so Shockwave shows its own. Switch the game from the same screen and the generals follow.
-- **Quieter Mac game audio.** Unit and weapon sounds now fade with distance and follow the volume sliders instead of always playing at full volume.
-- **Full names on Mac.** Messages like "Construction Complete" and player names in game showed only their first letter on macOS. They now show in full.
-- **Fewer desyncs between Mac and Windows.** Projectile flight paths now use the same maths on both. A Chaos game went out of sync around frame 6600 because of it. Older versions are refused at the lobby.
-- **Choose your start position.** Click a numbered start on the map preview (or use the Your start buttons) and **Play skirmish** puts you there. The computer players are placed around you. Leave it on Random for the old behaviour.
-- **A tidier map preview.** The picture is bigger, the map's facts (pack, size, players, file, on or off) are a short list, and your start, opponents and difficulty each get one clear row above a full-width Play skirmish button.
-- **Quick Skirmish is one block.** On the Play page its opponents, difficulty and **Start skirmish** button now sit together under their own heading, below Play.
-- **Pages use the whole window.** Lists, settings and forms stretch to the wider window instead of stopping at a narrow column.
+Set up a whole skirmish from the map preview (players, generals read from the game or mod, teams, starts), with Mac audio fading with distance, full names in game messages on Mac, and projectile flight paths using the same maths on Mac and Windows (a Chaos game desynced around frame 6600 without it). The app opens at 1200 × 840. Older versions are refused at the lobby.
 
 ## Rallypoint 0.4.6
 
 Update installers stop piling up, and Windows debug zips carry the game's own log. Rallypoint now clears what an update leaves behind at every start, and the Windows zip includes `DebugLogFile.txt` so a desync can be compared with the Mac side line by line.
-
-## Rallypoint 0.4.5
-
-Fixes the dead macOS keyboard after switching Spaces. Sync logs now cover the whole game (every 100th frame) and no longer cause false mismatches when only one player has them on. The window opens bigger (1080 × 780) with a roomier map preview.
