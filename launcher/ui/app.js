@@ -960,22 +960,26 @@ function playPage() {
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
-  // The chosen game's own picture, read from the player's files, fading in from the right edge of the card.
-  const heroArt = h("img", { class: "heroart", alt: "", "aria-hidden": "true", hidden: true });
-  let artKey = "";
+  // The chosen game's own picture, read from the player's files, fading in from the right edge of the card. Two layers:
+  // the new picture fades in while the old one fades out.
+  const art = [0, 1].map(() => h("img", { class: "heroart", alt: "", "aria-hidden": "true" }));
+  let artKey = "", artFront = 0, hasArt = false;
+  const paintArt = () => art.forEach((el, i) => el.classList.toggle("shown", hasArt && i === artFront));
   async function loadArt(folder) {
     const key = `${store.cfg.game_dir}|${folder || ""}`;
     if (key === artKey) return;
     artKey = key;
-    heroArt.classList.remove("shown");
     let url = null;
     if (store.cfg.game_dir) { try { url = await invoke("game_art", { gameDir: store.cfg.game_dir, gameFolder: folder || null }); } catch { url = null; } }
     if (key !== artKey) return; // the choice changed while it loaded
-    if (!url) { heroArt.hidden = true; return; }
-    heroArt.src = url; heroArt.hidden = false;
-    requestAnimationFrame(() => heroArt.classList.add("shown"));
+    hasArt = !!url;
+    if (url) { artFront = 1 - artFront; art[artFront].src = url; }
+    requestAnimationFrame(paintArt);  // the new picture fades in as the old one fades out
   }
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
+  const hero = h("div", { class: "card hero" }, ...art,
+    h("div", { class: "stack tight herotext" }, heroTitle, heroSub, files),
+    h("div", { class: "row heroact" }, play, h("span", { class: "muted small" }, "Opens the game's main menu.")));
   const sk = h("button", { class: "btn", onclick: () => launch(true) }, icon("play"), "Start skirmish");
   // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
   const skAi = segmented("Quick Skirmish opponents", [["1", "1"], ["2", "2"], ["3", "3"]], String(Math.min(3, Math.max(1, prefs.get().skAi || 1))), (v) => prefs.set({ skAi: +v }));
@@ -1004,6 +1008,7 @@ function playPage() {
     // what Play will start, at a glance
     heroTitle.textContent = cur.name;
     loadArt(cur.folder);
+    hero.classList.toggle("blue", cur.id === GAME_ZH); // Zero Hour is blue; the mods stay red
     const withExtras = extraMods().filter((m) => selectedExtras().includes(m.folder)).map((m) => m.name);
     heroSub.textContent = (cur.id === GAME_ZH ? "Command & Conquer: Generals – Zero Hour" : cur.note) + (withExtras.length ? `, with ${withExtras.join(" and ")}` : "");
     const extras = extraMods();
@@ -1033,10 +1038,7 @@ function playPage() {
 
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
-    h("div", { class: "card hero" },
-      heroArt,
-      h("div", { class: "stack tight herotext" }, heroTitle, heroSub, files),
-      h("div", { class: "row heroact" }, play, h("span", { class: "muted small" }, "Opens the game's main menu."))),
+    hero,
     skOptions,
     h("div", { class: "card" },
       h("h3", {}, "Options"),

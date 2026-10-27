@@ -80,13 +80,13 @@ main { overflow-y: auto; padding: 28px 34px 44px; }
 
 /* ---- surfaces: one lifted panel (the hero), the rest sit flat on tone ---- */
 .card { background: var(--surface); border-radius: var(--r-panel); padding: 18px 20px; display: grid; gap: 14px; }
+.card.hero.blue { --accent: #2f6fd6; --accent-ink: #ffffff; --rose: #8fb4f2; }
 .card.hero { padding: 26px 28px; gap: 20px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface) 65%); }
 .card.hero { position: relative; overflow: hidden; }
 .card.hero > :not(.heroart) { position: relative; z-index: 1; }
 .card.hero > .heroart { position: absolute; z-index: 0; top: 0; right: 0; width: 62%; height: 100%; object-fit: cover; object-position: center; opacity: 0; transition: opacity .9s var(--ease);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); }
 .card.hero > .heroart.shown { opacity: .5; }
-.card.hero > .heroart[hidden] { display: none; }
 @media (max-width: 760px) { .card.hero > .heroart { width: 100%; } .card.hero > .heroart.shown { opacity: .25; } }
 .heroact { gap: 14px; }
 .gamepath { overflow-wrap: anywhere; }
