@@ -272,6 +272,56 @@ fn download_with(info: &UpdateInfo, dest_dir: &Path, public_hex: &str, proto: &s
     Ok(Downloaded { path, sha256 })
 }
 
+/// `x.y.z` of an installer file as our releases name them (`Rallypoint_0.4.5_x64-setup.exe`, `Rallypoint_0.4.5_aarch64.dmg`,
+/// `Rallypoint-0.4.5-1.x86_64.rpm`, and a `.part` of any of them); `None` for any other file.
+pub fn installer_version(name: &str) -> Option<[u64; 3]> {
+    let n = name.strip_suffix(".part").unwrap_or(name);
+    let rest = n.strip_prefix("Rallypoint")?.strip_prefix(['_', '-'])?;
+    if !["-setup.exe", ".dmg", ".AppImage", ".deb", ".rpm"].iter().any(|e| n.ends_with(e)) {
+        return None;
+    }
+    let core: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let v = parse_version(&core)?;
+    Some(v.core)
+}
+
+/// After an update: remove what the updater left behind. Everything in `<app data>/update` goes except the log of the last
+/// update (it says what happened if the update failed), and so do installers in the Downloads folder that are ours, by name,
+/// and for this version or an older one (they are obsolete the moment the app runs). Returns how many things were removed.
+pub fn cleanup(data: &Path, downloads: Option<&Path>, running: &str) -> usize {
+    let mut gone = 0;
+    for e in std::fs::read_dir(data.join("update")).into_iter().flatten().flatten() {
+        if e.file_name() == "apply-update.log" {
+            continue;
+        }
+        let p = e.path();
+        // an installer for a newer version than the one running is an update that has not been run yet: keep it
+        if e.file_name() == "download" {
+            for f in std::fs::read_dir(&p).into_iter().flatten().flatten() {
+                let newer = parse_version(running).zip(installer_version(&f.file_name().to_string_lossy())).is_some_and(|(now, v)| v > now.core);
+                if !newer && std::fs::remove_file(f.path()).is_ok() {
+                    gone += 1;
+                }
+            }
+            let _ = std::fs::remove_dir(&p); // only if it is empty now
+            continue;
+        }
+        let done = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        if done.is_ok() {
+            gone += 1;
+        }
+    }
+    if let (Some(dir), Some(now)) = (downloads, parse_version(running)) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.file_type().map(|t| t.is_file()).unwrap_or(false) && installer_version(&name).is_some_and(|v| v <= now.core) && std::fs::remove_file(e.path()).is_ok() {
+                gone += 1;
+            }
+        }
+    }
+    gone
+}
+
 /// Hand the installer to the OS. Returns what the user should do next.
 pub fn open_installer(file: &Downloaded) -> Result<String, String> {
     file.unchanged()?;
@@ -468,6 +518,41 @@ mod tests {
         // a different key refuses the same release
         assert!(download_with(&info, &t.join("private2"), &keypair(10).1, "=file", false).unwrap_err().contains("signature"));
         assert!(!t.join("private2").exists(), "nothing is written before the signature is good");
+        std::fs::remove_dir_all(t).unwrap();
+    }
+
+    #[test]
+    fn installer_names_are_recognised_by_version() {
+        for (name, v) in [("Rallypoint_0.4.5_x64-setup.exe", [0, 4, 5]), ("Rallypoint_0.4.5_aarch64.dmg", [0, 4, 5]), ("Rallypoint_0.1.0_amd64.AppImage", [0, 1, 0]), ("Rallypoint-0.4.2-1.x86_64.rpm", [0, 4, 2]), ("Rallypoint_0.4.5_x64-setup.exe.part", [0, 4, 5]), ("Rallypoint_0.4.5_amd64.deb", [0, 4, 5])] {
+            assert_eq!(installer_version(name), Some(v), "{name}");
+        }
+        for other in ["Rallypoint.dmg", "Rallypoint_notes.txt", "Shockwave_1.0_x64-setup.exe", "rallypoint-server-0.4.5-linux-x86_64.tar.gz", "Rallypoint_0.4.5_x64.zip", "report.exe"] {
+            assert_eq!(installer_version(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn what_the_updater_left_behind_is_removed_and_nothing_else() {
+        let t = std::env::temp_dir().join(format!("gen-upd-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let (data, dl) = (t.join("data"), t.join("Downloads"));
+        std::fs::create_dir_all(data.join("update/download")).unwrap();
+        std::fs::create_dir_all(data.join("update/stage/Rallypoint.app")).unwrap();
+        std::fs::create_dir_all(&dl).unwrap();
+        for f in ["update/download/Rallypoint_0.4.5_aarch64.dmg", "update/download/Rallypoint_0.4.6_aarch64.dmg", "update/apply-update.sh", "update/stage/Rallypoint.app/x", "update/apply-update.log"] {
+            std::fs::write(data.join(f), "x").unwrap();
+        }
+        for f in ["Rallypoint_0.4.4_x64-setup.exe", "Rallypoint_0.4.5_x64-setup.exe", "Rallypoint_0.4.6_x64-setup.exe", "Rallypoint_0.4.3_aarch64.dmg.part", "holiday.dmg", "Rallypoint notes.txt"] {
+            std::fs::write(dl.join(f), "x").unwrap();
+        }
+        let n = cleanup(&data, Some(&dl), "0.4.5");
+        assert_eq!(n, 3 + 3, "the update folder's three entries and three older or current installers");
+        assert!(data.join("update/apply-update.log").exists(), "the log of the last update stays");
+        assert!(!data.join("update/download/Rallypoint_0.4.5_aarch64.dmg").exists() && !data.join("update/stage").exists() && !data.join("update/apply-update.sh").exists());
+        assert!(data.join("update/download/Rallypoint_0.4.6_aarch64.dmg").exists(), "an update that has not been installed yet is kept");
+        let left: Vec<String> = { let mut v: Vec<_> = std::fs::read_dir(&dl).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(); v.sort(); v };
+        assert_eq!(left, ["Rallypoint notes.txt", "Rallypoint_0.4.6_x64-setup.exe", "holiday.dmg"], "a newer installer and unrelated files are untouched");
+        assert_eq!(cleanup(&t.join("none"), None, "0.4.5"), 0);
         std::fs::remove_dir_all(t).unwrap();
     }
 }
