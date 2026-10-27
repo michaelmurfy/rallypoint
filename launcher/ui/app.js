@@ -28,6 +28,8 @@ const ICONS = {
   settings: "M19.400 13a7.500 7.500 0 0 0 0-2l2.100-1.600-2-3.400-2.500 1a7.600 7.600 0 0 0-1.700-1L15 3.300h-4L10.700 6a7.600 7.600 0 0 0-1.700 1l-2.500-1-2 3.400L6.600 11a7.500 7.500 0 0 0 0 2l-2.100 1.600 2 3.400 2.500-1c.5.400 1.100.7 1.700 1l.3 2.700h4l.3-2.700c.6-.3 1.200-.6 1.700-1l2.500 1 2-3.400L19.400 13zM13 15.500a3.500 3.500 0 1 1 0-7 3.500 3.500 0 0 1 0 7z",
   check: "M9 16.200 4.800 12l-1.400 1.400L9 19 21 7l-1.400-1.400z",
   plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
+  prev: "M15.400 7.400 14 6l-6 6 6 6 1.400-1.400L10.800 12z",
+  next: "M8.600 16.600 10 18l6-6-6-6-1.400 1.400L13.200 12z",
 };
 function icon(name) {
   const ns = "http://www.w3.org/2000/svg";
@@ -391,26 +393,29 @@ function mapsCard() {
   return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
 }
 
-/** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas, .skirmishbar). */
+/** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas). */
 const MAP_VIEW = 400;
+/** One colour per place in a skirmish: on its row's swatch (style.css .pc0 to .pc7) and on its start marker. */
+const PLACE_COLORS = ["#4d8dff", "#e5484d", "#46a758", "#f5c542", "#f08c3c", "#9a6bdc", "#3dc7c0", "#e5509b"];
 
-/** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
+/** A map as the game shows it: the preview picture with the start positions on it, beside the skirmish table. */
 function openMapViewer(entries, start, onChange) {
   let i = start, token = 0, active = 0, shown = null; // active: the row the next click on the map assigns a start position to
   let generalsList = [];                              // what the chosen game and mod offer: [{ id, name }]
   let rows = [];                                      // the skirmish table: one per place on this map
   const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start position to give it to the selected place" });
   const title = h("h2", {});
-  const position = h("p", { class: "muted small" });
-  const facts = h("dl", { class: "summary mapfacts" });
-  const note = h("p", { class: "muted small", role: "status" });
-  const prev = h("button", { class: "btn", onclick: () => go(-1) }, "Previous");
-  const next = h("button", { class: "btn", onclick: () => go(1) }, "Next");
-  const toggle = h("button", { class: "btn", onclick: async () => {
+  const factline = h("p", { class: "factline" });
+  const position = h("span", { class: "muted small mappos" });
+  const note = h("p", { class: "muted small mapnote", role: "status" });
+  const prev = h("button", { class: "btn iconbtn", "aria-label": "Previous map", onclick: () => go(-1) }, icon("prev"));
+  const next = h("button", { class: "btn iconbtn", "aria-label": "Next map", onclick: () => go(1) }, icon("next"));
+  const listed = h("input", { type: "checkbox", role: "switch", onchange: async () => {
     const m = entries[i];
-    toggle.disabled = true;
-    try { await invoke("maps_set_enabled", { names: [m.name], enabled: !m.enabled }); m.enabled = !m.enabled; if (onChange) onChange(); show(false); } catch (e) { note.textContent = errText(e); }
-    toggle.disabled = false;
+    listed.disabled = true;
+    try { await invoke("maps_set_enabled", { names: [m.name], enabled: listed.checked }); m.enabled = listed.checked; if (onChange) onChange(); }
+    catch (e) { listed.checked = m.enabled; note.textContent = errText(e); }
+    listed.disabled = false;
   } });
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
 
@@ -429,6 +434,7 @@ function openMapViewer(entries, start, onChange) {
 
   // The table: you first, then one row per other place on the map.
   const table = h("div", { class: "skgrid", role: "group", "aria-label": "Skirmish players" });
+  const summary = h("span", { class: "muted small" });
   const diffs = [["easy", "Easy AI"], ["medium", "Medium AI"], ["brutal", "Brutal AI"]];
   const sel = (label, options, value, onchange) => {
     const el = h("select", { "aria-label": label, onchange: () => onchange(el.value) }, ...options.map(([v, t]) => new Option(t, v)));
@@ -440,18 +446,30 @@ function openMapViewer(entries, start, onChange) {
     rows = Array.from({ length: places }, (_, k) => k === 0 ? { kind: "player", faction: null, team: null, start: null } : { kind: k <= wantAi ? "ai" : "closed", difficulty: diff, faction: null, team: null, start: null });
     active = 0;
   }
+  // Choosing a row only moves the highlight: rebuilding the table here would close a drop-down as it opens.
+  function setActive(k) {
+    if (active === k) return;
+    active = k;
+    table.querySelectorAll(".skrow2").forEach((r, j) => r.classList.toggle("active", j === k));
+    paint(shown);
+  }
   function drawTable() {
-    if (!rows.length) { fill(table, h("p", { class: "muted small" }, "This map has no start positions for a skirmish (a mission or solo map).")); updatePlay(); return; }
-    const header = h("div", { class: "skrowhead muted small" }, h("span", {}, "Player"), h("span", {}, "General"), h("span", {}, "Team"), h("span", {}, "Start"));
+    if (!rows.length) { fill(table, h("p", { class: "muted small" }, "This map has no start positions for a skirmish (a mission or solo map).")); summary.textContent = ""; updatePlay(); return; }
+    const header = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "General"), h("span", {}, "Team"), h("span", {}, "Start"));
     fill(table, header, rows.map((r, k) => {
-      const who = k === 0 ? h("span", { class: "skwho you" }, "You")
-        : sel(`Place ${k + 1}`, [...diffs, ["closed", "Closed"]], r.kind === "closed" ? "closed" : r.difficulty, (v) => { if (v === "closed") r.kind = "closed"; else { r.kind = "ai"; r.difficulty = v; prefs.set({ skDiff: v }); } drawTable(); paint(shown); });
       const closed = r.kind === "closed";
-      const general = closed ? h("span", { class: "muted small" }, "") : sel(`General for place ${k + 1}`, [["", "Random"], ...generalsList.map((g) => [g.id, g.name])], r.faction || "", (v) => { r.faction = v || null; });
-      const team = closed ? h("span", {}) : sel(`Team for place ${k + 1}`, [["", "None"], ["0", "Team 1"], ["1", "Team 2"], ["2", "Team 3"], ["3", "Team 4"]], r.team == null ? "" : String(r.team), (v) => { r.team = v === "" ? null : +v; });
+      const who = k === 0 ? h("span", { class: "skwho" }, "You")
+        : sel(`Place ${k + 1}`, [...diffs, ["closed", "Closed"]], closed ? "closed" : r.difficulty, (v) => {
+          if (v === "closed") r.kind = "closed"; else { r.kind = "ai"; r.difficulty = v; prefs.set({ skDiff: v }); }
+          if (v === "closed" || closed) { drawTable(); paint(shown); }
+        });
+      const general = closed ? h("span", {}) : sel(`General for place ${k + 1}`, [["", "Random general"], ...generalsList.map((g) => [g.id, g.name])], r.faction || "", (v) => { r.faction = v || null; });
+      const team = closed ? h("span", {}) : sel(`Team for place ${k + 1}`, [["", "No team"], ["0", "Team 1"], ["1", "Team 2"], ["2", "Team 3"], ["3", "Team 4"]], r.team == null ? "" : String(r.team), (v) => { r.team = v === "" ? null : +v; });
       const startSel = closed ? h("span", {}) : sel(`Start for place ${k + 1}`, [["", "Random"], ...Array.from({ length: rows.length }, (_, n) => [String(n + 1), `Start ${n + 1}`])], r.start == null ? "" : String(r.start), (v) => assign(k, v === "" ? null : +v));
-      return h("div", { class: "skrow2" + (k === active ? " active" : "") + (closed ? " closed" : ""), onclick: () => { if (active !== k) { active = k; drawTable(); paint(shown); } } }, who, general, team, startSel);
+      return h("div", { class: `skrow2 pc${k}` + (k === active ? " active" : "") + (closed ? " closed" : ""), onclick: () => setActive(k), onfocusin: () => setActive(k) }, h("i", { class: "swatch" }), who, general, team, startSel);
     }));
+    const ai = rows.filter((r) => r.kind === "ai").length;
+    summary.textContent = ai ? `You and ${ai} computer player${ai === 1 ? "" : "s"}` : "No computer players";
     updatePlay();
   }
   // Give start position n to place k; whoever had it goes back to random.
@@ -460,12 +478,12 @@ function openMapViewer(entries, start, onChange) {
     rows[k].start = n;
     drawTable(); paint(shown);
   }
-  const play = h("button", { class: "btn primary big", onclick: async () => {
+  const play = h("button", { class: "btn primary big playbtn", onclick: async () => {
     const m = entries[i];
     play.disabled = true;
     try {
       // a switched-off map is not in the game's folder: switch it on first
-      if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; if (onChange) onChange(); }
+      if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; listed.checked = true; if (onChange) onChange(); }
       const ai = rows.filter((r) => r.kind === "ai");
       prefs.set({ skAi: ai.length, skDiff: ai[0].difficulty });
       const slots = rows.map((r) => r.kind === "closed" ? { kind: "closed" } : { kind: r.kind, difficulty: r.kind === "ai" ? r.difficulty : null, faction: r.faction, team: r.team, start: r.start });
@@ -481,9 +499,11 @@ function openMapViewer(entries, start, onChange) {
 
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Skirmish setup" },
     h("div", { class: "wizard mapviewer" },
-      h("div", { class: "wiz-head" }, h("div", { class: "row between" }, h("div", {}, title, position), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Game"), gameSel))),
-      h("div", { class: "wiz-body mapbody" }, canvas, h("div", { class: "mapside" }, facts, note, table, play)),
-      h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
+      h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, title, factline), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Play with"), gameSel)),
+      h("div", { class: "wiz-body mapbody" },
+        h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
+        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, play)),
+      h("div", { class: "wiz-foot" }, h("label", { class: "switch" }, listed, "Show in the game's map list"), close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
   function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
@@ -521,12 +541,13 @@ function openMapViewer(entries, start, onChange) {
         const x = ox + st.x * cw, y = oy + (1 - st.y) * ch;
         const owner = rows.findIndex((r) => r.kind !== "closed" && r.start === st.number);
         spots.push({ x, y, n: st.number });
-        const mine = owner === 0, theirs = owner > 0;
-        if (mine) { ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.fillStyle = css("--accent"); ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
-        ctx.beginPath(); ctx.arc(x, y, mine ? 15 : 11, 0, Math.PI * 2);
-        ctx.fillStyle = theirs ? css("--surface") : css("--accent"); ctx.fill();
-        ctx.lineWidth = mine ? 3 : 2; ctx.strokeStyle = theirs ? css("--accent") : css("--text"); ctx.stroke();
-        ctx.fillStyle = theirs ? css("--text") : css("--accent-ink"); ctx.fillText(String(st.number), x, y + 1);
+        const taken = owner >= 0, mine = owner === active;
+        // a taken start wears its place's colour; the selected place's start also gets a halo
+        if (taken && mine) { ctx.beginPath(); ctx.arc(x, y, 21, 0, Math.PI * 2); ctx.fillStyle = PLACE_COLORS[owner]; ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
+        ctx.beginPath(); ctx.arc(x, y, taken ? 14 : 11, 0, Math.PI * 2);
+        ctx.fillStyle = taken ? PLACE_COLORS[owner] : "rgba(20, 8, 9, .72)"; ctx.fill();
+        ctx.lineWidth = taken ? 2.5 : 1.5; ctx.strokeStyle = taken ? "#fff" : "rgba(255, 255, 255, .7)"; ctx.stroke();
+        ctx.fillStyle = "#fff"; ctx.fillText(String(st.number), x, y + 1);
       }
     }
   }
@@ -539,16 +560,14 @@ function openMapViewer(entries, start, onChange) {
   canvas.addEventListener("click", (e) => { const s = spotAt(e); if (s && rows[active] && rows[active].kind !== "closed") assign(active, rows[active].start === s.n ? null : s.n); });
   canvas.addEventListener("mousemove", (e) => { const s = spotAt(e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected place` : ""; });
 
-  const fact = (k, v) => [h("dt", {}, k), h("dd", {}, v)];
-  async function show(reload = true) {
+  async function show() {
     const m = entries[i], mine = ++token;
-    toggle.textContent = m.enabled ? "Switch off" : "Switch on";
+    listed.checked = m.enabled;
     position.textContent = `${i + 1} of ${entries.length}`;
-    if (!reload) { fillFacts(shown, m); return; }
     title.textContent = m.name;
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
     note.textContent = "Loading…";
-    fill(facts);
+    fill(factline);
     shown = null; spots = []; rows = [];
     drawTable();
     try {
@@ -565,13 +584,12 @@ function openMapViewer(entries, start, onChange) {
   }
   function fillFacts(v, m) {
     const n = v && v.info ? v.info.starts.length : 0;
-    fill(facts,
-      fact("Pack", m.pack),
-      fact("Size", v && v.info ? `${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)} cells` : "unknown"),
-      fact("Players", n ? String(n) : "none (a mission or solo map)"),
-      fact("File", v ? (v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`) : "…"),
-      fact("In the game", m.enabled ? "switched on" : "switched off"));
-    note.textContent = v && !v.rgba ? "This map has no preview picture." : n > 1 ? "Select a row, then click a start position on the map to give it to that place." : "";
+    const bits = [m.pack];
+    if (v && v.info) bits.push(`${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)}`);
+    bits.push(n ? `${n} players` : "Solo map");
+    if (v) bits.push(v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`);
+    fill(factline, bits.map((b) => h("span", {}, b)));
+    note.textContent = v && !v.rgba ? "This map has no preview picture." : n > 1 ? "Select a player, then click a start on the map." : "";
   }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
