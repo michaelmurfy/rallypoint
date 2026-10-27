@@ -1,0 +1,16 @@
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/HeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/HeightMap.cpp
+index 9b771dd..fa22b86 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/HeightMap.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/HeightMap.cpp
+@@ -2123,8 +2123,10 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
+ 			// — that pass uses ST_ROAD_BASE which is a multi-stage shader we don't
+ 			// fully emulate without pixel shaders. Diagnostic only — opaque/blend
+ 			// output may differ from Windows when this is off.
++			// Rallypoint: off unless GEN_3WAY=1. On macOS the pass drew a faint grid over the terrain when zoomed out (and,
++			// before patch 0057, black wedges); leaving it out only loses the third texture at a few corner tiles.
+ 			static int s_no3w = -1;
+-			if (s_no3w < 0) s_no3w = getenv("GEN_NO_3WAY") ? 1 : 0;
++			if (s_no3w < 0) s_no3w = (getenv("GEN_NO_3WAY") || !getenv("GEN_3WAY")) ? 1 : 0;
+ 			if (!s_no3w)
+ #endif
+ 			renderExtraBlendTiles();
