@@ -391,10 +391,13 @@ function mapsCard() {
   return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
 }
 
+/** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas, .skirmishbar). */
+const MAP_VIEW = 448;
+
 /** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
 function openMapViewer(entries, start, onChange) {
   let i = start, token = 0;
-  const canvas = h("canvas", { class: "mapview-canvas", width: 384, height: 384, role: "img", "aria-label": "Map preview" });
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview" });
   const title = h("h2", {});
   const facts = h("p", { class: "muted small" });
   const note = h("p", { class: "muted", role: "status" });
@@ -439,7 +442,7 @@ function openMapViewer(entries, start, onChange) {
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
     h("div", { class: "wizard mapviewer" },
       h("div", { class: "wiz-head" }, title, facts),
-      h("div", { class: "wiz-body" }, canvas, note, skirmish),
+      h("div", { class: "wiz-body mapbody" }, canvas, h("div", { class: "mapside" }, note, skirmish)),
       h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
   const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -450,11 +453,11 @@ function openMapViewer(entries, start, onChange) {
     // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
     // proportions, centred in it.
     const ratio = info ? info.width / info.height : 1;
-    const cw = ratio >= 1 ? 384 : Math.round(384 * ratio), ch = ratio >= 1 ? Math.round(384 / ratio) : 384;
-    const ox = Math.round((384 - cw) / 2), oy = Math.round((384 - ch) / 2);
-    canvas.width = 384; canvas.height = 384;
+    const cw = ratio >= 1 ? MAP_VIEW : Math.round(MAP_VIEW * ratio), ch = ratio >= 1 ? Math.round(MAP_VIEW / ratio) : MAP_VIEW;
+    const ox = Math.round((MAP_VIEW - cw) / 2), oy = Math.round((MAP_VIEW - ch) / 2);
+    canvas.width = MAP_VIEW; canvas.height = MAP_VIEW;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, 384, 384);
+    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, MAP_VIEW, MAP_VIEW);
     if (v.rgba) {
       const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
       for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);

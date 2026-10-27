@@ -280,5 +280,7 @@ jobs:
             echo "::warning::RELEASE_SIGNING_KEY is not set: this release is unsigned and cannot be installed by the in-app updater"
           fi
           pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          # The release page (and the in-app "What's new") shows this release and the two before it, not the whole history.
+          awk '/^## Rallypoint /{n++} n<=3' docs/release-notes.md > release-notes-short.md
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
-            --title "Rallypoint ${GITHUB_REF_NAME#v}" --notes-file docs/release-notes.md --generate-notes
+            --title "Rallypoint ${GITHUB_REF_NAME#v}" --notes-file release-notes-short.md --generate-notes

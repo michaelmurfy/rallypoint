@@ -11,10 +11,10 @@
     "windows": [
       {
         "title": "Rallypoint",
-        "width": 980,
-        "height": 700,
-        "minWidth": 780,
-        "minHeight": 560,
+        "width": 1080,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 600,
         "center": true
       }
     ],
