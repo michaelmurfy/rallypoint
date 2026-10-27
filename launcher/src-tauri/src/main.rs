@@ -291,6 +291,7 @@ async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>
         include_replay,
         // their user name is in every path; it is removed from the text files
         home: std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from),
+        engine_dir: engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &app.path().data_dir().map_err(|e| e.to_string())?).and_then(|e| e.parent().map(PathBuf::from)),
     };
     let out_dir = mods::downloads_dir().filter(|d| d.is_dir()).unwrap_or_else(|| src.base.clone());
     let zip = tauri::async_runtime::spawn_blocking(move || bundle::create(&src, &out_dir)).await.map_err(|e| e.to_string())??;
