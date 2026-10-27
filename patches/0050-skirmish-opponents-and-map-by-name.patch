@@ -1,0 +1,107 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index ac632e2..6ff6dd9 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -856,21 +856,6 @@ void GameEngine::init()
+ 			           (int)TheGlobalData->m_waterType));
+ 		}
+ 
+-		// macOS port debugging convenience: GEN_AUTO_SKIRMISH=1 (optionally
+-		// GEN_AUTO_MAP=<map path>) launches straight into a 1-human-vs-1-easy-AI
+-		// skirmish on startup, skipping the shell menus. This makes it cheap to
+-		// repeatedly reproduce in-game issues without clicking through the UI.
+-		{
+-			const char *autoSkirmish = ::getenv("GEN_AUTO_SKIRMISH");
+-			if (autoSkirmish && autoSkirmish[0] && autoSkirmish[0] != '0')
+-			{
+-				TheWritableGlobalData->m_shellMapOn = FALSE;
+-				TheWritableGlobalData->m_playIntro = FALSE;
+-				TheWritableGlobalData->m_afterIntro = TRUE;
+-				const char *autoMap = ::getenv("GEN_AUTO_MAP");
+-				DebugAutoStartSkirmish(autoMap ? autoMap : "");
+-			}
+-		}
+ 		// GEN_QUICK_MENU=1: skip cinematic intro + shellmap backdrop and land on
+ 		// the main menu immediately, for fast UI-debug iteration (menu button
+ 		// borders, fonts, dialog rendering, etc.).
+@@ -898,7 +883,25 @@ void GameEngine::init()
+ 				TheWritableGlobalData->m_shellMapOn = FALSE;
+ 			}
+ 		}
+-#endif
++#endif // __APPLE__
++
++		// Rallypoint: the launcher's Quick Skirmish (and the skirmish started from the map list) on every platform; this was inside
++		// the macOS-only block above, so on Windows the game opened at the main menu.
++		// GEN_AUTO_SKIRMISH=1 (optionally
++		// GEN_AUTO_MAP=<map path>) launches straight into a 1-human-vs-1-easy-AI
++		// skirmish on startup, skipping the shell menus. This makes it cheap to
++		// repeatedly reproduce in-game issues without clicking through the UI.
++		{
++			const char *autoSkirmish = ::getenv("GEN_AUTO_SKIRMISH");
++			if (autoSkirmish && autoSkirmish[0] && autoSkirmish[0] != '0')
++			{
++				TheWritableGlobalData->m_shellMapOn = FALSE;
++				TheWritableGlobalData->m_playIntro = FALSE;
++				TheWritableGlobalData->m_afterIntro = TRUE;
++				const char *autoMap = ::getenv("GEN_AUTO_MAP");
++				DebugAutoStartSkirmish(autoMap ? autoMap : "");
++			}
++		}
+ 
+ 		//
+ 		if (TheMapCache && TheGlobalData->m_shellMapOn)
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index f49acc6..a6f67f7 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -616,6 +616,19 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 	}
+ 	TheSkirmishGameInfo->setSlot(1, aiSlot);
+ 
++	// Rallypoint: GEN_AUTO_AI=N (the launcher's skirmish options) asks for N computer opponents, 1 to 7, each against
++	// everyone else; the map's own player count still limits it (adjustSlotsForMap below).
++	if (const char *ai = ::getenv("GEN_AUTO_AI"))
++	{
++		const int wanted = atoi(ai);
++		for (int i = 2; i <= wanted && i <= 7; ++i)
++		{
++			GameSlot extra;
++			extra.setState(aiSlotState);
++			TheSkirmishGameInfo->setSlot(i, extra);
++		}
++	}
++
+ 	// Slot 2 (allyMode only): a common enemy for the human + API ally to fight.
+ 	if (allyMode)
+ 	{
+@@ -658,6 +671,29 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 	if ( map.isEmpty() )
+ 		map = prefs.getPreferredMap();
+ 
++	// Rallypoint: the launcher names a map by its folder (`Tournament Desert`); the cache is keyed by the map's full path,
++	// which is different on every machine, so find the entry whose path ends in `<folder>/<folder>.map`.
++	if ( TheMapCache && !map.isEmpty() && !TheMapCache->findMap(map) )
++	{
++		AsciiString want = map;
++		want.toLower();
++		AsciiString suffix;
++		suffix.format("/%s/%s.map", want.str(), want.str());
++		for (std::map<AsciiString, MapMetaData>::iterator it = TheMapCache->begin(); it != TheMapCache->end(); ++it)
++		{
++			char path[1024];
++			strncpy(path, it->first.str(), sizeof(path) - 1);
++			path[sizeof(path) - 1] = 0;
++			for (char *c = path; *c; ++c)
++				*c = (*c == '\\') ? '/' : (char)tolower((unsigned char)*c);
++			if (AsciiString(path).endsWith(suffix))
++			{
++				map = it->first;
++				break;
++			}
++		}
++	}
++
+ 	// Validate against the cache; fall back to the default multiplayer map if unknown.
+ 	if ( !TheMapCache || !TheMapCache->findMap(map) )
+ 		map = getDefaultMap(TRUE);

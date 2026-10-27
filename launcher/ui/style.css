@@ -360,6 +360,14 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .reading.ok b { color: var(--ok-ink); } .reading.warn b { color: var(--warn-ink); } .reading.bad b { color: var(--bad-ink); }
 .wizard.bundledialog { width: min(520px, 100%); }
 
+/* the skirmish options under a map's preview: fixed height, so the window does not move between maps */
+.mapviewer .skirmishbar { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; width: 384px; max-width: 100%; margin-top: 4px; }
+.mapviewer .skirmishbar .field > span { font-size: 12px; }
+@media (max-width: 520px) { .mapviewer .skirmishbar { grid-template-columns: 1fr 1fr; } .mapviewer .skirmishbar .btn { grid-column: 1 / -1; } }
+
+.skoptions { gap: 12px; }
+.skoptions label.inline { display: inline-flex; align-items: center; gap: 6px; }
+.skoptions select { width: auto; height: 28px; font-size: 12px; padding-right: 30px; background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; }
 /* install progress, where you just clicked: inside the pack's row, or in the mod's card */
 .mappack .packjob { grid-column: 1 / -1; display: grid; gap: 6px; padding: 8px 10px; border-radius: var(--r-btn); background: var(--bg); margin-top: 4px; }
 .strip .packjob, .stack > .packjob { padding: 8px 10px; border-radius: var(--r-btn); background: var(--bg); display: grid; gap: 6px; }
