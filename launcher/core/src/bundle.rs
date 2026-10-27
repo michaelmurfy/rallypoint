@@ -20,6 +20,9 @@ pub struct Sources {
     pub include_replay: bool,
     /// The user's home folder, which is removed from the text files (it has their user name in it).
     pub home: Option<PathBuf>,
+    /// The folder of the game engine's program: on Windows the engine writes its own debug log (`DebugLogFile.txt`, with the
+    /// pathfinding, network and AI lines the macOS build prints to `engine.log`) next to itself.
+    pub engine_dir: Option<PathBuf>,
 }
 
 const MAX_COPY: u64 = 200 * 1024 * 1024;
@@ -143,6 +146,11 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
     if s.include_replay {
         copy_file(&s.game_data.join("Replays").join("LastReplay.rep"), &stage.join("game").join("LastReplay.rep"));
     }
+    if let Some(dir) = &s.engine_dir {
+        for f in ["DebugLogFile.txt", "DebugLogFilePrev.txt"] {
+            copy_file(&dir.join(f), &stage.join("engine-debug").join(f));
+        }
+    }
     // macOS leaves a crash report of its own for each crash of the engine.
     if let Some(home) = std::env::var_os("HOME") {
         for p in newest(&PathBuf::from(home).join("Library/Logs/DiagnosticReports"), "generalszh", 3) {
@@ -164,7 +172,7 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
         for f in ["engine.log", "engine.log.1", "config.json", "system.txt"] {
             redact_file(&stage.join(f), home);
         }
-        for dir in ["game", "crash-reports"] {
+        for dir in ["game", "crash-reports", "engine-debug"] {
             for e in std::fs::read_dir(stage.join(dir)).into_iter().flatten().flatten() {
                 if !matches!(e.path().extension(), Some(x) if x == "rep") {
                     redact_file(&e.path(), home);
@@ -252,7 +260,9 @@ mod tests {
         std::fs::write(data.join("Options.ini"), "Resolution = 1280 720").unwrap();
         std::fs::write(data.join("ReleaseCrashInfo.txt"), "crash").unwrap();
         std::fs::write(data.join("Replays/LastReplay.rep"), "rep").unwrap();
-        let s = Sources { base: base.clone(), game_data: data, game_dir: None, version: "9.9.9".into(), extra: vec![("relay".into(), "connected".into())], include_replay: false, home: Some(PathBuf::from("/Users/ann smith")) };
+        std::fs::create_dir_all(t.join("engine")).unwrap();
+        std::fs::write(t.join("engine/DebugLogFile.txt"), "path failed in /Users/ann smith/x").unwrap();
+        let s = Sources { base: base.clone(), game_data: data, game_dir: None, version: "9.9.9".into(), extra: vec![("relay".into(), "connected".into())], include_replay: false, home: Some(PathBuf::from("/Users/ann smith")), engine_dir: Some(t.join("engine")) };
         let out = t.join("stage");
         stage(&s, &out, 0).unwrap();
         for f in ["engine.log", "sync-logs/DebugFrame_000000.txt", "config.json", "game/Options.ini", "game/ReleaseCrashInfo.txt", "system.txt"] {
@@ -264,7 +274,9 @@ mod tests {
         let log = std::fs::read_to_string(out.join("engine.log")).unwrap();
         assert!(log.contains("-mod <home>/Library") && !log.contains("ann smith"), "{log}");
         assert!(!out.join("game/LastReplay.rep").exists(), "the replay is only added when asked for");
-        let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: None } };
+        let dbg = std::fs::read_to_string(out.join("engine-debug/DebugLogFile.txt")).unwrap();
+        assert!(dbg.contains("<home>/x") && !dbg.contains("ann smith"), "{dbg}");
+        let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: None, engine_dir: None } };
         let out2 = t.join("stage2");
         stage(&with, &out2, 0).unwrap();
         assert!(out2.join("game/LastReplay.rep").is_file());
