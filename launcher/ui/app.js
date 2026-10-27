@@ -800,6 +800,13 @@ function playPage() {
   const files = h("div", { class: "row between" });
   const play = h("button", { class: "btn primary big", onclick: () => launch(false) }, icon("play"), "Play");
   const sk = h("button", { class: "btn big", onclick: () => launch(true) }, "Quick Skirmish");
+  // Quick Skirmish options, remembered: how many computer opponents (fewer if the map has fewer places) and how hard they are
+  const skAi = h("select", { "aria-label": "Quick Skirmish opponents", onchange: () => prefs.set({ skAi: +skAi.value }) }, ...[1, 2, 3].map((n) => new Option(String(n), String(n))));
+  skAi.value = String(Math.min(3, Math.max(1, prefs.get().skAi || 1)));
+  const skDiff = h("select", { "aria-label": "Quick Skirmish difficulty", onchange: () => prefs.set({ skDiff: skDiff.value }) }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
+  skDiff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
+  const skOptions = h("div", { class: "row skoptions" }, h("span", { class: "muted small" }, "Quick Skirmish:"),
+    h("label", { class: "inline" }, h("span", { class: "muted small" }, "opponents"), skAi), h("label", { class: "inline" }, h("span", { class: "muted small" }, "difficulty"), skDiff));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);
   resSel.append(new Option(`Native (${nat.w} × ${nat.h})`, "native"), ...presets.filter(([w]) => w !== nat.w).map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)), new Option("Custom…", "custom"));
@@ -834,16 +841,16 @@ function playPage() {
   async function launch(skirmish) {
     prefs.set({ cw: +cw.value || undefined, ch: +ch.value || undefined, fs: fs.checked }); // a custom size is remembered for launches from elsewhere
     play.disabled = sk.disabled = true;
-    const started = await startGame({ skirmish });
+    const started = await startGame(skirmish ? { skirmish, ai: +skAi.value, difficulty: skDiff.value } : { skirmish });
     setTimeout(() => { play.disabled = sk.disabled = false; }, started ? 5000 : 0);
   }
 
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Play")),
     h("div", { class: "card hero" },
-      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game. Quick Skirmish starts a 1v1 against the AI straight away.")),
+      h("div", {}, h("h2", {}, "Command & Conquer: Generals – Zero Hour"), h("p", { class: "muted" }, "Play opens the game. Quick Skirmish starts straight away against the computer: choose how many opponents and how hard.")),
       files,
-      h("div", { class: "row" }, play, sk)),
+      h("div", { class: "row" }, play, sk), skOptions),
     h("div", { class: "card" },
       h("h3", {}, "Options"),
       h("div", { class: "grid2" },
