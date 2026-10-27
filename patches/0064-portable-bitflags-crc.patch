@@ -1,0 +1,45 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/BitFlagsIO.h b/GeneralsMD/Code/GameEngine/Include/Common/BitFlagsIO.h
+index 61afcb5..e7383f9 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/BitFlagsIO.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/BitFlagsIO.h
+@@ -213,12 +213,21 @@ void BitFlags<NUMBITS>::xfer(Xfer* xfer)
+ 	else if( xfer->getXferMode() == XFER_CRC )
+ 	{
+ 
+-		// just call the xfer implementation on the data values
+-#if RETAIL_COMPATIBLE_CRC
+-		xfer->xferUser( this, sizeof( this ) );
+-#else
+-		xfer->xferUser( this, sizeof( *this ) );
+-#endif
++		// Rallypoint: the retail code checksummed sizeof(this), which is the size of a POINTER (4 bytes on Windows x86, 8 on
++		// macOS arm64), and the other branch checksummed raw std::bitset storage, whose size and word width differ between
++		// standard libraries. A player with battle plans (Strategy Center) therefore had a different PlayerList checksum on
++		// Mac and Windows. Write the bits as 32-bit words instead, the same on every platform.
++		UnsignedInt word = 0;
++		for( size_t i = 0; i < NUMBITS; ++i )
++		{
++			if( m_bits.test( i ) )
++				word |= 1u << (i % 32);
++			if( (i % 32) == 31 || i + 1 == NUMBITS )
++			{
++				xfer->xferUnsignedInt( &word );
++				word = 0;
++			}
++		}
+ 
+ 	}
+ 	else
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+index e5dde71..790e9dc 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@ UnsignedInt GlobalData::generateExeCRC()
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 6;
++		static const UnsignedInt kRallypointSimulationId = 7;
+ 		const UnsignedInt idBlock[3] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));
