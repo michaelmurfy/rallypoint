@@ -1,16 +1,15 @@
+## Rallypoint 0.5.4
+
+The right art for every game on the Play card, no more Downloads folder prompts on Mac, and the version in the sidebar.
+
+- **Art for Chaos and Cold War Crisis.** They used Zero Hour's picture because their art lives inside their game files. The Play card now finds it there: Chaos shows its helicopter backdrop and Cold War Crisis its checkpoint scene.
+- **No Downloads prompt on Mac.** Rallypoint no longer looks in your Downloads folder when it starts, so macOS stops asking for access. Updates already used their own folder.
+- **Version in the sidebar.** The version you are running is at the bottom left.
+
 ## Rallypoint 0.5.3
 
-Fixes a Mac and Windows desync in long games, makes lobby guests start with the host's cash, and gives the Play card the game's own artwork.
-
-- **No more desync when someone builds battle plans.** Mac and Windows added up the plans' unit lists differently, so two long games went out of sync the moment a player first used a Strategy Center plan. Both now count them the same way. Older versions are refused at the lobby.
-- **Guests start with the host's cash.** A guest joining a lobby could keep their own saved amount (420000 against the host's 10000) until the host changed it again.
-- **The Play card shows the game.** Its own loading picture fades in on the right, the colours match the game (blue for Zero Hour, red for the mods), and both cross-fade when you change game.
-- **Debug zip with the crash dump.** Tick the replay box and the newest crash dump goes in too, so a Windows crash can be read.
+Fixes a Mac and Windows desync in long games, makes lobby guests start with the host's cash, and gives the Play card the game's own artwork. A player's first battle plan no longer makes the two machines count their unit lists differently (older versions are refused at the lobby), a guest keeps the host's starting cash, and the Play card is blue for Zero Hour and red for the mods. The debug zip carries the crash dump when you tick the replay box.
 
 ## Rallypoint 0.5.2
 
 Updates take over the window with a progress card, the Play page says which game will start, and the Mac loses its terrain grid when zoomed out. The Mac keyboard after a Space switch gets a fallback, the Boss General is left out of the general list, and sync logs record each player's skill and science points.
-
-## Rallypoint 0.5.1
-
-A tidier Play page and skirmish setup (a clearer Maps banner, a calmer skirmish dialog with a colour per player and drop-downs that stay open, Quick Skirmish as its own card), and no more black wedges on Mac terrain.
