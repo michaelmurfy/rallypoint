@@ -894,7 +894,7 @@ fn main() {
         .setup(|app| {
             if let Ok(data) = base(app.handle()) {
                 std::thread::spawn(move || {
-                    update::cleanup(&data, mods::downloads_dir().as_deref(), update::current_version());
+                    update::cleanup(&data, update::current_version());
                 });
             }
             Ok(())
