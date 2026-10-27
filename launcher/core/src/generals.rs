@@ -71,6 +71,32 @@ fn archives(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// A picture for the mod in `dir` from its archives: the best of its menu backdrop, title and logo screens (`.tga`, in
+/// `Art\Textures`), as the bytes of the file. For mods that ship no loose loading picture (Chaos, Cold War Crisis).
+pub fn menu_art(dir: &Path) -> Option<Vec<u8>> {
+    // lower is better
+    let rank = |n: &str| -> Option<u32> {
+        if !n.starts_with("art\\textures\\") || !n.ends_with(".tga") {
+            return None;
+        }
+        let f = n.rsplit('\\').next().unwrap_or(n);
+        [("titlescreen", 0), ("mainmenubackdrop", 1), ("logoscreen", 2)].iter().find(|(k, _)| f.contains(k)).map(|(_, r)| *r)
+    };
+    let mut best: Option<(u32, PathBuf, Entry)> = None;
+    for a in archives(dir) {
+        let Ok(entries) = list(&a) else { continue };
+        for e in entries {
+            if let Some(r) = rank(&e.name) {
+                if e.size > 64 && e.size <= 8 << 20 && best.as_ref().is_none_or(|(br, _, _)| r < *br) {
+                    best = Some((r, a.clone(), e));
+                }
+            }
+        }
+    }
+    let (_, a, e) = best?;
+    read(&a, &e, 8 << 20).ok()
+}
+
 /// The file `name` as the game would find it: the last layer (highest priority) that has it, the base game last.
 fn find(name: &str, base: &Path, layers: &[PathBuf], max: u32) -> Option<Vec<u8>> {
     for dir in layers.iter().rev().chain(std::iter::once(&base.to_path_buf())) {
@@ -289,5 +315,18 @@ mod tests {
         assert!(g.len() >= 12, "{g:?}");
         assert!(g.iter().any(|g| g.id == "FactionAmerica"));
         assert!(g.iter().all(|g| !g.name.is_empty() && !g.name.starts_with("INI:")), "{g:?}");
+    }
+
+    #[test]
+    fn menu_art_picks_the_title_screen_and_ignores_other_pictures() {
+        let t = std::env::temp_dir().join(format!("gen-menuart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(&t).unwrap();
+        let tga = |b: u8| vec![b; 200];
+        std::fs::write(t.join("a.big"), big(&[("Art\\Textures\\XLogoScreen.tga", &tga(1)), ("Art\\Textures\\Other.tga", &tga(9)), ("Data\\TitleScreen.tga", &tga(8))])).unwrap();
+        assert_eq!(menu_art(&t).unwrap()[0], 1, "the logo screen: the only matching name in Art\\Textures");
+        std::fs::write(t.join("b.big"), big(&[("Art\\Textures\\XMainMenuBackdropuserinterface.tga", &tga(2)), ("Art\\Textures\\XTitleScreen.tga", &tga(3))])).unwrap();
+        assert_eq!(menu_art(&t).unwrap()[0], 3, "title screen beats backdrop beats logo");
+        let _ = std::fs::remove_dir_all(t);
     }
 }
