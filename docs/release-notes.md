@@ -1,3 +1,9 @@
+## Rallypoint 0.4.6
+
+- **The Windows game's own log goes in the debug zip.** On Windows the game keeps most of its messages (pathfinding, network, AI) in `DebugLogFile.txt` next to the program, not in the log Rallypoint collects, so a Windows zip had far less than a Mac one. It is now included (with your user name removed), so the two sides of a desync can be compared line by line.
+
+---
+
 ## Rallypoint 0.4.5
 
 - **A slightly bigger window, and a roomier map preview.** The window opens larger (1080 × 780) so lists and settings need less scrolling, and the map preview shows a bigger picture with the skirmish options beside it instead of below it.
