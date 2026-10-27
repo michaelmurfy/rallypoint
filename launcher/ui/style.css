@@ -359,3 +359,8 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .reading > span { font-size: 10.5px; color: var(--muted); }
 .reading.ok b { color: var(--ok-ink); } .reading.warn b { color: var(--warn-ink); } .reading.bad b { color: var(--bad-ink); }
 .wizard.bundledialog { width: min(520px, 100%); }
+
+/* the skirmish options under a map's preview: fixed height, so the window does not move between maps */
+.mapviewer .skirmishbar { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; width: 384px; max-width: 100%; margin-top: 4px; }
+.mapviewer .skirmishbar .field > span { font-size: 12px; }
+@media (max-width: 520px) { .mapviewer .skirmishbar { grid-template-columns: 1fr 1fr; } .mapviewer .skirmishbar .btn { grid-column: 1 / -1; } }

@@ -7,6 +7,9 @@ Security hardening, from a review of the code.
 - **Your Steam sign-in is not kept.** Downloading the game from Steam used to leave a saved sign-in token on your computer for good. Rallypoint now gives the downloader a private folder for it and removes it when the download ends, however it ends. **Settings > Game files > Saved Steam sign-in > Forget** removes one an earlier version left. Your Steam password was never stored.
 - **Server image builds use the tested dependencies.** The Docker build keeps every library at the version CI tested, the base images are pinned by digest, and a weekly check looks for known vulnerabilities in the Rust libraries.
 
+- **Play a skirmish from the map list.** In a map's preview, choose how many computer opponents (up to the map's other start positions) and how hard they are, then **Play skirmish**. The game starts on that map with your display settings and mods; a switched-off map is switched on for you.
+- **Quick Skirmish works on Windows.** It opened the main menu there, because the start-straight-into-a-skirmish code only ran on macOS.
+
 ---
 
 ## Rallypoint 0.4.3

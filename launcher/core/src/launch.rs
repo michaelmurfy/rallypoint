@@ -75,6 +75,31 @@ pub fn splash_bitmap(mod_dir: &Path) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Environment for a skirmish started from the map list: the map (a folder in the game's Maps folder, which `exists` checks),
+/// how many computer opponents (1 to 7) and how hard they are. Anything else is refused: these come from the page.
+pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>, exists: impl Fn(&str) -> bool) -> Result<Vec<(String, String)>, String> {
+    let mut env = vec![];
+    if let Some(m) = map {
+        if !crate::maporg::is_safe_name(m) || !exists(m) {
+            return Err(format!("{m:?} isn't a map you have (is it switched on?)"));
+        }
+        env.push(("GEN_AUTO_MAP".to_string(), m.to_string()));
+    }
+    if let Some(n) = ai {
+        if !(1..=7).contains(&n) {
+            return Err("a skirmish has 1 to 7 opponents".into());
+        }
+        env.push(("GEN_AUTO_AI".to_string(), n.to_string()));
+    }
+    if let Some(d) = difficulty {
+        if !["easy", "medium", "brutal"].contains(&d) {
+            return Err("the difficulty is easy, medium or brutal".into());
+        }
+        env.push(("GEN_AUTO_DIFF".to_string(), d.to_string()));
+    }
+    Ok(env)
+}
+
 /// Is the network ready for the game? No relay at all means offline play, which is fine. A relay that has
 /// not accepted us yet would start the game on the wrong network (and fail with a socket error in the LAN
 /// lobby), so that is refused. Returns the agent address and our virtual IP to hand to the engine.
@@ -141,6 +166,19 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skirmish_options_are_checked_before_they_reach_the_game() {
+        let have = |n: &str| n == "Tournament Desert";
+        let e = skirmish_env(Some("Tournament Desert"), Some(3), Some("brutal"), have).unwrap();
+        assert!(e.contains(&("GEN_AUTO_MAP".into(), "Tournament Desert".into())) && e.contains(&("GEN_AUTO_AI".into(), "3".into())) && e.contains(&("GEN_AUTO_DIFF".into(), "brutal".into())));
+        assert!(skirmish_env(None, None, None, have).unwrap().is_empty());
+        for bad_map in ["Missing", "../x", "a/b", ""] {
+            assert!(skirmish_env(Some(bad_map), None, None, have).is_err(), "{bad_map:?}");
+        }
+        assert!(skirmish_env(None, Some(0), None, have).is_err() && skirmish_env(None, Some(8), None, have).is_err());
+        assert!(skirmish_env(None, None, Some("god mode"), have).is_err());
+    }
 
     #[test]
     fn builds_args_with_mod() {

@@ -382,11 +382,40 @@ function openMapViewer(entries, start, onChange) {
     try { await invoke("maps_set_enabled", { names: [m.name], enabled: !m.enabled }); m.enabled = !m.enabled; if (onChange) onChange(); show(false); } catch (e) { note.textContent = errText(e); }
     toggle.disabled = false;
   } });
-  const close = h("button", { class: "btn primary", onclick: () => finish() }, "Close");
+  const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
+  // Play a skirmish on this map: how many computer opponents (up to the map's other start positions) and how hard.
+  const opp = h("select", { "aria-label": "Computer opponents" });
+  const diff = h("select", { "aria-label": "Difficulty" }, new Option("Easy", "easy"), new Option("Medium", "medium"), new Option("Brutal", "brutal"));
+  diff.value = ["easy", "medium", "brutal"].includes(prefs.get().skDiff) ? prefs.get().skDiff : "easy";
+  const play = h("button", { class: "btn primary", onclick: async () => {
+    const m = entries[i];
+    play.disabled = true;
+    try {
+      // a switched-off map is not in the game's folder: switch it on first
+      if (!m.enabled) { await invoke("maps_set_enabled", { names: [m.name], enabled: true }); m.enabled = true; if (onChange) onChange(); }
+      prefs.set({ skAi: +opp.value, skDiff: diff.value });
+      if (await startGame({ skirmish: true, map: m.name, ai: +opp.value, difficulty: diff.value })) finish();
+    } catch (e) { note.textContent = errText(e); }
+    play.disabled = false;
+  } }, icon("play"), "Play skirmish");
+  const skirmish = h("div", { class: "skirmishbar" },
+    h("label", { class: "field" }, h("span", {}, "Opponents"), opp),
+    h("label", { class: "field" }, h("span", {}, "Difficulty"), diff),
+    play);
+  opp.addEventListener("change", () => prefs.set({ skAi: +opp.value }));
+  function setSkirmish(starts) {
+    const max = Math.min(7, Math.max(0, starts - 1));
+    opp.replaceChildren(...Array.from({ length: max }, (_, k) => new Option(String(k + 1), String(k + 1))));
+    const want = Math.min(max, Math.max(1, prefs.get().skAi || 1));
+    if (max) opp.value = String(want);
+    for (const el of [opp, diff, play]) el.disabled = !max;
+    play.title = max ? "" : "This map has no start positions for a skirmish (a mission or solo map)";
+  }
+  setSkirmish(0);
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Map preview" },
     h("div", { class: "wizard mapviewer" },
       h("div", { class: "wiz-head" }, title, facts),
-      h("div", { class: "wiz-body" }, canvas, note),
+      h("div", { class: "wiz-body" }, canvas, note, skirmish),
       h("div", { class: "wiz-foot" }, h("div", { class: "row" }, prev, next, toggle), close)));
   const onKey = (e) => { if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -430,11 +459,13 @@ function openMapViewer(entries, start, onChange) {
     facts.textContent = `${m.pack} · ${m.enabled ? "switched on" : "switched off"} · ${i + 1} of ${entries.length}`;
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
     note.textContent = "Loading…";
+    setSkirmish(0);
     try {
       const v = await invoke("map_view", { name: m.name });
       if (mine !== token) return;
       paint(v);
       const n = v.info ? v.info.starts.length : 0;
+      setSkirmish(n);
       note.textContent = [
         v.info ? `${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)} cells` : "Size unknown",
         n ? `${n} start position${n === 1 ? "" : "s"}` : "no start positions (a mission or solo map)",
@@ -735,6 +766,23 @@ function watchBanner() {
     h("div", { class: "row" }, h("button", { class: "btn primary", onclick: () => choose(w.id, false) }, "Choose downloaded file…"), h("button", { class: "btn", onclick: cancelWatch }, "Cancel")));
 }
 
+/** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
+ *  goes straight into a skirmish. Returns whether the game was started. */
+async function startGame({ skirmish = false, map = null, ai = null, difficulty = null } = {}) {
+  if (!store.cfg.game_dir) { openWizard(); return false; }
+  const p = prefs.get(), nat = nativeRes();
+  const { w, h: hh } = p.res === "native" ? nat : p.res === "custom" ? { w: p.cw || nat.w, h: p.ch || nat.h } : (([x, y]) => ({ w: +x, h: +y }))(String(p.res).split("x"));
+  const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
+  let started = false;
+  try {
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty });
+    started = true;
+  } catch (e) { say(errText(e), "bad"); }
+  // The game's own window takes a few seconds to appear; keep the notice up until then.
+  setTimeout(() => busy.close(), started ? 5000 : 0);
+  return started;
+}
+
 // ---------------------------------------------------------------- pages
 function playPage() {
   const p = prefs.get();
@@ -784,17 +832,10 @@ function playPage() {
   fillFiles();
 
   async function launch(skirmish) {
-    if (!store.cfg.game_dir) { openWizard(); return; }
-    const { w, h: hh } = size();
+    prefs.set({ cw: +cw.value || undefined, ch: +ch.value || undefined, fs: fs.checked }); // a custom size is remembered for launches from elsewhere
     play.disabled = sk.disabled = true;
-    const busy = busyOverlay(skirmish ? "Starting a skirmish…" : "Starting the game…");
-    let started = false;
-    try {
-      await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: fs.checked, skirmish, raisedCamera: !!prefs.get().camera });
-      started = true;
-    } catch (e) { say(errText(e), "bad"); }
-    // The game's own window takes a few seconds to appear; keep the notice up until then.
-    setTimeout(() => { busy.close(); play.disabled = sk.disabled = false; }, started ? 5000 : 0);
+    const started = await startGame({ skirmish });
+    setTimeout(() => { play.disabled = sk.disabled = false; }, started ? 5000 : 0);
   }
 
   const el = h("div", { class: "page" },
