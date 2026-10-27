@@ -4,12 +4,15 @@ Security hardening, from a review of the code.
 
 - **Signed updates.** Each release's checksums are now signed (Ed25519) and the app only installs an update whose signature matches the key built into it. Before, the checksums came from the same place as the installer, so they only caught corrupt downloads. A release without a valid signature (including every release before this one) is not installed from inside the app: use **What's new** to open the release page. Installers are downloaded into a folder only you can use, and checked again right before they run.
 - **The debug zip shows what goes in before it is made.** Your Steam account name and lobby name are left out, your user name in file paths is replaced by `<home>`, and the last replay (it can contain chat) is only added if you tick it.
+- **Enter connects.** On the Online page, pressing Enter in the server, port, room or password field connects (it never disconnects you).
+- **Progress where you clicked.** Installing a map pack now shows its progress bar inside that pack's row, adding your own maps shows it above the "Add maps from…" buttons, and the "download this mod in your browser" steps appear inside the mod's own card, instead of at the top or bottom of a long list (or in a toast behind the setup window).
 - **Your Steam sign-in is not kept.** Downloading the game from Steam used to leave a saved sign-in token on your computer for good. Rallypoint now gives the downloader a private folder for it and removes it when the download ends, however it ends. **Settings > Game files > Saved Steam sign-in > Forget** removes one an earlier version left. Your Steam password was never stored.
 - **Server image builds use the tested dependencies.** The Docker build keeps every library at the version CI tested, the base images are pinned by digest, and a weekly check looks for known vulnerabilities in the Rust libraries.
 
 - **Play a skirmish from the map list.** In a map's preview, choose how many computer opponents (up to the map's other start positions) and how hard they are, then **Play skirmish**. The game starts on that map with your display settings and mods; a switched-off map is switched on for you.
 - **Quick Skirmish has options.** Choose 1 to 3 computer opponents (fewer if the map is small) and Easy, Medium or Brutal under the Play button; your choice is remembered, and the map preview uses the same choices.
 - **Quick Skirmish works on Windows.** It opened the main menu there, because the start-straight-into-a-skirmish code only ran on macOS.
+- **Quick Skirmish uses your player name.** A skirmish now calls you what the Online page says (this computer's name unless you set one), like the LAN lobby, and a host name such as `pc.example.org` becomes `pc` everywhere instead of the whole network name.
 
 ---
 

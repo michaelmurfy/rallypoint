@@ -1,0 +1,39 @@
+diff --git a/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp b/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
+index 5c8de34..c784047 100644
+--- a/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
++++ b/Core/GameEngine/Source/GameNetwork/IPEnumeration.cpp
+@@ -259,6 +259,10 @@ AsciiString IPEnumeration::getMachineName()
+ 		return "";
+ 	}
+ 
++	// Rallypoint: a host name such as `pc.example.org` is a name of the computer on a network, not a player name; the
++	// first part is what people call the machine.
++	if (char *dot = strchr(hostname, '.'))
++		*dot = 0;
+ 	return AsciiString(hostname);
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index 0ff2501..f49acc6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -201,6 +201,19 @@ void SkirmishPreferences::setSlotList()
+ UnicodeString SkirmishPreferences::getUserName()
+ {
+ 	UnicodeString ret;
++
++	// Rallypoint: the launcher passes the player's name (Online page; this computer's name unless they set one), the
++	// same one the LAN lobby uses, so a skirmish does not call them something else.
++	if (const char *launcherName = getenv("GEN_PLAYER_NAME"))
++	{
++		AsciiString name(launcherName);
++		name.trim();
++		if (!name.isEmpty())
++		{
++			ret.translate(name);
++			return ret;
++		}
++	}
+ 	SkirmishPreferences::const_iterator it = find("UserName");
+ 	if (it == end())
+ 	{

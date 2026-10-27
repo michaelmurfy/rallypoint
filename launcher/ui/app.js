@@ -251,7 +251,6 @@ async function startWatch(m) {
   } catch (e) { return say(errText(e), "bad"); }
   store.watch = { id: m.id, name: m.name, found: null };
   notifyMods();
-  document.getElementById("main")?.scrollTo({ top: 0, behavior: "smooth" }); // the banner is at the top of the page
   clearInterval(watchTimer);
   watchTimer = setInterval(async () => {
     if (!store.watch) return clearInterval(watchTimer);
@@ -301,6 +300,9 @@ async function loadMaps() {
   notifyMods();
 }
 /** Pick an archive or folder of maps, in the Downloads folder, and add it. */
+// Set by the maps card while it is on screen, so adding a file or folder reports in the card (where you clicked), not in a toast.
+let mapsNotice = null;
+const mapsSay = (text, kind) => (mapsNotice ? mapsNotice(text, kind) : say(text, kind));
 async function pickMaps(directory, packId) {
   let picked;
   try {
@@ -310,61 +312,83 @@ async function pickMaps(directory, packId) {
       title: directory ? "Choose a folder of maps" : "Choose a maps archive",
       filters: directory ? undefined : [{ name: "Map archives", extensions: ["zip", "7z", "rar", "gz", "tgz"] }],
     });
-  } catch (e) { return say("Couldn't open the file picker: " + errText(e), "bad"); }
+  } catch (e) { return mapsSay("Couldn't open the file picker: " + errText(e), "bad"); }
   if (!picked) return;
-  say("Adding maps…", "busy");
+  mapsSay("Adding maps… this can take a minute for a big pack", "busy");
   try {
     const n = await invoke("maps_install_path", { path: typeof picked === "string" ? picked : picked.path, pack: packId || null });
     const pack = packId && (store.maps.packs.find((p) => p.id === packId) || {});
-    say(pack && pack.start_disabled ? `${n} maps added to your library. Choose the ones you want on the Maps page.` : `${n} map${n === 1 ? "" : "s"} added`, "ok");
-  } catch (e) { say(errText(e), "bad"); }
+    mapsSay(pack && pack.start_disabled ? `${n} maps added to your library. Choose the ones you want on the Maps page.` : `${n} map${n === 1 ? "" : "s"} added`, "ok");
+  } catch (e) { mapsSay(errText(e), "bad"); }
   loadMaps();
   notifyMaps();
 }
 const notifyMaps = () => refreshers.forEach((f) => f.name === "reloadOrganiser" && f());
 /** Map packs to install with one button, plus adding your own. Used on the Mods page and in the wizard. */
 function mapsCard() {
-  let timer = null;
+  let timer = null, active = null, last = null; // active: the pack being installed (null for a file or folder you chose)
   const info = h("p", { class: "muted small" });
   const list = h("div", { class: "stack" });
-  const progress = h("progress", { max: 100, value: 0, hidden: true });
-  const msg = h("div", { class: "msg muted", role: "status" });
-  const cancel = h("button", { class: "btn small", hidden: true, onclick: () => invoke("maps_cancel") }, "Cancel");
+  // One progress block. It sits inside the row of the pack being installed, or above the "Add maps from…" buttons for a
+  // file or folder, so it shows where you just clicked instead of at the end of a long list.
+  const bar = h("progress", { max: 100, value: 0 });
+  const text = h("span", { class: "jobtext", role: "status" });
+  const cancel = h("button", { class: "btn small", onclick: () => invoke("maps_cancel") }, "Cancel");
+  const job = h("div", { class: "packjob", hidden: true }, h("div", { class: "row between" }, text, cancel), bar);
+  const strip = h("div", {});
+  // a file or folder being added: no percentage to show, so the bar just moves
+  mapsNotice = (message, kind) => {
+    last = { phase: kind === "busy" ? "Installing" : kind === "ok" ? "Done" : "Failed", percent: 0, message, local: true };
+    paintJob();
+  };
+  function paintJob() {
+    const s = last;
+    const busy = !!s && (s.phase === "Downloading" || s.phase === "Installing");
+    job.hidden = !s || s.phase === "Idle";
+    bar.hidden = !busy; cancel.hidden = !busy || !!(s && s.local);
+    if (s && s.percent > 0) bar.value = s.percent; else bar.removeAttribute("value");
+    text.className = "jobtext " + (s && s.phase === "Failed" ? "bad" : s && s.phase === "Done" ? "ok" : "");
+    text.textContent = s && s.phase !== "Idle" ? (busy ? `${s.message}${s.percent ? ` ${Math.round(s.percent)}%` : ""}` : s.message) : "";
+    list.querySelectorAll("button").forEach((b) => { if (!job.contains(b)) b.disabled = busy; });
+  }
   function render() {
     const m = store.maps;
     if (!m) return;
     info.textContent = m.count ? `${m.count} map${m.count === 1 ? "" : "s"} installed in ${m.dir}` : "No extra maps installed yet.";
-    fill(list, m.packs.map((p) => h("div", { class: "mappack" },
-      h("div", {}, h("h3", {}, p.name), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
-      p.manual
-        ? h("div", { class: "row" },
-          h("button", { class: "btn small", onclick: () => invoke("maps_open_pack_page", { id: p.id }).catch((e) => say(errText(e), "bad")) }, "Open download page"),
-          h("button", { class: "btn small", onclick: () => pickMaps(false, p.id) }, "Choose the file…"))
-        : h("button", { class: "btn small", onclick: () => start(p) }, "Install"))));
+    fill(list, m.packs.map((p) => {
+      const row = h("div", { class: "mappack" },
+        h("div", {}, h("h3", {}, p.name), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
+        p.manual
+          ? h("div", { class: "row" },
+            h("button", { class: "btn small", onclick: () => invoke("maps_open_pack_page", { id: p.id }).catch((e) => say(errText(e), "bad")) }, "Open download page"),
+            h("button", { class: "btn small", onclick: () => { active = p.id; render(); pickMaps(false, p.id); } }, "Choose the file…"))
+          : h("button", { class: "btn small", onclick: () => start(p) }, "Install"));
+      if (active === p.id) row.append(job);
+      return row;
+    }));
+    if (!job.parentElement || !list.contains(job)) strip.append(job);
+    paintJob();
   }
   async function start(p) {
-    try { await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { say(errText(e), "bad"); }
+    try { active = p.id; render(); await invoke("maps_install_pack", { id: p.id }); poll(); } catch (e) { active = null; render(); say(errText(e), "bad"); }
   }
   function poll() {
     clearInterval(timer);
     timer = setInterval(async () => {
       const s = await invoke("maps_status").catch(() => null);
       if (!s) return;
-      const active = s.phase === "Downloading" || s.phase === "Installing";
-      progress.hidden = !active; progress.value = s.percent; cancel.hidden = !active;
-      msg.className = "msg " + (s.phase === "Failed" ? "bad" : s.phase === "Done" ? "ok" : "muted");
-      msg.textContent = s.phase === "Idle" ? "" : s.message;
-      list.querySelectorAll("button").forEach((b) => { b.disabled = active; });
+      last = s;
+      paintJob();
       if (s.phase === "Done" || s.phase === "Failed") { clearInterval(timer); loadMaps(); }
     }, 600);
   }
   refreshers.add(render);
   render();
-  const el = h("div", { class: "stack" }, info, list, progress, msg,
-    h("div", { class: "row" }, cancel,
-      h("button", { class: "btn small", onclick: () => pickMaps(false) }, "Add maps from a file…"),
-      h("button", { class: "btn small", onclick: () => pickMaps(true) }, "Add a folder of maps…")));
-  return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); } };
+  const el = h("div", { class: "stack" }, info, list, strip,
+    h("div", { class: "row" },
+      h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(false); } }, "Add maps from a file…"),
+      h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(true); } }, "Add a folder of maps…")));
+  return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
 }
 
 /** A map as the game shows it: the preview picture at the map's proportions, with the start positions numbered on it. */
@@ -744,7 +768,9 @@ function modCard(m, compact) {
       actions),
     h("div", { class: "mod-links" },
       m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
-      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")));
+      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")),
+    watchBanner(m.id),
+    busy ? h("div", { class: "jobline", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, "Unpacking and installing. A large mod takes a minute or two.")) : null);
 }
 
 /** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
@@ -757,9 +783,10 @@ function modGroups() {
   ]);
 }
 
-function watchBanner() {
+/** What to do next for the mod being downloaded, shown inside that mod's own card so it is where you just clicked. */
+function watchBanner(id) {
   const w = store.watch;
-  if (!w || store.installing) return null;
+  if (!w || store.installing || w.id !== id) return null;
   return h("div", { class: "banner stack" },
     h("div", {}, h("b", {}, `Download ${w.name} in your browser`), h("p", { class: "muted small" }, "When the download has finished, choose the file here. Shockwave's own Windows launcher is not started; Rallypoint unpacks the installer and loads the game archives.")),
     w.found ? h("div", { class: "row" }, h("span", { class: "small" }, "Found in Downloads: "), h("code", {}, w.found.name), h("button", { class: "btn small primary", onclick: () => installPath(w.found.path, w.id) }, "Install this file")) : null,
@@ -884,7 +911,6 @@ function modsPage() {
   function render() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
     fill(body,
-      watchBanner(),
       modGroups(),
       store.mods.other.length ? h("h2", {}, "Your other mods") : null,
       store.mods.other.map((o) => {
@@ -1179,6 +1205,10 @@ function onlinePage() {
     fill(problem, lines);
   }
   refreshers.add(refresh); refresh();
+  // Enter in any of the four fields connects (not while connected: Disconnect is a deliberate click)
+  for (const f of [server, port, room, pw]) {
+    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing && btn.dataset.mode !== "disconnect" && !btn.disabled) { e.preventDefault(); btn.click(); } });
+  }
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Online")),
     h("div", { class: "card" },
@@ -1422,7 +1452,7 @@ function openWizard() {
     }
     if (step === 3) {
       const box = h("div", { class: "stack" });
-      const render = () => fill(box, watchBanner(), store.mods.catalog.map((m) => modCard(m, true)));
+      const render = () => fill(box, store.mods.catalog.map((m) => modCard(m, true)));
       refreshers.add(render); render();
       w.dispose = () => refreshers.delete(render);
       return h("div", { class: "stack" }, h("h2", {}, "Mods (optional)"), h("p", { class: "muted" }, "Mods change the game. Get one now, or add any later from the Mods tab, where you can also drop in your own."), box);
