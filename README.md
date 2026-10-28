@@ -45,7 +45,6 @@ On the **Play** tab:
 - pick the game (Zero Hour or an installed mod) and any extra mods
 - pick a resolution (default: your screen's native size) and fullscreen
 - **Play** opens the full game; **Start skirmish** (in the Quick Skirmish block) starts a match straight away with the opponents (1–3) and difficulty you choose
-- the **speed menu** beside it runs the skirmish slower or faster than normal (50% to 200%). It is set to normal until you change it, and it only applies to skirmishes: online games always run at the same speed for everyone
 
 **Widescreen and HiDPI** are on by default: wide screens see more of the map instead of a zoomed-in one, and the menus, command bar and text scale together. Set `GEN_STRETCH=1` to get the original stretched look back. *Settings → Graphics* has camera distance and the community's high-quality graphics settings (your `Options.ini` is backed up first).
 
@@ -70,7 +69,7 @@ The **Maps** tab has two parts.
 
 - **Get more maps:** one-click packs from [GenTool](https://www.gentool.net/download/) (all ranked maps, or the 1v1, 2v2 or 3v3 set) and the [Epic Showdown 707 pack](https://www.moddb.com/mods/cc-epic-showdown-707-mappack) (download it, then choose the file). Any other archive or folder works too.
 - **Your maps:** search, filter by pack and player count, sort, and switch maps on or off. Big packs arrive switched off so they don't bury your list. Switched-off maps move to `<app data>/GeneralsZH/MapLibrary`; nothing is deleted until you delete it. Changes apply the next time the game starts.
-- **Skirmish** (on every map in the list) opens the map with its numbered start positions. Set up the whole match: switch the game, then give each place a player (you, Easy/Medium/Brutal AI or closed), a general read from the game or mod, a team and a start position (click the map to assign one). Press **Play skirmish**.
+- **Skirmish** (on every map in the list) opens the map with its numbered start positions. Set up the whole match: switch the game, then give each place a player (you, Easy/Medium/Brutal AI or closed), a general read from the game or mod, a team and a start position (click the map to assign one). Pick a game speed beside the button (50% to 200%; normal until you change it) and press **Play skirmish**. Speed only applies to skirmishes: online games run at the same speed for everyone.
 
 ## Play online
 

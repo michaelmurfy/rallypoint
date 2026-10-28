@@ -444,7 +444,9 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .skbanner-icon svg { width: 14px; height: 14px; fill: currentColor; margin-left: 2px; }
 .maprow .btn svg { width: 14px; height: 14px; fill: currentColor; margin-right: 4px; }
 .skoptions { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center; }
-.skoptions > .skgo { margin-left: auto; }
+.skoptions > .btn { margin-left: auto; }
 .speedsel { width: auto; min-width: 0; }
+.playrow { display: flex; gap: 10px; align-items: stretch; margin-top: 4px; }
+.playrow .playbtn { flex: 1; width: auto; margin-top: 0; }
 .skrow .segs { justify-self: start; }
 
