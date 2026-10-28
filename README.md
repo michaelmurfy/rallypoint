@@ -106,7 +106,7 @@ Rallypoint checks GitHub for a newer release when it starts (switch that off in 
 
 To play over the internet, someone has to run a Rallypoint server. It runs on Linux: a cheap rented VM or a Raspberry Pi. It uses almost nothing (a few megabytes of memory and a trickle of bandwidth), so the cheapest machine you can rent is plenty. Everyone who plays connects to the same server and meets in a room.
 
-The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself.
+The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself. It also starts [Watchtower](https://github.com/nicholas-fedor/watchtower), which checks once a day for a newer Rallypoint server and restarts it on the new version, so the server looks after itself.
 
 ### 1. Rent a small server
 
@@ -156,7 +156,7 @@ Log in to the server over SSH and use the `rallypoint` command:
 | Command | What it does |
 |---|---|
 | `rallypoint status` | Is it running, and which port do players use |
-| `rallypoint update` | Get the newest release and restart. Do this when a new Rallypoint version comes out. |
+| `rallypoint update` | Get the newest release and restart right now. Watchtower does this for you once a day, so you only need it when you're impatient. |
 | `rallypoint logs` | Watch what it's doing (Ctrl+C to leave) |
 | `rallypoint key` | Show the identity fingerprint |
 | `rallypoint countries NZ,AU` | Change which countries are let in (`none` lets everyone in) |

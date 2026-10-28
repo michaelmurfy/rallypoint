@@ -1,5 +1,5 @@
 # Debian and Ubuntu only. Sets up a fresh server as a Rallypoint server:
-# updates, Docker, a firewall, protection against SSH guessing, automatic security updates, a login banner,
+# updates, Docker, a firewall, protection against SSH guessing, automatic security updates, Watchtower (keeps the server up to date), a login banner,
 # the server itself, and a `rallypoint` command to run it.
 #
 #   sudo apt update && sudo apt install -y git ansible     # on the fresh server, logged in as root
@@ -181,6 +181,24 @@
 
     - name: Install the rallypoint command
       ansible.builtin.copy: { src: ../rallypoint.sh, dest: /usr/local/bin/rallypoint, mode: "0755" }
+
+    # ---- automatic updates for the server itself -------------------------------------------------------------------
+    # Watchtower checks once a day for a newer image and restarts the container on it. It needs Docker's socket, which
+    # is as powerful as root on this machine, so it is the only thing given it. nickfedor's fork is the maintained one.
+    - name: Check whether Watchtower is already running
+      ansible.builtin.command: docker inspect watchtower
+      register: watchtower
+      failed_when: false
+      changed_when: false
+
+    - name: Start Watchtower
+      ansible.builtin.command: >-
+        docker run -d --name watchtower --restart unless-stopped
+        -e WATCHTOWER_CLEANUP=true
+        -v /var/run/docker.sock:/var/run/docker.sock
+        nickfedor/watchtower
+      when: watchtower.rc != 0
+      changed_when: true
 
     - name: Put a banner on the login screen
       ansible.builtin.template: { src: motd.j2, dest: /etc/motd, mode: "0644" }
