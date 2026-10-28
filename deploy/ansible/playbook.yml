@@ -1,10 +1,14 @@
-# Sets up a fresh Debian or Ubuntu server as a Rallypoint server:
+# Debian and Ubuntu only. Sets up a fresh server as a Rallypoint server:
 # updates, Docker, a firewall, protection against SSH guessing, automatic security updates, a login banner,
 # the server itself, and a `rallypoint` command to run it.
 #
-#   cd deploy/ansible
+#   sudo apt update && sudo apt install -y git ansible     # on the computer you run it from (Debian/Ubuntu)
+#   git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
 #   cp inventory.example.ini inventory.ini        # put your server's address in it
 #   ansible-playbook -i inventory.ini playbook.yml
+#
+# Or run it on the server itself, after logging in as root:
+#   ansible-playbook -i localhost, -c local -e rallypoint_address=YOUR.SERVER.IP playbook.yml
 #
 # It is safe to run again: it only changes what is not already how it should be.
 - name: Rallypoint server
@@ -164,8 +168,8 @@
     - name: Done
       ansible.builtin.debug:
         msg:
-          - "Your Rallypoint server is running on {{ inventory_hostname }}, UDP port {{ rallypoint_port }}."
-          - "In the Rallypoint app, open Online and enter: {{ inventory_hostname }}:{{ rallypoint_port }}"
+          - "Your Rallypoint server is running on {{ rallypoint_address | default(inventory_hostname) }}, UDP port {{ rallypoint_port }}."
+          - "In the Rallypoint app, open Online and enter: {{ rallypoint_address | default(inventory_hostname) }}:{{ rallypoint_port }}"
           - "{{ identity.stdout_lines[0] }}   (players compare this the first time they connect)"
           - "Log in over SSH and type `rallypoint help` to manage it."
 

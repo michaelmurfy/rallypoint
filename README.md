@@ -122,12 +122,30 @@ You want a **Debian 12 or Ubuntu 24.04** machine with 1 CPU and 1 GB of memory. 
 
 ### 2. Run the playbook
 
-On your own computer, install Ansible (`brew install ansible` on a Mac, `sudo apt install ansible` on Debian or Ubuntu, `pipx install ansible` anywhere else; on Windows use WSL). Then:
+**The playbook is for Debian and Ubuntu only** (on the server you rent). On anything else, use the plain Docker steps further down.
+
+You run it from a computer with Ansible and git. Your server doesn't need either, because the playbook installs what it needs there. Pick whichever is easiest:
+
+- **From a fresh Debian or Ubuntu machine** (your own, or the server itself):
+
+  ```bash
+  sudo apt update && sudo apt install -y git ansible
+  ```
+
+- **From a Mac:** `brew install ansible git`. **From Windows:** use WSL (Ubuntu) and the line above. **Anywhere else:** `pipx install ansible`.
+
+Then, from that computer:
 
 ```bash
 git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
 cp inventory.example.ini inventory.ini      # put your server's address in it
 ansible-playbook -i inventory.ini playbook.yml
+```
+
+**Running it on the server itself?** Log in as root, install the two packages above, clone the repo, and run this instead (use the server's public address):
+
+```bash
+ansible-playbook -i localhost, -c local -e rallypoint_address=YOUR.SERVER.IP playbook.yml
 ```
 
 It takes a few minutes and ends by printing the address to type into the app and the server's fingerprint. It's safe to run again whenever you like.
