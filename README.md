@@ -8,13 +8,13 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 **Playing over the internet needs a Rallypoint server.** It's a small program that passes the game's traffic between you and your friends, and one cheap server is enough for everyone. Setting one up takes about ten minutes: see [Run a server](#run-a-server). Skirmishes, mods and maps work without one, and so does a LAN game on the same network.
 
-**Where it stands:** single player works on macOS and Windows. Online games have been played Windows vs Windows and Mac vs Windows. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, the logs are how you help.
+**Where it stands:** single player works on macOS and Windows, and online games have been played Windows against Windows and Mac against Windows. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
 
 ## Get started
 
 1. Download the installer from [Releases](../../releases).
 2. Open Rallypoint. The setup wizard finds or downloads your game files.
-3. Press **Play**, or **Start skirmish** under Quick Skirmish to be in a match in seconds.
+3. Press **Play**, or **Start skirmish** under Quick Skirmish if you just want to blow something up in the next ten seconds.
 
 - **macOS (Apple Silicon only):** open the `.dmg`, drag Rallypoint to Applications. The first launch is blocked by Gatekeeper: right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
@@ -32,7 +32,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 ## Your game files
 
-Rallypoint needs the folder with `INIZH.big`.
+Rallypoint needs the folder with `INIZH.big` (that's Zero Hour's main data file). You have to own the game; Rallypoint just needs to know where it lives.
 
 - **Windows:** Steam installs are found automatically.
 - **macOS:** in *Settings → Game files* (or the setup wizard) open **Download them from Steam**. Enter your Steam account and password. Rallypoint downloads Generals and Zero Hour (about 4 GB) with the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader). Approve the sign-in on your phone or type the code. The password is never saved, and the sign-in token the downloader keeps is deleted when the download ends. The account must own both games.
@@ -56,7 +56,7 @@ On the **Play** tab:
 
 Listed mods: **Shockwave**, its add-on **Shockwave Chaos** (played on top of Shockwave), and **Cold War Crisis** (a total conversion: it can't be combined with the other two). Anything else you add shows up as a tick box on top of the game.
 
-- **Why not download in the app?** Mod sites such as ModDB block automated downloads, so you fetch the file and Rallypoint installs it.
+- **Why not download in the app?** Mod sites such as ModDB block automated downloads, so you fetch the file yourself and Rallypoint does the installing. A small chore, but it keeps us on the right side of those sites.
 - **Installers:** Shockwave's Windows installer is unpacked by Rallypoint itself, on Mac and PC, and its own launcher is never started. For other installers, `innoextract` or 7-Zip does the same job (`brew install sevenzip innoextract`, `sudo apt install p7zip-full innoextract unzip`, or [7-Zip](https://www.7-zip.org/)).
 - **What can't work:** a patched `generals.exe`, or features that live in a mod's own launcher. Mods without `.big` files aren't installed automatically yet.
 - **Safety:** archives are checked before anything is written; ones that try to escape their folder are refused.
@@ -85,7 +85,7 @@ You need a Rallypoint server for this. If a friend runs one, ask them for its ad
 
 **Security:** everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305). The first time you connect, the launcher remembers the server's identity; a different server answering later is refused until you say so. Compare the fingerprint from `rallypoint key` (run on the server) with the one on the Online tab to be sure the first time.
 
-**Staying in sync:** both machines use the same deterministic maths. The lobby refuses a player whose game data or maths differs. The relay also compares every player's simulation checksum and tells everyone, with the frame and who is out of step, if they diverge. Bringing a player back in step mid-game isn't built yet.
+**Staying in sync:** a lockstep game only works if every machine does exactly the same sums, so Rallypoint makes a Mac and a PC do the same sums. The lobby refuses a player whose game data or maths differs. The relay also compares every player's simulation checksum and tells everyone, with the frame and who is out of step, if they diverge. Bringing a player back in step mid-game isn't built yet.
 
 ## Debug logs
 
@@ -100,7 +100,7 @@ If a game crashes or goes out of sync:
 
 ## Updates
 
-Rallypoint checks GitHub for a newer release when it starts (switch off in *Settings → Updates*). Updates are signed: the app installs one only if its signature matches the key built into the app. Installers are kept in a private folder, checked again right before they run, and cleaned up on the next start.
+Rallypoint checks GitHub for a newer release when it starts (switch that off in *Settings → Updates*), and *Changelog* there shows what changed. Updates are signed: the app installs one only if its signature matches the key built into the app. Installers are kept in a private folder, checked again right before they run, and cleaned up on the next start.
 
 ## Run a server
 
@@ -222,9 +222,10 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 
 ## Known limitations
 
-- Some online games drift out of sync a couple of minutes in. Investigation is under way; sync logs and debug logs are how to help.
-- No Linux engine and no Intel Mac engine.
+- Some long online games drift out of sync. We're on it, and sync logs and debug logs are how you can help.
+- No Linux engine and no Intel Mac engine. Sorry, Intel Mac folks.
 - Mods and the Epic Showdown pack are downloaded in your browser, not inside the launcher.
+- Game speed can be changed in skirmishes only, not in online games.
 - Not built yet: save and load in multiplayer, controlling allies' units, co-op, bringing an out-of-step player back mid-game.
 - The first connection to a relay trusts whoever answers (like SSH); after that its identity is checked.
 
