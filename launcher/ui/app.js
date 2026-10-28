@@ -22,6 +22,7 @@ function h(tag, props, ...kids) {
 
 const ICONS = {
   play: "M8 5v14l11-7z",
+  speed: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z",
   mods: "M12 2 2 7l10 5 10-5-10-5zm0 11.5L4.6 9.8 2 11l10 5 10-5-2.6-1.2L12 13.5zm0 4-7.4-3.7L2 15l10 5 10-5-2.6-1.2L12 17.5z",
   online: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-3a15.7 15.7 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8zM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4zM4.3 14a8.200 8.200 0 0 1 0-4h3.400a16.500 16.500 0 0 0 0 4H4.300zm.8 2h3a15.700 15.700 0 0 0 1.400 3.600A8 8 0 0 1 5.100 16zm3-8h-3a8 8 0 0 1 4.400-3.600A15.700 15.700 0 0 0 8.100 8zM12 20c-.8-1.200-1.500-2.500-1.900-4h3.800c-.4 1.500-1.100 2.800-1.900 4zm2.300-6H9.700a14.700 14.700 0 0 1 0-4h4.600a14.700 14.700 0 0 1 0 4zm.2 5.600c.6-1.100 1.100-2.300 1.400-3.600h3a8 8 0 0 1-4.400 3.600zm1.800-5.600a16.500 16.500 0 0 0 0-4h3.400a8.200 8.200 0 0 1 0 4h-3.400z",
   maps: "M20.5 3l-.2.1L15 5.2 9 3 3.400 4.900a.5.5 0 0 0-.4.5v15.100a.5.5 0 0 0 .5.5l.2-.1L9 18.800l6 2.100 5.600-1.900a.5.5 0 0 0 .4-.5V3.500a.5.5 0 0 0-.5-.5zM15 19l-6-2.100V5l6 2.100V19z",
@@ -935,8 +936,11 @@ function speedSelect() {
     ...SPEEDS.map(([v, t]) => h("option", { value: String(v) }, t)));
   const saved = prefs.get().skSpeed;
   sel.value = SPEEDS.some(([v]) => v === saved) ? String(saved) : "100";
-  sel.addEventListener("change", () => prefs.set({ skSpeed: +sel.value }));
-  return sel;
+  const wrap = h("div", { class: "speedpick" }, icon("speed"), sel);
+  const mark = () => wrap.classList.toggle("changed", sel.value !== "100"); // a speed other than normal is lit up
+  mark();
+  sel.addEventListener("change", () => { prefs.set({ skSpeed: +sel.value }); mark(); });
+  return wrap;
 }
 const skirmishSpeed = () => (SPEEDS.some(([v]) => v === prefs.get().skSpeed) ? prefs.get().skSpeed : 100);
 
