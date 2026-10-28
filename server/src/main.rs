@@ -1,4 +1,4 @@
-//! rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key>
+//! rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key | health>
 //! Settings come from the environment (see .env.example): ALLOWED_COUNTRIES, GEO_DIR, ALLOW_PRIVATE,
 //! GENERALS_SERIALS, GENERALS_BIND, GENERALS_REGISTRATION, GENERALS_KEY.
 use generals_proto::secure::{self, Key};
@@ -94,10 +94,23 @@ fn main() -> std::io::Result<()> {
             let (_, public) = identity(&key_file)?;
             println!("identity {}\npublic key {}", secure::fingerprint(&public), secure::to_hex(&public));
         }
+        // For the container's health check: exit 0 only if the server loop has been alive in the last 10 seconds.
+        Some("health") => {
+            let fresh = std::fs::metadata(heartbeat_file()).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < Duration::from_secs(10));
+            if !fresh {
+                eprintln!("the server loop has not reported in the last 10 seconds");
+                std::process::exit(1);
+            }
+        }
         Some("run") => run(&file, &bind, open, &key_file)?,
-        _ => eprintln!("usage: rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key>"),
+        _ => eprintln!("usage: rallypoint-server [--serials FILE] [--bind ADDR] [--key FILE] <run | issue [label] | revoke SERIAL | list | key | health>"),
     }
     Ok(())
+}
+
+/// The file `run` touches once a second so `health` can tell a live server from a hung one.
+fn heartbeat_file() -> String {
+    env("HEALTH_FILE", "/tmp/rallypoint-alive")
 }
 
 fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()> {
@@ -180,6 +193,7 @@ fn run(file: &str, bind: &str, open: bool, key_file: &str) -> std::io::Result<()
         }
         if now != last_tick {
             last_tick = now;
+            let _ = std::fs::write(heartbeat_file(), now.to_string());
             server.expire(now);
             for line in server.take_events() {
                 eprintln!("[{}] {line}", uptime(now));

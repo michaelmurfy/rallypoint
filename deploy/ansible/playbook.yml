@@ -1,0 +1,210 @@
+# Debian and Ubuntu only. Sets up a fresh server as a Rallypoint server:
+# updates, Docker, a firewall, protection against SSH guessing, automatic security updates, a login banner,
+# the server itself, and a `rallypoint` command to run it.
+#
+#   sudo apt update && sudo apt install -y git ansible     # on the fresh server, logged in as root
+#   git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
+#   ansible-playbook -i localhost, -c local playbook.yml
+#
+# Or from another Linux machine over SSH: copy inventory.example.ini to inventory.ini, put the server's address in it,
+# and run: ansible-playbook -i inventory.ini playbook.yml
+#
+# It is safe to run again: it only changes what is not already how it should be.
+- name: Rallypoint server
+  hosts: all
+  become: true
+  vars:
+    # The UDP port players connect to. If you change it, change it in the game's Online tab too.
+    rallypoint_port: 7777
+    # Only let players from these countries in, like "NZ,AU". Empty lets everyone in.
+    rallypoint_countries: ""
+    rallypoint_dir: /opt/rallypoint
+    rallypoint_repo: https://github.com/michaelmurfy/rallypoint.git
+    ssh_port: 22
+    # Turn off password logins for SSH. The playbook refuses to do it unless you can log in with a key, so you can't lock yourself out.
+    harden_ssh: true
+    docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}[ansible_architecture] | default(ansible_architecture) }}"
+
+  pre_tasks:
+    - name: Check this is Debian or Ubuntu
+      ansible.builtin.assert:
+        that: ansible_distribution in ['Debian', 'Ubuntu']
+        fail_msg: "This playbook is for Debian or Ubuntu. {{ ansible_distribution }} isn't supported; use the plain Docker steps in the README instead."
+
+    - name: Look for an SSH key that lets you in
+      ansible.builtin.stat:
+        path: "{{ '/root' if (ansible_user | default('root')) == 'root' else '/home/' ~ ansible_user }}/.ssh/authorized_keys"
+      register: login_keys
+      when: harden_ssh
+
+    - name: Refuse to turn off SSH passwords if there is no key to log in with
+      ansible.builtin.assert:
+        that: login_keys.stat.exists and login_keys.stat.size > 0
+        fail_msg: >-
+          There is no SSH key on this server for {{ ansible_user | default('root') }}, so turning off password logins would lock you out.
+          Add your key (ssh-copy-id), or run with -e harden_ssh=false.
+      when: harden_ssh
+
+  tasks:
+    # ---- the basics ------------------------------------------------------------------------------------------------
+    - name: Install updates and the tools we need
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        name: [ca-certificates, curl, git, make, ufw, fail2ban, unattended-upgrades, gnupg]
+        state: present
+
+    - name: Install security updates automatically
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    # ---- Docker, from Docker's own repository ----------------------------------------------------------------------
+    - name: Make a folder for apt keys
+      ansible.builtin.file: { path: /etc/apt/keyrings, state: directory, mode: "0755" }
+
+    - name: Get Docker's signing key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Add Docker's repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ docker_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: true
+
+    - name: Keep Docker's logs from filling the disk
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+        content: |
+          {"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
+      notify: Restart Docker
+
+    - name: Start Docker now and on every boot
+      ansible.builtin.service: { name: docker, state: started, enabled: true }
+
+    # ---- firewall --------------------------------------------------------------------------------------------------
+    # The server runs on the host's network, so this firewall covers it (Docker's published ports would skip it).
+    - name: Allow SSH, and slow down anyone hammering it
+      community.general.ufw: { rule: limit, port: "{{ ssh_port }}", proto: tcp }
+
+    - name: Allow players in on the Rallypoint port
+      community.general.ufw: { rule: allow, port: "{{ rallypoint_port }}", proto: udp }
+
+    - name: Block everything else coming in
+      community.general.ufw: { state: enabled, default: deny, direction: incoming }
+
+    - name: Let the server make its own connections out
+      community.general.ufw: { default: allow, direction: outgoing }
+
+    # ---- SSH -------------------------------------------------------------------------------------------------------
+    - name: Turn off SSH passwords (keys only)
+      ansible.builtin.template:
+        src: sshd-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-rallypoint.conf
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      when: harden_ssh
+      notify: Reload SSH
+
+    - name: Ban addresses that keep guessing SSH logins
+      ansible.builtin.template: { src: jail.local.j2, dest: /etc/fail2ban/jail.d/rallypoint.local, mode: "0644" }
+      notify: Restart fail2ban
+
+    - name: Start fail2ban now and on every boot
+      ansible.builtin.service: { name: fail2ban, state: started, enabled: true }
+
+    # ---- Rallypoint ------------------------------------------------------------------------------------------------
+    - name: Get the Rallypoint server files
+      ansible.builtin.git:
+        repo: "{{ rallypoint_repo }}"
+        dest: "{{ rallypoint_dir }}"
+        version: main
+        depth: 1
+        update: false
+
+    - name: Create the settings file
+      ansible.builtin.command: make config
+      args: { chdir: "{{ rallypoint_dir }}", creates: "{{ rallypoint_dir }}/.env" }
+
+    - name: Set the port
+      ansible.builtin.lineinfile: { path: "{{ rallypoint_dir }}/.env", regexp: "^PORT=", line: "PORT={{ rallypoint_port }}" }
+
+    - name: Set which countries are let in
+      ansible.builtin.lineinfile: { path: "{{ rallypoint_dir }}/.env", regexp: "^ALLOWED_COUNTRIES=", line: "ALLOWED_COUNTRIES={{ rallypoint_countries }}" }
+
+    # ---- this server's addresses (the public ones come from icanhazip.com) -----------------------------------------
+    - name: Find the public IPv4 address
+      ansible.builtin.uri: { url: "https://ipv4.icanhazip.com", return_content: true, timeout: 10 }
+      register: public_v4
+      failed_when: false
+      changed_when: false
+
+    - name: Find the public IPv6 address, if there is one
+      ansible.builtin.uri: { url: "https://ipv6.icanhazip.com", return_content: true, timeout: 10 }
+      register: public_v6
+      failed_when: false
+      changed_when: false
+
+    - name: Work out the addresses to show
+      ansible.builtin.set_fact:
+        public_ipv4: "{{ (public_v4.content | default('') | trim) if public_v4.status | default(0) == 200 else '' }}"
+        public_ipv6: "{{ (public_v6.content | default('') | trim) if public_v6.status | default(0) == 200 else '' }}"
+        private_ipv4: "{{ ansible_facts['default_ipv4']['address'] | default('') }}"
+        private_ipv6: "{{ ansible_facts['default_ipv6']['address'] | default('') }}"
+
+    - name: Pick the address players should type
+      ansible.builtin.set_fact:
+        server_address: >-
+          {{ rallypoint_address if rallypoint_address is defined
+             else (public_ipv4 if inventory_hostname in ['localhost', '127.0.0.1'] and public_ipv4 else inventory_hostname) }}
+
+    - name: Install the rallypoint command
+      ansible.builtin.copy: { src: ../rallypoint.sh, dest: /usr/local/bin/rallypoint, mode: "0755" }
+
+    - name: Put a banner on the login screen
+      ansible.builtin.template: { src: motd.j2, dest: /etc/motd, mode: "0644" }
+
+    - name: Start the server (this waits until it reports healthy)
+      ansible.builtin.command: make up
+      args: { chdir: "{{ rallypoint_dir }}" }
+      changed_when: true
+
+    - name: Read the server's identity fingerprint
+      ansible.builtin.command: make key
+      args: { chdir: "{{ rallypoint_dir }}" }
+      register: identity
+      changed_when: false
+
+    - name: Done
+      ansible.builtin.debug:
+        msg:
+          - "Your Rallypoint server is running on {{ server_address }}, UDP port {{ rallypoint_port }}."
+          - "In the Rallypoint app, open Online and enter: {{ server_address }}:{{ rallypoint_port }}"
+          - "{{ identity.stdout_lines[0] }}   (players compare this the first time they connect)"
+          - "Public IPv4: {{ public_ipv4 | default('unknown', true) }}    Private IPv4: {{ private_ipv4 | default('none', true) }}"
+          - "Public IPv6: {{ public_ipv6 | default('none', true) }}    Private IPv6: {{ private_ipv6 | default('none', true) }}"
+          - "The server accepts IPv4 connections only for now, so give players the IPv4 address (or a name that points to it)."
+          - "Log in over SSH and type `rallypoint help` to manage it."
+
+  handlers:
+    - name: Restart Docker
+      ansible.builtin.service: { name: docker, state: restarted }
+    - name: Reload SSH
+      ansible.builtin.service: { name: ssh, state: reloaded }
+    - name: Restart fail2ban
+      ansible.builtin.service: { name: fail2ban, state: restarted }

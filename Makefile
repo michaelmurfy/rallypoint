@@ -1,13 +1,15 @@
 # Rallypoint server and development tasks. `make help` lists everything.
 COMPOSE ?= docker compose
 BUILD = $(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml
+# Seconds to wait for the container to report healthy before `up` gives up.
+WAIT ?= 60
 .DEFAULT_GOAL := help
 -include .env
 
-.PHONY: help config geo up dev down restart logs status key update test release linux-client
+.PHONY: help config geo up build down restart logs status key update test release linux-client
 
 help: ## Show this help
-	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  \033[1mmake %-9s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN{FS=":.*## "} /^[a-z-]+:.*## /{printf "  \033[1mmake %-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
 config: ## Create .env (limit to a country: make config COUNTRIES=NZ)
 	@[ -f .env ] || { cp .env.example .env; echo "created .env"; }
@@ -27,18 +29,20 @@ geo: ## Download the IP lists for ALLOWED_COUNTRIES (done automatically by up/up
 	    || { rm -f data/geo/$$cc.zone.tmp; echo "could not download the list for $$cc"; exit 1; }; \
 	done
 
-up: config geo ## Start the server from the released image (RELAY_TAG=0.2.0-beta.4 pins a version)
-	@$(COMPOSE) up -d || { echo "Could not get the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build; }
+up: config geo ## Start the server from the released image (RELAY_TAG=0.5.6 pins a version)
+	$(COMPOSE) pull
+	$(COMPOSE) up -d --wait --wait-timeout $(WAIT)
 	@echo "Rallypoint server is running on UDP port $${PORT:-7777}"
 
-dev: config geo ## Build the server from this checkout and start it
-	$(BUILD) up -d --build
+build: config geo ## Build the server from this checkout instead of pulling the released image, and start it
+	$(BUILD) up -d --build --wait --wait-timeout $(WAIT)
+	@echo "Rallypoint server (built from source) is running on UDP port $${PORT:-7777}"
 
 down: ## Stop the server
 	$(COMPOSE) down
 
 restart: config geo ## Apply .env changes
-	@$(COMPOSE) up -d --force-recreate || { echo "Could not get the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build --force-recreate; }
+	$(COMPOSE) up -d --force-recreate --wait --wait-timeout $(WAIT)
 
 logs: ## Follow the server log
 	$(COMPOSE) logs -f --tail=100 relay
@@ -52,7 +56,8 @@ status: ## Show whether the server is running
 update: ## Pull the latest released image and config, refresh country lists, restart
 	git pull --ff-only
 	$(MAKE) geo
-	@if $(COMPOSE) pull; then $(COMPOSE) up -d; else echo "Could not pull the released image (is the GHCR package public?); building from this checkout instead."; $(BUILD) up -d --build; fi
+	$(COMPOSE) pull
+	$(COMPOSE) up -d --wait --wait-timeout $(WAIT)
 
 test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server

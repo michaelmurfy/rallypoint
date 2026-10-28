@@ -1,7 +1,7 @@
 # Use the Makefile (make up / down / update) rather than calling this directly.
 services:
   relay:
-    # The image CI builds for each release. `make dev` builds from this checkout instead (docker-compose.build.yml).
+    # The image CI builds for each release. `make build` builds from this checkout instead (docker-compose.build.yml).
     image: ghcr.io/michaelmurfy/rallypoint-relay:${RELAY_TAG:-latest}
     restart: unless-stopped
     env_file: .env
@@ -15,6 +15,13 @@ services:
     volumes:
       - relay-data:/data
       - ./data/geo:/geo:ro
+    # `docker compose up --wait` (make up) waits for this. The server touches a file once a second; `health` checks it is fresh.
+    healthcheck:
+      test: ["CMD", "rallypoint-server", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     # The server needs nothing but its UDP socket and the /data volume.
     read_only: true
     tmpfs:

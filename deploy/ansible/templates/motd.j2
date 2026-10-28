@@ -1,0 +1,17 @@
+
+  Rallypoint server
+  -----------------
+  Players connect to this machine on UDP port {{ rallypoint_port }}.
+  Address to give them: {{ server_address }}:{{ rallypoint_port }}
+  Public IPv4 {{ public_ipv4 | default('unknown', true) }}, private IPv4 {{ private_ipv4 | default('none', true) }}
+  Public IPv6 {{ public_ipv6 | default('none', true) }} (the server accepts IPv4 only for now)
+{% if rallypoint_countries %}  Only these countries are let in: {{ rallypoint_countries }}.
+{% endif %}
+  rallypoint status     is it running?
+  rallypoint logs       watch it work
+  rallypoint update     get the newest release
+  rallypoint key        the fingerprint players compare the first time
+  rallypoint help       everything else
+
+  Set up by the Rallypoint Ansible playbook. Changes to this file will be overwritten if you run it again.
+

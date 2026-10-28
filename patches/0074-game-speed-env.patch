@@ -1,0 +1,45 @@
+GEN_GAME_SPEED=N (percent, 50 to 200) sets the single-player game speed through the logic time scale. The launcher's skirmish speed menu sets it.
+
+diff --git a/Core/GameEngine/Source/Common/FramePacer.cpp b/Core/GameEngine/Source/Common/FramePacer.cpp
+index 70d8260..bca99df 100644
+--- a/Core/GameEngine/Source/Common/FramePacer.cpp
++++ b/Core/GameEngine/Source/Common/FramePacer.cpp
+@@ -88,6 +88,18 @@ FramePacer::FramePacer()
+ 		}
+ 	}
+ #endif
++
++	// Rallypoint: GEN_GAME_SPEED=N (percent, 50 to 200) runs a single-player game at N% of normal speed by stepping the
++	// simulation at 30*N/100 Hz (the logic time scale the in-game hotkeys use). 100 or unset leaves the game as it was.
++	{
++		const char *gs = ::getenv("GEN_GAME_SPEED");
++		const Int pct = (gs && *gs) ? atoi(gs) : 100;
++		if (pct >= 50 && pct <= 200 && pct != 100)
++		{
++			m_enableLogicTimeScale = TRUE;
++			m_logicTimeScaleFPS = ((Int)LOGICFRAMES_PER_SECOND * pct + 50) / 100;
++		}
++	}
+ }
+ 
+ FramePacer::~FramePacer()
+@@ -106,6 +118,9 @@ void FramePacer::update()
+ 
+ void FramePacer::setFramesPerSecondLimit( Int fps )
+ {
++	// Rallypoint: a faster game speed needs the render cap above the logic rate, or the logic just follows the render frames.
++	if (m_enableLogicTimeScale && m_logicTimeScaleFPS > (Int)LOGICFRAMES_PER_SECOND && fps > 0 && fps < m_logicTimeScaleFPS * 2)
++		fps = m_logicTimeScaleFPS * 2;
+ 	DEBUG_LOG(("FramePacer::setFramesPerSecondLimit() - setting max fps to %d (TheGlobalData->m_useFpsLimit == %d)", fps, TheGlobalData->m_useFpsLimit));
+ 	m_maxFPS = fps;
+ }
+@@ -178,6 +193,9 @@ Int FramePacer::getActualFramesPerSecondLimit() const
+ 		s_cap = (e && *e) ? atoi(e) : 30;
+ 	}
+ 	if (s_cap <= 0) return RenderFpsPreset::UncappedFpsValue;
++	// Rallypoint: GEN_GAME_SPEED above 100 needs a render cap above the logic rate.
++	if (m_enableLogicTimeScale && m_logicTimeScaleFPS > (Int)LOGICFRAMES_PER_SECOND && s_cap < m_logicTimeScaleFPS * 2)
++		return m_logicTimeScaleFPS * 2;
+ 	return s_cap;
+ #else
+ 	return isActualFramesPerSecondLimitEnabled() ? getFramesPerSecondLimit() : RenderFpsPreset::UncappedFpsValue;
