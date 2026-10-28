@@ -164,6 +164,17 @@ Log in to the server over SSH and use the `rallypoint` command:
 
 Keep the server's `serials.key` safe (it lives in Docker's data volume). A new key shows every player a changed identity. The relay carries only the game's own traffic, and each player has a packet limit, so a stranger can't use it for anything else.
 
+### How the server is locked down
+
+What the playbook sets up, so you know what you're trusting:
+
+- **Firewall:** everything coming in is blocked except SSH (rate limited) and the game's UDP port.
+- **SSH:** keys only, no passwords, root can log in with a key but not a password, three tries per connection, no X11 or agent forwarding, and fail2ban bans addresses that keep guessing.
+- **The server itself:** runs as an unprivileged user in a read-only container with every Linux capability dropped, a memory cap and no way to gain privileges. It only carries the game's own traffic.
+- **Updates:** security patches install by themselves every night. Kernel patches need a restart; add `-e auto_reboot=true` to let the machine restart itself at 04:00, or reboot when you next log in.
+- **Watchtower:** checks once a day for a new Rallypoint server image and only touches that one container. It's pinned to a version, read-only, and has no extra privileges. It does need Docker's control socket, which is as powerful as root on that machine, so it's the one piece worth knowing about. Prefer not to have it? Run `docker rm -f watchtower` and use `rallypoint update` yourself.
+- **Not done:** the playbook doesn't create a separate admin user, so you still log in as root with your key. To follow a release tag instead of the latest code, use `-e rallypoint_version=v0.5.7`.
+
 ### Doing it by hand
 
 On any Linux machine with Docker (a Pi included), open one **UDP** port (7777 by default) and run:

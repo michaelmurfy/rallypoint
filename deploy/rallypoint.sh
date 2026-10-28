@@ -1,12 +1,13 @@
 #!/bin/sh
 # rallypoint: the one command you need on a Rallypoint server. The Ansible playbook installs it as /usr/local/bin/rallypoint.
 # It runs the Makefile in the server's folder, so `rallypoint update` and `make update` there do the same thing.
-DIR="${RALLYPOINT_DIR:-/opt/rallypoint}"
+# A fixed folder, not an environment variable: this script runs as root and runs the Makefile it finds there.
+DIR=/opt/rallypoint
 
 [ -d "$DIR" ] || { echo "No Rallypoint server in $DIR."; exit 1; }
 # The server's files belong to root, so a regular user is sent through sudo.
 if [ "$(id -u)" != 0 ]; then
-  exec sudo RALLYPOINT_DIR="$DIR" "$0" "$@"
+  exec sudo "$0" "$@"
 fi
 cd "$DIR" || exit 1
 

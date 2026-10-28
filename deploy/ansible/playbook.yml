@@ -21,6 +21,12 @@
     rallypoint_dir: /opt/rallypoint
     rallypoint_repo: https://github.com/michaelmurfy/rallypoint.git
     ssh_port: 22
+    # Which version of the server files to run: main, or a release tag like v0.5.7. A tag only changes when you change it.
+    rallypoint_version: main
+    # Restart the machine by itself (at 04:00) when a security update needs it, which is how kernel fixes take effect.
+    # Off by default because it ends any game in progress.
+    auto_reboot: false
+    watchtower_image: nickfedor/watchtower:1.23.2
     # Turn off password logins for SSH. The playbook refuses to do it unless you can log in with a key, so you can't lock yourself out.
     harden_ssh: true
     docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}[ansible_architecture] | default(ansible_architecture) }}"
@@ -64,6 +70,14 @@
         content: |
           APT::Periodic::Update-Package-Lists "1";
           APT::Periodic::Unattended-Upgrade "1";
+
+    - name: Restart by itself after updates that need it (only if auto_reboot is on)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52rallypoint-reboot
+        mode: "0644"
+        content: |
+          Unattended-Upgrade::Automatic-Reboot "{{ 'true' if auto_reboot else 'false' }}";
+          Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 
     # ---- Docker, from Docker's own repository ----------------------------------------------------------------------
     - name: Make a folder for apt keys
@@ -139,7 +153,7 @@
       ansible.builtin.git:
         repo: "{{ rallypoint_repo }}"
         dest: "{{ rallypoint_dir }}"
-        version: main
+        version: "{{ rallypoint_version }}"
         depth: 1
         update: false
 
@@ -184,20 +198,28 @@
 
     # ---- automatic updates for the server itself -------------------------------------------------------------------
     # Watchtower checks once a day for a newer image and restarts the container on it. It needs Docker's socket, which
-    # is as powerful as root on this machine, so it is the only thing given it. nickfedor's fork is the maintained one.
-    - name: Check whether Watchtower is already running
-      ansible.builtin.command: docker inspect watchtower
+    # is as powerful as root on this machine, so it is locked down as far as it can be: a pinned version (nothing new
+    # arrives from Docker Hub unless this playbook says so), only containers labelled for it (the relay), no extra
+    # privileges, a read-only filesystem and a memory cap. nickfedor's fork is the maintained one.
+    - name: Check what Watchtower is running now
+      ansible.builtin.command: docker inspect watchtower --format '{% raw %}{{.Config.Image}} {{.Config.Env}}{% endraw %}'
       register: watchtower
       failed_when: false
       changed_when: false
 
+    - name: Remove an out-of-date Watchtower
+      ansible.builtin.command: docker rm -f watchtower
+      when: watchtower.rc == 0 and (watchtower_image not in watchtower.stdout or 'WATCHTOWER_LABEL_ENABLE=true' not in watchtower.stdout)
+      changed_when: true
+
     - name: Start Watchtower
       ansible.builtin.command: >-
         docker run -d --name watchtower --restart unless-stopped
-        -e WATCHTOWER_CLEANUP=true
+        -e WATCHTOWER_CLEANUP=true -e WATCHTOWER_LABEL_ENABLE=true
+        --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --pids-limit 64
         -v /var/run/docker.sock:/var/run/docker.sock
-        nickfedor/watchtower
-      when: watchtower.rc != 0
+        {{ watchtower_image }}
+      when: watchtower.rc != 0 or watchtower_image not in watchtower.stdout or 'WATCHTOWER_LABEL_ENABLE=true' not in watchtower.stdout
       changed_when: true
 
     - name: Put a banner on the login screen

@@ -2,3 +2,8 @@
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin prohibit-password
+# Nothing here needs these, and each is a way for a stranger's machine to reach back into yours.
+X11Forwarding no
+AllowAgentForwarding no
+MaxAuthTries 3
+LoginGraceTime 30
