@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "generals-core"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "bzip2",
  "ed25519-dalek",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "generals-launcher"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "generals-core",
  "generals-proto",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "generals-proto"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "sha2 0.11.1",
  "snow",
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "generals-server"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "generals-proto",
 ]
