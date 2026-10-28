@@ -1,0 +1,30 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 414ac6a..af5409f 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -3928,6 +3928,25 @@ static void DrawShadowPass(MetalContext* ctx, const MetalDrawCall* dc)
+         id<MTLRenderPipelineState> ps = GetPipeline(ctx, dc);
+         if (!ps) return;
+ 
++        // MTL_DRAW_SKIP=a-b skips draws a..b-1 of every frame (bisect which draw paints something wrong);
++        // MTL_DRAW_LOG=a-b prints their state once, at render frame 300.
++        { static int s_init = 0, s_lo = 0, s_hi = 0, s_llo = 0, s_lhi = 0, s_idx = 0; static long s_fr = -1;
++          if (!s_init) { s_init = 1;
++              if (const char* e = getenv("MTL_DRAW_SKIP")) sscanf(e, "%d-%d", &s_lo, &s_hi);
++              if (const char* e = getenv("MTL_DRAW_LOG"))  sscanf(e, "%d-%d", &s_llo, &s_lhi); }
++          if (s_hi > 0 || s_lhi > 0) {
++              if (ctx->frameIndex != s_fr) { s_fr = ctx->frameIndex; s_idx = 0; }
++              const int i = s_idx++;
++              if (i >= s_llo && i < s_lhi && ctx->frameIndex == 300) {
++                  id<MTLTexture> lt = dc->texture ? (__bridge id<MTLTexture>)dc->texture : nil;
++                  fprintf(stderr, "[draw #%d] fvf=0x%x tex=%p %lux%lu fmt=%lu blend=%d,%d,%d alphaT=%d ops=%d,%d,%d,%d idx=%u vtx=%u\n",
++                          i, dc->fvf, lt, lt ? (unsigned long)lt.width : 0, lt ? (unsigned long)lt.height : 0,
++                          lt ? (unsigned long)lt.pixelFormat : 0, dc->blendEnable, dc->srcBlend, dc->destBlend,
++                          dc->alphaTestEnable, dc->colorOp, dc->colorArg1, dc->colorArg2, dc->alphaOp, dc->indexCount, dc->vertexCount);
++              }
++              if (i >= s_lo && i < s_hi) return;
++          } }
++
+         id<MTLBuffer>  vb  = (__bridge id<MTLBuffer>)dc->vertexBuffer;
+         id<MTLTexture> tex = dc->texture ? (__bridge id<MTLTexture>)dc->texture : ctx->whiteTex;
+ 
