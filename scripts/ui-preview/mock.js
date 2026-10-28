@@ -69,6 +69,7 @@ const handlers = {
     return t < 4.5 ? { phase: "Downloading", done: Math.min(total, (t / 4.5) * total), total } : t < 6.2 ? { phase: "Installing", done: total, total } : { phase: "Restarting", done: total, total };
   },
   whats_new_take: async () => hash.includes("whatsnew") ? { version: "0.3.0", notes: "## Highlights\n\nStill a **prerelease**.\n\n- **Seamless updates.** The app installs the new version and opens again by itself.\n- **Multiplayer fixes.** Sync logs now name the frame that diverged.\n- A `code` word stays monospaced.\n\n## Also in this build\n\n- Smoother pages.\n- No autocorrect in text fields.\n\n---\n\n## Earlier\n\n" + Array.from({ length: 12 }, (_, i) => `- Note ${i + 1} is long enough that the dialog has to scroll instead of clipping the last lines.`).join("\n") } : null,
+  changelog: () => "## Rallypoint 0.5.6\n\nFixes black units on Mac.\n\n- **Team colours on Mac.** Units draw with the player colour.\n\n## Rallypoint 0.5.5\n\nMultiplayer opens the LAN lobby.",
   open_release_page: () => {},
   detect_games: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Generals - Zero Hour", zero_hour: true }] : []),
   check_game_dir: ({ path }) => (path.includes("ZeroHour") ? { ok: true, message: "Zero Hour found" } : path.trim() ? { ok: false, message: "No Zero Hour files in that folder (INIZH.big is missing)" } : { ok: false, message: "Choose the folder that contains INIZH.big" }),

@@ -249,6 +249,7 @@ function updatesCard() {
     install.disabled = false;
   } }, "Update and restart");
   const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
+  const changelog = h("button", { class: "btn", onclick: () => invoke("changelog").then((t) => showChangelog(t)).catch((e) => fb.bad(errText(e))) }, "Changelog");
   const check = h("button", { class: "btn", onclick: async () => {
     check.disabled = true;
     fill(actions);
@@ -264,7 +265,7 @@ function updatesCard() {
   }
   if (store.update) report();
   return h("div", { class: "card" }, h("h2", {}, "Updates"),
-    setting(`Rallypoint ${store.cfg.version}`, fb.el, check),
+    setting(`Rallypoint ${store.cfg.version}`, fb.el, changelog, check),
     actions,
     setting("Check when Rallypoint starts", null, h("label", { class: "switch" }, auto)));
 }
@@ -1707,6 +1708,17 @@ function showWhatsNew(w) {
       h("div", { class: "wiz-head" }, h("h2", {}, `Rallypoint ${w.version}`), h("p", { class: "muted small" }, "You're up to date. Here's what changed.")),
       h("div", { class: "wiz-body" }, renderNotes(w.notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Continue"))));
+  document.getElementById("root").append(overlay);
+}
+
+/** The release notes shipped with this version (the last three releases), opened from Settings > Updates. */
+function showChangelog(notes) {
+  const close = () => overlay.remove();
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Changelog" },
+    h("div", { class: "wizard whatsnew" },
+      h("div", { class: "wiz-head" }, h("h2", {}, "Changelog")),
+      h("div", { class: "wiz-body" }, renderNotes(notes)),
+      h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Close"))));
   document.getElementById("root").append(overlay);
 }
 
