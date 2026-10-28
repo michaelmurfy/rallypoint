@@ -1,0 +1,24 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index af5409f..b896f42 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -3943,6 +3943,19 @@ static void DrawShadowPass(MetalContext* ctx, const MetalDrawCall* dc)
+                           i, dc->fvf, lt, lt ? (unsigned long)lt.width : 0, lt ? (unsigned long)lt.height : 0,
+                           lt ? (unsigned long)lt.pixelFormat : 0, dc->blendEnable, dc->srcBlend, dc->destBlend,
+                           dc->alphaTestEnable, dc->colorOp, dc->colorArg1, dc->colorArg2, dc->alphaOp, dc->indexCount, dc->vertexCount);
++                  // Texture content summary (shared/managed textures only; private ones cannot be read back on the CPU).
++                  if (lt) {
++                      if (lt.storageMode == MTLStorageModePrivate) fprintf(stderr, "    storage=private mips=%lu\n", (unsigned long)lt.mipmapLevelCount);
++                      else {
++                          const NSUInteger w = lt.width, h = lt.height; const MTLPixelFormat pf = lt.pixelFormat;
++                          size_t bytes = 0, zero = 0; std::vector<uint8_t> raw;
++                          if (pf >= 130 && pf <= 135) { size_t bb = (pf == 130 || pf == 131) ? 8 : 16; size_t rb = ((w + 3) / 4) * bb; raw.resize(rb * ((h + 3) / 4));
++                              [lt getBytes:raw.data() bytesPerRow:rb fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0]; }
++                          else if (pf == MTLPixelFormatBGRA8Unorm) { raw.resize(w * h * 4); [lt getBytes:raw.data() bytesPerRow:w*4 fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0]; }
++                          bytes = raw.size(); for (uint8_t v : raw) zero += (v == 0);
++                          fprintf(stderr, "    storage=%d mips=%lu content: %zu bytes, %.0f%% zero\n", (int)lt.storageMode, (unsigned long)lt.mipmapLevelCount, bytes, bytes ? 100.0 * zero / bytes : 0.0);
++                      }
++                  }
+               }
+               if (i >= s_lo && i < s_hi) return;
+           } }
