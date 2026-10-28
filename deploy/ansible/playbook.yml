@@ -1,5 +1,5 @@
 # Debian and Ubuntu only. Sets up a fresh server as a Rallypoint server:
-# updates, Docker, a firewall, protection against SSH guessing, automatic security updates, a login banner,
+# updates, Docker, a firewall, protection against SSH guessing, automatic security updates, Watchtower (keeps the server up to date), a login banner,
 # the server itself, and a `rallypoint` command to run it.
 #
 #   sudo apt update && sudo apt install -y git ansible     # on the fresh server, logged in as root
@@ -21,6 +21,12 @@
     rallypoint_dir: /opt/rallypoint
     rallypoint_repo: https://github.com/michaelmurfy/rallypoint.git
     ssh_port: 22
+    # Which version of the server files to run: main, or a release tag like v0.5.7. A tag only changes when you change it.
+    rallypoint_version: main
+    # Restart the machine by itself (at 04:00) when a security update needs it, which is how kernel fixes take effect.
+    # Off by default because it ends any game in progress.
+    auto_reboot: false
+    watchtower_image: nickfedor/watchtower:latest
     # Turn off password logins for SSH. The playbook refuses to do it unless you can log in with a key, so you can't lock yourself out.
     harden_ssh: true
     docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}[ansible_architecture] | default(ansible_architecture) }}"
@@ -47,10 +53,13 @@
 
   tasks:
     # ---- the basics ------------------------------------------------------------------------------------------------
-    - name: Install updates and the tools we need
+    - name: Install the latest updates
       ansible.builtin.apt:
         update_cache: true
         upgrade: dist
+
+    - name: Install the tools we need
+      ansible.builtin.apt:
         name: [ca-certificates, curl, git, make, ufw, fail2ban, unattended-upgrades, gnupg]
         state: present
 
@@ -61,6 +70,14 @@
         content: |
           APT::Periodic::Update-Package-Lists "1";
           APT::Periodic::Unattended-Upgrade "1";
+
+    - name: Restart by itself after updates that need it (only if auto_reboot is on)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52rallypoint-reboot
+        mode: "0644"
+        content: |
+          Unattended-Upgrade::Automatic-Reboot "{{ 'true' if auto_reboot else 'false' }}";
+          Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 
     # ---- Docker, from Docker's own repository ----------------------------------------------------------------------
     - name: Make a folder for apt keys
@@ -96,6 +113,9 @@
 
     - name: Start Docker now and on every boot
       ansible.builtin.service: { name: docker, state: started, enabled: true }
+
+    - name: Apply Docker's settings before anything runs on it
+      ansible.builtin.meta: flush_handlers
 
     # ---- firewall --------------------------------------------------------------------------------------------------
     # The server runs on the host's network, so this firewall covers it (Docker's published ports would skip it).
@@ -133,7 +153,7 @@
       ansible.builtin.git:
         repo: "{{ rallypoint_repo }}"
         dest: "{{ rallypoint_dir }}"
-        version: main
+        version: "{{ rallypoint_version }}"
         depth: 1
         update: false
 
@@ -175,6 +195,40 @@
 
     - name: Install the rallypoint command
       ansible.builtin.copy: { src: ../rallypoint.sh, dest: /usr/local/bin/rallypoint, mode: "0755" }
+
+    # ---- automatic updates for the server itself -------------------------------------------------------------------
+    # Watchtower checks once a day for a newer image and restarts the container on it. It needs Docker's socket, which
+    # is as powerful as root on this machine, so it is locked down as far as it can be: only containers labelled for it
+    # (the relay and itself) are touched, with no extra privileges, a read-only filesystem and a memory cap. It is not
+    # pinned to a version on purpose: it updates itself, so a fix for a bug in Watchtower arrives without anyone
+    # doing anything. nickfedor's fork is the maintained one.
+    - name: Check what Watchtower is running now
+      ansible.builtin.command: docker inspect watchtower --format '{% raw %}{{.Config.Image}} {{.Config.Env}} {{.Config.Labels}}{% endraw %}'
+      register: watchtower
+      failed_when: false
+      changed_when: false
+
+    - name: Work out whether that is how it should be
+      ansible.builtin.set_fact:
+        watchtower_ok: >-
+          {{ watchtower.rc == 0 and watchtower_image in watchtower.stdout
+             and 'WATCHTOWER_LABEL_ENABLE=true' in watchtower.stdout and 'watchtower.enable:true' in watchtower.stdout }}
+
+    - name: Remove an out-of-date Watchtower
+      ansible.builtin.command: docker rm -f watchtower
+      when: watchtower.rc == 0 and not watchtower_ok
+      changed_when: true
+
+    - name: Start Watchtower
+      ansible.builtin.command: >-
+        docker run -d --name watchtower --restart unless-stopped
+        -e WATCHTOWER_CLEANUP=true -e WATCHTOWER_LABEL_ENABLE=true
+        --label com.centurylinklabs.watchtower.enable=true
+        --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --pids-limit 64
+        -v /var/run/docker.sock:/var/run/docker.sock
+        {{ watchtower_image }}
+      when: not watchtower_ok
+      changed_when: true
 
     - name: Put a banner on the login screen
       ansible.builtin.template: { src: motd.j2, dest: /etc/motd, mode: "0644" }

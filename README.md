@@ -106,7 +106,7 @@ Rallypoint checks GitHub for a newer release when it starts (switch that off in 
 
 To play over the internet, someone has to run a Rallypoint server. It runs on Linux: a cheap rented VM or a Raspberry Pi. It uses almost nothing (a few megabytes of memory and a trickle of bandwidth), so the cheapest machine you can rent is plenty. Everyone who plays connects to the same server and meets in a room.
 
-The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself.
+The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself. It also starts [Watchtower](https://github.com/nicholas-fedor/watchtower), which checks once a day for a newer Rallypoint server and restarts it on the new version, so the server looks after itself.
 
 ### 1. Rent a small server
 
@@ -122,7 +122,7 @@ You want a **Debian 13 or Ubuntu 26.04 LTS** machine (older releases still work)
 
 ### 2. Run the playbook
 
-**The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
+**The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. It has been tested on **Debian 12, Debian 13, Ubuntu 24.04 LTS and Ubuntu 26.04 LTS**. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
 
 The easiest way is to run it on the fresh server itself, so SSH in as root and install Ansible and git first (the playbook installs everything else):
 
@@ -156,13 +156,24 @@ Log in to the server over SSH and use the `rallypoint` command:
 | Command | What it does |
 |---|---|
 | `rallypoint status` | Is it running, and which port do players use |
-| `rallypoint update` | Get the newest release and restart. Do this when a new Rallypoint version comes out. |
+| `rallypoint update` | Get the newest release and restart right now. Watchtower does this for you once a day, so you only need it when you're impatient. |
 | `rallypoint logs` | Watch what it's doing (Ctrl+C to leave) |
 | `rallypoint key` | Show the identity fingerprint |
-| `rallypoint countries NZ,AU` | Change which countries are let in (`none` lets everyone in) |
+| `rallypoint countries` | A menu to choose which countries can connect (or `rallypoint countries NZ,AU`; `none` lets everyone in) |
 | `rallypoint stop` / `start` / `restart` | Does what it says |
 
 Keep the server's `serials.key` safe (it lives in Docker's data volume). A new key shows every player a changed identity. The relay carries only the game's own traffic, and each player has a packet limit, so a stranger can't use it for anything else.
+
+### How the server is locked down
+
+What the playbook sets up, so you know what you're trusting:
+
+- **Firewall:** everything coming in is blocked except SSH (rate limited) and the game's UDP port.
+- **SSH:** keys only, no passwords, root can log in with a key but not a password, three tries per connection, no X11 or agent forwarding, and fail2ban bans addresses that keep guessing.
+- **The server itself:** runs as an unprivileged user in a read-only container with every Linux capability dropped, a memory cap and no way to gain privileges. It only carries the game's own traffic.
+- **Updates:** security patches install by themselves every night. Kernel patches need a restart; add `-e auto_reboot=true` to let the machine restart itself at 04:00, or reboot when you next log in.
+- **Watchtower:** checks once a day for a new Rallypoint server image and restarts the server on it. It also updates itself, so a fix for a bug in Watchtower arrives on its own. It only touches those two containers, is read-only and has no extra privileges. It talks to Docker on the machine itself and nothing else, so on a server that only does this job it's a sensible way to stay up to date. Don't want it? `docker rm -f watchtower`, then use `rallypoint update` yourself.
+- **Not done:** the playbook doesn't create a separate admin user, so you still log in as root with your key. To follow a release tag instead of the latest code, use `-e rallypoint_version=v0.5.7`.
 
 ### Doing it by hand
 

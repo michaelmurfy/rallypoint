@@ -45,13 +45,13 @@ restart: config geo ## Apply .env changes
 	$(COMPOSE) up -d --force-recreate --wait --wait-timeout $(WAIT)
 
 logs: ## Follow the server log
-	$(COMPOSE) logs -f --tail=100 relay
+	@$(COMPOSE) logs -f --tail=100 relay
 
 key: ## Show the server's identity fingerprint (players check it the first time they connect)
-	$(COMPOSE) run --rm relay key
+	@$(COMPOSE) run --rm -T relay key 2>/dev/null
 
 status: ## Show whether the server is running
-	$(COMPOSE) ps
+	@$(COMPOSE) ps
 
 update: ## Pull the latest released image and config, refresh country lists, restart
 	git pull --ff-only
