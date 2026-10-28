@@ -122,7 +122,7 @@ You want a **Debian 13 or Ubuntu 26.04 LTS** machine (older releases still work)
 
 ### 2. Run the playbook
 
-**The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
+**The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. It has been tested on **Debian 12, Debian 13, Ubuntu 24.04 LTS and Ubuntu 26.04 LTS**. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
 
 The easiest way is to run it on the fresh server itself, so SSH in as root and install Ansible and git first (the playbook installs everything else):
 
@@ -172,7 +172,7 @@ What the playbook sets up, so you know what you're trusting:
 - **SSH:** keys only, no passwords, root can log in with a key but not a password, three tries per connection, no X11 or agent forwarding, and fail2ban bans addresses that keep guessing.
 - **The server itself:** runs as an unprivileged user in a read-only container with every Linux capability dropped, a memory cap and no way to gain privileges. It only carries the game's own traffic.
 - **Updates:** security patches install by themselves every night. Kernel patches need a restart; add `-e auto_reboot=true` to let the machine restart itself at 04:00, or reboot when you next log in.
-- **Watchtower:** checks once a day for a new Rallypoint server image and only touches that one container. It's pinned to a version, read-only, and has no extra privileges. It does need Docker's control socket, which is as powerful as root on that machine, so it's the one piece worth knowing about. Prefer not to have it? Run `docker rm -f watchtower` and use `rallypoint update` yourself.
+- **Watchtower:** checks once a day for a new Rallypoint server image and only touches that one container. It's pinned to a version, read-only and has no extra privileges. It talks to Docker on the machine itself and nothing else, so on a server that only does this job it's a sensible way to stay up to date. Don't want it? `docker rm -f watchtower`, then use `rallypoint update` yourself.
 - **Not done:** the playbook doesn't create a separate admin user, so you still log in as root with your key. To follow a release tag instead of the latest code, use `-e rallypoint_version=v0.5.7`.
 
 ### Doing it by hand
