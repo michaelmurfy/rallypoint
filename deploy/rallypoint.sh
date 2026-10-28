@@ -13,14 +13,14 @@ cd "$DIR" || exit 1
 port() { sed -n 's/^PORT=//p' .env 2>/dev/null | tail -1 | grep . || echo 7777; }
 
 case "${1:-help}" in
-  start)   make up ;;
-  stop)    make down ;;
-  restart) make restart ;;
-  update)  make update ;;
-  logs)    make logs ;;
-  key)     make key ;;
+  start)   make -s up ;;
+  stop)    make -s down ;;
+  restart) make -s restart ;;
+  update)  make -s update ;;
+  logs)    make -s logs ;;
+  key)     make -s key ;;
   status)
-    make status
+    make -s status
     echo
     echo "Players connect to this server on UDP port $(port)."
     if command -v ufw >/dev/null 2>&1; then ufw status | sed -n '1p;/'"$(port)"'/p'; fi
@@ -29,12 +29,12 @@ case "${1:-help}" in
     # rallypoint countries NZ,AU   limits who can connect; rallypoint countries none   lets everyone in
     [ -n "$2" ] || { echo "usage: rallypoint countries NZ,AU   (or: none)"; exit 1; }
     list="$2"; [ "$list" = none ] && list=""
-    [ -f .env ] || make config
+    [ -f .env ] || make -s config
     if [ -n "$list" ]; then
       echo "$list" | grep -Eq '^[A-Za-z]{2}(,[A-Za-z]{2})*$' || { echo "Use two-letter country codes, like NZ or NZ,AU"; exit 1; }
     fi
     sed -i "s/^ALLOWED_COUNTRIES=.*/ALLOWED_COUNTRIES=$list/" .env
-    make restart
+    make -s restart
     ;;
   version) git log -1 --format='server files from %h (%cd)' --date=short; docker compose images 2>/dev/null ;;
   help|-h|--help|*)

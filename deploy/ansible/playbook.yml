@@ -47,10 +47,13 @@
 
   tasks:
     # ---- the basics ------------------------------------------------------------------------------------------------
-    - name: Install updates and the tools we need
+    - name: Install the latest updates
       ansible.builtin.apt:
         update_cache: true
         upgrade: dist
+
+    - name: Install the tools we need
+      ansible.builtin.apt:
         name: [ca-certificates, curl, git, make, ufw, fail2ban, unattended-upgrades, gnupg]
         state: present
 
@@ -96,6 +99,9 @@
 
     - name: Start Docker now and on every boot
       ansible.builtin.service: { name: docker, state: started, enabled: true }
+
+    - name: Apply Docker's settings before anything runs on it
+      ansible.builtin.meta: flush_handlers
 
     # ---- firewall --------------------------------------------------------------------------------------------------
     # The server runs on the host's network, so this firewall covers it (Docker's published ports would skip it).
