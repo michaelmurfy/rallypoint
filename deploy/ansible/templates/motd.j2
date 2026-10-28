@@ -5,12 +5,11 @@
   Address to give them: {{ server_address }}:{{ rallypoint_port }}
   Public IPv4 {{ public_ipv4 | default('unknown', true) }}, private IPv4 {{ private_ipv4 | default('none', true) }}
   Public IPv6 {{ public_ipv6 | default('none', true) }} (the server accepts IPv4 only for now)
-{% if rallypoint_countries %}  Only these countries are let in: {{ rallypoint_countries }}.
-{% endif %}
   This server updates itself: security patches nightly, and Rallypoint itself through Watchtower.
 
   rallypoint status     is it running?
   rallypoint logs       watch it work
+  rallypoint countries  limit which countries can connect (a menu)
   rallypoint update     get the newest release
   rallypoint key        the fingerprint players compare the first time
   rallypoint help       everything else

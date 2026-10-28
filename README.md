@@ -159,7 +159,7 @@ Log in to the server over SSH and use the `rallypoint` command:
 | `rallypoint update` | Get the newest release and restart right now. Watchtower does this for you once a day, so you only need it when you're impatient. |
 | `rallypoint logs` | Watch what it's doing (Ctrl+C to leave) |
 | `rallypoint key` | Show the identity fingerprint |
-| `rallypoint countries NZ,AU` | Change which countries are let in (`none` lets everyone in) |
+| `rallypoint countries` | A menu to choose which countries can connect (or `rallypoint countries NZ,AU`; `none` lets everyone in) |
 | `rallypoint stop` / `start` / `restart` | Does what it says |
 
 Keep the server's `serials.key` safe (it lives in Docker's data volume). A new key shows every player a changed identity. The relay carries only the game's own traffic, and each player has a packet limit, so a stranger can't use it for anything else.
