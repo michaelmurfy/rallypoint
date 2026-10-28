@@ -517,6 +517,7 @@ function openMapViewer(entries, start, onChange) {
     } catch (e) { note.textContent = errText(e); }
     updatePlay();
   } }, icon("play"), "Play skirmish");
+  const speedPick = speedSelect();
   function updatePlay() {
     const ai = rows.filter((r) => r.kind === "ai").length;
     play.disabled = !ai;
@@ -528,7 +529,7 @@ function openMapViewer(entries, start, onChange) {
       h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, title, factline), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Play with"), gameSel)),
       h("div", { class: "wiz-body mapbody" },
         h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
-        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, play)),
+        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("label", { class: "skgroup" }, h("span", { class: "muted small" }, "Game speed"), speedPick), play)),
       h("div", { class: "wiz-foot" }, h("label", { class: "switch" }, listed, "Show in the game's map list"), close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -927,6 +928,18 @@ function segmented(label, options, current, onPick) {
   return api;
 }
 
+/** Game speed for a skirmish, remembered. 100 is normal and sends nothing to the game. */
+const SPEEDS = [[50, "Slow (50%)"], [75, "Slower (75%)"], [100, "Normal speed"], [125, "Faster (125%)"], [150, "Fast (150%)"], [200, "Very fast (200%)"]];
+function speedSelect() {
+  const sel = h("select", { class: "speedsel", "aria-label": "Game speed", title: "Game speed for this skirmish" },
+    ...SPEEDS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const saved = prefs.get().skSpeed;
+  sel.value = SPEEDS.some(([v]) => v === saved) ? String(saved) : "100";
+  sel.addEventListener("change", () => prefs.set({ skSpeed: +sel.value }));
+  return sel;
+}
+const skirmishSpeed = () => (SPEEDS.some(([v]) => v === prefs.get().skSpeed) ? prefs.get().skSpeed : 100);
+
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
  *  goes straight into a skirmish. Returns whether the game was started. */
 async function startGame({ skirmish = false, map = null, ai = null, difficulty = null, start = null, slots = null } = {}) {
@@ -936,7 +949,7 @@ async function startGame({ skirmish = false, map = null, ai = null, difficulty =
   const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
   let started = false;
   try {
-    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSlots: slots });
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: skirmish ? skirmishSpeed() : null, skirmishSlots: slots });
     started = true;
   } catch (e) { say(errText(e), "bad"); }
   // The game's own window takes a few seconds to appear; keep the notice up until then.
@@ -990,7 +1003,7 @@ function playPage() {
     h("div", { class: "skoptions" },
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el),
-      sk),
+      h("div", { class: "skgroup skgo" }, speedSelect(), sk)),
     h("p", { class: "tip" }, h("b", {}, "Tip"), h("span", {}, "To pick the map, your general, teams and where everyone starts, set up a skirmish under ", h("button", { class: "linkbtn", onclick: () => go("maps") }, "Maps"), ".")));
 
   const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w <= nat.w);

@@ -2,11 +2,13 @@
 
 # Rallypoint
 
-Play **Command & Conquer: Generals – Zero Hour** on a Mac or a PC, at any resolution, and play it online with friends through your own relay server.
+Play **Command & Conquer: Generals – Zero Hour** on a Mac or a PC, at any resolution, and play it online with friends.
 
-You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data.
+You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data, and never will.
 
-**Where it stands:** single player works on macOS and Windows. Online games have been played Windows vs Windows and Mac vs Windows. Known issue: some games drift out of sync a couple of minutes in. We are tracking it down (see [Debug logs](#debug-logs)).
+**Playing over the internet needs a Rallypoint server.** It's a small program that passes the game's traffic between you and your friends, and one cheap server is enough for everyone. Setting one up takes about ten minutes: see [Run a server](#run-a-server). Skirmishes, mods and maps work without one, and so does a LAN game on the same network.
+
+**Where it stands:** single player works on macOS and Windows. Online games have been played Windows vs Windows and Mac vs Windows. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, the logs are how you help.
 
 ## Get started
 
@@ -16,7 +18,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 - **macOS (Apple Silicon only):** open the `.dmg`, drag Rallypoint to Applications. The first launch is blocked by Gatekeeper: right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
-- **Linux:** no launcher or engine yet. The relay server runs there (see [Run a server](#run-a-server)).
+- **Linux:** no launcher or engine yet. The relay server runs there, and Linux is the best place to host one (see [Run a server](#run-a-server)).
 
 ## What works
 
@@ -43,6 +45,7 @@ On the **Play** tab:
 - pick the game (Zero Hour or an installed mod) and any extra mods
 - pick a resolution (default: your screen's native size) and fullscreen
 - **Play** opens the full game; **Start skirmish** (in the Quick Skirmish block) starts a match straight away with the opponents (1–3) and difficulty you choose
+- the **speed menu** beside it runs the skirmish slower or faster than normal (50% to 200%). It is set to normal until you change it, and it only applies to skirmishes: online games always run at the same speed for everyone
 
 **Widescreen and HiDPI** are on by default: wide screens see more of the map instead of a zoomed-in one, and the menus, command bar and text scale together. Set `GEN_STRETCH=1` to get the original stretched look back. *Settings → Graphics* has camera distance and the community's high-quality graphics settings (your `Options.ini` is backed up first).
 
@@ -71,7 +74,9 @@ The **Maps** tab has two parts.
 
 ## Play online
 
-1. Open the **Online** tab and enter a server, a room name and a room password.
+You need a Rallypoint server for this. If a friend runs one, ask them for its address. If nobody does, [set one up](#run-a-server); it's quicker than it sounds.
+
+1. Open the **Online** tab and enter the server, a room name and a room password.
 2. Press **Connect** (or Enter), then use the game's LAN lobby. Everyone in the same room with the same password ends up in the same game.
 
 - **Save server** keeps the server and room. Tick *Remember the password* to keep that too (stored in Rallypoint's settings file, readable only by you, never shown again).
@@ -79,7 +84,7 @@ The **Maps** tab has two parts.
 - **If it can't connect,** the page says what it tried and what to check: address, port, firewall (UDP), room password, full room.
 - **While connected,** the bottom-left corner shows ping, players in your room and packet loss, and the Online tab graphs them with the server's load.
 
-**Security:** everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305). The first time you connect, the launcher remembers the server's identity; a different server answering later is refused until you say so. Compare the fingerprint from `make key` with the one on the Online tab to be sure the first time.
+**Security:** everything between the launcher and the server is encrypted and authenticated (Noise over X25519 and ChaCha20-Poly1305). The first time you connect, the launcher remembers the server's identity; a different server answering later is refused until you say so. Compare the fingerprint from `rallypoint key` (run on the server) with the one on the Online tab to be sure the first time.
 
 **Staying in sync:** both machines use the same deterministic maths. The lobby refuses a player whose game data or maths differs. The relay also compares every player's simulation checksum and tells everyone, with the frame and who is out of step, if they diverge. Bringing a player back in step mid-game isn't built yet.
 
@@ -100,31 +105,79 @@ Rallypoint checks GitHub for a newer release when it starts (switch off in *Sett
 
 ## Run a server
 
-Runs on Linux (x86_64, arm64, 32-bit armv7: Raspberry Pi 3/4/5, ARM cloud servers), macOS (Apple silicon) and Windows. Needs one open **UDP** port (7777 by default).
+To play over the internet, someone has to run a Rallypoint server. It uses almost nothing (a few megabytes of memory and a trickle of bandwidth), so the cheapest machine you can rent is plenty. Everyone who plays connects to the same server and meets in a room.
 
-**With Docker (Linux):**
+The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself.
+
+### 1. Rent a small server
+
+You want a **Debian 12 or Ubuntu 24.04** machine with 1 CPU and 1 GB of memory. Pick the data centre **closest to your players**, because distance is the biggest part of lag. When it asks, add your **SSH key** instead of using a password. If you've never made one, run `ssh-keygen` and paste the contents of the `.pub` file it makes.
+
+| Provider | Why you might pick it |
+|---|---|
+| [Quic Compute](https://www.quic.nz/cloud-compute/) (New Zealand) | The obvious choice if your players are in NZ: a local server means low ping. |
+| [Vultr](https://www.vultr.com/) | The $5 a month plan on Debian is all you need, and it has data centres all over the world. |
+| [Hetzner Cloud](https://www.hetzner.com/cloud) | Very good value if your players are in Europe or the US. |
+| [DigitalOcean](https://www.digitalocean.com/) or [Linode](https://www.linode.com/) | Easy panels and plenty of regions. |
+| A Raspberry Pi at home | Works well, but you'll need to forward the UDP port on your router, and your home internet is then part of everyone's game. |
+
+### 2. Run the playbook
+
+On your own computer, install Ansible (`brew install ansible` on a Mac, `sudo apt install ansible` on Debian or Ubuntu, `pipx install ansible` anywhere else; on Windows use WSL). Then:
+
+```bash
+git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
+cp inventory.example.ini inventory.ini      # put your server's address in it
+ansible-playbook -i inventory.ini playbook.yml
+```
+
+It takes a few minutes and ends by printing the address to type into the app and the server's fingerprint. It's safe to run again whenever you like.
+
+- **Only let some countries in:** add `-e rallypoint_countries=NZ,AU` (two-letter codes, comma separated).
+- **A different port:** `-e rallypoint_port=7778`. Players then enter `your-server:7778`.
+- **Keep SSH passwords on:** `-e harden_ssh=false`. By default the playbook turns passwords off, but only after checking that a key is installed, so it can't lock you out.
+
+### 3. Connect
+
+In the Rallypoint app open **Online**, enter the address the playbook printed, choose a room name and password, and press **Connect**. The first time, the app remembers the server's identity; if the fingerprint on screen matches the one the playbook printed, you're talking to your own server.
+
+### Looking after it
+
+Log in to the server over SSH and use the `rallypoint` command:
+
+| Command | What it does |
+|---|---|
+| `rallypoint status` | Is it running, and which port do players use |
+| `rallypoint update` | Get the newest release and restart. Do this when a new Rallypoint version comes out. |
+| `rallypoint logs` | Watch what it's doing (Ctrl+C to leave) |
+| `rallypoint key` | Show the identity fingerprint |
+| `rallypoint countries NZ,AU` | Change which countries are let in (`none` lets everyone in) |
+| `rallypoint stop` / `start` / `restart` | Does what it says |
+
+Keep the server's `serials.key` safe (it lives in Docker's data volume). A new key shows every player a changed identity. The relay carries only the game's own traffic, and each player has a packet limit, so a stranger can't use it for anything else.
+
+### Doing it by hand
+
+On any Linux machine with Docker (a Pi included), open one **UDP** port (7777 by default) and run:
 
 ```bash
 git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint
 make up
 ```
 
-The image `ghcr.io/michaelmurfy/rallypoint-relay` is multi-architecture, so this is the same on a PC and a Pi. It uses the host's network (no NAT delay), so open the UDP port in the firewall.
+`make up` pulls the released image, starts it and waits until the container reports healthy. The image works on PCs, ARM servers and Raspberry Pis alike, and uses the host's network so game packets skip Docker's NAT.
 
 | Command | What it does |
 |---|---|
 | `make config COUNTRIES=NZ` | Create `.env`, optionally limited to countries (`NZ,AU`) |
-| `make up` / `down` / `restart` | Start (pulling the released image), stop, apply changed settings |
-| `make update` | Pull the latest image and country lists, restart |
-| `make dev` | Build from your checkout |
+| `make up` / `down` / `restart` | Start, stop, apply changed settings |
+| `make update` | Pull the newest image and country lists, restart |
+| `make build` | Build the server from your checkout instead of pulling the release |
 | `make logs` / `status` / `key` | Watch it, check it, show the identity fingerprint |
 
 **Without Docker:** each release has `rallypoint-server-<version>-linux-x86_64`, `-linux-aarch64`, `-linux-armv7`, `-macos-arm64` and `-windows-x86_64` downloads. Unpack and run `rallypoint-server run`; settings are environment variables (see [`.env.example`](.env.example)). Linux builds run on Raspberry Pi OS Bookworm and newer. Pi Zero and Pi 1 (armv6) aren't covered.
 
-- **Settings** live in `.env`: the port, and `ALLOWED_COUNTRIES` to accept only some countries. Local-network addresses are refused by the country limit unless `ALLOW_PRIVATE=true` (LAN-only servers).
-- **Keep `serials.key` safe** (in the data volume). A new key shows every player a changed identity.
-- **Limits:** the tunnel carries only the game's own traffic; each player has a packet-rate limit; wrong room passwords and sign-ups are rate-limited per address.
-- **`docker compose pull` says `unauthorized`?** The GHCR package is private: make it Public under your profile's Packages settings. Until then the commands build from your checkout.
+Settings live in `.env`: the port, and `ALLOWED_COUNTRIES` to accept only some countries. Local-network addresses are refused by the country limit unless `ALLOW_PRIVATE=true` (LAN-only servers).
 
 ## Linux
 
@@ -154,6 +207,7 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 |---|---|
 | `launcher/` | Tauri 2 app: `core/` (logic, tested), `src-tauri/` (thin shell), `ui/` (plain HTML) |
 | `server/`, `shared/` | Relay server and the wire protocol |
+| `deploy/` | Ansible playbook and the `rallypoint` command for setting up a server |
 | `engine/` | Submodule: the macOS/Windows engine port |
 | `patches/` | Our engine changes, applied with `patches/apply.sh` |
 | `mods/` | Mod and map-pack lists |

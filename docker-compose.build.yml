@@ -1,4 +1,4 @@
-# Overlay for building the server from this checkout instead of pulling the released image: make dev
+# Overlay for building the server from this checkout instead of pulling the released image: make build
 services:
   relay:
     build:

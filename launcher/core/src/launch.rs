@@ -99,8 +99,8 @@ pub fn game_art(game_dir: &Path, layers: &[std::path::PathBuf]) -> Option<Vec<u8
 }
 
 /// Environment for a skirmish started from the map list: the map (a folder in the game's Maps folder, which `exists` checks),
-/// how many computer opponents (1 to 7), how hard they are and which start position (1 to 8) the player takes. Anything else is refused: these come from the page.
-pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>, start: Option<u32>, exists: impl Fn(&str) -> bool) -> Result<Vec<(String, String)>, String> {
+/// how many computer opponents (1 to 7), how hard they are, which start position (1 to 8) the player takes and the game speed (50 to 200 percent). Anything else is refused: these come from the page.
+pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>, start: Option<u32>, speed: Option<u32>, exists: impl Fn(&str) -> bool) -> Result<Vec<(String, String)>, String> {
     let mut env = vec![];
     if let Some(m) = map {
         if !crate::maporg::is_safe_name(m) || !exists(m) {
@@ -125,6 +125,15 @@ pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>
             return Err("a start position is 1 to 8".into());
         }
         env.push(("GEN_AUTO_START".to_string(), n.to_string()));
+    }
+    // The game speed in percent; 100 is normal and sets nothing.
+    if let Some(n) = speed {
+        if !(50..=200).contains(&n) {
+            return Err("the game speed is 50 to 200 percent".into());
+        }
+        if n != 100 {
+            env.push(("GEN_GAME_SPEED".to_string(), n.to_string()));
+        }
     }
     Ok(env)
 }
@@ -267,15 +276,18 @@ mod tests {
     #[test]
     fn skirmish_options_are_checked_before_they_reach_the_game() {
         let have = |n: &str| n == "Tournament Desert";
-        let e = skirmish_env(Some("Tournament Desert"), Some(3), Some("brutal"), Some(2), have).unwrap();
+        let e = skirmish_env(Some("Tournament Desert"), Some(3), Some("brutal"), Some(2), Some(150), have).unwrap();
         assert!(e.contains(&("GEN_AUTO_MAP".into(), "Tournament Desert".into())) && e.contains(&("GEN_AUTO_AI".into(), "3".into())) && e.contains(&("GEN_AUTO_DIFF".into(), "brutal".into())) && e.contains(&("GEN_AUTO_START".into(), "2".into())));
-        assert!(skirmish_env(None, None, None, None, have).unwrap().is_empty());
+        assert!(skirmish_env(None, None, None, None, None, have).unwrap().is_empty());
         for bad_map in ["Missing", "../x", "a/b", ""] {
-            assert!(skirmish_env(Some(bad_map), None, None, None, have).is_err(), "{bad_map:?}");
+            assert!(skirmish_env(Some(bad_map), None, None, None, None, have).is_err(), "{bad_map:?}");
         }
-        assert!(skirmish_env(None, Some(0), None, None, have).is_err() && skirmish_env(None, Some(8), None, None, have).is_err());
-        assert!(skirmish_env(None, None, Some("god mode"), None, have).is_err());
-        assert!(skirmish_env(None, None, None, Some(0), have).is_err() && skirmish_env(None, None, None, Some(9), have).is_err());
+        assert!(skirmish_env(None, Some(0), None, None, None, have).is_err() && skirmish_env(None, Some(8), None, None, None, have).is_err());
+        assert!(skirmish_env(None, None, Some("god mode"), None, None, have).is_err());
+        assert!(e.contains(&("GEN_GAME_SPEED".into(), "150".into())));
+        assert!(skirmish_env(None, None, None, None, Some(100), have).unwrap().is_empty(), "normal speed sets nothing");
+        assert!(skirmish_env(None, None, None, None, Some(49), have).is_err() && skirmish_env(None, None, None, None, Some(201), have).is_err());
+        assert!(skirmish_env(None, None, None, Some(0), None, have).is_err() && skirmish_env(None, None, None, Some(9), None, have).is_err());
     }
 
     #[test]

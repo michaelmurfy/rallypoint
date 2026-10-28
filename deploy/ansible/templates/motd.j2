@@ -1,0 +1,14 @@
+
+  Rallypoint server
+  -----------------
+  Players connect to this machine on UDP port {{ rallypoint_port }}.
+{% if rallypoint_countries %}  Only these countries are let in: {{ rallypoint_countries }}.
+{% endif %}
+  rallypoint status     is it running?
+  rallypoint logs       watch it work
+  rallypoint update     get the newest release
+  rallypoint key        the fingerprint players compare the first time
+  rallypoint help       everything else
+
+  Set up by the Rallypoint Ansible playbook. Changes to this file will be overwritten if you run it again.
+
