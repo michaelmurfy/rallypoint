@@ -110,7 +110,7 @@ The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). I
 
 ### 1. Rent a small server
 
-You want a **Debian 12 or Ubuntu 24.04** machine with 1 CPU and 1 GB of memory. Pick the data centre **closest to your players**, because distance is the biggest part of lag. When it asks, add your **SSH key** instead of using a password. If you've never made one, run `ssh-keygen` and paste the contents of the `.pub` file it makes.
+You want a **Debian 13 or Ubuntu 26.04 LTS** machine (older releases still work) with 1 CPU and 1 GB of memory. Pick the data centre **closest to your players**, because distance is the biggest part of lag. When it asks, add your **SSH key** instead of using a password. If you've never made one, run `ssh-keygen` and paste the contents of the `.pub` file it makes.
 
 | Provider | Why you might pick it |
 |---|---|
