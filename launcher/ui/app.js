@@ -1052,7 +1052,7 @@ function playPage() {
       h("div", { class: "optlist" },
         h("div", { class: "opt" }, h("label", { class: "switch" }, fs, "Fullscreen"), h("span", { class: "muted small" }, "Fill the screen instead of a window.")),
         h("div", { class: "opt" }, h("label", { class: "switch" }, cam, "Higher camera"), h("span", { class: "muted small" }, "See further out. Leave it off for a normal online view."))),
-      h("p", { class: "muted small" }, "Any resolution works, including 4K and ultrawide. An add-on such as Chaos is laid over the mod it needs.")));
+      ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 

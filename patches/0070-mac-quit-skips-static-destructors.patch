@@ -1,0 +1,33 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index b896f42..d9f93e5 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -925,6 +925,17 @@ - (void)setFrameSize:(NSSize)newSize { [super setFrameSize:newSize]; [self layou
+     int   texturedThisFrame;
+ };
+ 
++#include <unistd.h>
++
++// Quit from the app menu. NSApplication terminate: calls exit(), which runs the engine's static destructors, and one of
++// them (a pooled allocator) crashes on a normal shutdown. Flush and leave without them.
++@interface RPQuitTarget : NSObject
++- (void)quit:(id)sender;
++@end
++@implementation RPQuitTarget
++- (void)quit:(id)sender { (void)sender; fflush(NULL); _exit(0); }
++@end
++
+ static void EnsureAppInitialized()
+ {
+     static bool initialized = false;
+@@ -945,7 +956,9 @@ static void EnsureAppInitialized()
+         NSMenu *appMenu = [[NSMenu alloc] initWithTitle:appName];
+         [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:appName] action:@selector(hide:) keyEquivalent:@"h"];
+         [appMenu addItem:[NSMenuItem separatorItem]];
+-        [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:appName] action:@selector(terminate:) keyEquivalent:@"q"];
++        static RPQuitTarget *quitTarget = [[RPQuitTarget alloc] init];
++        NSMenuItem *quitItem = [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:appName] action:@selector(quit:) keyEquivalent:@"q"];
++        [quitItem setTarget:quitTarget];
+         [appItem setSubmenu:appMenu];
+         [NSApp setMainMenu:bar];
+     }

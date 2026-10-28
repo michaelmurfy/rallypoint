@@ -1,0 +1,126 @@
+diff --git a/Generals/Code/GameEngine/Source/Common/GameEngine.cpp b/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
+index ce2fdf1..a193137 100644
+--- a/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/Generals/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -193,7 +193,8 @@ static void updateWindowTitle()
+ 		title.concat(str);
+ 	}
+ 
+-	UnicodeString productString = TheVersion->getUnicodeProductString();
++	// Rallypoint: the title names the game being run, not the engine fork (the launcher sets GEN_WINDOW_TITLE to the game or mod).
++	UnicodeString productString;
+ 
+ 	if (!productString.isEmpty())
+ 	{
+@@ -231,6 +232,12 @@ static void updateWindowTitle()
+ 		title.concat(gameVersion.str());
+ 	}
+ 
++	if (const char *envTitle = ::getenv("GEN_WINDOW_TITLE"); envTitle && envTitle[0])
++	{
++		AsciiString envA(envTitle);
++		title.translate(envA);
++	}
++
+ 	if (!title.isEmpty())
+ 	{
+ 		AsciiString titleA;
+diff --git a/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp b/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
+index 0097330..a217f0e 100644
+--- a/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
++++ b/Generals/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
+@@ -452,6 +452,9 @@ void MainMenuInit( WindowLayout *layout, void *userData )
+ 	buttonSinglePlayer = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonSinglePlayerID );
+ 	buttonMultiPlayer = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonMultiPlayerID );
+ 	buttonSkirmish = TheWindowManager->winGetWindowFromId( parentMainMenu, skirmishID );
++	// The 1.04 patch's MainMenu.wnd has a Custom Mission button whose text no language file defines ("MISSING: 'GUI:CustomMission'").
++	if (GameWindow *customMission = TheWindowManager->winGetWindowFromId( parentMainMenu, TheNameKeyGenerator->nameToKey( "MainMenu.wnd:ButtonCustomMission" ) ))
++		customMission->winHide( TRUE );
+ 	buttonOnline = TheWindowManager->winGetWindowFromId( parentMainMenu, onlineID );
+ 	buttonNetwork = TheWindowManager->winGetWindowFromId( parentMainMenu, networkID );
+ 	buttonOptions = TheWindowManager->winGetWindowFromId( parentMainMenu, optionsID );
+@@ -1266,15 +1269,15 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
+ 			}
+ 			else if( controlID == buttonMultiPlayerID)
+ 			{
++				// Rallypoint: Online (the retired GameSpy lobby) is gone, so Multiplayer opens the LAN lobby directly.
+ 				if(dontAllowTransitions)
+ 					break;
+ 				dontAllowTransitions = TRUE;
+-				//buttonPushed = TRUE;
+-				buttonPushed = FALSE;
+-				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
+-				TheTransitionHandler->remove("MainMenuDefaultMenu");
+-				TheTransitionHandler->reverse("MainMenuDefaultMenuBack");
+-				TheTransitionHandler->setGroup("MainMenuMultiPlayerMenu");
++				buttonPushed = TRUE;
++				TheShell->push( "Menus/LanLobbyMenu.wnd" );
++				dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
++				TheTransitionHandler->reverse("MainMenuDefaultMenu");
++				TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_NETWORK_SELECTED]);
+ 			}
+ 			else if( controlID == buttonLoadReplayID)
+ 			{
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index 6ff6dd9..fe325fe 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -198,7 +198,8 @@ static void updateWindowTitle()
+ 		title.concat(str);
+ 	}
+ 
+-	UnicodeString productString = TheVersion->getUnicodeProductString();
++	// Rallypoint: the title names the game being run, not the engine fork (the launcher sets GEN_WINDOW_TITLE to the game or mod).
++	UnicodeString productString;
+ 
+ 	if (!productString.isEmpty())
+ 	{
+@@ -236,6 +237,12 @@ static void updateWindowTitle()
+ 		title.concat(gameVersion.str());
+ 	}
+ 
++	if (const char *envTitle = ::getenv("GEN_WINDOW_TITLE"); envTitle && envTitle[0])
++	{
++		AsciiString envA(envTitle);
++		title.translate(envA);
++	}
++
+ 	if (!title.isEmpty())
+ 	{
+ 		AsciiString titleA;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
+index f51953e..2853527 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/MainMenu.cpp
+@@ -488,6 +488,9 @@ void MainMenuInit( WindowLayout *layout, void *userData )
+ 	buttonSinglePlayer = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonSinglePlayerID );
+ 	buttonMultiPlayer = TheWindowManager->winGetWindowFromId( parentMainMenu, buttonMultiPlayerID );
+ 	buttonSkirmish = TheWindowManager->winGetWindowFromId( parentMainMenu, skirmishID );
++	// The 1.04 patch's MainMenu.wnd has a Custom Mission button whose text no language file defines ("MISSING: 'GUI:CustomMission'").
++	if (GameWindow *customMission = TheWindowManager->winGetWindowFromId( parentMainMenu, TheNameKeyGenerator->nameToKey( "MainMenu.wnd:ButtonCustomMission" ) ))
++		customMission->winHide( TRUE );
+ 	buttonOnline = TheWindowManager->winGetWindowFromId( parentMainMenu, onlineID );
+ 	buttonNetwork = TheWindowManager->winGetWindowFromId( parentMainMenu, networkID );
+ 	buttonOptions = TheWindowManager->winGetWindowFromId( parentMainMenu, optionsID );
+@@ -1339,15 +1342,15 @@ WindowMsgHandledType MainMenuSystem( GameWindow *window, UnsignedInt msg,
+ 			}
+ 			else if( controlID == buttonMultiPlayerID)
+ 			{
++				// Rallypoint: Online (the retired GameSpy lobby) is gone, so Multiplayer opens the LAN lobby directly.
+ 				if(dontAllowTransitions)
+ 					break;
+ 				dontAllowTransitions = TRUE;
+-				//buttonPushed = TRUE;
+-				buttonPushed = FALSE;
+-				dropDownWindows[DROPDOWN_MULTIPLAYER]->winHide(FALSE);
+-				TheTransitionHandler->remove("MainMenuDefaultMenu");
+-				TheTransitionHandler->reverse("MainMenuDefaultMenuBack");
+-				TheTransitionHandler->setGroup("MainMenuMultiPlayerMenu");
++				buttonPushed = TRUE;
++				TheShell->push( "Menus/LanLobbyMenu.wnd" );
++				dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
++				TheTransitionHandler->reverse("MainMenuDefaultMenu");
++				TheScriptEngine->signalUIInteract(TheShellHookNames[SHELL_SCRIPT_HOOK_MAIN_MENU_NETWORK_SELECTED]);
+ 			}
+ 			else if( controlID == buttonLoadReplayID)
+ 			{

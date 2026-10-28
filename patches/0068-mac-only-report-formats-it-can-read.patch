@@ -1,0 +1,62 @@
+diff --git a/cmake/dx8_stub/dx8_device.cpp b/cmake/dx8_stub/dx8_device.cpp
+index 36a1534..3af47a1 100644
+--- a/cmake/dx8_stub/dx8_device.cpp
++++ b/cmake/dx8_stub/dx8_device.cpp
+@@ -75,8 +75,8 @@ inline UINT FormatBpp(D3DFORMAT fmt)
+     switch (fmt) {
+         case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: return 4;
+         case D3DFMT_R5G6B5:   case D3DFMT_A1R5G5B5:
+-        case D3DFMT_A4R4G4B4: return 2;
+-        case D3DFMT_A8:       case D3DFMT_L8:       return 1;
++        case D3DFMT_A4R4G4B4: case D3DFMT_A8L8: return 2;
++        case D3DFMT_A8:       case D3DFMT_A4L4:       case D3DFMT_L8:       return 1;
+         case D3DFMT_R8G8B8:                          return 3;
+         default:                                     return 4;
+     }
+@@ -136,6 +136,17 @@ inline void ConvertRowToBGRA8(D3DFORMAT fmt, const unsigned char* src, unsigned
+                 dst[x*4+0] = 255; dst[x*4+1] = 255; dst[x*4+2] = 255; dst[x*4+3] = src[x];
+             }
+             break;
++        case D3DFMT_A8L8: // luminance + alpha: low byte L, high byte A
++            for (UINT x = 0; x < width; ++x) {
++                dst[x*4+0] = src[x*2]; dst[x*4+1] = src[x*2]; dst[x*4+2] = src[x*2]; dst[x*4+3] = src[x*2+1];
++            }
++            break;
++        case D3DFMT_A4L4: // low nibble L, high nibble A
++            for (UINT x = 0; x < width; ++x) {
++                unsigned l = (src[x] & 0xF) * 17, a = (src[x] >> 4) * 17;
++                dst[x*4+0] = (unsigned char)l; dst[x*4+1] = (unsigned char)l; dst[x*4+2] = (unsigned char)l; dst[x*4+3] = (unsigned char)a;
++            }
++            break;
+         case D3DFMT_L8: // luminance: grey, opaque
+             for (UINT x = 0; x < width; ++x) {
+                 dst[x*4+0] = src[x]; dst[x*4+1] = src[x]; dst[x*4+2] = src[x]; dst[x*4+3] = 255;
+@@ -1719,7 +1730,7 @@ public:
+         return D3D_OK;
+     }
+     STDMETHOD(CheckDeviceType)(UINT, D3DDEVTYPE, D3DFORMAT, D3DFORMAT, BOOL) override { return D3D_OK; }
+-    STDMETHOD(CheckDeviceFormat)(UINT, D3DDEVTYPE, D3DFORMAT, DWORD, D3DRESOURCETYPE, D3DFORMAT CheckFormat) override
++    STDMETHOD(CheckDeviceFormat)(UINT, D3DDEVTYPE, D3DFORMAT, DWORD usage, D3DRESOURCETYPE rtype, D3DFORMAT CheckFormat) override
+     {
+         // Apple Silicon Metal supports BC/DXT (S3TC) compression natively
+         // (device.supportsBCTextureCompression == YES on M1+). Report DXT as
+@@ -1728,7 +1739,18 @@ public:
+         // handing us compressed blocks we upload to BC textures. Reporting these
+         // unsupported made every DDS-only texture (516 of them: unit/building
+         // skins, terrain blends) fall back to the missing-texture placeholder.
+-        (void)CheckFormat;
++        // Rallypoint: only say yes to texture formats the converters above can read. Reporting everything as available let
++        // the engine pick formats such as P8 or V8U8 that were then copied as if they were 32-bit (black or garbled textures).
++        if (rtype == D3DRTYPE_TEXTURE && !(usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL))) {
++            switch (CheckFormat) {
++                case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: case D3DFMT_R8G8B8: case D3DFMT_R5G6B5: case D3DFMT_A1R5G5B5:
++                case D3DFMT_A4R4G4B4: case D3DFMT_A8: case D3DFMT_L8: case D3DFMT_A8L8: case D3DFMT_A4L4:
++                case D3DFMT_DXT1: case D3DFMT_DXT2: case D3DFMT_DXT3: case D3DFMT_DXT4: case D3DFMT_DXT5:
++                    break;
++                default:
++                    return D3DERR_NOTAVAILABLE;
++            }
++        }
+         return D3D_OK;
+     }
+     STDMETHOD(CheckDeviceMultiSampleType)(UINT, D3DDEVTYPE, D3DFORMAT, BOOL, D3DMULTISAMPLE_TYPE) override { return D3D_OK; }

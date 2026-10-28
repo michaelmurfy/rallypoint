@@ -855,6 +855,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
                 }
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
+            // The window title names what is being played: the top mod, else the game.
+            let title = ordered.last().and_then(|n| cat.iter().find(|m| &m.path == n)).map(|m| m.name.clone()).unwrap_or_else(|| "Command & Conquer Generals Zero Hour".to_string());
+            env.push(("GEN_WINDOW_TITLE".to_string(), title));
             // The name other players see in the lobby: the player's own, else this computer's.
             env.push(("GEN_PLAYER_NAME".to_string(), Config::load(&config_path(&app)?).lobby_name()));
             // The agent only listens to an engine that presents this (other local processes can reach its port).
