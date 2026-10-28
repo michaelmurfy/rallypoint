@@ -222,6 +222,10 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     // Weather.ini is only in Zero Hour's archives. If the process is not started in that folder, the engine
     // reads this and loads them. A trailing separator is added on the engine side.
     c.env("GEN_ZH_PATH", game_dir);
+    // The Dock icon (macOS): the game's own, from the player's install.
+    if let Some(ico) = ["GeneralsZH.ico", "Generals.ico"].iter().map(|n| game_dir.join(n)).find(|p| p.is_file()) {
+        c.env("GEN_APP_ICON", ico);
+    }
     // The engine paints Install_Final.bmp from the game folder unless this names a mod's picture.
     if let Some(dir) = o.mod_path.as_deref() {
         if let Some(bmp) = splash_bitmap(Path::new(dir)) {

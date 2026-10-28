@@ -1,0 +1,34 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index be6f4bf..414ac6a 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -930,8 +930,29 @@ static void EnsureAppInitialized()
+     static bool initialized = false;
+     if (initialized) return;
+     initialized = true;
++    // Rallypoint: the app menu names the game (GEN_WINDOW_TITLE, set by the launcher), has Hide and Quit
++    // (Cmd+Q ends the game if it hangs), and the Dock shows the game's icon (GEN_APP_ICON, the .ico in the player's own game folder).
++    const char *envTitle = getenv("GEN_WINDOW_TITLE");
++    NSString *appName = (envTitle && envTitle[0]) ? [NSString stringWithUTF8String:envTitle] : @"Generals Zero Hour";
++    if (!appName) appName = @"Generals Zero Hour";
++    [[NSProcessInfo processInfo] setProcessName:appName];
+     [NSApplication sharedApplication];
+     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++    {
++        NSMenu *bar = [[NSMenu alloc] init];
++        NSMenuItem *appItem = [[NSMenuItem alloc] init];
++        [bar addItem:appItem];
++        NSMenu *appMenu = [[NSMenu alloc] initWithTitle:appName];
++        [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:appName] action:@selector(hide:) keyEquivalent:@"h"];
++        [appMenu addItem:[NSMenuItem separatorItem]];
++        [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:appName] action:@selector(terminate:) keyEquivalent:@"q"];
++        [appItem setSubmenu:appMenu];
++        [NSApp setMainMenu:bar];
++    }
++    if (const char *icon = getenv("GEN_APP_ICON"); icon && icon[0]) {
++        NSImage *img = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:icon]];
++        if (img) [NSApp setApplicationIconImage:img];
++    }
+     [NSApp finishLaunching];
+     [NSApp activateIgnoringOtherApps:YES];
+ }
