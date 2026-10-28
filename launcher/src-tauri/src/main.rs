@@ -778,6 +778,12 @@ fn whats_new_take(app: tauri::AppHandle) -> Result<Option<selfupdate::WhatsNew>,
     Ok(selfupdate::take_marker(&base(&app)?, update::current_version()))
 }
 
+/// The release notes of the last three releases, built into this version.
+#[tauri::command]
+fn changelog() -> &'static str {
+    include_str!("../../../docs/release-notes.md")
+}
+
 #[tauri::command]
 fn open_release_page(updates: tauri::State<Updates>) -> Result<(), String> {
     let page = updates.0.lock().unwrap().as_ref().map(|u| u.page.clone()).ok_or("no release to show")?;
@@ -915,7 +921,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
-            update_check, update_install, update_progress, whats_new_take, open_release_page,
+            update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install,
