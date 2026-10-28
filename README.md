@@ -172,7 +172,7 @@ What the playbook sets up, so you know what you're trusting:
 - **SSH:** keys only, no passwords, root can log in with a key but not a password, three tries per connection, no X11 or agent forwarding, and fail2ban bans addresses that keep guessing.
 - **The server itself:** runs as an unprivileged user in a read-only container with every Linux capability dropped, a memory cap and no way to gain privileges. It only carries the game's own traffic.
 - **Updates:** security patches install by themselves every night. Kernel patches need a restart; add `-e auto_reboot=true` to let the machine restart itself at 04:00, or reboot when you next log in.
-- **Watchtower:** checks once a day for a new Rallypoint server image and only touches that one container. It's pinned to a version, read-only and has no extra privileges. It talks to Docker on the machine itself and nothing else, so on a server that only does this job it's a sensible way to stay up to date. Don't want it? `docker rm -f watchtower`, then use `rallypoint update` yourself.
+- **Watchtower:** checks once a day for a new Rallypoint server image and restarts the server on it. It also updates itself, so a fix for a bug in Watchtower arrives on its own. It only touches those two containers, is read-only and has no extra privileges. It talks to Docker on the machine itself and nothing else, so on a server that only does this job it's a sensible way to stay up to date. Don't want it? `docker rm -f watchtower`, then use `rallypoint update` yourself.
 - **Not done:** the playbook doesn't create a separate admin user, so you still log in as root with your key. To follow a release tag instead of the latest code, use `-e rallypoint_version=v0.5.7`.
 
 ### Doing it by hand

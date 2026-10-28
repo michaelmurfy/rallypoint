@@ -26,7 +26,7 @@
     # Restart the machine by itself (at 04:00) when a security update needs it, which is how kernel fixes take effect.
     # Off by default because it ends any game in progress.
     auto_reboot: false
-    watchtower_image: nickfedor/watchtower:1.23.2
+    watchtower_image: nickfedor/watchtower:latest
     # Turn off password logins for SSH. The playbook refuses to do it unless you can log in with a key, so you can't lock yourself out.
     harden_ssh: true
     docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}[ansible_architecture] | default(ansible_architecture) }}"
@@ -198,28 +198,36 @@
 
     # ---- automatic updates for the server itself -------------------------------------------------------------------
     # Watchtower checks once a day for a newer image and restarts the container on it. It needs Docker's socket, which
-    # is as powerful as root on this machine, so it is locked down as far as it can be: a pinned version (nothing new
-    # arrives from Docker Hub unless this playbook says so), only containers labelled for it (the relay), no extra
-    # privileges, a read-only filesystem and a memory cap. nickfedor's fork is the maintained one.
+    # is as powerful as root on this machine, so it is locked down as far as it can be: only containers labelled for it
+    # (the relay and itself) are touched, with no extra privileges, a read-only filesystem and a memory cap. It is not
+    # pinned to a version on purpose: it updates itself, so a fix for a bug in Watchtower arrives without anyone
+    # doing anything. nickfedor's fork is the maintained one.
     - name: Check what Watchtower is running now
-      ansible.builtin.command: docker inspect watchtower --format '{% raw %}{{.Config.Image}} {{.Config.Env}}{% endraw %}'
+      ansible.builtin.command: docker inspect watchtower --format '{% raw %}{{.Config.Image}} {{.Config.Env}} {{.Config.Labels}}{% endraw %}'
       register: watchtower
       failed_when: false
       changed_when: false
 
+    - name: Work out whether that is how it should be
+      ansible.builtin.set_fact:
+        watchtower_ok: >-
+          {{ watchtower.rc == 0 and watchtower_image in watchtower.stdout
+             and 'WATCHTOWER_LABEL_ENABLE=true' in watchtower.stdout and 'watchtower.enable:true' in watchtower.stdout }}
+
     - name: Remove an out-of-date Watchtower
       ansible.builtin.command: docker rm -f watchtower
-      when: watchtower.rc == 0 and (watchtower_image not in watchtower.stdout or 'WATCHTOWER_LABEL_ENABLE=true' not in watchtower.stdout)
+      when: watchtower.rc == 0 and not watchtower_ok
       changed_when: true
 
     - name: Start Watchtower
       ansible.builtin.command: >-
         docker run -d --name watchtower --restart unless-stopped
         -e WATCHTOWER_CLEANUP=true -e WATCHTOWER_LABEL_ENABLE=true
+        --label com.centurylinklabs.watchtower.enable=true
         --read-only --cap-drop ALL --security-opt no-new-privileges --memory 128m --pids-limit 64
         -v /var/run/docker.sock:/var/run/docker.sock
         {{ watchtower_image }}
-      when: watchtower.rc != 0 or watchtower_image not in watchtower.stdout or 'WATCHTOWER_LABEL_ENABLE=true' not in watchtower.stdout
+      when: not watchtower_ok
       changed_when: true
 
     - name: Put a banner on the login screen
