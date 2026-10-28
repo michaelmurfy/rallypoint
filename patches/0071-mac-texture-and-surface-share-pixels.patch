@@ -1,0 +1,53 @@
+diff --git a/cmake/dx8_stub/dx8_device.cpp b/cmake/dx8_stub/dx8_device.cpp
+index 3af47a1..7654696 100644
+--- a/cmake/dx8_stub/dx8_device.cpp
++++ b/cmake/dx8_stub/dx8_device.cpp
+@@ -186,6 +186,13 @@ public:
+ 
+     void* dxTexture() const { return m_texture; } // opaque MTLTexture*
+ 
++    // The texture's own staging and its cached level-0 surface used to be two separate buffers: the loader fills the
++    // texture's through LockRect, while Get_Surface_Level() returned a surface whose buffer was still zeros. Anything
++    // that copies from the surface (the team-colour recolour of ZHCA_/ZHCD_ textures: units, flags, base emblems)
++    // then got a black copy. Both directions are kept in step now.
++    std::vector<unsigned char>& stagingBuf() { return m_staging; }
++    bool m_surfaceStale = false;   // texture staging written since the surface last copied it
++
+     // Returns the MTLTexture the next upload must write into. The FIRST upload
+     // fills the texture before any draw referenced it, so in-place replaceRegion
+     // is safe; every RE-upload swaps in a fresh pooled texture instead
+@@ -233,6 +240,7 @@ public:
+     STDMETHOD(GetSurfaceLevel)(UINT Level, IDirect3DSurface8** ppSurfaceLevel) override;
+     STDMETHOD(LockRect)(UINT, D3DLOCKED_RECT* pLockedRect, CONST RECT*, DWORD) override
+     {
++        m_surfaceStale = true;
+         if (pLockedRect) {
+             pLockedRect->Pitch = (INT)m_pitch;
+             pLockedRect->pBits = m_staging.data();
+@@ -352,12 +360,14 @@ public:
+     // surface get nullptr-equivalent and must check (CopyRects src checks).
+     const unsigned char* surfBits() const { return m_staging.data(); }
+     void*     uploadTexture() const { return m_uploadTexture; }
++    void      setStaging(const std::vector<unsigned char>& s) { if (s.size() == m_staging_size) m_staging = s; }
+ 
+     // Convert this surface's bytes to BGRA8 and push to the bound MTLTexture
+     // (no-op if this surface isn't a texture level).
+     void flushToTexture()
+     {
+         if (!m_uploadTexture || m_staging.empty()) return;
++        if (m_ownerTex) { m_ownerTex->stagingBuf() = m_staging; m_ownerTex->m_surfaceStale = false; }
+         // Re-uploads must not replaceRegion in-place while in-flight GPU frames
+         // still sample the texture — swap to a fresh pooled backing first.
+         if (m_ownerTex) m_uploadTexture = m_ownerTex->prepareUploadBacking();
+@@ -490,6 +500,11 @@ HRESULT STDMETHODCALLTYPE MetalTexture8::GetSurfaceLevel(UINT Level, IDirect3DSu
+             surf->bindUploadTexture(m_texture);
+             surf->bindOwnerTexture(this);    // route re-uploads through the rename path
+             m_level0Surface = surf;          // texture keeps one reference
++            m_surfaceStale = true;
++        }
++        if (m_surfaceStale) {
++            static_cast<MetalSurface8*>(m_level0Surface)->setStaging(m_staging);
++            m_surfaceStale = false;
+         }
+         m_level0Surface->AddRef();           // reference for the returned pointer
+         *ppSurfaceLevel = m_level0Surface;

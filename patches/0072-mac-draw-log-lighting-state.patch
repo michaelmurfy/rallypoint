@@ -1,0 +1,22 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index d9f93e5..1e9f9e0 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -3956,6 +3956,17 @@ static void DrawShadowPass(MetalContext* ctx, const MetalDrawCall* dc)
+                           i, dc->fvf, lt, lt ? (unsigned long)lt.width : 0, lt ? (unsigned long)lt.height : 0,
+                           lt ? (unsigned long)lt.pixelFormat : 0, dc->blendEnable, dc->srcBlend, dc->destBlend,
+                           dc->alphaTestEnable, dc->colorOp, dc->colorArg1, dc->colorArg2, dc->alphaOp, dc->indexCount, dc->vertexCount);
++                  fprintf(stderr, "    light=%d nL=%d src(d/a/e)=%d/%d/%d mat d=(%.2f,%.2f,%.2f,%.2f) a=(%.2f,%.2f,%.2f) e=(%.2f,%.2f,%.2f) gAmb=(%.2f,%.2f,%.2f) normOff=%d diffOff=%d",
++                          dc->lightingEnable, dc->numLights, dc->diffuseSource, dc->ambientSource, dc->emissiveSource,
++                          dc->matDiffuse[0], dc->matDiffuse[1], dc->matDiffuse[2], dc->matDiffuse[3],
++                          dc->matAmbient[0], dc->matAmbient[1], dc->matAmbient[2], dc->matEmissive[0], dc->matEmissive[1], dc->matEmissive[2],
++                          dc->globalAmbient[0], dc->globalAmbient[1], dc->globalAmbient[2], dc->normalOffset, dc->diffuseOffset);
++                  if (dc->diffuseOffset >= 0 && dc->vertexBuffer) {
++                      id<MTLBuffer> lvb = (__bridge id<MTLBuffer>)dc->vertexBuffer;
++                      const unsigned char* lb = (const unsigned char*)lvb.contents + (size_t)dc->baseVertex * dc->stride;
++                      fprintf(stderr, " vdiff0=%08x vdiff1=%08x", *(const uint32_t*)(lb + dc->diffuseOffset), *(const uint32_t*)(lb + dc->stride + dc->diffuseOffset));
++                  }
++                  fprintf(stderr, "\n");
+                   // Texture content summary (shared/managed textures only; private ones cannot be read back on the CPU).
+                   if (lt) {
+                       if (lt.storageMode == MTLStorageModePrivate) fprintf(stderr, "    storage=private mips=%lu\n", (unsigned long)lt.mipmapLevelCount);

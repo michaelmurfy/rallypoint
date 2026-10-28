@@ -1,0 +1,14 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 1e9f9e0..2e2b4ed 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -3956,6 +3956,9 @@ static void DrawShadowPass(MetalContext* ctx, const MetalDrawCall* dc)
+                           i, dc->fvf, lt, lt ? (unsigned long)lt.width : 0, lt ? (unsigned long)lt.height : 0,
+                           lt ? (unsigned long)lt.pixelFormat : 0, dc->blendEnable, dc->srcBlend, dc->destBlend,
+                           dc->alphaTestEnable, dc->colorOp, dc->colorArg1, dc->colorArg2, dc->alphaOp, dc->indexCount, dc->vertexCount);
++                  fprintf(stderr, "    z=%d/%d/%d stencil=%d func=%d ref=%d mask=%x pass=%d zfail=%d fail=%d cull=%d cw=%d\n",
++                          dc->zEnable, dc->zWriteEnable, dc->zFunc, dc->stencilEnable, dc->stencilFunc, dc->stencilRef, dc->stencilMask,
++                          dc->stencilPass, dc->stencilZFail, dc->stencilFail, dc->cullMode, dc->colorWriteMask);
+                   fprintf(stderr, "    light=%d nL=%d src(d/a/e)=%d/%d/%d mat d=(%.2f,%.2f,%.2f,%.2f) a=(%.2f,%.2f,%.2f) e=(%.2f,%.2f,%.2f) gAmb=(%.2f,%.2f,%.2f) normOff=%d diffOff=%d",
+                           dc->lightingEnable, dc->numLights, dc->diffuseSource, dc->ambientSource, dc->emissiveSource,
+                           dc->matDiffuse[0], dc->matDiffuse[1], dc->matDiffuse[2], dc->matDiffuse[3],
