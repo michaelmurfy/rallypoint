@@ -148,6 +148,32 @@
     - name: Set which countries are let in
       ansible.builtin.lineinfile: { path: "{{ rallypoint_dir }}/.env", regexp: "^ALLOWED_COUNTRIES=", line: "ALLOWED_COUNTRIES={{ rallypoint_countries }}" }
 
+    # ---- this server's addresses (the public ones come from icanhazip.com) -----------------------------------------
+    - name: Find the public IPv4 address
+      ansible.builtin.uri: { url: "https://ipv4.icanhazip.com", return_content: true, timeout: 10 }
+      register: public_v4
+      failed_when: false
+      changed_when: false
+
+    - name: Find the public IPv6 address, if there is one
+      ansible.builtin.uri: { url: "https://ipv6.icanhazip.com", return_content: true, timeout: 10 }
+      register: public_v6
+      failed_when: false
+      changed_when: false
+
+    - name: Work out the addresses to show
+      ansible.builtin.set_fact:
+        public_ipv4: "{{ (public_v4.content | default('') | trim) if public_v4.status | default(0) == 200 else '' }}"
+        public_ipv6: "{{ (public_v6.content | default('') | trim) if public_v6.status | default(0) == 200 else '' }}"
+        private_ipv4: "{{ ansible_facts['default_ipv4']['address'] | default('') }}"
+        private_ipv6: "{{ ansible_facts['default_ipv6']['address'] | default('') }}"
+
+    - name: Pick the address players should type
+      ansible.builtin.set_fact:
+        server_address: >-
+          {{ rallypoint_address if rallypoint_address is defined
+             else (public_ipv4 if inventory_hostname in ['localhost', '127.0.0.1'] and public_ipv4 else inventory_hostname) }}
+
     - name: Install the rallypoint command
       ansible.builtin.copy: { src: ../rallypoint.sh, dest: /usr/local/bin/rallypoint, mode: "0755" }
 
@@ -168,9 +194,12 @@
     - name: Done
       ansible.builtin.debug:
         msg:
-          - "Your Rallypoint server is running on {{ rallypoint_address | default(inventory_hostname) }}, UDP port {{ rallypoint_port }}."
-          - "In the Rallypoint app, open Online and enter: {{ rallypoint_address | default(inventory_hostname) }}:{{ rallypoint_port }}"
+          - "Your Rallypoint server is running on {{ server_address }}, UDP port {{ rallypoint_port }}."
+          - "In the Rallypoint app, open Online and enter: {{ server_address }}:{{ rallypoint_port }}"
           - "{{ identity.stdout_lines[0] }}   (players compare this the first time they connect)"
+          - "Public IPv4: {{ public_ipv4 | default('unknown', true) }}    Private IPv4: {{ private_ipv4 | default('none', true) }}"
+          - "Public IPv6: {{ public_ipv6 | default('none', true) }}    Private IPv6: {{ private_ipv6 | default('none', true) }}"
+          - "The server accepts IPv4 connections only for now, so give players the IPv4 address (or a name that points to it)."
           - "Log in over SSH and type `rallypoint help` to manage it."
 
   handlers:

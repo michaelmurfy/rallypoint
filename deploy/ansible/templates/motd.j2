@@ -2,6 +2,9 @@
   Rallypoint server
   -----------------
   Players connect to this machine on UDP port {{ rallypoint_port }}.
+  Address to give them: {{ server_address }}:{{ rallypoint_port }}
+  Public IPv4 {{ public_ipv4 | default('unknown', true) }}, private IPv4 {{ private_ipv4 | default('none', true) }}
+  Public IPv6 {{ public_ipv6 | default('none', true) }} (the server accepts IPv4 only for now)
 {% if rallypoint_countries %}  Only these countries are let in: {{ rallypoint_countries }}.
 {% endif %}
   rallypoint status     is it running?

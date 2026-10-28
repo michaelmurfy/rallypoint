@@ -148,7 +148,7 @@ ansible-playbook -i inventory.ini playbook.yml
 ansible-playbook -i localhost, -c local -e rallypoint_address=YOUR.SERVER.IP playbook.yml
 ```
 
-It takes a few minutes and ends by printing the address to type into the app and the server's fingerprint. It's safe to run again whenever you like.
+It takes a few minutes and ends by printing the address to type into the app, the server's fingerprint, and its public and private IP addresses (the public ones come from [icanhazip.com](https://icanhazip.com), IPv4 and IPv6). The same details are on the login banner. The server accepts IPv4 connections only for now, so give players the IPv4 address. It's safe to run again whenever you like.
 
 - **Only let some countries in:** add `-e rallypoint_countries=NZ,AU` (two-letter codes, comma separated).
 - **A different port:** `-e rallypoint_port=7778`. Players then enter `your-server:7778`.
