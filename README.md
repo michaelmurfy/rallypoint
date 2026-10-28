@@ -28,7 +28,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 | Widescreen, 4K, HiDPI | ✅ | ✅ | – |
 | Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | – |
 | Online through the relay | ✅ | ✅ | – |
-| Relay server | ✅ | ✅ | ✅ x86_64, arm64, armv7 |
+| Relay server | – | – | ✅ x86_64, arm64, armv7 (Debian and Ubuntu setup script) |
 
 ## Your game files
 
@@ -104,7 +104,7 @@ Rallypoint checks GitHub for a newer release when it starts (switch off in *Sett
 
 ## Run a server
 
-To play over the internet, someone has to run a Rallypoint server. It uses almost nothing (a few megabytes of memory and a trickle of bandwidth), so the cheapest machine you can rent is plenty. Everyone who plays connects to the same server and meets in a room.
+To play over the internet, someone has to run a Rallypoint server. It runs on Linux: a cheap rented VM or a Raspberry Pi. It uses almost nothing (a few megabytes of memory and a trickle of bandwidth), so the cheapest machine you can rent is plenty. Everyone who plays connects to the same server and meets in a room.
 
 The fastest way is the Ansible playbook in [`deploy/ansible`](deploy/ansible). It sets up a blank server for you: updates, Docker, a firewall, protection against password guessing, automatic security updates, a login banner and the server itself.
 
@@ -118,35 +118,26 @@ You want a **Debian 12 or Ubuntu 24.04** machine with 1 CPU and 1 GB of memory. 
 | [Vultr](https://www.vultr.com/) | The $5 a month plan on Debian is all you need, and it has data centres all over the world. |
 | [Hetzner Cloud](https://www.hetzner.com/cloud) | Very good value if your players are in Europe or the US. |
 | [DigitalOcean](https://www.digitalocean.com/) or [Linode](https://www.linode.com/) | Easy panels and plenty of regions. |
-| A Raspberry Pi at home | Works well, but you'll need to forward the UDP port on your router, and your home internet is then part of everyone's game. |
+| A Raspberry Pi at home | Works well. Use a Pi 3, 4 or 5 with **64-bit Raspberry Pi OS Lite**. You'll need to forward the UDP port on your router, and your home internet is then part of everyone's game. |
 
 ### 2. Run the playbook
 
-**The playbook is for Debian and Ubuntu only** (on the server you rent). On anything else, use the plain Docker steps further down.
+**The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
 
-You run it from a computer with Ansible and git. Your server doesn't need either, because the playbook installs what it needs there. Pick whichever is easiest:
+The easiest way is to run it on the fresh server itself, so SSH in as root and install Ansible and git first (the playbook installs everything else):
 
-- **From a fresh Debian or Ubuntu machine** (your own, or the server itself):
+```bash
+sudo apt update && sudo apt install -y git ansible
+```
 
-  ```bash
-  sudo apt update && sudo apt install -y git ansible
-  ```
-
-- **From a Mac:** `brew install ansible git`. **From Windows:** use WSL (Ubuntu) and the line above. **Anywhere else:** `pipx install ansible`.
-
-Then, from that computer:
+Then clone the repo and run it against the machine you are on:
 
 ```bash
 git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
-cp inventory.example.ini inventory.ini      # put your server's address in it
-ansible-playbook -i inventory.ini playbook.yml
+ansible-playbook -i localhost, -c local playbook.yml
 ```
 
-**Running it on the server itself?** Log in as root, install the two packages above, clone the repo, and run this instead (use the server's public address):
-
-```bash
-ansible-playbook -i localhost, -c local -e rallypoint_address=YOUR.SERVER.IP playbook.yml
-```
+It works out the server's public address by itself. Prefer to run it from another Linux machine over SSH? Copy `inventory.example.ini` to `inventory.ini`, put the server's address in it, and use `ansible-playbook -i inventory.ini playbook.yml`.
 
 It takes a few minutes and ends by printing the address to type into the app, the server's fingerprint, and its public and private IP addresses (the public ones come from [icanhazip.com](https://icanhazip.com), IPv4 and IPv6). The same details are on the login banner. The server accepts IPv4 connections only for now, so give players the IPv4 address. It's safe to run again whenever you like.
 
@@ -192,7 +183,7 @@ make up
 | `make build` | Build the server from your checkout instead of pulling the release |
 | `make logs` / `status` / `key` | Watch it, check it, show the identity fingerprint |
 
-**Without Docker:** each release has `rallypoint-server-<version>-linux-x86_64`, `-linux-aarch64`, `-linux-armv7`, `-macos-arm64` and `-windows-x86_64` downloads. Unpack and run `rallypoint-server run`; settings are environment variables (see [`.env.example`](.env.example)). Linux builds run on Raspberry Pi OS Bookworm and newer. Pi Zero and Pi 1 (armv6) aren't covered.
+**Without Docker:** each release has `rallypoint-server-<version>-linux-x86_64`, `-linux-aarch64` and `-linux-armv7` downloads. Unpack and run `rallypoint-server run`; settings are environment variables (see [`.env.example`](.env.example)). Linux builds run on Raspberry Pi OS Bookworm and newer. Pi Zero and Pi 1 (armv6) aren't covered.
 
 Settings live in `.env`: the port, and `ALLOWED_COUNTRIES` to accept only some countries. Local-network addresses are refused by the country limit unless `ALLOW_PRIVATE=true` (LAN-only servers).
 

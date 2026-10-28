@@ -2,17 +2,16 @@
 # updates, Docker, a firewall, protection against SSH guessing, automatic security updates, a login banner,
 # the server itself, and a `rallypoint` command to run it.
 #
-#   sudo apt update && sudo apt install -y git ansible     # on the computer you run it from (Debian/Ubuntu)
+#   sudo apt update && sudo apt install -y git ansible     # on the fresh server, logged in as root
 #   git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
-#   cp inventory.example.ini inventory.ini        # put your server's address in it
-#   ansible-playbook -i inventory.ini playbook.yml
+#   ansible-playbook -i localhost, -c local playbook.yml
 #
-# Or run it on the server itself, after logging in as root:
-#   ansible-playbook -i localhost, -c local -e rallypoint_address=YOUR.SERVER.IP playbook.yml
+# Or from another Linux machine over SSH: copy inventory.example.ini to inventory.ini, put the server's address in it,
+# and run: ansible-playbook -i inventory.ini playbook.yml
 #
 # It is safe to run again: it only changes what is not already how it should be.
 - name: Rallypoint server
-  hosts: rallypoint
+  hosts: all
   become: true
   vars:
     # The UDP port players connect to. If you change it, change it in the game's Online tab too.
