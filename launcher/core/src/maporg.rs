@@ -2,6 +2,8 @@
 //! few you want. Maps the player has switched off are moved to a library folder beside Rallypoint's settings and moved
 //! back when switched on again: nothing is deleted and nothing is held twice. `library.json` remembers which pack each
 //! map came from.
+use crate::generals::{self, Entry};
+use crate::mapview;
 use crate::maps::{find_maps, is_map_file};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -9,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 /// Packs shown for maps nothing is known about (added by hand, or before the organiser).
 pub const OTHER: &str = "Other maps";
+/// The tag on maps that ship inside the game's own archives.
+pub const OFFICIAL: &str = "Official";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MapEntry {
@@ -67,6 +71,92 @@ pub fn list(maps_dir: &Path, lib: &Path) -> Vec<MapEntry> {
     }
     out.sort_by_key(|e| e.name.to_lowercase());
     out
+}
+
+/// A skirmish map that ships with the game (or the mod being played). Players have not installed these: they sit in `.big` archives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OfficialMap {
+    pub name: String,
+    pub size_kb: u64,
+    pub players: u8,
+}
+
+struct Found {
+    name: String,
+    big: PathBuf,
+    map: Entry,
+    tga: Option<Entry>,
+}
+
+/// Every `maps\<folder>\<folder>.map` in the archives of `dirs`, as the game sees them: a later folder (a mod) replaces an earlier one (the base game).
+fn found(dirs: &[PathBuf]) -> Vec<Found> {
+    let mut by: BTreeMap<String, Found> = BTreeMap::new();
+    for dir in dirs {
+        for big in generals::archives(dir) {
+            let Ok(entries) = generals::list(&big) else { continue };
+            for e in &entries {
+                let Some(rest) = e.name.strip_prefix("maps\\") else { continue };
+                let parts: Vec<&str> = rest.split('\\').collect();
+                let [folder, file] = parts[..] else { continue };
+                if file != format!("{folder}.map") {
+                    continue;
+                }
+                let name = e.path.split('\\').nth(1).unwrap_or(folder).to_string();
+                if !is_safe_name(&name) || name.starts_with('_') {
+                    continue;
+                }
+                let tga = entries.iter().find(|t| t.name == format!("maps\\{folder}\\{folder}.tga")).cloned();
+                by.insert(folder.to_string(), Found { name, big: big.clone(), map: e.clone(), tga });
+            }
+        }
+    }
+    by.into_values().collect()
+}
+
+const MAX_MAP: u32 = 64 << 20;
+
+/// The skirmish maps in the archives of `dirs` (base game first, mods after): the ones with two or more start positions, which leaves out
+/// the campaign, the challenge generals and the test maps. Reading a map means unpacking it, so the counts are kept in `cache` against the map's size.
+pub fn official(dirs: &[PathBuf], cache: &Path) -> Vec<OfficialMap> {
+    let mut known: BTreeMap<String, u8> = std::fs::read_to_string(cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut changed = false;
+    let mut out = vec![];
+    for f in found(dirs) {
+        let key = format!("{}|{}", f.map.name, f.map.size);
+        let players = match known.get(&key) {
+            Some(&n) => n,
+            None => {
+                let Some(n) = generals::read(&f.big, &f.map, MAX_MAP).ok().and_then(|b| mapview::parse_map(&b).ok()).map(|m| m.starts.len().min(255) as u8) else { continue };
+                known.insert(key, n);
+                changed = true;
+                n
+            }
+        };
+        if players >= 2 {
+            out.push(OfficialMap { size_kb: (f.map.size as u64 + f.tga.as_ref().map_or(0, |t| t.size as u64)) / 1024, name: f.name, players });
+        }
+    }
+    if changed {
+        if let Some(d) = cache.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = serde_json::to_vec(&known).map(|b| std::fs::write(cache, b));
+    }
+    out.sort_by_key(|m| m.name.to_lowercase());
+    out
+}
+
+/// Whether the archives of `dirs` hold a map with this folder name (names are not case sensitive, as in the game).
+pub fn is_official(dirs: &[PathBuf], name: &str) -> bool {
+    found(dirs).iter().any(|f| f.name.eq_ignore_ascii_case(name))
+}
+
+/// The preview picture and start positions of an official map.
+pub fn official_view(dirs: &[PathBuf], name: &str) -> Result<mapview::MapView, String> {
+    let f = found(dirs).into_iter().find(|f| f.name.eq_ignore_ascii_case(name)).ok_or("that map isn't part of this game")?;
+    let map = generals::read(&f.big, &f.map, MAX_MAP).map_err(|e| e.to_string())?;
+    let tga = f.tga.as_ref().and_then(|t| generals::read(&f.big, t, 16 << 20).ok());
+    Ok(mapview::render(&f.name, Some(&map), tga.as_deref(), (map.len() as u64 + f.tga.as_ref().map_or(0, |t| t.size as u64)) / 1024))
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -182,6 +272,49 @@ pub fn found_in(root: &Path) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn big(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let header = 16 + files.iter().map(|(n, _)| 8 + n.len() + 1).sum::<usize>();
+        let mut out = b"BIGF".to_vec();
+        out.extend(0u32.to_le_bytes());
+        out.extend((files.len() as u32).to_be_bytes());
+        out.extend((header as u32).to_be_bytes());
+        let mut offset = header as u32;
+        for (n, d) in files {
+            out.extend(offset.to_be_bytes());
+            out.extend((d.len() as u32).to_be_bytes());
+            out.extend(n.as_bytes());
+            out.push(0);
+            offset += d.len() as u32;
+        }
+        files.iter().for_each(|(_, d)| out.extend(*d));
+        out
+    }
+
+    #[test]
+    fn official_maps_come_from_the_archives_and_only_the_skirmish_ones_are_listed() {
+        let dir = temp("official");
+        let map = crate::mapview::tests::tiny_map(); // two start positions
+        std::fs::write(
+            dir.join("MapsZH.big"),
+            big(&[
+                ("Maps\\Alpine Assault\\Alpine Assault.map", &map),
+                ("Maps\\Alpine Assault\\Alpine Assault.tga", b"x"),
+                ("Maps\\MD_USA01\\MD_USA01.map", b"not a map"),
+                ("Maps\\_Art Review\\_Art Review.map", &map),
+                ("Maps\\MapCache.ini", b"x"),
+            ]),
+        )
+        .unwrap();
+        let cache = dir.join("cache.json");
+        let got = official(&[dir.clone()], &cache);
+        assert_eq!(got.iter().map(|m| (m.name.as_str(), m.players)).collect::<Vec<_>>(), [("Alpine Assault", 2)]);
+        assert!(cache.is_file());
+        assert!(is_official(&[dir.clone()], "alpine assault"));
+        assert!(!is_official(&[dir.clone()], "MD_USA01x"));
+        assert!(official_view(&[dir.clone()], "Alpine Assault").unwrap().info.is_some());
+        assert!(official_view(&[dir], "Nowhere").is_err());
+    }
 
     fn temp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("gen-maporg-{name}-{}", std::process::id()));

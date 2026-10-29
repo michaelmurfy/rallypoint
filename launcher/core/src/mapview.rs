@@ -396,10 +396,17 @@ pub fn view(name: &str, dir: &Path) -> Result<MapView, String> {
     let files: Vec<_> = std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).collect();
     let ext = |p: &Path, e: &str| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
     let pick = |e: &str| files.iter().find(|p| ext(p, e) && p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(name))).or_else(|| files.iter().find(|p| ext(p, e)));
-    let info = pick("map").and_then(|p| std::fs::metadata(p).ok().filter(|m| m.len() < (64 << 20)).and_then(|_| std::fs::read(p).ok())).and_then(|b| parse_map(&b).ok());
-    let image = pick("tga").and_then(|p| std::fs::metadata(p).ok().filter(|m| m.len() < (16 << 20)).and_then(|_| std::fs::read(p).ok())).and_then(|b| decode_tga(&b).ok());
+    let map = pick("map").and_then(|p| std::fs::metadata(p).ok().filter(|m| m.len() < (64 << 20)).and_then(|_| std::fs::read(p).ok()));
+    let tga = pick("tga").and_then(|p| std::fs::metadata(p).ok().filter(|m| m.len() < (16 << 20)).and_then(|_| std::fs::read(p).ok()));
+    Ok(render(name, map.as_deref(), tga.as_deref(), dir_size_kb(dir)))
+}
+
+/// The same from the bytes of the `.map` and its preview picture (a map that lives inside a game archive).
+pub fn render(name: &str, map: Option<&[u8]>, tga: Option<&[u8]>, size_kb: u64) -> MapView {
+    let info = map.and_then(|b| parse_map(b).ok());
+    let image = tga.and_then(|b| decode_tga(b).ok());
     let (image_w, image_h, rgba) = image.map(|i| (i.w, i.h, base64(&i.rgba))).unwrap_or((0, 0, String::new()));
-    Ok(MapView { name: name.to_string(), image_w, image_h, rgba, info, size_kb: dir_size_kb(dir) })
+    MapView { name: name.to_string(), image_w, image_h, rgba, info, size_kb }
 }
 
 /// How many players a map is for: its start positions. 0 for a solo map or mission; `None` when the map can't be read.
@@ -445,7 +452,7 @@ pub fn counts(maps: &[(String, std::path::PathBuf)], cache: &Path) -> std::colle
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -463,7 +470,7 @@ mod tests {
     }
 
     /// A tiny map file: one terrain chunk (10 x 8 cells, border 1) and an object list with two start waypoints.
-    fn tiny_map() -> Vec<u8> {
+    pub(crate) fn tiny_map() -> Vec<u8> {
         let names = ["HeightMapData", "ObjectsList", "Object", "waypointName"];
         let mut m = b"CkMp".to_vec();
         m.extend_from_slice(&(names.len() as u32).to_le_bytes());

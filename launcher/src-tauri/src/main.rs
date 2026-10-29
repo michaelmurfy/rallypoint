@@ -660,6 +660,31 @@ async fn skirmish_generals(app: tauri::AppHandle, game_dir: PathBuf, mod_folders
     tauri::async_runtime::spawn_blocking(move || generals::generals(&game_dir, &layers)).await.map_err(|e| e.to_string())
 }
 
+/// Where the game's own maps live, lowest priority first: the original Generals (Zero Hour reads its maps too), the game folder, then the mods.
+fn official_dirs(app: &tauri::AppHandle, game_dir: &Path, mod_folders: Option<Vec<String>>) -> Result<Vec<PathBuf>, String> {
+    let cat = catalog()?;
+    let mut dirs: Vec<PathBuf> = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base(app)?)).into_iter().collect();
+    dirs.push(game_dir.to_path_buf());
+    for f in mods::with_bases(&cat, &mod_folders.unwrap_or_default()) {
+        dirs.push(mods_dir(app)?.join(f));
+    }
+    Ok(dirs)
+}
+
+/// The skirmish maps that come with this game (or mod), for the map list.
+#[tauri::command]
+async fn maps_official(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<Vec<maporg::OfficialMap>, String> {
+    let (dirs, cache) = (official_dirs(&app, &game_dir, mod_folders)?, map_library(&app)?.join("official.json"));
+    tauri::async_runtime::spawn_blocking(move || maporg::official(&dirs, &cache)).await.map_err(|e| e.to_string())
+}
+
+/// An official map's preview picture and start positions.
+#[tauri::command]
+async fn official_map_view(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>, name: String) -> Result<mapview::MapView, String> {
+    let dirs = official_dirs(&app, &game_dir, mod_folders)?;
+    tauri::async_runtime::spawn_blocking(move || maporg::official_view(&dirs, &name)).await.map_err(|e| e.to_string())?
+}
+
 /// How many players each map is for (its start positions), read once per map and remembered.
 #[tauri::command]
 async fn maps_players(app: tauri::AppHandle) -> Result<std::collections::BTreeMap<String, u8>, String> {
@@ -812,7 +837,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
         return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
     }
     let cat = catalog()?;
-    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    let ordered = mods::with_bases(&cat, &mod_folders.clone().unwrap_or_default());
     if let Some((a, b)) = mods::conflict(&cat, &ordered) {
         return Err(format!("{a} and {b} can't be played together. Untick one of them."));
     }
@@ -834,7 +859,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
         }
         None => None,
     };
-    let skirmish_env = launch::skirmish_env(skirmish_map.as_deref(), skirmish_ai, skirmish_difficulty.as_deref(), skirmish_start, skirmish_speed, |name| maps_dir(&app).map(|d| d.join(name).is_dir()).unwrap_or(false))?;
+    let skirmish_env = launch::skirmish_env(skirmish_map.as_deref(), skirmish_ai, skirmish_difficulty.as_deref(), skirmish_start, skirmish_speed, |name| maps_dir(&app).map(|d| d.join(name).is_dir()).unwrap_or(false) || official_dirs(&app, &game_dir, mod_folders.clone()).is_ok_and(|d| maporg::is_official(&d, name)))?;
     let opts = launch::LaunchOptions {
         log: engine_log(&app).ok(),
         sync_logs: if Config::load(&config_path(&app)?).sync_logs {
@@ -922,7 +947,7 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install,
             launch_game

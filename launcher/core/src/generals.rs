@@ -13,6 +13,8 @@ const MAX_CSF: u32 = 64 << 20;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     pub name: String,
+    /// The path as stored in the archive (original case, backslashes), for showing names.
+    pub path: String,
     pub offset: u32,
     pub size: u32,
 }
@@ -42,7 +44,8 @@ pub fn list(path: &Path) -> std::io::Result<Vec<Entry>> {
         let size = u32::from_be_bytes(table[pos + 4..pos + 8].try_into().unwrap());
         pos += 8;
         let Some(end) = table[pos..].iter().position(|&b| b == 0) else { break };
-        out.push(Entry { name: String::from_utf8_lossy(&table[pos..pos + end]).replace('/', "\\").to_ascii_lowercase(), offset, size });
+        let path = String::from_utf8_lossy(&table[pos..pos + end]).replace('/', "\\");
+        out.push(Entry { name: path.to_ascii_lowercase(), path, offset, size });
         pos += end + 1;
     }
     Ok(out)
@@ -59,7 +62,7 @@ pub fn read(path: &Path, e: &Entry, max: u32) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn archives(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn archives(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()

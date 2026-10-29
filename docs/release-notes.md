@@ -1,17 +1,16 @@
+## Rallypoint 0.5.8
+
+The game's own maps are finally in the map list.
+
+- **Official maps, tagged.** The Maps page and the skirmish setup now list the maps that ship with the game, marked **Official**. Zero Hour shows its own (plus the original Generals maps) and a mod shows the ones it ships. They can't be switched off or deleted, and a map of yours with the same name wins.
+- **Only skirmish maps.** Campaign, challenge and test maps are left out, so the list is the one you would pick from anyway.
+- **Tried on a real install.** A skirmish on an official map starts from the setup screen like any other.
+
 ## Rallypoint 0.5.7
 
-Skirmishes get a speed dial, setting up a server no longer needs a computer science degree, and Settings has a Changelog button.
-
-- **Game speed for skirmishes.** The map skirmish screen has a speed menu beside Play skirmish, from 50% to 200%. Normal until you say otherwise, and skirmishes only: online games stay the same speed for everyone.
-- **A proper way to set up a server.** There's now an Ansible playbook that turns a blank Debian, Ubuntu or Raspberry Pi OS machine into a Rallypoint server (updates, Docker, firewall, SSH protection, automatic security updates), plus a `rallypoint` command to start, stop, update and check it. The README walks through it, with a few hosting suggestions.
-- **Servers say when they're ready.** `make up` pulls the release and waits until the container reports healthy. `make build` builds from source.
-- **Changelog button.** *Settings → Updates* shows the notes for this version and the two before it, whether or not an update is waiting.
-- **Known.** The game speed menu hasn't had a long play test yet. If 50% or 200% feels wrong, tell us.
+Skirmishes got a speed menu (50% to 200%, never online), the README gained a proper server setup guide with an Ansible playbook and a `rallypoint` helper, `make up` waits for the container to be healthy, and Settings has a Changelog button.
 
 ## Rallypoint 0.5.6
 
 Fixed units and flags that drew black on Mac (the GLA worker, team-colour parts and base emblems). Only the Mac engine had the problem; Windows was fine.
 
-## Rallypoint 0.5.5
-
-Multiplayer opens the LAN lobby directly, the window and Mac menu name the game (Cmd+Q quits), the unused Custom Mission button is hidden, and the Play page fits without a scrollbar.
