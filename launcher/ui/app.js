@@ -445,10 +445,15 @@ function openMapViewer(entries, start, onChange) {
     catch (e) { listed.checked = m.enabled; note.textContent = errText(e); }
     listed.disabled = false;
   } });
+  const listedRow = h("label", { class: "switch" }, listed, "Show in the game's map list");
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
 
   // The game (Zero Hour or a mod) the skirmish is played with. Changing it changes the generals on offer.
-  const gameSel = h("select", { "aria-label": "Game", onchange: async () => { prefs.set({ game: gameSel.value }); notifyMods(); await loadGenerals(); drawTable(); paint(shown); } });
+  const gameSel = h("select", { "aria-label": "Game", onchange: async () => {
+    prefs.set({ game: gameSel.value }); notifyMods();
+    if (entries[i].official) { show(); return; } // an official map belongs to a game: read it again for this one
+    await loadGenerals(); drawTable(); paint(shown);
+  } });
   function drawGames() {
     const cur = selectedGame();
     gameSel.replaceChildren(...gameChoices().map((g) => { const o = new Option(g.installed ? g.name : `${g.name} (not installed)`, g.id); o.disabled = !g.installed; return o; }));
@@ -532,7 +537,7 @@ function openMapViewer(entries, start, onChange) {
       h("div", { class: "wiz-body mapbody" },
         h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
         h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, speedPick, play))),
-      h("div", { class: "wiz-foot" }, h("label", { class: "switch" }, listed, "Show in the game's map list"), close)));
+      h("div", { class: "wiz-foot" }, listedRow, close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
   function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
@@ -592,6 +597,7 @@ function openMapViewer(entries, start, onChange) {
   async function show() {
     const m = entries[i], mine = ++token;
     listed.checked = m.enabled;
+    listedRow.hidden = !!m.official;
     position.textContent = `${i + 1} of ${entries.length}`;
     title.textContent = m.name;
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
@@ -600,7 +606,7 @@ function openMapViewer(entries, start, onChange) {
     shown = null; spots = []; rows = [];
     drawTable();
     try {
-      const v = await invoke("map_view", { name: m.name });
+      const v = m.official ? await invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), name: m.name }) : await invoke("map_view", { name: m.name });
       if (mine !== token) return;
       const places = v.info ? Math.min(8, v.info.starts.length) : 0;
       newRows(places >= 2 ? places : 0);
@@ -613,7 +619,7 @@ function openMapViewer(entries, start, onChange) {
   }
   function fillFacts(v, m) {
     const n = v && v.info ? v.info.starts.length : 0;
-    const bits = [m.pack];
+    const bits = [m.official ? `Official, ${selectedGame().name}` : m.pack];
     if (v && v.info) bits.push(`${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)}`);
     bits.push(n ? `${n} players` : "Solo map");
     if (v) bits.push(v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`);
@@ -630,7 +636,7 @@ function openMapViewer(entries, start, onChange) {
 /** Every map, on or off: pick the ones the game should show. Switching a map off moves it aside; nothing is deleted. */
 function mapOrganiser() {
   const LIMIT = 150;
-  let all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
+  let own = [], official = [], all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
   let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
   const summary = h("span", { class: "pill" });
   const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
@@ -648,7 +654,7 @@ function mapOrganiser() {
   const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off shown");
   const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete shown…");
   const empty = h("div", { class: "notice", hidden: true });
-  const players = (m) => (counts && m.name in counts ? counts[m.name] : null);
+  const players = (m) => (m.official ? m.players : counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
   const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!pack || m.pack === pack) && (view === "all" || (view === "on") === m.enabled));
   const visible = () => {
@@ -671,8 +677,8 @@ function mapOrganiser() {
       counts ? null : h("span", { class: "muted small" }, "counting…"));
   }
   function drawSummary() {
-    const n = all.filter((m) => m.enabled).length;
-    summary.textContent = all.length ? `${n} of ${all.length} switched on` : "";
+    const mine = all.filter((m) => !m.official), n = mine.filter((m) => m.enabled).length;
+    summary.textContent = mine.length ? `${n} of ${mine.length} switched on` : "";
     summary.className = "pill" + (n ? " ok" : "");
   }
   function draw() {
@@ -694,17 +700,19 @@ function mapOrganiser() {
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
       const idx = v.indexOf(m);
-      const row = h("label", { class: "maprow" + (m.enabled ? " on" : "") }, box, h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+      const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") }, m.official ? h("span", {}) : box,
+        h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name, m.official ? h("span", { class: "officialtag" }, "Official") : null), h("span", { class: "muted small mappack-tag" }, m.official ? selectedGame().name : m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
       return row;
     }));
     more.hidden = v.length <= shown;
     more.textContent = `Show more (${v.length - shown} left)`;
-    [on, off, del].forEach((b) => { b.disabled = !v.length; });
-    del.textContent = confirmDelete ? `Click again to delete ${v.length} map${v.length === 1 ? "" : "s"}` : "Delete shown…";
+    const yours = v.filter((m) => !m.official).length; // the game's own maps can't be switched off or deleted
+    [on, off, del].forEach((b) => { b.disabled = !yours; });
+    del.textContent = confirmDelete ? `Click again to delete ${yours} map${yours === 1 ? "" : "s"}` : "Delete shown…";
   }
   async function bulk(enabled) {
-    const names = visible().filter((m) => m.enabled !== enabled).map((m) => m.name);
+    const names = visible().filter((m) => !m.official && m.enabled !== enabled).map((m) => m.name);
     if (!names.length) return;
     on.disabled = off.disabled = true;
     try {
@@ -717,20 +725,34 @@ function mapOrganiser() {
   async function remove() {
     if (!confirmDelete) { confirmDelete = true; draw(); setTimeout(() => { confirmDelete = false; draw(); }, 4000); return; }
     confirmDelete = false;
-    const names = visible().map((m) => m.name);
+    const names = visible().filter((m) => !m.official).map((m) => m.name);
     try { const n = await invoke("maps_delete", { names }); say(`${n} map${n === 1 ? "" : "s"} deleted`, "ok"); } catch (e) { say(errText(e), "bad"); }
     await reloadOrganiser();
   }
-  async function reloadOrganiser() {
-    try { all = await invoke("maps_organiser"); } catch (e) { say(errText(e), "bad"); all = []; }
+  // The game's own skirmish maps, for the game chosen on the Play page. A map of yours with the same name wins, as in the game.
+  function merge() {
+    const taken = new Set(own.map((m) => m.name.toLowerCase()));
+    all = [...own, ...official.filter((o) => !taken.has(o.name.toLowerCase())).map((o) => ({ name: o.name, pack: "Official", enabled: true, official: true, size_kb: o.size_kb, players: o.players }))]
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  }
+  async function loadOfficial() {
+    if (!store.cfg.game_dir) return;
+    try { official = await invoke("maps_official", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }); } catch { official = []; }
+    merge();
     draw();
+  }
+  async function reloadOrganiser() {
+    try { own = await invoke("maps_organiser"); } catch (e) { say(errText(e), "bad"); own = []; }
+    merge();
+    draw();
+    loadOfficial();
     // reading each map's start positions takes a moment the first time; the list is usable meanwhile
     invoke("maps_players").then((c) => { counts = c; draw(); }).catch(() => { counts = {}; draw(); });
   }
   refreshers.add(reloadOrganiser);
   reloadOrganiser();
   const el = h("div", { class: "organiser" },
-    h("div", { class: "row between" }, h("h2", {}, "Your maps"), summary),
+    h("div", { class: "row between" }, h("h2", {}, "Maps"), summary),
     h("div", { class: "organiser-bar" }, search, packSel, segs),
     chips,
     empty,
