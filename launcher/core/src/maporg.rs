@@ -146,6 +146,33 @@ pub fn official(dirs: &[PathBuf], cache: &Path) -> Vec<OfficialMap> {
     out
 }
 
+/// An official map and every game that ships it (ids, in the order the games were given).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GameMap {
+    pub name: String,
+    pub size_kb: u64,
+    pub players: u8,
+    pub games: Vec<String>,
+}
+
+/// The official maps of several games at once. Each game is `(id, dirs)`, `dirs` being the archives that game adds on its own
+/// (a mod's folder, not the base game under it), so a mod's maps are not credited to the games it is built on.
+/// A map that two games ship appears once, tagged with both.
+pub fn official_games(games: &[(String, Vec<PathBuf>)], cache: &Path) -> Vec<GameMap> {
+    let mut out: BTreeMap<String, GameMap> = BTreeMap::new();
+    for (id, dirs) in games {
+        for m in official(dirs, cache) {
+            let e = out.entry(m.name.to_lowercase()).or_insert_with(|| GameMap { name: m.name.clone(), size_kb: m.size_kb, players: m.players, games: vec![] });
+            if !e.games.contains(id) {
+                e.games.push(id.clone());
+            }
+        }
+    }
+    let mut v: Vec<GameMap> = out.into_values().collect();
+    v.sort_by_key(|m| m.name.to_lowercase());
+    v
+}
+
 /// Whether the archives of `dirs` hold a map with this folder name (names are not case sensitive, as in the game).
 pub fn is_official(dirs: &[PathBuf], name: &str) -> bool {
     found(dirs).iter().any(|f| f.name.eq_ignore_ascii_case(name))
@@ -314,6 +341,22 @@ mod tests {
         assert!(!is_official(&[dir.clone()], "MD_USA01x"));
         assert!(official_view(&[dir.clone()], "Alpine Assault").unwrap().info.is_some());
         assert!(official_view(&[dir], "Nowhere").is_err());
+    }
+
+    #[test]
+    fn a_map_is_tagged_with_every_game_that_ships_it() {
+        let dir = temp("games");
+        let map = crate::mapview::tests::tiny_map();
+        let (zh, sw) = (dir.join("zh"), dir.join("sw"));
+        std::fs::create_dir_all(&zh).unwrap();
+        std::fs::create_dir_all(&sw).unwrap();
+        std::fs::write(zh.join("MapsZH.big"), big(&[("Maps\\Alpine Assault\\Alpine Assault.map", &map), ("Maps\\Shared\\Shared.map", &map)])).unwrap();
+        std::fs::write(sw.join("Maps.big"), big(&[("Maps\\Shockwave Only\\Shockwave Only.map", &map), ("Maps\\shared\\shared.map", &map)])).unwrap();
+        let got = official_games(&[("zh".into(), vec![zh]), ("shockwave".into(), vec![sw])], &dir.join("cache.json"));
+        assert_eq!(
+            got.iter().map(|m| (m.name.as_str(), m.games.iter().map(String::as_str).collect::<Vec<_>>())).collect::<Vec<_>>(),
+            [("Alpine Assault", vec!["zh"]), ("Shared", vec!["zh", "shockwave"]), ("Shockwave Only", vec!["shockwave"])]
+        );
     }
 
     fn temp(name: &str) -> PathBuf {

@@ -671,11 +671,19 @@ fn official_dirs(app: &tauri::AppHandle, game_dir: &Path, mod_folders: Option<Ve
     Ok(dirs)
 }
 
-/// The skirmish maps that come with this game (or mod), for the map list.
+/// The skirmish maps of every game that is installed (Zero Hour and each catalog mod), each tagged with the games that ship it.
 #[tauri::command]
-async fn maps_official(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<Vec<maporg::OfficialMap>, String> {
-    let (dirs, cache) = (official_dirs(&app, &game_dir, mod_folders)?, map_library(&app)?.join("official.json"));
-    tauri::async_runtime::spawn_blocking(move || maporg::official(&dirs, &cache)).await.map_err(|e| e.to_string())
+async fn maps_official(app: tauri::AppHandle, game_dir: PathBuf) -> Result<Vec<maporg::GameMap>, String> {
+    let cat = catalog()?;
+    let cache = map_library(&app)?.join("official.json");
+    let mut games: Vec<(String, Vec<PathBuf>)> = vec![("zh".to_string(), official_dirs(&app, &game_dir, None)?)];
+    for m in &cat {
+        let dir = mods_dir(&app)?.join(&m.path);
+        if dir.is_dir() {
+            games.push((m.id.clone(), vec![dir]));
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || maporg::official_games(&games, &cache)).await.map_err(|e| e.to_string())
 }
 
 /// An official map's preview picture and start positions.

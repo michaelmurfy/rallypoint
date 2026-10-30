@@ -320,7 +320,12 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .maprow.on { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
 .mapname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .mapsize { text-align: right; }
-.officialtag { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; color: var(--rose); border: 1px solid color-mix(in srgb, var(--rose) 45%, transparent); vertical-align: 1px; }
+.maptags { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 2px; }
+.officialtag, .gametag { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.officialtag { color: #2f9e5b; border: 1px solid color-mix(in srgb, #2f9e5b 50%, transparent); background: color-mix(in srgb, #2f9e5b 12%, transparent); }
+.gametag { color: var(--muted); border: 1px solid var(--line); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .officialtag { color: #5fcf8b; } }
+:root[data-theme="dark"] .officialtag { color: #5fcf8b; }
 .mappack-tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maprow input { appearance: none; width: 18px; height: 18px; margin: 0; border-radius: 5px; border: 1.5px solid var(--muted); background: none; display: grid; place-items: center; cursor: pointer; transition: background .12s var(--ease), border-color .12s var(--ease); }
 .maprow input::after { content: ""; width: 9px; height: 5px; border-left: 2px solid var(--accent-ink); border-bottom: 2px solid var(--accent-ink); transform: translateY(-1px) rotate(-45deg) scale(0); transition: transform .12s var(--ease); }
