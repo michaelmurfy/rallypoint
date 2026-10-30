@@ -162,6 +162,14 @@ function launchFolders() {
   const g = selectedGame();
   return [...(store.mods.other.some((o) => o.folder === ICON_FOLDER) ? [ICON_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...selectedExtras()];
 }
+/** The names of the games an official map comes with (its tags). */
+const gameNames = (m) => (m.games || []).map((id) => (gameChoices().find((g) => g.id === id) || { name: id }).name.replace(/^C&C: /, ""));
+/** The mod folders to read an official map's archives with: those of the game it comes with (the selected one when it has the map). */
+function officialFolders(m) {
+  const id = m.games.includes(selectedGame().id) ? selectedGame().id : m.games[0];
+  const g = gameChoices().find((c) => c.id === id);
+  return g && g.folder ? [g.folder] : [];
+}
 let iconsJob = null;
 /** Sharp command-bar icons. Setup downloads them on its own; they load with every game. */
 function ensureIcons() {
@@ -451,7 +459,6 @@ function openMapViewer(entries, start, onChange) {
   // The game (Zero Hour or a mod) the skirmish is played with. Changing it changes the generals on offer.
   const gameSel = h("select", { "aria-label": "Game", onchange: async () => {
     prefs.set({ game: gameSel.value }); notifyMods();
-    if (entries[i].official) { show(); return; } // an official map belongs to a game: read it again for this one
     await loadGenerals(); drawTable(); paint(shown);
   } });
   function drawGames() {
@@ -513,6 +520,7 @@ function openMapViewer(entries, start, onChange) {
   }
   const play = h("button", { class: "btn primary big playbtn", onclick: async () => {
     const m = entries[i];
+    if (m.official && !m.games.includes(selectedGame().id)) { note.textContent = `${m.name} comes with ${gameNames(m).join(" and ")}. Choose it under "Play with".`; return; }
     play.disabled = true;
     try {
       // a switched-off map is not in the game's folder: switch it on first
@@ -596,6 +604,8 @@ function openMapViewer(entries, start, onChange) {
 
   async function show() {
     const m = entries[i], mine = ++token;
+    // an official map belongs to its game(s): play it with one of them
+    if (m.official && !m.games.includes(selectedGame().id)) { prefs.set({ game: m.games[0] }); notifyMods(); drawGames(); }
     listed.checked = m.enabled;
     listedRow.hidden = !!m.official;
     position.textContent = `${i + 1} of ${entries.length}`;
@@ -606,7 +616,7 @@ function openMapViewer(entries, start, onChange) {
     shown = null; spots = []; rows = [];
     drawTable();
     try {
-      const v = m.official ? await invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), name: m.name }) : await invoke("map_view", { name: m.name });
+      const v = m.official ? await invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: officialFolders(m), name: m.name }) : await invoke("map_view", { name: m.name });
       if (mine !== token) return;
       const places = v.info ? Math.min(8, v.info.starts.length) : 0;
       newRows(places >= 2 ? places : 0);
@@ -619,7 +629,7 @@ function openMapViewer(entries, start, onChange) {
   }
   function fillFacts(v, m) {
     const n = v && v.info ? v.info.starts.length : 0;
-    const bits = [m.official ? `Official, ${selectedGame().name}` : m.pack];
+    const bits = [m.official ? `Official, ${gameNames(m).join(", ")}` : m.pack];
     if (v && v.info) bits.push(`${Math.round(v.info.width / 10)} × ${Math.round(v.info.height / 10)}`);
     bits.push(n ? `${n} players` : "Solo map");
     if (v) bits.push(v.size_kb >= 1024 ? `${(v.size_kb / 1024).toFixed(1)} MB` : `${v.size_kb} KB`);
@@ -701,7 +711,7 @@ function mapOrganiser() {
       } });
       const idx = v.indexOf(m);
       const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") }, m.official ? h("span", {}) : box,
-        h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name, m.official ? h("span", { class: "officialtag" }, "Official") : null), h("span", { class: "muted small mappack-tag" }, m.official ? selectedGame().name : m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+        h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
       return row;
     }));
@@ -729,15 +739,15 @@ function mapOrganiser() {
     try { const n = await invoke("maps_delete", { names }); say(`${n} map${n === 1 ? "" : "s"} deleted`, "ok"); } catch (e) { say(errText(e), "bad"); }
     await reloadOrganiser();
   }
-  // The game's own skirmish maps, for the game chosen on the Play page. A map of yours with the same name wins, as in the game.
+  // The skirmish maps of every installed game, each tagged with its game(s). A map of yours with the same name wins, as in the game.
   function merge() {
     const taken = new Set(own.map((m) => m.name.toLowerCase()));
-    all = [...own, ...official.filter((o) => !taken.has(o.name.toLowerCase())).map((o) => ({ name: o.name, pack: "Official", enabled: true, official: true, size_kb: o.size_kb, players: o.players }))]
+    all = [...own, ...official.filter((o) => !taken.has(o.name.toLowerCase())).map((o) => ({ name: o.name, pack: "Official", enabled: true, official: true, size_kb: o.size_kb, players: o.players, games: o.games }))]
       .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   }
   async function loadOfficial() {
     if (!store.cfg.game_dir) return;
-    try { official = await invoke("maps_official", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }); } catch { official = []; }
+    try { official = await invoke("maps_official", { gameDir: store.cfg.game_dir }); } catch { official = []; }
     merge();
     draw();
   }
