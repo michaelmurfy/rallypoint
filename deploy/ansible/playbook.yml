@@ -105,6 +105,20 @@
 
   tasks:
     # ---- the basics ------------------------------------------------------------------------------------------------
+    # A Docker repository set up by hand (docker.sources, or a list with another key) clashes with ours: apt refuses
+    # two entries for one repository with different keys. Ours replaces them, and it has to happen before the first apt run, which fails on the clash.
+    - name: Look for other Docker repository files
+      ansible.builtin.find:
+        paths: /etc/apt/sources.list.d
+        patterns: ["*.list", "*.sources"]
+        contains: ".*download\\.docker\\.com"
+      register: old_docker_sources
+
+    - name: Remove them
+      ansible.builtin.file: { path: "{{ item.path }}", state: absent }
+      loop: "{{ old_docker_sources.files | rejectattr('path', 'equalto', '/etc/apt/sources.list.d/docker.list') | list }}"
+      loop_control: { label: "{{ item.path }}" }
+
     - name: Install the latest updates
       ansible.builtin.apt:
         update_cache: true
@@ -140,20 +154,6 @@
         url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
         dest: /etc/apt/keyrings/docker.asc
         mode: "0644"
-
-    # A Docker repository set up by hand (docker.sources, or a list with another key) clashes with ours: apt refuses
-    # two entries for one repository with different keys. Ours replaces them.
-    - name: Look for other Docker repository files
-      ansible.builtin.find:
-        paths: /etc/apt/sources.list.d
-        patterns: ["*.list", "*.sources"]
-        contains: "download\\.docker\\.com"
-      register: old_docker_sources
-
-    - name: Remove them
-      ansible.builtin.file: { path: "{{ item.path }}", state: absent }
-      loop: "{{ old_docker_sources.files | rejectattr('path', 'equalto', '/etc/apt/sources.list.d/docker.list') | list }}"
-      loop_control: { label: "{{ item.path }}" }
 
     - name: Add Docker's repository
       ansible.builtin.apt_repository:
@@ -334,7 +334,15 @@
   handlers:
     - name: Restart Docker
       ansible.builtin.service: { name: docker, state: restarted }
+    # A reload makes a running sshd bind its port again, which fails when systemd's ssh.socket (Debian 13, new Ubuntu)
+    # holds it, and sshd then exits: the server is cut off. Restarting through systemd handles both setups.
     - name: Reload SSH
-      ansible.builtin.service: { name: ssh, state: reloaded }
+      ansible.builtin.shell: |
+        if systemctl is-active --quiet ssh.socket; then
+          systemctl restart ssh.socket && systemctl try-restart ssh.service
+        else
+          systemctl restart ssh.service
+        fi
+      changed_when: true
     - name: Restart fail2ban
       ansible.builtin.service: { name: fail2ban, state: restarted }
