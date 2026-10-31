@@ -124,7 +124,7 @@ You want a **Debian 13 or Ubuntu 26.04 LTS** machine (older releases still work)
 
 **The playbook is for Debian and Ubuntu only**, which includes Raspberry Pi OS. It has been tested on **Debian 12, Debian 13, Ubuntu 24.04 LTS and Ubuntu 26.04 LTS**. The server is meant to run on a Linux VM or a Raspberry Pi, not on a Mac or Windows PC. On any other Linux, use the plain Docker steps further down.
 
-The easiest way is to run it on the fresh server itself, so SSH in as root and install Ansible and git first (the playbook installs everything else):
+The easiest way is to run it on the fresh server itself, so SSH in (as root, or as a user that can `sudo`) and install Ansible and git first (the playbook installs everything else):
 
 ```bash
 sudo apt update && sudo apt install -y git ansible
@@ -137,7 +137,7 @@ git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ans
 ansible-playbook -i localhost, -c local playbook.yml
 ```
 
-It works out the server's public address by itself. Prefer to run it from another Linux machine over SSH? Copy `inventory.example.ini` to `inventory.ini`, put the server's address in it, and use `ansible-playbook -i inventory.ini playbook.yml`.
+If you are not root, it asks for your **sudo password** (or pass `-K`), and adds you to the `docker` group so `docker` works without sudo after your next login. It works out the server's public address by itself. Prefer to run it from another Linux machine over SSH? Copy `inventory.example.ini` to `inventory.ini`, put the server's address in it, and use `ansible-playbook -i inventory.ini playbook.yml`.
 
 It takes a few minutes and ends by printing the address to type into the app, the server's fingerprint, and its public and private IP addresses (the public ones come from [icanhazip.com](https://icanhazip.com), IPv4 and IPv6). The same details are on the login banner. The server accepts IPv4 connections only for now, so give players the IPv4 address. It's safe to run again whenever you like.
 

@@ -2,9 +2,11 @@
 # updates, Docker, a firewall, protection against SSH guessing, automatic security updates, Watchtower (keeps the server up to date), a login banner,
 # the server itself, and a `rallypoint` command to run it.
 #
-#   sudo apt update && sudo apt install -y git ansible     # on the fresh server, logged in as root
+#   sudo apt update && sudo apt install -y git ansible     # on the fresh server, as root or a user that can sudo
 #   git clone https://github.com/michaelmurfy/rallypoint && cd rallypoint/deploy/ansible
 #   ansible-playbook -i localhost, -c local playbook.yml
+#
+# As a regular user it asks for your sudo password (or pass -K), and adds you to the docker group.
 #
 # Or from another Linux machine over SSH: copy inventory.example.ini to inventory.ini, put the server's address in it,
 # and run: ansible-playbook -i inventory.ini playbook.yml
@@ -13,6 +15,8 @@
 - name: Rallypoint server
   hosts: all
   become: true
+  # Facts are gathered in pre_tasks, after sudo works: gathering needs it and would fail on a password prompt.
+  gather_facts: false
   vars:
     # The UDP port players connect to. If you change it, change it in the game's Online tab too.
     rallypoint_port: 7777
@@ -32,6 +36,54 @@
     docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}[ansible_architecture] | default(ansible_architecture) }}"
 
   pre_tasks:
+    # ---- who is running this, and can they sudo --------------------------------------------------------------------
+    - name: Find out who is logging in
+      ansible.builtin.command: id -un
+      become: false
+      register: whoami
+      changed_when: false
+
+    - name: Check sudo works
+      ansible.builtin.raw: "true"
+      register: sudo_probe
+      ignore_errors: true
+      changed_when: false
+
+    - name: Ask for the sudo password
+      ansible.builtin.pause:
+        prompt: "sudo password for {{ whoami.stdout }}"
+        echo: false
+      register: sudo_prompt
+      run_once: true
+      ignore_errors: true
+      when: sudo_probe is failed
+
+    - name: Use that password for sudo
+      ansible.builtin.set_fact:
+        ansible_become_password: "{{ sudo_prompt.user_input }}"
+      no_log: true
+      when: sudo_prompt.user_input is defined
+
+    - name: Check sudo again
+      ansible.builtin.raw: "true"
+      register: sudo_check
+      ignore_errors: true
+      changed_when: false
+      when: sudo_probe is failed
+
+    - name: Stop if sudo still doesn't work
+      ansible.builtin.assert:
+        that: sudo_probe is succeeded or sudo_check is succeeded
+        fail_msg: >-
+          {{ whoami.stdout }} can't use sudo here: the password was wrong, none was given, or this user isn't allowed to sudo.
+          Run as root, or as a user in the sudo group, and pass the password with -K (--ask-become-pass).
+
+    - name: Collect facts about this server
+      ansible.builtin.setup:
+
+    - name: Look up the login user's home folder
+      ansible.builtin.getent: { database: passwd, key: "{{ whoami.stdout }}" }
+
     - name: Check this is Debian or Ubuntu
       ansible.builtin.assert:
         that: ansible_distribution in ['Debian', 'Ubuntu']
@@ -39,7 +91,7 @@
 
     - name: Look for an SSH key that lets you in
       ansible.builtin.stat:
-        path: "{{ '/root' if (ansible_user | default('root')) == 'root' else '/home/' ~ ansible_user }}/.ssh/authorized_keys"
+        path: "{{ getent_passwd[whoami.stdout][4] }}/.ssh/authorized_keys"
       register: login_keys
       when: harden_ssh
 
@@ -47,7 +99,7 @@
       ansible.builtin.assert:
         that: login_keys.stat.exists and login_keys.stat.size > 0
         fail_msg: >-
-          There is no SSH key on this server for {{ ansible_user | default('root') }}, so turning off password logins would lock you out.
+          There is no SSH key on this server for {{ whoami.stdout }}, so turning off password logins would lock you out.
           Add your key (ssh-copy-id), or run with -e harden_ssh=false.
       when: harden_ssh
 
@@ -113,6 +165,11 @@
 
     - name: Start Docker now and on every boot
       ansible.builtin.service: { name: docker, state: started, enabled: true }
+
+    - name: Let the login user run docker without sudo (takes effect at their next login)
+      ansible.builtin.user: { name: "{{ whoami.stdout }}", groups: docker, append: true }
+      when: whoami.stdout != 'root'
+      register: docker_group
 
     - name: Apply Docker's settings before anything runs on it
       ansible.builtin.meta: flush_handlers
@@ -254,6 +311,11 @@
           - "Public IPv6: {{ public_ipv6 | default('none', true) }}    Private IPv6: {{ private_ipv6 | default('none', true) }}"
           - "The server accepts IPv4 connections only for now, so give players the IPv4 address (or a name that points to it)."
           - "Log in over SSH and type `rallypoint help` to manage it."
+
+    - name: Say the docker group needs a new login
+      ansible.builtin.debug:
+        msg: "{{ whoami.stdout }} was added to the docker group. Log out and back in to run docker without sudo."
+      when: docker_group is changed
 
   handlers:
     - name: Restart Docker
