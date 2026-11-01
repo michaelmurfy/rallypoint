@@ -702,9 +702,9 @@ function mapOrganiser() {
     const y = Math.min(Math.max(8, e.clientY - TIP / 2), innerHeight - TIP - 8);
     tip.style.transform = `translate(${x}px, ${y}px)`;
   }
-  function hoverPreview(row, m) {
+  function hoverPreview(target, m) {
     let timer = null, token = 0;
-    row.addEventListener("mouseenter", (e) => {
+    target.addEventListener("mouseenter", (e) => {
       const mine = ++token;
       placeTip(e);
       timer = setTimeout(async () => {
@@ -718,8 +718,8 @@ function mapOrganiser() {
         tip.hidden = false;
       }, 140);
     });
-    row.addEventListener("mousemove", placeTip);
-    row.addEventListener("mouseleave", () => { token++; clearTimeout(timer); tip.hidden = true; });
+    target.addEventListener("mousemove", placeTip);
+    target.addEventListener("mouseleave", () => { token++; clearTimeout(timer); tip.hidden = true; });
   }
   const players = (m) => (m.official ? m.players : counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
@@ -778,7 +778,7 @@ function mapOrganiser() {
       const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") }, m.official ? h("span", {}) : box,
         h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
-      hoverPreview(row, m);
+      hoverPreview(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
       return row;
     }));
     more.hidden = v.length <= shown;
