@@ -648,11 +648,11 @@ function openMapViewer(entries, start, onChange) {
 /** Every map, on or off: pick the ones the game should show. Switching a map off moves it aside; nothing is deleted. */
 function mapOrganiser() {
   const LIMIT = 150;
-  let own = [], official = [], all = [], q = "", pack = "", view = "all", shown = LIMIT, confirmDelete = false;
+  let own = [], official = [], all = [], q = "", packs = new Set(), view = "all", shown = LIMIT, confirmDelete = false;
   let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
   const summary = h("span", { class: "pill" });
   const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
-  // The pack filter is a menu so each pack can also be switched on or off as a whole (its maps, not the game's own).
+  // The pack filter is a menu of tick boxes: show the maps of the ticked packs (none ticked is every pack). It only filters the list.
   const packName = h("span", { class: "packbtn-name" });
   const packBtn = h("button", { class: "btn packbtn", "aria-haspopup": "true", "aria-expanded": "false", "aria-label": "Show maps from", onclick: () => setPackMenu(packMenu.hidden) }, packName);
   const packMenu = h("div", { class: "packmenu", role: "group", "aria-label": "Map packs", hidden: true });
@@ -668,7 +668,7 @@ function mapOrganiser() {
     new Option("Sort: name", "name"), new Option("Sort: fewest players", "players"), new Option("Sort: most players", "players-desc"), new Option("Sort: largest file", "size"));
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Number of players" });
   const result = h("p", { class: "muted small mapresult", role: "status" });
-  const clear = h("button", { class: "btn small ghost", hidden: true, onclick: () => { q = ""; pack = ""; view = "all"; pf = ""; search.value = ""; shown = LIMIT; draw(); } }, "Clear filters");
+  const clear = h("button", { class: "btn small ghost", hidden: true, onclick: () => { q = ""; packs.clear(); view = "all"; pf = ""; search.value = ""; shown = LIMIT; draw(); } }, "Clear filters");
   const list = h("div", { class: "maplist" });
   const more = h("button", { class: "btn small", hidden: true, onclick: () => { shown += LIMIT; draw(); } }, "Show more");
   const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on shown");
@@ -677,7 +677,7 @@ function mapOrganiser() {
   const empty = h("div", { class: "notice", hidden: true });
   const players = (m) => (m.official ? m.players : counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
-  const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!pack || m.pack === pack) && (view === "all" || (view === "on") === m.enabled));
+  const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!packs.size || packs.has(m.pack)) && (view === "all" || (view === "on") === m.enabled));
   const visible = () => {
     const v = base().filter((m) => pf === "" || players(m) === Number(pf));
     const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
@@ -697,34 +697,14 @@ function mapOrganiser() {
       ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), h("span", {}, n === 0 ? "Solo" : String(n), h("span", { class: "chipcount" }, String(have.get(n)))))),
       counts ? null : h("span", { class: "muted small" }, "counting…"));
   }
-  const partial = (input, some) => { input.indeterminate = some; return input; }; // some of a pack's maps are on: not a plain on or off
-  function drawPacks(packs) {
-    const choose = (p) => { pack = p; shown = LIMIT; setPackMenu(false); draw(); };
-    fill(packName, pack || "All packs");
-    packBtn.classList.toggle("filtered", !!pack);
-    const row = (p, label, count) => {
-      const maps = all.filter((m) => m.pack === p);
-      const mine = maps.filter((m) => !m.official), on = mine.filter((m) => m.enabled).length;
-      // a switch for the maps of yours in a pack; the game's own maps are always there
-      const sw = p === "" || !mine.length ? h("span", { class: "muted small packfixed" }, p === "" ? "" : "Always on")
-        : h("label", { class: "switch packswitch", title: `Switch all ${mine.length} maps in ${p} ${on === mine.length ? "off" : "on"}` }, partial(h("input", { type: "checkbox", role: "switch", "data-pack": p, "aria-label": `${p}: switch all its maps on or off`, checked: on === mine.length, onchange: (e) => switchPack(p, e.target.checked) }), on > 0 && on < mine.length));
-      return h("div", { class: "packrow" + (pack === p ? " current" : "") },
-        h("button", { class: "packchoose", "aria-current": String(pack === p), onclick: () => choose(p) }, h("span", { class: "packlabel" }, label), h("span", { class: "muted small" }, p !== "" && mine.length && on > 0 && on < mine.length ? `${on} of ${count} on` : String(count))),
-        sw);
-    };
-    packMenu.replaceChildren(row("", "All packs", all.length), ...packs.map((p) => row(p, p, all.filter((m) => m.pack === p).length)));
-  }
-  async function switchPack(p, enabled) {
-    const names = all.filter((m) => m.pack === p && !m.official && m.enabled !== enabled).map((m) => m.name);
-    if (!names.length) return;
-    packMenu.querySelectorAll("input").forEach((i) => { i.disabled = true; });
-    try {
-      const n = await invoke("maps_set_enabled", { names, enabled });
-      all.forEach((m) => { if (names.includes(m.name)) m.enabled = enabled; });
-      say(`${n} map${n === 1 ? "" : "s"} in ${p} switched ${enabled ? "on" : "off"}`, "ok");
-    } catch (e) { say(errText(e), "bad"); }
-    draw();
-    packMenu.querySelector(`input[data-pack="${CSS.escape(p)}"]`)?.focus();
+  function drawPacks(names) {
+    const total = (p) => all.filter((m) => m.pack === p).length;
+    fill(packName, packs.size === 0 ? "All packs" : packs.size === 1 ? [...packs][0] : `${packs.size} packs`);
+    packBtn.classList.toggle("filtered", packs.size > 0);
+    const row = (label, count, checked, onchange) => h("label", { class: "packrow" }, h("input", { type: "checkbox", checked, "aria-label": label, onchange }), h("span", { class: "packlabel" }, label), h("span", { class: "muted small" }, String(count)));
+    packMenu.replaceChildren(
+      row("All packs", all.length, packs.size === 0, () => { packs.clear(); shown = LIMIT; draw(); }),
+      ...names.map((p) => row(p, total(p), packs.has(p), (e) => { if (e.target.checked) packs.add(p); else packs.delete(p); shown = LIMIT; draw(); })));
   }
   function drawSummary() {
     const mine = all.filter((m) => !m.official), n = mine.filter((m) => m.enabled).length;
@@ -732,15 +712,15 @@ function mapOrganiser() {
     summary.className = "pill" + (n ? " ok" : "");
   }
   function draw() {
-    const packs = [...new Set(all.map((m) => m.pack))].sort();
-    if (pack && !packs.includes(pack)) pack = "";
-    drawPacks(packs);
+    const packNames = [...new Set(all.map((m) => m.pack))].sort();
+    for (const p of [...packs]) if (!packNames.includes(p)) packs.delete(p);
+    drawPacks(packNames);
     segs.querySelectorAll(".seg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
     const v = visible();
     drawSummary();
     drawChips();
     result.textContent = all.length ? (v.length === all.length ? `${all.length} maps` : `${v.length} of ${all.length} maps`) : "";
-    clear.hidden = !(q || pack || view !== "all" || pf !== "");
+    clear.hidden = !(q || packs.size || view !== "all" || pf !== "");
     empty.hidden = !!v.length;
     fill(empty, all.length ? "No maps match." : h("span", {}, "No maps yet. Install a pack above, or add your own maps from a file or folder."));
     fill(list, v.slice(0, shown).map((m) => {

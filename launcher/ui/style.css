@@ -307,16 +307,10 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .packbtn.filtered { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .packmenu { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; min-width: 360px; padding: 6px; border-radius: var(--r-panel); border: 1px solid var(--line); background: var(--surface); box-shadow: 0 12px 32px rgba(0, 0, 0, .35); display: grid; gap: 2px; }
 .packmenu[hidden] { display: none; }
-.packrow { display: flex; align-items: center; gap: 8px; border-radius: var(--r-btn); }
-.packrow:hover, .packrow.current { background: var(--surface-2); }
-.packchoose { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 10px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; border-radius: var(--r-btn); }
-.packchoose[aria-current="true"] .packlabel { font-weight: 700; }
-.packchoose .muted { white-space: nowrap; }
-.packlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.packswitch { padding-right: 10px; }
-.packfixed { padding-right: 10px; min-width: 38px; text-align: right; }
-.packswitch input:indeterminate { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
-.packswitch input:indeterminate::after { transform: translateX(8px); background: #fff; }
+.packrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-btn); cursor: pointer; }
+.packrow:hover { background: var(--surface-2); }
+.packrow input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.packlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-height: 28px; }
 .chiplabel { margin-right: 4px; }
 .chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; font-size: 12px; padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease); }
