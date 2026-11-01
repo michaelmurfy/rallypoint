@@ -1,0 +1,24 @@
+GEN_AUTO_CASH=N (1000 to 1000000) sets the skirmish starting money, replacing the saved choice. The launcher's starting money menu sets it.
+
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index c89aeab..13fb21d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -709,6 +709,17 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 
+ 	TheSkirmishGameInfo->setSeed(GetTickCount());
+ 	TheSkirmishGameInfo->setStartingCash( prefs.getStartingCash() );
++	// Rallypoint: GEN_AUTO_CASH=N (the launcher's starting money menu, 1000 to 1000000) replaces the saved starting cash.
++	if (const char *cash = ::getenv("GEN_AUTO_CASH"))
++	{
++		const long amount = strtol(cash, nullptr, 10);
++		if (amount >= 1000 && amount <= 1000000)
++		{
++			Money startingCash;
++			startingCash.deposit( (UnsignedInt)amount, FALSE, FALSE );
++			TheSkirmishGameInfo->setStartingCash( startingCash );
++		}
++	}
+ 	TheSkirmishGameInfo->setSuperweaponRestriction( prefs.getSuperweaponRestricted() ? 1 : 0 );
+ 
+ 	// Pick the map: explicit override, else preferred/default multiplayer map.
