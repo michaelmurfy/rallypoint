@@ -652,7 +652,16 @@ function mapOrganiser() {
   let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
   const summary = h("span", { class: "pill" });
   const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
-  const packSel = h("select", { "aria-label": "Show maps from", onchange: () => { pack = packSel.value; shown = LIMIT; draw(); } });
+  // The pack filter is a menu so each pack can also be switched on or off as a whole (its maps, not the game's own).
+  const packName = h("span", { class: "packbtn-name" });
+  const packBtn = h("button", { class: "btn packbtn", "aria-haspopup": "true", "aria-expanded": "false", "aria-label": "Show maps from", onclick: () => setPackMenu(packMenu.hidden) }, packName);
+  const packMenu = h("div", { class: "packmenu", role: "group", "aria-label": "Map packs", hidden: true });
+  const packPick = h("div", { class: "packpick" }, packBtn, packMenu);
+  function setPackMenu(open) { packMenu.hidden = !open; packBtn.setAttribute("aria-expanded", String(open)); }
+  const closeOutside = (e) => { if (!packMenu.hidden && !packPick.contains(e.target)) setPackMenu(false); };
+  const closeOnEscape = (e) => { if (e.key === "Escape" && !packMenu.hidden) { setPackMenu(false); packBtn.focus(); } };
+  document.addEventListener("click", closeOutside);
+  document.addEventListener("keydown", closeOnEscape);
   const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
   const segs = h("div", { class: "segs", role: "group", "aria-label": "Show" }, seg("all", "All"), seg("on", "On"), seg("off", "Off"));
   const sortSel = h("select", { "aria-label": "Sort maps", onchange: () => { sortBy = sortSel.value; shown = LIMIT; draw(); } },
@@ -688,6 +697,35 @@ function mapOrganiser() {
       ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), h("span", {}, n === 0 ? "Solo" : String(n), h("span", { class: "chipcount" }, String(have.get(n)))))),
       counts ? null : h("span", { class: "muted small" }, "counting…"));
   }
+  const partial = (input, some) => { input.indeterminate = some; return input; }; // some of a pack's maps are on: not a plain on or off
+  function drawPacks(packs) {
+    const choose = (p) => { pack = p; shown = LIMIT; setPackMenu(false); draw(); };
+    fill(packName, pack || "All packs");
+    packBtn.classList.toggle("filtered", !!pack);
+    const row = (p, label, count) => {
+      const maps = all.filter((m) => m.pack === p);
+      const mine = maps.filter((m) => !m.official), on = mine.filter((m) => m.enabled).length;
+      // a switch for the maps of yours in a pack; the game's own maps are always there
+      const sw = p === "" || !mine.length ? h("span", { class: "muted small packfixed" }, p === "" ? "" : "Always on")
+        : h("label", { class: "switch packswitch", title: `Switch all ${mine.length} maps in ${p} ${on === mine.length ? "off" : "on"}` }, partial(h("input", { type: "checkbox", role: "switch", "data-pack": p, "aria-label": `${p}: switch all its maps on or off`, checked: on === mine.length, onchange: (e) => switchPack(p, e.target.checked) }), on > 0 && on < mine.length));
+      return h("div", { class: "packrow" + (pack === p ? " current" : "") },
+        h("button", { class: "packchoose", "aria-current": String(pack === p), onclick: () => choose(p) }, h("span", { class: "packlabel" }, label), h("span", { class: "muted small" }, p !== "" && mine.length && on > 0 && on < mine.length ? `${on} of ${count} on` : String(count))),
+        sw);
+    };
+    packMenu.replaceChildren(row("", "All packs", all.length), ...packs.map((p) => row(p, p, all.filter((m) => m.pack === p).length)));
+  }
+  async function switchPack(p, enabled) {
+    const names = all.filter((m) => m.pack === p && !m.official && m.enabled !== enabled).map((m) => m.name);
+    if (!names.length) return;
+    packMenu.querySelectorAll("input").forEach((i) => { i.disabled = true; });
+    try {
+      const n = await invoke("maps_set_enabled", { names, enabled });
+      all.forEach((m) => { if (names.includes(m.name)) m.enabled = enabled; });
+      say(`${n} map${n === 1 ? "" : "s"} in ${p} switched ${enabled ? "on" : "off"}`, "ok");
+    } catch (e) { say(errText(e), "bad"); }
+    draw();
+    packMenu.querySelector(`input[data-pack="${CSS.escape(p)}"]`)?.focus();
+  }
   function drawSummary() {
     const mine = all.filter((m) => !m.official), n = mine.filter((m) => m.enabled).length;
     summary.textContent = mine.length ? `${n} of ${mine.length} switched on` : "";
@@ -696,8 +734,7 @@ function mapOrganiser() {
   function draw() {
     const packs = [...new Set(all.map((m) => m.pack))].sort();
     if (pack && !packs.includes(pack)) pack = "";
-    packSel.replaceChildren(new Option("All packs", ""), ...packs.map((p) => new Option(`${p} (${all.filter((m) => m.pack === p).length})`, p)));
-    packSel.value = pack;
+    drawPacks(packs);
     segs.querySelectorAll(".seg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
     const v = visible();
     drawSummary();
@@ -765,7 +802,7 @@ function mapOrganiser() {
   reloadOrganiser();
   const el = h("div", { class: "organiser" },
     h("div", { class: "row between" }, h("h2", {}, "Maps"), summary),
-    h("div", { class: "organiser-bar" }, search, packSel, segs),
+    h("div", { class: "organiser-bar" }, search, packPick, segs),
     chips,
     empty,
     h("div", { class: "listbox" },
@@ -774,7 +811,7 @@ function mapOrganiser() {
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
     h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
-  return { el, dispose: () => refreshers.delete(reloadOrganiser) };
+  return { el, dispose: () => { refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
 function mapsPage() {

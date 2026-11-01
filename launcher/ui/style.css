@@ -300,6 +300,23 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .organiser-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .organiser-bar input[type=text] { flex: 1 1 200px; width: auto; }
 .organiser-bar select { width: auto; max-width: 240px; }
+.packpick { position: relative; }
+.packbtn { height: 36px; max-width: 240px; padding: 0 36px 0 11px; border-radius: var(--r-field); background-color: var(--bg); font-weight: 400; text-align: left;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 19px) 50%, calc(100% - 14px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.packbtn-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.packbtn.filtered { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.packmenu { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; min-width: 360px; padding: 6px; border-radius: var(--r-panel); border: 1px solid var(--line); background: var(--surface); box-shadow: 0 12px 32px rgba(0, 0, 0, .35); display: grid; gap: 2px; }
+.packmenu[hidden] { display: none; }
+.packrow { display: flex; align-items: center; gap: 8px; border-radius: var(--r-btn); }
+.packrow:hover, .packrow.current { background: var(--surface-2); }
+.packchoose { flex: 1; min-width: 0; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 10px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; border-radius: var(--r-btn); }
+.packchoose[aria-current="true"] .packlabel { font-weight: 700; }
+.packchoose .muted { white-space: nowrap; }
+.packlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.packswitch { padding-right: 10px; }
+.packfixed { padding-right: 10px; min-width: 38px; text-align: right; }
+.packswitch input:indeterminate { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
+.packswitch input:indeterminate::after { transform: translateX(8px); background: #fff; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-height: 28px; }
 .chiplabel { margin-right: 4px; }
 .chip { border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-weight: 650; font-size: 12px; padding: 3px 10px; border-radius: 999px; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease); }
