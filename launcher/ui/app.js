@@ -675,6 +675,52 @@ function mapOrganiser() {
   const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off shown");
   const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete shown…");
   const empty = h("div", { class: "notice", hidden: true });
+  // A small picture of the map under the mouse, following it. Pictures are fetched once, a moment after the mouse settles on a row.
+  const TIP = 190;
+  const tipCanvas = h("canvas", { width: TIP, height: TIP });
+  const tip = h("div", { class: "maptip", hidden: true, "aria-hidden": "true" }, tipCanvas);
+  const pictures = new Map(); // map name -> the bitmap, or null when it has none
+  async function pictureOf(m) {
+    if (pictures.has(m.name)) return pictures.get(m.name);
+    let pic = null;
+    try {
+      const v = m.official ? await invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: officialFolders(m), name: m.name }) : await invoke("map_view", { name: m.name });
+      if (v.rgba) {
+        const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
+        for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
+        const bmp = document.createElement("canvas");
+        bmp.width = v.image_w; bmp.height = v.image_h;
+        bmp.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
+        pic = { bmp, ratio: v.info ? v.info.width / v.info.height : 1 };
+      }
+    } catch { /* no picture: no tip */ }
+    pictures.set(m.name, pic);
+    return pic;
+  }
+  function placeTip(e) {
+    const x = e.clientX + 18 + TIP > innerWidth ? e.clientX - 18 - TIP : e.clientX + 18;
+    const y = Math.min(Math.max(8, e.clientY - TIP / 2), innerHeight - TIP - 8);
+    tip.style.transform = `translate(${x}px, ${y}px)`;
+  }
+  function hoverPreview(row, m) {
+    let timer = null, token = 0;
+    row.addEventListener("mouseenter", (e) => {
+      const mine = ++token;
+      placeTip(e);
+      timer = setTimeout(async () => {
+        const pic = await pictureOf(m);
+        if (mine !== token || !pic) return;
+        const cw = pic.ratio >= 1 ? TIP : Math.round(TIP * pic.ratio), ch = pic.ratio >= 1 ? Math.round(TIP / pic.ratio) : TIP;
+        tipCanvas.width = cw; tipCanvas.height = ch; // the frame takes the map's own proportions
+        const ctx = tipCanvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(pic.bmp, 0, 0, cw, ch);
+        tip.hidden = false;
+      }, 140);
+    });
+    row.addEventListener("mousemove", placeTip);
+    row.addEventListener("mouseleave", () => { token++; clearTimeout(timer); tip.hidden = true; });
+  }
   const players = (m) => (m.official ? m.players : counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
   const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!packs.size || packs.has(m.pack)) && (view === "all" || (view === "on") === m.enabled));
@@ -732,6 +778,7 @@ function mapOrganiser() {
       const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") }, m.official ? h("span", {}) : box,
         h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
+      hoverPreview(row, m);
       return row;
     }));
     more.hidden = v.length <= shown;
@@ -780,6 +827,7 @@ function mapOrganiser() {
   }
   refreshers.add(reloadOrganiser);
   reloadOrganiser();
+  document.body.append(tip); // on the body: a page that is mid-animation has a transform, which would move a fixed child
   const el = h("div", { class: "organiser" },
     h("div", { class: "row between" }, h("h2", {}, "Maps"), summary),
     h("div", { class: "organiser-bar" }, search, packPick, segs),
@@ -791,7 +839,7 @@ function mapOrganiser() {
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
     h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
-  return { el, dispose: () => { refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
+  return { el, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
 function mapsPage() {

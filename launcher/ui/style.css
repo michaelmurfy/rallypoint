@@ -330,6 +330,9 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .maprow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 64px auto; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); cursor: pointer; transition: background .1s var(--ease); }
 .maprow:first-child { border-top: 0; }
 .maprow:hover { background: var(--surface-2); }
+.maptip { position: fixed; z-index: 30; left: 0; top: 0; pointer-events: none; padding: 5px; border-radius: var(--r-panel); border: 1px solid var(--line); background: var(--surface); box-shadow: 0 12px 32px rgba(0, 0, 0, .45); }
+.maptip[hidden] { display: none; }
+.maptip canvas { display: block; border-radius: calc(var(--r-panel) - 4px); background: var(--bg); }
 .maprow.official { cursor: default; }
 .maprow.on { background: color-mix(in srgb, var(--accent) 9%, var(--bg)); }
 .mapname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
