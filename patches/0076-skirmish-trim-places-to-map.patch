@@ -1,0 +1,35 @@
+A skirmish table with more players than the map has start positions crashed the game at start. The extra computer places are now closed (from the end; place 0, the human, stays), as the game's own lobby would never have offered them.
+
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index 13fb21d..3178807 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -799,6 +799,28 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 			TheSkirmishGameInfo->getSlot(0)->setStartPos(n - 1);
+ 	}
+ 
++	// Rallypoint: more players than the map has start positions crash the game at start (Player::init on a side the map does
++	// not have), and adjustSlotsForMap leaves occupied slots alone. The game's own lobby never offers more places than the
++	// map has, so close the extra computer places from the end here; the human in place 0 always stays.
++	if (md && md->m_numPlayers >= 2)
++	{
++		Int seated = 0;
++		for (Int s = 0; s < MAX_SLOTS; ++s)
++			if (TheSkirmishGameInfo->getSlot(s)->isOccupied())
++				++seated;
++		for (Int s = MAX_SLOTS - 1; s > 0 && seated > md->m_numPlayers; --s)
++		{
++			if (TheSkirmishGameInfo->getSlot(s)->isOccupied())
++			{
++				GameSlot closed;
++				closed.setState(SLOT_CLOSED);
++				TheSkirmishGameInfo->setSlot(s, closed);
++				--seated;
++			}
++		}
++		DEBUG_LOG(("DebugAutoStartSkirmish: map has %d start positions, table trimmed to %d players", md->m_numPlayers, seated));
++	}
++
+ 	// Close empty slots / fit the map, then mark the game started.
+ 	TheSkirmishGameInfo->adjustSlotsForMap();
+ 	TheWritableGlobalData->m_mapName = TheSkirmishGameInfo->getMap();

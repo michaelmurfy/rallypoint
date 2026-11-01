@@ -209,6 +209,14 @@ pub fn skirmish_slots_env(slots: &[SlotSpec], generals: &[crate::generals::Gener
     Ok(parts.join(";"))
 }
 
+/// A table never has more places than the map has start positions (the game's own lobby never offers more, and a game started
+/// with more crashes). Places past the map's are dropped; `None` (an official map, or a map that can't be read) leaves the table alone.
+pub fn fit_table(slots: &mut Vec<SlotSpec>, starts: Option<u8>) {
+    if let Some(n) = starts.filter(|n| *n >= 2) {
+        slots.truncate(n as usize);
+    }
+}
+
 /// Is the network ready for the game? No relay at all means offline play, which is fine. A relay that has
 /// not accepted us yet would start the game on the wrong network (and fail with a socket error in the LAN
 /// lobby), so that is refused. Returns the agent address and our virtual IP to hand to the engine.
@@ -273,12 +281,34 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
     let splash = o.mod_path.as_deref().and_then(|dir| splash_bitmap(Path::new(dir))).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "retail".into());
     let _ = writeln!(f, "[launcher] {}x{} fullscreen={} relay={} splash={}", o.width, o.height, o.fullscreen, o.relay.as_ref().map(|(a, v)| format!("agent {a}, virtual IP {v}")).unwrap_or_else(|| "off".into()), splash);
     let _ = writeln!(f, "[launcher] arguments: {}", args(o).join(" "));
+    // what the skirmish was asked to be (no secrets in these), so a bad table can be traced to the page or the game
+    for (k, v) in o.env.iter().filter(|(k, _)| k.starts_with("GEN_AUTO_")) {
+        let _ = writeln!(f, "[launcher] {k}={v}");
+    }
     Some(f)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_is_cut_to_the_maps_start_positions() {
+        let place = |k: &str| SlotSpec { kind: k.into(), difficulty: None, faction: None, team: None, start: None };
+        let table = || vec![place("player"), place("ai"), place("ai"), place("ai"), place("ai"), place("ai"), place("ai"), place("closed")];
+        let mut t = table();
+        fit_table(&mut t, Some(4));
+        assert_eq!(t.len(), 4);
+        let mut t = table();
+        fit_table(&mut t, None);
+        assert_eq!(t.len(), 8, "unknown map: left alone");
+        let mut t = table();
+        fit_table(&mut t, Some(0));
+        assert_eq!(t.len(), 8, "a solo map has no say");
+        let mut t = table();
+        fit_table(&mut t, Some(8));
+        assert_eq!(t.len(), 8);
+    }
 
     #[test]
     fn skirmish_options_are_checked_before_they_reach_the_game() {

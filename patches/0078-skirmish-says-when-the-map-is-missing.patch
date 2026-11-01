@@ -1,0 +1,21 @@
+A skirmish on a map the game's map cache does not have started the default multiplayer map without a word (with the table sized for the map asked for). It now says so on stderr, so engine.log shows it.
+
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+index 3178807..ac52140 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/SkirmishGameOptionsMenu.cpp
+@@ -775,7 +775,13 @@ void DebugAutoStartSkirmish( const char *mapName )
+ 
+ 	// Validate against the cache; fall back to the default multiplayer map if unknown.
+ 	if ( !TheMapCache || !TheMapCache->findMap(map) )
+-		map = getDefaultMap(TRUE);
++	{
++		// Rallypoint: say so, in engine.log. Starting a different map than the one asked for is never what the player meant.
++		const char *asked = getenv("GEN_AUTO_MAP");
++		AsciiString fallback = getDefaultMap(TRUE);
++		fprintf(stderr, "[skirmish] map '%s' is not in the map cache; starting '%s' instead\n", asked ? asked : map.str(), fallback.str());
++		map = fallback;
++	}
+ 
+ 	TheSkirmishGameInfo->setMap(map);
+ 	const MapMetaData *md = TheMapCache ? TheMapCache->findMap(map) : nullptr;
