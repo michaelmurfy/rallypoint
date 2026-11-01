@@ -836,7 +836,7 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
@@ -859,6 +859,10 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
+    // No more places than the map has start positions (more than that crashes the game at start).
+    if let (Some(slots), Some(map)) = (skirmish_slots.as_mut(), skirmish_map.as_deref().filter(|m| maporg::is_safe_name(m))) {
+        launch::fit_table(slots, maps_dir(&app).ok().and_then(|d| mapview::player_count(&d.join(map))));
+    }
     // The whole table (you, each computer player with its general and team, start positions): checked against the generals this game and mod offer.
     let skirmish_table = match &skirmish_slots {
         Some(slots) => {

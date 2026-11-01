@@ -44,7 +44,9 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); overflow: hidden; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); overflow: hidden; -webkit-user-select: none; user-select: none; }
+/* text is selectable only where it is something to copy: fields, logs and code */
+input, textarea, pre, code { -webkit-user-select: text; user-select: text; }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 28px; line-height: 1.15; font-weight: 750; letter-spacing: -.02em; }
 h2 { font-size: 16px; font-weight: 700; letter-spacing: -.005em; }
@@ -199,6 +201,7 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 .chevs i.done { background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
 .chevs i.now { background: var(--accent); }
 .wiz-body { padding: 20px 24px; overflow-y: auto; display: grid; gap: 14px; align-content: start; min-height: 0; }
+.mapviewer .wiz-foot > .btn:last-child { margin-left: auto; } /* Close stays on the right when the switch is hidden (official maps) */
 .wiz-foot { padding: 14px 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .wiz-body .card { background: var(--bg); }
 .intro { display: grid; grid-template-columns: 112px 1fr; gap: 26px; align-items: start; padding: 6px 0; }
