@@ -1,0 +1,23 @@
+A map whose folder or file name has square brackets (`[RANK] Desert Vortex ZH v1`, `Swamp Assault v3 [WBC2021]`) never reached the game's map cache on macOS: FindFirstFile handed the name to fnmatch, which reads `[RANK]` as a character class, so looking up the file by its own name found nothing. The launcher then started the default map with a table sized for the one picked. Win32 wildcards are only * and ?, so `[` and `]` are now matched literally.
+
+diff --git a/Dependencies/Utility/osdep_compat/win32_api.h b/Dependencies/Utility/osdep_compat/win32_api.h
+index 59976e1..686f9e0 100644
+--- a/Dependencies/Utility/osdep_compat/win32_api.h
++++ b/Dependencies/Utility/osdep_compat/win32_api.h
+@@ -1406,6 +1406,16 @@ inline HANDLE FindFirstFile(const char *searchSpec, WIN32_FIND_DATA *fd)
+   // Both collapse to "*"; callers apply their own attribute/extension filter.
+   if (pattern == "*." || pattern == "*.*") pattern = "*";
+ 
++  // Rallypoint: Win32 wildcards are only * and ?. fnmatch also reads [..] as a character class, so a literal file name
++  // such as "[RANK] Desert Vortex ZH v1.map" matched nothing and the engine never saw that map (getFileInfo, and with it the
++  // map cache, failed; the launcher then started the default map instead). The separators were turned into '/' above, so
++  // a backslash here can only be this escape.
++  {
++    std::string escaped;
++    for (char c : pattern) { if (c == '[' || c == ']') escaped += '\\'; escaped += c; }
++    pattern = escaped;
++  }
++
+   const char *openPath = dirPart.empty() ? "." : dirPart.c_str();
+   DIR *d = ::opendir(openPath);
+   if (!d) return INVALID_HANDLE_VALUE;
