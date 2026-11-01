@@ -38,7 +38,7 @@ FROM scratch AS binary
 COPY --from=build /out/rallypoint-server /rallypoint-server
 
 # No RUN here, so the image for another CPU can be assembled without emulating it.
-FROM debian:stable-slim@sha256:a717a33469731894e77e912ea7d714e27c2dc38ee6554fd1a3102e92999cfc66
+FROM debian:stable-slim@sha256:13e0a2e78aa0554ad5ff66e4e260c6dbcdff807eb1f39d43b9fb0288aae88b04
 COPY --from=build /out/rallypoint-server /usr/local/bin/rallypoint-server
 COPY --from=build --chown=10001:10001 /data /data
 # Links the published GHCR package to this repository (and its public visibility and permissions).
