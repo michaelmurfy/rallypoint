@@ -4,7 +4,7 @@
 #   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -f server/Dockerfile .
 # The server is compiled on the build machine for each target (no emulation), so every platform builds in a minute or two.
 # Base images are pinned by digest (Dependabot proposes updates), so a moved tag cannot change what is built.
-FROM --platform=$BUILDPLATFORM rust:1-slim@sha256:1a939748a7cbab172de91a014e3804a97af1394a8c844faa67fce9401c4e40fb AS build
+FROM --platform=$BUILDPLATFORM rust:1-slim@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS build
 ARG TARGETARCH
 ARG TARGETVARIANT
 # The release version, compiled into the server so it can report it.
