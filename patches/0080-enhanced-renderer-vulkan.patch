@@ -47193,7 +47193,7 @@ index 42b2034..45f40e9 100644
  	ib = lockIdxBuffer.Get_Index_Array();
  
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-index eca33a3..54eaa4b 100644
+index eca33a3..36222da 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 @@ -35,6 +35,8 @@ static void drawFramerateBar();
@@ -47326,7 +47326,7 @@ index eca33a3..54eaa4b 100644
  				}
  
 +				if (takeShot && !VkGfx_NativeActive())
-+					takeScreenShot( SCREENSHOT_PNG, 100 );		// classic renderer: the game's own screenshot (user data folder, Screenshots)
++					takeScreenShot();		// classic renderer: the game's own screenshot (user data folder, Screenshots)
 +
  #if defined(RTS_DEBUG)
  				if (TheGlobalData->m_benchmarkTimer > 0)
