@@ -1,7 +1,8 @@
-diff --color -ruN base/CMakeLists.txt work/CMakeLists.txt
---- a/CMakeLists.txt	2026-10-25 15:44:16
-+++ b/CMakeLists.txt	2026-11-11 22:26:35
-@@ -56,12 +56,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 232f691..e283e71 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,12 +56,13 @@ endif()
  # Find/Add build dependencies and stubs shared by all projects.
  #
  # Miles (audio) and Bink (video) are Windows-only proprietary middleware; they
@@ -17,9 +18,10 @@ diff --color -ruN base/CMakeLists.txt work/CMakeLists.txt
      include(cmake/miles.cmake)
      include(cmake/bink.cmake)
      include(cmake/dx8.cmake)
-diff --color -ruN base/CMakePresets.json work/CMakePresets.json
---- a/CMakePresets.json	2026-10-25 15:44:16
-+++ b/CMakePresets.json	2026-11-11 18:32:02
+diff --git a/CMakePresets.json b/CMakePresets.json
+index 94a6bbb..8a52360 100644
+--- a/CMakePresets.json
++++ b/CMakePresets.json
 @@ -105,6 +105,24 @@
                  }
              }
@@ -84,40 +86,25 @@ diff --color -ruN base/CMakePresets.json work/CMakePresets.json
          {
              "name": "win32-profile",
              "configurePreset": "win32-profile",
-@@ -287,6 +330,13 @@
-             "configurePreset": "win32-vcpkg",
-             "displayName": "Build Windows 32bit VCPKG Release",
+@@ -289,6 +332,13 @@
              "description": "Build Windows 32bit VCPKG Release",
-+            "configuration": "Release"
-+        },
+             "configuration": "Release"
+         },
 +    {
 +            "name": "win64-vcpkg",
 +            "configurePreset": "win64-vcpkg",
 +            "displayName": "Build Windows 64bit (experimental) VCPKG Release",
 +            "description": "Build Windows 64bit (experimental) VCPKG Release",
-             "configuration": "Release"
-         },
++            "configuration": "Release"
++        },
          {
-diff --color -ruN base/Core/GameEngine/CMakeLists.txt work/Core/GameEngine/CMakeLists.txt
---- a/Core/GameEngine/CMakeLists.txt	2026-10-25 15:44:16
-+++ b/Core/GameEngine/CMakeLists.txt	2026-11-11 18:32:02
-@@ -167,6 +167,7 @@
- #    Include/GameClient/ExtendedMessageBox.h
- #    Include/GameClient/FontDesc.h
-     Include/GameClient/FXList.h
-+    Include/GameClient/Shockwave.h
-     Include/GameClient/Gadget.h
-     Include/GameClient/GadgetCheckBox.h
-     Include/GameClient/GadgetComboBox.h
-@@ -704,6 +705,7 @@
-     Source/GameClient/DrawGroupInfo.cpp
- #    Source/GameClient/Eva.cpp
-     Source/GameClient/FXList.cpp
-+    Source/GameClient/Shockwave.cpp
- #    Source/GameClient/GameClient.cpp
- #    Source/GameClient/GameClientDispatch.cpp
-     Source/GameClient/GameText.cpp
-@@ -1187,9 +1189,12 @@
+             "name": "win32-vcpkg-profile",
+             "configurePreset": "win32-vcpkg-profile",
+diff --git a/Core/GameEngine/CMakeLists.txt b/Core/GameEngine/CMakeLists.txt
+index 11d96a4..bf6a22f 100644
+--- a/Core/GameEngine/CMakeLists.txt
++++ b/Core/GameEngine/CMakeLists.txt
+@@ -1187,9 +1187,12 @@ target_link_libraries(corei_gameengine_private INTERFACE
      corei_always
  )
  
@@ -133,9 +120,10 @@ diff --color -ruN base/Core/GameEngine/CMakeLists.txt work/Core/GameEngine/CMake
  
  target_precompile_headers(corei_gameengine_private INTERFACE
  #    Include/Precompiled/PreRTS.h
-diff --color -ruN base/Core/GameEngine/Source/Common/System/Debug.cpp work/Core/GameEngine/Source/Common/System/Debug.cpp
---- a/Core/GameEngine/Source/Common/System/Debug.cpp	2026-10-25 15:44:16
-+++ b/Core/GameEngine/Source/Common/System/Debug.cpp	2026-11-11 18:32:02
+diff --git a/Core/GameEngine/Source/Common/System/Debug.cpp b/Core/GameEngine/Source/Common/System/Debug.cpp
+index be22e87..cd2f5e2 100644
+--- a/Core/GameEngine/Source/Common/System/Debug.cpp
++++ b/Core/GameEngine/Source/Common/System/Debug.cpp
 @@ -66,9 +66,7 @@
  #include "GameClient/GameText.h"
  #include "GameClient/Keyboard.h"
@@ -147,10 +135,11 @@ diff --color -ruN base/Core/GameEngine/Source/Common/System/Debug.cpp work/Core/
  #ifdef RTS_ENABLE_CRASHDUMP
  #include "Common/MiniDumper.h"
  #endif
-diff --color -ruN base/Core/GameEngine/Source/Common/System/LocalFile.cpp work/Core/GameEngine/Source/Common/System/LocalFile.cpp
---- a/Core/GameEngine/Source/Common/System/LocalFile.cpp	2026-10-25 15:44:16
-+++ b/Core/GameEngine/Source/Common/System/LocalFile.cpp	2026-11-11 18:32:23
-@@ -374,7 +374,7 @@
+diff --git a/Core/GameEngine/Source/Common/System/LocalFile.cpp b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+index 9fea19a..f8d6c90 100644
+--- a/Core/GameEngine/Source/Common/System/LocalFile.cpp
++++ b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+@@ -374,7 +374,7 @@ Int LocalFile::readChar()
  	Int ret = read( &character, sizeof(character) );
  
  	if (ret == sizeof(character))
@@ -159,7 +148,7 @@ diff --color -ruN base/Core/GameEngine/Source/Common/System/LocalFile.cpp work/C
  
  	return EOF;
  }
-@@ -390,7 +390,7 @@
+@@ -390,7 +390,7 @@ Int LocalFile::readWideChar()
  	Int ret = read( &character, sizeof(character) );
  
  	if (ret == sizeof(character))
@@ -168,10 +157,11 @@ diff --color -ruN base/Core/GameEngine/Source/Common/System/LocalFile.cpp work/C
  
  	return WEOF;
  }
-diff --color -ruN base/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp work/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
---- a/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp	2026-10-25 15:44:16
-+++ b/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp	2026-11-11 18:32:02
-@@ -90,7 +90,7 @@
+diff --git a/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp b/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
+index ffc8d60..762acdb 100644
+--- a/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
++++ b/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
+@@ -90,7 +90,7 @@ WindowMsgHandledType GadgetProgressBarSystem( GameWindow *window, UnsignedInt ms
        if (newPos < 0 || newPos > 100)
          break;
  
@@ -180,10 +170,11 @@ diff --color -ruN base/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgre
  
  			break;
  
-diff --color -ruN base/Core/GameEngine/Source/GameClient/MapUtil.cpp work/Core/GameEngine/Source/GameClient/MapUtil.cpp
---- a/Core/GameEngine/Source/GameClient/MapUtil.cpp	2026-10-25 15:44:16
-+++ b/Core/GameEngine/Source/GameClient/MapUtil.cpp	2026-11-11 18:32:02
-@@ -848,7 +848,7 @@
+diff --git a/Core/GameEngine/Source/GameClient/MapUtil.cpp b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+index 3b58a49..c404ce5 100644
+--- a/Core/GameEngine/Source/GameClient/MapUtil.cpp
++++ b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+@@ -848,7 +848,7 @@ static Bool addMapToMapListbox(
  
  		if (lbData.numColumns > 1)
  		{
@@ -192,29 +183,11 @@ diff --color -ruN base/Core/GameEngine/Source/GameClient/MapUtil.cpp work/Core/G
  		}
  
  		// TheSuperHackers @performance Now stops processing when the list is full.
-diff --color -ruN base/Core/GameEngineDevice/CMakeLists.txt work/Core/GameEngineDevice/CMakeLists.txt
---- a/Core/GameEngineDevice/CMakeLists.txt	2026-10-25 15:44:16
-+++ b/Core/GameEngineDevice/CMakeLists.txt	2026-11-11 18:32:02
-@@ -62,6 +62,7 @@
- #    Include/W3DDevice/GameClient/W3DRoadBuffer.h
- #    Include/W3DDevice/GameClient/W3DScene.h
-     Include/W3DDevice/GameClient/W3DShaderManager.h
-+    Include/W3DDevice/GameClient/W3DShockwave.h
- #    Include/W3DDevice/GameClient/W3DShadow.h
- #    Include/W3DDevice/GameClient/W3DShroud.h
-     Include/W3DDevice/GameClient/W3DSmudge.h
-@@ -165,6 +166,7 @@
- #    Source/W3DDevice/GameClient/W3DRoadBuffer.cpp
- #    Source/W3DDevice/GameClient/W3DScene.cpp
-     Source/W3DDevice/GameClient/W3DShaderManager.cpp
-+    Source/W3DDevice/GameClient/W3DShockwave.cpp
- #    Source/W3DDevice/GameClient/W3DShroud.cpp
-     Source/W3DDevice/GameClient/W3DSmudge.cpp
-     Source/W3DDevice/GameClient/W3DSnow.cpp
-diff --color -ruN base/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h work/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
---- a/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h	2026-10-25 15:44:16
-+++ b/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h	2026-11-11 22:25:11
-@@ -63,6 +63,10 @@
+diff --git a/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h b/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
+index 2d6e55d..4be2996 100644
+--- a/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
++++ b/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
+@@ -63,6 +63,10 @@ class FFmpegVideoStream : public VideoStream
  		Char			*m_memFile;				///< Pointer to memory resident file
  		UnsignedInt64	m_startTime = 0;		///< Time the stream started
  		UnsignedByte *	m_audioBuffer = nullptr;///< Audio buffer for the stream
@@ -225,9 +198,10 @@ diff --color -ruN base/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVi
  
  		FFmpegVideoStream(FFmpegFile* file);																///< only BinkVideoPlayer can create these
  		virtual ~FFmpegVideoStream();
-diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp work/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
---- a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp	2026-10-25 15:44:16
-+++ b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp	2026-11-11 22:27:30
+diff --git a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
+index a8a1e6e..8f25546 100644
+--- a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
++++ b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
 @@ -44,6 +44,9 @@
  extern "C" {
  	#include <libavcodec/avcodec.h>
@@ -238,7 +212,7 @@ diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVid
  }
  
  #ifdef RTS_HAS_OPENAL
-@@ -52,6 +55,11 @@
+@@ -52,6 +55,11 @@ extern "C" {
  #endif
  
  #include <chrono>
@@ -250,7 +224,7 @@ diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVid
  
  //----------------------------------------------------------------------------
  //         Externals
-@@ -335,6 +343,11 @@
+@@ -335,6 +343,11 @@ FFmpegVideoStream::FFmpegVideoStream(FFmpegFile* file)
  
  FFmpegVideoStream::~FFmpegVideoStream()
  {
@@ -262,7 +236,7 @@ diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVid
  	av_freep(&m_audioBuffer);
  	av_frame_free(&m_frame);
  	sws_freeContext(m_swsContext);
-@@ -384,8 +397,51 @@
+@@ -384,9 +397,52 @@ void FFmpegVideoStream::onFrame(AVFrame *frame, int stream_idx, int stream_type,
  		ALenum format = OpenALAudioManager::getALFormat(frame->ch_layout.nb_channels, bytesPerSample * 8);
  		audioStream->bufferData(frameData, frameSize, format, frame->sample_rate);
  	}
@@ -272,7 +246,7 @@ diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVid
 +	}
  #endif
  }
-+
+ 
 +#ifdef RTS_MINIMILES
 +//============================================================================
 +// FFmpegVideoStream::pushAudio
@@ -311,13 +285,15 @@ diff --color -ruN base/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVid
 +		MiniMiles_VideoAudioWrite(m_videoAudio, out.data(), (unsigned)got);
 +}
 +#endif
- 
++
  
  //============================================================================
-diff --color -ruN base/Core/Libraries/Source/Compression/EAC/huffencode.cpp work/Core/Libraries/Source/Compression/EAC/huffencode.cpp
---- a/Core/Libraries/Source/Compression/EAC/huffencode.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/Compression/EAC/huffencode.cpp	2026-11-11 18:32:02
-@@ -1050,8 +1050,8 @@
+ // FFmpegVideoStream::update
+diff --git a/Core/Libraries/Source/Compression/EAC/huffencode.cpp b/Core/Libraries/Source/Compression/EAC/huffencode.cpp
+index 06f51b3..7dcae21 100644
+--- a/Core/Libraries/Source/Compression/EAC/huffencode.cpp
++++ b/Core/Libraries/Source/Compression/EAC/huffencode.cpp
+@@ -1050,8 +1050,8 @@ static void HUFF_pack(struct HuffEncodeContext *EC,
  		if (!i3)
  			HUFF_writecode(EC,dest,i);
  
@@ -328,10 +304,11 @@ diff --color -ruN base/Core/Libraries/Source/Compression/EAC/huffencode.cpp work
  	}
  
  	/* write EOF ([clue] 0gn [10]) */
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp work/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
---- a/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp	2026-11-11 18:32:02
-@@ -217,7 +217,7 @@
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp b/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
+index acc5afc..92a3b8a 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
+@@ -217,7 +217,7 @@ void	DX8WebBrowser::CreateBrowser(const char* browsername, const char* url, int
  	if(pBrowser)
  	{
  		_bstr_t brsname(browsername);
@@ -340,10 +317,11 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp wor
  		pBrowser->SetUpdateRate(brsname, updateticks);
  	}
  }
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h work/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
---- a/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h	2026-11-11 18:32:02
-@@ -242,7 +242,7 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h b/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
+index 3f85a55..6a5088d 100644
+--- a/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
++++ b/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
+@@ -242,7 +242,7 @@ SoundSceneObjClass::On_Event
  				break;
  
  			case AudioCallbackClass::EVENT_LOGICAL_HEARD:
@@ -352,10 +330,11 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h wor
  				break;
  		}
  	}
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp work/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
---- a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp	2026-11-11 18:32:02
-@@ -37,7 +37,7 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
+index c312827..98334a5 100644
+--- a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
++++ b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
+@@ -37,7 +37,7 @@ bool  getStringFromRegistry(HKEY root, std::string path, std::string key, std::s
  	DWORD type;
  	int returnValue;
  
@@ -364,7 +343,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp wor
  	{
  		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -61,7 +61,7 @@
+@@ -61,7 +61,7 @@ bool getUnsignedIntFromRegistry(HKEY root, std::string path, std::string key, un
  	DWORD type;
  	int returnValue;
  
@@ -373,7 +352,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp wor
  	{
  		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -84,7 +84,7 @@
+@@ -84,7 +84,7 @@ bool setStringInRegistry( HKEY root, std::string path, std::string key, std::str
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -382,7 +361,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp wor
  	{
  		type = REG_SZ;
  		size = val.length()+1;
-@@ -103,7 +103,7 @@
+@@ -103,7 +103,7 @@ bool setUnsignedIntInRegistry( HKEY root, std::string path, std::string key, uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -391,17 +370,18 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp wor
  	{
  		type = REG_DWORD;
  		size = 4;
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/Except.cpp work/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
---- a/Core/Libraries/Source/WWVegas/WWLib/Except.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWLib/Except.cpp	2026-11-11 18:32:02
-@@ -278,8 +278,21 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/Except.cpp b/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
+index 35ecf90..b129e53 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
++++ b/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
+@@ -278,6 +278,19 @@ static void Add_Txt (char const *txt)
   * HISTORY:                                                                                    *
   *    7/22/97 12:21PM ST : Created                                                             *
   *=============================================================================================*/
 +#ifdef _WIN64
 +// The register/stack dump below is x86 specific. On x64 just record the exception code and address.
- void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
- {
++void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
++{
 +	char text[256];
 +	_snprintf(text, sizeof(text), "Exception code %08lX at address %p\r\n",
 +		e_info && e_info->ExceptionRecord ? e_info->ExceptionRecord->ExceptionCode : 0UL,
@@ -411,12 +391,10 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/Except.cpp work/Core/
 +	ExceptionText[sizeof(ExceptionText) - 1] = 0;
 +}
 +#else
-+void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
-+{
+ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
+ {
  	/*
- 	** List of possible exceptions
- 	*/
-@@ -734,6 +747,8 @@
+@@ -734,6 +747,8 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
  
  
  
@@ -425,7 +403,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/Except.cpp work/Core/
  /***********************************************************************************************
   * Exception_Handler -- Exception handler filter function                                      *
   *                                                                                             *
-@@ -1204,6 +1219,13 @@
+@@ -1204,6 +1219,13 @@ bool Lookup_Symbol(void *code_ptr, char *symbol, int &displacement)
   * HISTORY:                                                                                    *
   *   6/12/2001 11:57AM ST : Created                                                            *
   *=============================================================================================*/
@@ -439,7 +417,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/Except.cpp work/Core/
  int Stack_Walk(unsigned long *return_addresses, int num_addresses, CONTEXT *context)
  {
  	static HINSTANCE _imagehelp = (HINSTANCE) -1;
-@@ -1290,6 +1312,7 @@
+@@ -1290,6 +1312,7 @@ here:
  
  	return(pointer_index);
  }
@@ -447,10 +425,11 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/Except.cpp work/Core/
  
  
  
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
---- a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp	2026-11-11 18:32:02
-@@ -48,7 +48,7 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
+index 94eeee4..44c4552 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
++++ b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
+@@ -48,7 +48,7 @@ bool RegistryClass::IsLocked = false;
  bool RegistryClass::Exists(const char* sub_key)
  {
  	HKEY hKey;
@@ -459,7 +438,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  
  	if (ERROR_SUCCESS == result) {
  		RegCloseKey(hKey);
-@@ -72,14 +72,14 @@
+@@ -72,14 +72,14 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
  	if (create && !IsLocked) {
  		DWORD disposition;
  		result = RegCreateKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, nullptr, 0,
@@ -477,7 +456,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  	}
  }
  
-@@ -440,7 +440,7 @@
+@@ -440,7 +440,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
  	memset(&file_time, 0, sizeof(file_time));
  
  
@@ -486,7 +465,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  
  	WWASSERT(result == ERROR_SUCCESS);
  
-@@ -465,7 +465,7 @@
+@@ -465,7 +465,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
  				unsigned long num_subs = 0;
  				unsigned long num_values = 0;
  
@@ -495,7 +474,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  				if (new_result == ERROR_SUCCESS) {
  					new_result = RegQueryInfoKey(sub_key, nullptr, nullptr, nullptr, &num_subs, nullptr, nullptr, &num_values, nullptr, nullptr, nullptr, nullptr);
  
-@@ -665,7 +665,7 @@
+@@ -665,7 +665,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
  		int max_times = 1000;
  
  
@@ -504,7 +483,7 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  
  		if (result == ERROR_SUCCESS) {
  			Delete_Registry_Values(base_key);
-@@ -688,7 +688,7 @@
+@@ -688,7 +688,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
  					unsigned long num_subs = 0;
  					unsigned long num_values = 0;
  
@@ -513,10 +492,11 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.cpp work/Cor
  					if (new_result == ERROR_SUCCESS) {
  						new_result = RegQueryInfoKey(sub_key, nullptr, nullptr, nullptr, &num_subs, nullptr, nullptr, &num_values, nullptr, nullptr, nullptr, nullptr);
  
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.h work/Core/Libraries/Source/WWVegas/WWLib/registry.h
---- a/Core/Libraries/Source/WWVegas/WWLib/registry.h	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWLib/registry.h	2026-11-11 18:32:02
-@@ -107,7 +107,7 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/registry.h b/Core/Libraries/Source/WWVegas/WWLib/registry.h
+index deccd44..bb5bf8e 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/registry.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/registry.h
+@@ -107,7 +107,7 @@ private:
  	static void Save_Registry_Values(HKEY key, char *path, INIClass *ini);
  
  
@@ -525,10 +505,11 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/registry.h work/Core/
  	bool	IsValid;
  
  	//
-diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/thread.h work/Core/Libraries/Source/WWVegas/WWLib/thread.h
---- a/Core/Libraries/Source/WWVegas/WWLib/thread.h	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/WWVegas/WWLib/thread.h	2026-11-11 18:32:02
-@@ -91,6 +91,6 @@
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/thread.h b/Core/Libraries/Source/WWVegas/WWLib/thread.h
+index f8c58cb..72a9977 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/thread.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/thread.h
+@@ -91,6 +91,6 @@ protected:
  
  private:
  	static void __cdecl Internal_Thread_Function(void*);
@@ -536,9 +517,10 @@ diff --color -ruN base/Core/Libraries/Source/WWVegas/WWLib/thread.h work/Core/Li
 +	volatile uintptr_t handle; // holds the _beginthread handle, which is pointer sized
  	int thread_priority;
  };
-diff --color -ruN base/Core/Libraries/Source/debug/debug_debug.cpp work/Core/Libraries/Source/debug/debug_debug.cpp
---- a/Core/Libraries/Source/debug/debug_debug.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/debug/debug_debug.cpp	2026-11-11 22:26:18
+diff --git a/Core/Libraries/Source/debug/debug_debug.cpp b/Core/Libraries/Source/debug/debug_debug.cpp
+index c3c05fb..8b78980 100644
+--- a/Core/Libraries/Source/debug/debug_debug.cpp
++++ b/Core/Libraries/Source/debug/debug_debug.cpp
 @@ -33,6 +33,9 @@
  #include "internal_io.h"
  #include <stdlib.h>
@@ -549,7 +531,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_debug.cpp work/Core/Lib
  #include <WWCommon.h>
  #include <new>      // needed for placement new prototype
  
-@@ -315,7 +318,9 @@
+@@ -315,7 +318,9 @@ bool Debug::SkipNext()
    // do not implement this function inline, we do need
    // a valid frame pointer here!
    unsigned help;
@@ -560,7 +542,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_debug.cpp work/Core/Lib
    _asm
    {
      mov eax,[ebp+4]   // return address
-@@ -450,7 +455,7 @@
+@@ -450,7 +455,7 @@ bool Debug::AssertDone()
            break;
          case IDRETRY:
  #if defined(_MSC_VER)
@@ -569,7 +551,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_debug.cpp work/Core/Lib
  #elif defined(__GNUC__)
            __builtin_trap();
  #else
-@@ -724,7 +729,7 @@
+@@ -724,7 +729,7 @@ bool Debug::CrashDone(bool die)
              break;
            case IDRETRY:
  #if defined(_MSC_VER)
@@ -578,9 +560,10 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_debug.cpp work/Core/Lib
  #elif defined(__GNUC__)
              __builtin_trap();
  #else
-diff --color -ruN base/Core/Libraries/Source/debug/debug_except.cpp work/Core/Libraries/Source/debug/debug_except.cpp
---- a/Core/Libraries/Source/debug/debug_except.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/debug/debug_except.cpp	2026-11-11 18:32:02
+diff --git a/Core/Libraries/Source/debug/debug_except.cpp b/Core/Libraries/Source/debug/debug_except.cpp
+index 5574fa6..c028f90 100644
+--- a/Core/Libraries/Source/debug/debug_except.cpp
++++ b/Core/Libraries/Source/debug/debug_except.cpp
 @@ -40,6 +40,19 @@
  
  #include <commctrl.h>
@@ -601,7 +584,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_except.cpp work/Core/Li
  DebugExceptionhandler::DebugExceptionhandler()
  {
    // don't do anything here!
-@@ -157,6 +170,10 @@
+@@ -157,6 +170,10 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
      return;
    }
  
@@ -612,7 +595,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_except.cpp work/Core/Li
    FLOATING_SAVE_AREA &flt=ctx.FloatSave;
    dbg << Debug::Bin() << Debug::FillChar('0')
        << "CW:" << Debug::Width(16) << (flt.ControlWord&0xffff) << "\n"
-@@ -190,6 +207,7 @@
+@@ -190,6 +207,7 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
      dbg << "\n";
    }
    dbg << Debug::FillChar() << Debug::Dec();
@@ -620,7 +603,7 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_except.cpp work/Core/Li
  }
  
  // include exception dialog box
-@@ -204,7 +222,7 @@
+@@ -204,7 +222,7 @@ static char regInfo[1024],verInfo[256];
  // and this saves us from doing a stack walk twice
  static DebugStackwalk::Signature sig;
  
@@ -629,10 +612,11 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_except.cpp work/Core/Li
  {
    switch(uMsg)
    {
-diff --color -ruN base/Core/Libraries/Source/debug/debug_stack.cpp work/Core/Libraries/Source/debug/debug_stack.cpp
---- a/Core/Libraries/Source/debug/debug_stack.cpp	2026-10-25 15:44:16
-+++ b/Core/Libraries/Source/debug/debug_stack.cpp	2026-11-11 22:26:18
-@@ -344,6 +344,18 @@
+diff --git a/Core/Libraries/Source/debug/debug_stack.cpp b/Core/Libraries/Source/debug/debug_stack.cpp
+index db4d50c..533338f 100644
+--- a/Core/Libraries/Source/debug/debug_stack.cpp
++++ b/Core/Libraries/Source/debug/debug_stack.cpp
+@@ -344,6 +344,18 @@ bool DebugStackwalk::IsOldDbghelp()
    return g_oldDbghelp;
  }
  
@@ -651,27 +635,31 @@ diff --color -ruN base/Core/Libraries/Source/debug/debug_stack.cpp work/Core/Lib
  int DebugStackwalk::StackWalk(Signature &sig, struct _CONTEXT *ctx)
  {
    InitDbghelp();
-@@ -412,6 +424,8 @@
- 
+@@ -413,6 +425,8 @@ int DebugStackwalk::StackWalk(Signature &sig, struct _CONTEXT *ctx)
  	return sig.m_numAddr;
  }
-+
-+#endif // _WIN64
  
++#endif // _WIN64
++
  #else // !_WIN32
  
-diff --color -ruN base/Dependencies/D3DX8Compat/CMakeLists.txt work/Dependencies/D3DX8Compat/CMakeLists.txt
---- a/Dependencies/D3DX8Compat/CMakeLists.txt	1970-01-01 12:00:00
-+++ b/Dependencies/D3DX8Compat/CMakeLists.txt	2026-11-11 18:32:02
+ // TheSuperHackers @port macos: POSIX stub implementation. No symbolic stack
+diff --git a/Dependencies/D3DX8Compat/CMakeLists.txt b/Dependencies/D3DX8Compat/CMakeLists.txt
+new file mode 100644
+index 0000000..423453a
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/CMakeLists.txt
 @@ -0,0 +1,5 @@
 +# Minimal reimplementation of the few D3DX8 functions the game uses.
 +# Microsoft only ever shipped d3dx8.lib for x86, so 64-bit builds link this instead.
 +add_library(deps_d3dx8compat STATIC D3DX8Compat.cpp D3DX8Surface.cpp D3DX8Shader.cpp)
 +target_include_directories(deps_d3dx8compat PRIVATE ${dx8_SOURCE_DIR})
 +target_compile_definitions(deps_d3dx8compat PRIVATE BUILD_WITH_D3D8 NOMINMAX)
-diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Compat.cpp work/Dependencies/D3DX8Compat/D3DX8Compat.cpp
---- a/Dependencies/D3DX8Compat/D3DX8Compat.cpp	1970-01-01 12:00:00
-+++ b/Dependencies/D3DX8Compat/D3DX8Compat.cpp	2026-11-11 18:32:02
+diff --git a/Dependencies/D3DX8Compat/D3DX8Compat.cpp b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
+new file mode 100644
+index 0000000..21f79e9
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
 @@ -0,0 +1,153 @@
 +// x64 replacement for the subset of d3dx8.lib used by Generals/Zero Hour.
 +#include <windows.h>
@@ -826,9 +814,11 @@ diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Compat.cpp work/Dependencie
 +}
 +
 +} // extern "C"
-diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Shader.cpp work/Dependencies/D3DX8Compat/D3DX8Shader.cpp
---- a/Dependencies/D3DX8Compat/D3DX8Shader.cpp	1970-01-01 12:00:00
-+++ b/Dependencies/D3DX8Compat/D3DX8Shader.cpp	2026-11-11 18:32:02
+diff --git a/Dependencies/D3DX8Compat/D3DX8Shader.cpp b/Dependencies/D3DX8Compat/D3DX8Shader.cpp
+new file mode 100644
+index 0000000..2c00300
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Shader.cpp
 @@ -0,0 +1,308 @@
 +// Minimal Direct3D 8 pixel shader assembler (ps.1.0 - ps.1.3 instruction set) for the 64-bit d3dx8 replacement.
 +// The game assembles a few small pixel shaders from source text at run time (water); Microsoft's d3dx8.lib is not
@@ -1138,9 +1128,11 @@ diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Shader.cpp work/Dependencie
 +	*ppCompiledShader = new CompatBuffer(tokens);
 +	return D3D_OK;
 +}
-diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Surface.cpp work/Dependencies/D3DX8Compat/D3DX8Surface.cpp
---- a/Dependencies/D3DX8Compat/D3DX8Surface.cpp	1970-01-01 12:00:00
-+++ b/Dependencies/D3DX8Compat/D3DX8Surface.cpp	2026-11-11 18:32:02
+diff --git a/Dependencies/D3DX8Compat/D3DX8Surface.cpp b/Dependencies/D3DX8Compat/D3DX8Surface.cpp
+new file mode 100644
+index 0000000..9565c94
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Surface.cpp
 @@ -0,0 +1,363 @@
 +// Surface/texture helpers of the x64 d3dx8 replacement: format conversion, resampling and
 +// DXT1/DXT3/DXT5 encoding + decoding. Pixels are processed as float ARGB; quality is
@@ -1505,9 +1497,11 @@ diff --color -ruN base/Dependencies/D3DX8Compat/D3DX8Surface.cpp work/Dependenci
 +}
 +
 +} // extern "C"
-diff --color -ruN base/Dependencies/Miles/CMakeLists.txt work/Dependencies/Miles/CMakeLists.txt
---- a/Dependencies/Miles/CMakeLists.txt	1970-01-01 12:00:00
-+++ b/Dependencies/Miles/CMakeLists.txt	2026-11-11 22:29:08
+diff --git a/Dependencies/Miles/CMakeLists.txt b/Dependencies/Miles/CMakeLists.txt
+new file mode 100644
+index 0000000..e9e7b1f
+--- /dev/null
++++ b/Dependencies/Miles/CMakeLists.txt
 @@ -0,0 +1,23 @@
 +# 64-bit Windows: mss32.dll (Miles) has no 64-bit build and cannot be redistributed, so the part of the Miles
 +# API that the engine uses is implemented on top of miniaudio (MiniMiles.cpp). The target keeps the name of the
@@ -1532,9 +1526,11 @@ diff --color -ruN base/Dependencies/Miles/CMakeLists.txt work/Dependencies/Miles
 +target_compile_definitions(milesstub PRIVATE NOMINMAX)
 +# Movies play their sound through MiniMiles (no OpenAL on this platform).
 +target_compile_definitions(milesstub PUBLIC RTS_MINIMILES)
-diff --color -ruN base/Dependencies/Miles/MilesLoader.h work/Dependencies/Miles/MilesLoader.h
---- a/Dependencies/Miles/MilesLoader.h	1970-01-01 12:00:00
-+++ b/Dependencies/Miles/MilesLoader.h	2026-11-11 22:24:57
+diff --git a/Dependencies/Miles/MilesLoader.h b/Dependencies/Miles/MilesLoader.h
+new file mode 100644
+index 0000000..4029ea3
+--- /dev/null
++++ b/Dependencies/Miles/MilesLoader.h
 @@ -0,0 +1,54 @@
 +/*
 +**	Command & Conquer Generals Zero Hour(tm)
@@ -1590,9 +1586,11 @@ diff --color -ruN base/Dependencies/Miles/MilesLoader.h work/Dependencies/Miles/
 +	static bool load();
 +	static void unload();
 +};
-diff --color -ruN base/Dependencies/Miles/MiniMiles.cpp work/Dependencies/Miles/MiniMiles.cpp
---- a/Dependencies/Miles/MiniMiles.cpp	1970-01-01 12:00:00
-+++ b/Dependencies/Miles/MiniMiles.cpp	2026-11-11 22:29:08
+diff --git a/Dependencies/Miles/MiniMiles.cpp b/Dependencies/Miles/MiniMiles.cpp
+new file mode 100644
+index 0000000..705183b
+--- /dev/null
++++ b/Dependencies/Miles/MiniMiles.cpp
 @@ -0,0 +1,1223 @@
 +/*
 +**	Command & Conquer Generals Zero Hour(tm)
@@ -2817,9 +2815,11 @@ diff --color -ruN base/Dependencies/Miles/MiniMiles.cpp work/Dependencies/Miles/
 +	ma_pcm_rb_uninit(&v->rb);
 +	delete v;
 +}
-diff --color -ruN base/Dependencies/Miles/MiniMilesVideo.h work/Dependencies/Miles/MiniMilesVideo.h
---- a/Dependencies/Miles/MiniMilesVideo.h	1970-01-01 12:00:00
-+++ b/Dependencies/Miles/MiniMilesVideo.h	2026-11-11 22:24:57
+diff --git a/Dependencies/Miles/MiniMilesVideo.h b/Dependencies/Miles/MiniMilesVideo.h
+new file mode 100644
+index 0000000..567adef
+--- /dev/null
++++ b/Dependencies/Miles/MiniMilesVideo.h
 @@ -0,0 +1,9 @@
 +// Not part of the Miles API: lets the video player play the sound of a movie through the miniaudio engine of MiniMiles.
 +// The player decodes the sound to interleaved 16 bit samples and pushes them in; they are played as soon as they arrive.
@@ -2830,9 +2830,11 @@ diff --color -ruN base/Dependencies/Miles/MiniMilesVideo.h work/Dependencies/Mil
 +void MiniMiles_VideoAudioWrite(void* handle, const short* interleaved, unsigned frames);
 +void MiniMiles_VideoAudioSetVolume(void* handle, float volume);	// 0..1
 +void MiniMiles_VideoAudioClose(void* handle);
-diff --color -ruN base/Dependencies/Miles/mss/mss.h work/Dependencies/Miles/mss/mss.h
---- a/Dependencies/Miles/mss/mss.h	1970-01-01 12:00:00
-+++ b/Dependencies/Miles/mss/mss.h	2026-11-11 22:24:57
+diff --git a/Dependencies/Miles/mss/mss.h b/Dependencies/Miles/mss/mss.h
+new file mode 100644
+index 0000000..1203a40
+--- /dev/null
++++ b/Dependencies/Miles/mss/mss.h
 @@ -0,0 +1,272 @@
 +/**
 + * @file
@@ -3106,9 +3108,10 @@ diff --color -ruN base/Dependencies/Miles/mss/mss.h work/Dependencies/Miles/mss/
 +#ifdef __cplusplus
 +} // extern "C"
 +#endif
-diff --color -ruN base/Generals/Code/GameEngine/Include/Common/StackDump.h work/Generals/Code/GameEngine/Include/Common/StackDump.h
---- a/Generals/Code/GameEngine/Include/Common/StackDump.h	2026-10-25 15:44:16
-+++ b/Generals/Code/GameEngine/Include/Common/StackDump.h	2026-11-11 18:32:02
+diff --git a/Generals/Code/GameEngine/Include/Common/StackDump.h b/Generals/Code/GameEngine/Include/Common/StackDump.h
+index 2d11b75..cf45852 100644
+--- a/Generals/Code/GameEngine/Include/Common/StackDump.h
++++ b/Generals/Code/GameEngine/Include/Common/StackDump.h
 @@ -24,7 +24,7 @@
  
  #pragma once
@@ -3118,10 +3121,11 @@ diff --color -ruN base/Generals/Code/GameEngine/Include/Common/StackDump.h work/
  #define IG_DEBUG_STACKTRACE	1
  #endif // Unsure about this one -ML 3/25/03
  #if defined(RTS_DEBUG) || defined(IG_DEBUG_STACKTRACE)
-diff --color -ruN base/Generals/Code/GameEngine/Source/Common/System/registry.cpp work/Generals/Code/GameEngine/Source/Common/System/registry.cpp
---- a/Generals/Code/GameEngine/Source/Common/System/registry.cpp	2026-10-25 15:44:16
-+++ b/Generals/Code/GameEngine/Source/Common/System/registry.cpp	2026-11-11 18:32:02
-@@ -39,7 +39,7 @@
+diff --git a/Generals/Code/GameEngine/Source/Common/System/registry.cpp b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
+index 258f5d5..2039394 100644
+--- a/Generals/Code/GameEngine/Source/Common/System/registry.cpp
++++ b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
+@@ -39,7 +39,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
  	unsigned long type;
  	int returnValue;
  
@@ -3130,7 +3134,7 @@ diff --color -ruN base/Generals/Code/GameEngine/Source/Common/System/registry.cp
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -62,7 +62,7 @@
+@@ -62,7 +62,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
  	unsigned long type;
  	int returnValue;
  
@@ -3139,7 +3143,7 @@ diff --color -ruN base/Generals/Code/GameEngine/Source/Common/System/registry.cp
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -85,7 +85,7 @@
+@@ -85,7 +85,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3148,7 +3152,7 @@ diff --color -ruN base/Generals/Code/GameEngine/Source/Common/System/registry.cp
  	{
  		type = REG_SZ;
  		size = val.getLength()+1;
-@@ -104,7 +104,7 @@
+@@ -104,7 +104,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3157,10 +3161,11 @@ diff --color -ruN base/Generals/Code/GameEngine/Source/Common/System/registry.cp
  	{
  		type = REG_DWORD;
  		size = 4;
-diff --color -ruN base/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h work/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
---- a/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h	2026-10-25 15:44:16
-+++ b/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h	2026-11-11 18:32:02
-@@ -138,7 +138,7 @@
+diff --git a/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h b/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+index 2b3b92a..6ea1302 100644
+--- a/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
++++ b/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+@@ -138,7 +138,7 @@ struct LegacyDDSURFACEDESC2 {
  	};
  	unsigned AlphaBitDepth;
  	unsigned Reserved;
@@ -3169,19 +3174,20 @@ diff --color -ruN base/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h wo
  	union
  	{
  		LegacyDDCOLORKEY CKDestOverlay;
-@@ -151,6 +151,8 @@
- 	LegacyDDSCAPS2 Caps;
+@@ -152,6 +152,8 @@ struct LegacyDDSURFACEDESC2 {
  	unsigned TextureStage;
  };
-+
-+static_assert(sizeof(LegacyDDSURFACEDESC2) == 124, "DDS file header layout must match the on-disk size");
  
++static_assert(sizeof(LegacyDDSURFACEDESC2) == 124, "DDS file header layout must match the on-disk size");
++
  
  enum DDSType
-diff --color -ruN base/Generals/Code/Main/CMakeLists.txt work/Generals/Code/Main/CMakeLists.txt
---- a/Generals/Code/Main/CMakeLists.txt	2026-10-25 15:44:16
-+++ b/Generals/Code/Main/CMakeLists.txt	2026-11-11 18:32:02
-@@ -11,7 +11,7 @@
+ {
+diff --git a/Generals/Code/Main/CMakeLists.txt b/Generals/Code/Main/CMakeLists.txt
+index f40c743..dd471c1 100644
+--- a/Generals/Code/Main/CMakeLists.txt
++++ b/Generals/Code/Main/CMakeLists.txt
+@@ -11,7 +11,7 @@ target_link_libraries(g_generals PRIVATE
      binkstub
      comctl32
      d3d8
@@ -3190,9 +3196,10 @@ diff --color -ruN base/Generals/Code/Main/CMakeLists.txt work/Generals/Code/Main
      dinput8
      dxguid
      g_gameengine
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h work/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
---- a/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h	2026-11-11 18:32:02
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h b/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
+index ce84c0a..740d9b5 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
 @@ -24,7 +24,7 @@
  
  #pragma once
@@ -3202,10 +3209,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h wor
  #define IG_DEBUG_STACKTRACE	1
  #endif // Unsure about this one -ML 3/25/03
  #if defined(RTS_DEBUG) || defined(IG_DEBUG_STACKTRACE)
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp work/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
---- a/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp	2026-11-11 18:32:02
-@@ -647,5 +647,9 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
+index 51aaeea..3d5dd06 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
+@@ -647,5 +647,9 @@ void DumpExceptionInfo( unsigned int u, EXCEPTION_POINTERS* e_info )
  
  #pragma pack(pop)
  
@@ -3215,10 +3223,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump
 +
  #endif
  
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp work/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
---- a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp	2026-11-11 18:32:02
-@@ -40,7 +40,7 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
+index e65c259..17f6361 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
+@@ -40,7 +40,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
  	DWORD type;
  	int returnValue;
  
@@ -3227,7 +3236,7 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/registry.
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -63,7 +63,7 @@
+@@ -63,7 +63,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
  	DWORD type;
  	int returnValue;
  
@@ -3236,7 +3245,7 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/registry.
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -86,7 +86,7 @@
+@@ -86,7 +86,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3245,7 +3254,7 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/registry.
  	{
  		type = REG_SZ;
  		size = val.getLength()+1;
-@@ -105,7 +105,7 @@
+@@ -105,7 +105,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3254,10 +3263,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/Common/System/registry.
  	{
  		type = REG_DWORD;
  		size = 4;
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp work/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
---- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp	2026-11-11 18:32:23
-@@ -1073,7 +1073,7 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
+index f0bf8df..738491d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
+@@ -1073,7 +1073,7 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
  		count++;
  		str.translate(IPlist->getIPstring());
  		index = GadgetComboBoxAddEntry(comboBoxLANIP, str, color);
@@ -3266,7 +3276,7 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallb
  		if (selectedIP == IPlist->getIP())
  		{
  			selectedIndex = index;
-@@ -1109,7 +1109,7 @@
+@@ -1109,7 +1109,7 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
  			count++;
  			str.translate(IPlist->getIPstring());
  			index = GadgetComboBoxAddEntry(comboBoxOnlineIP, str, color);
@@ -3275,10 +3285,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallb
  			if (selectedIP == IPlist->getIP())
  			{
  				selectedIndex = index;
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp work/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
---- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp	2026-11-11 18:32:23
-@@ -179,7 +179,7 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
+index 561cb07..90e3f82 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
+@@ -179,7 +179,7 @@ Bool SabotageInternetCenterCrateCollide::executeCrateBehavior( Object *other )
  	//doesn't need to change.
  	// This loop goes before the Disabled_Hacked one since that will use the normal disabled code with its cool timers.
  	// This loop is for the other centers, but it hits the main one too.
@@ -3287,7 +3298,7 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collid
  
  	//Disable the internet center. Note this is purely fluff... because the spy vision update will still run even
  	//though we are disabling it. We have to disable the spyvision updates manually because other centers need to
-@@ -188,7 +188,7 @@
+@@ -188,7 +188,7 @@ Bool SabotageInternetCenterCrateCollide::executeCrateBehavior( Object *other )
  
  	//Disable all the hackers inside.
  	ContainModuleInterface *contain = other->getContain();
@@ -3296,10 +3307,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collid
  
  	return TRUE;
  }
-diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp work/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
---- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp	2026-11-01 23:30:46
-+++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp	2026-11-11 22:28:36
-@@ -210,9 +210,14 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index a928466..970ae6a 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -214,9 +214,14 @@ void setFPMode()
  	UnsignedInt newVal = curVal;
  	newVal = (newVal & ~_MCW_RC) | (_RC_NEAR & _MCW_RC);
  	//newVal = (newVal & ~_MCW_RC) | (_RC_CHOP & _MCW_RC);
@@ -3314,10 +3326,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLo
  }
  
  //-------------------------------------------------------------------------------------------------
-diff --color -ruN base/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp work/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
---- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp	2026-11-11 18:32:23
-@@ -1371,7 +1371,7 @@
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
+index 87c0a8c..8c109f4 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
+@@ -1371,7 +1371,7 @@ RenderObjClass * W3DAssetManager::Create_Render_Obj(const char * name,float scal
  		char filename [MAX_PATH];
  		char *mesh_name = ::strchr (name, '.');
  		if (mesh_name != nullptr) {
@@ -3326,10 +3339,11 @@ diff --color -ruN base/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameCli
  			if (isGranny)
  				::lstrcat (filename, ".gr2");
  			else
-diff --color -ruN base/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h work/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
---- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h	2026-11-11 18:32:23
-@@ -163,6 +163,8 @@
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+index e41534f..ca465b8 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+@@ -163,6 +163,8 @@ struct LegacyDDSURFACEDESC2 {
  	unsigned TextureStage;
  };
  
@@ -3338,10 +3352,11 @@ diff --color -ruN base/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h 
  
  enum DDSType
  {
-diff --color -ruN base/GeneralsMD/Code/Main/CMakeLists.txt work/GeneralsMD/Code/Main/CMakeLists.txt
---- a/GeneralsMD/Code/Main/CMakeLists.txt	2026-10-25 15:44:16
-+++ b/GeneralsMD/Code/Main/CMakeLists.txt	2026-11-11 18:32:02
-@@ -12,7 +12,7 @@
+diff --git a/GeneralsMD/Code/Main/CMakeLists.txt b/GeneralsMD/Code/Main/CMakeLists.txt
+index a58d310..00207ef 100644
+--- a/GeneralsMD/Code/Main/CMakeLists.txt
++++ b/GeneralsMD/Code/Main/CMakeLists.txt
+@@ -12,7 +12,7 @@ target_link_libraries(z_generals PRIVATE
      core_debug
      core_profile_legacy
      d3d8
@@ -3350,10 +3365,11 @@ diff --color -ruN base/GeneralsMD/Code/Main/CMakeLists.txt work/GeneralsMD/Code/
      dinput8
      dxguid
      milesstub
-diff --color -ruN base/GeneralsMD/Code/Main/WinMain.cpp work/GeneralsMD/Code/Main/WinMain.cpp
---- a/GeneralsMD/Code/Main/WinMain.cpp	2026-11-01 23:30:46
-+++ b/GeneralsMD/Code/Main/WinMain.cpp	2026-11-11 22:26:18
-@@ -1026,6 +1026,13 @@
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index b0f2533..5b59d2c 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -1026,6 +1026,13 @@ Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
  	TheDmaCriticalSection = nullptr;
  	TheMemoryPoolCriticalSection = nullptr;
  
@@ -3367,9 +3383,10 @@ diff --color -ruN base/GeneralsMD/Code/Main/WinMain.cpp work/GeneralsMD/Code/Mai
  	return exitcode;
  
  }
-diff --color -ruN base/cmake/FindFFMPEG.cmake work/cmake/FindFFMPEG.cmake
---- a/cmake/FindFFMPEG.cmake	2026-10-25 15:44:16
-+++ b/cmake/FindFFMPEG.cmake	2026-11-11 22:30:33
+diff --git a/cmake/FindFFMPEG.cmake b/cmake/FindFFMPEG.cmake
+index 2862936..588af92 100644
+--- a/cmake/FindFFMPEG.cmake
++++ b/cmake/FindFFMPEG.cmake
 @@ -15,6 +15,34 @@
  # files (`brew install ffmpeg`) — they cover both header and library
  # search paths and Just Work for `find_package(FFMPEG REQUIRED)`.
@@ -3405,9 +3422,10 @@ diff --color -ruN base/cmake/FindFFMPEG.cmake work/cmake/FindFFMPEG.cmake
  find_package(PkgConfig QUIET)
  
  if(NOT PKG_CONFIG_FOUND)
-diff --color -ruN base/cmake/bink.cmake work/cmake/bink.cmake
---- a/cmake/bink.cmake	2026-10-25 15:44:16
-+++ b/cmake/bink.cmake	2026-11-11 22:26:55
+diff --git a/cmake/bink.cmake b/cmake/bink.cmake
+index a851f6c..510b8c4 100644
+--- a/cmake/bink.cmake
++++ b/cmake/bink.cmake
 @@ -1,7 +1,23 @@
 -FetchContent_Declare(
 -    bink
@@ -3438,9 +3456,10 @@ diff --color -ruN base/cmake/bink.cmake work/cmake/bink.cmake
 +
 +    FetchContent_MakeAvailable(bink)
 +endif()
-diff --color -ruN base/cmake/dx8.cmake work/cmake/dx8.cmake
---- a/cmake/dx8.cmake	2026-10-25 15:44:16
-+++ b/cmake/dx8.cmake	2026-11-11 22:24:43
+diff --git a/cmake/dx8.cmake b/cmake/dx8.cmake
+index 223adf1..10b1445 100644
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
 @@ -1,10 +1,54 @@
 -FetchContent_Declare(
 -    dx8
@@ -3502,10 +3521,11 @@ diff --color -ruN base/cmake/dx8.cmake work/cmake/dx8.cmake
  
  if(APPLE)
      # The min-dx8-sdk defines an INTERFACE target `d3d8lib` that links the bare
-diff --color -ruN base/cmake/miles.cmake work/cmake/miles.cmake
---- a/cmake/miles.cmake	2026-10-25 15:44:16
-+++ b/cmake/miles.cmake	2026-11-11 22:26:35
-@@ -4,6 +4,9 @@
+diff --git a/cmake/miles.cmake b/cmake/miles.cmake
+index d0e5485..ba3f284 100644
+--- a/cmake/miles.cmake
++++ b/cmake/miles.cmake
+@@ -4,6 +4,9 @@ if(APPLE)
      # `milesstub` / `mss32` target so downstream linkage is unchanged.
      add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/miles_apple
                       ${CMAKE_BINARY_DIR}/miles_apple-build)
@@ -3515,9 +3535,10 @@ diff --color -ruN base/cmake/miles.cmake work/cmake/miles.cmake
  else()
      FetchContent_Declare(
          miles
-diff --color -ruN base/vcpkg.json work/vcpkg.json
---- a/vcpkg.json	2026-10-25 15:44:16
-+++ b/vcpkg.json	2026-11-11 22:32:27
+diff --git a/vcpkg.json b/vcpkg.json
+index adcb2cd..5e7344c 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
 @@ -3,7 +3,11 @@
      "builtin-baseline": "b02e341c927f16d991edbd915d8ea43eac52096c",
      "dependencies": [
