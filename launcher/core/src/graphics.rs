@@ -81,9 +81,84 @@ pub fn renderer_env(renderer: &str, engine: &std::path::Path) -> Option<(String,
     (renderer == "enhanced" && x64).then(|| ("GENERALS_GFX".into(), "vulkan".into()))
 }
 
+/// The Enhanced renderer's effect settings the launcher offers: (Options.ini key, allowed values, default). The first
+/// value of a yes/no setting is "yes". These are the engine's own defaults, so an unset key changes nothing.
+pub const EFFECTS: &[(&str, &[&str], &str)] = &[
+    ("PostProcessing", &["yes", "no"], "yes"),
+    ("Bloom", &["yes", "no"], "yes"),
+    ("AmbientOcclusion", &["yes", "no"], "yes"),
+    ("AmbientOcclusionQuality", &["half", "full"], "half"),
+    ("AntiAliasingFXAA", &["yes", "no"], "yes"),
+    ("SoftShadows", &["yes", "no"], "yes"),
+    ("ShadowQuality", &["low", "medium", "high"], "medium"),
+    ("DynamicLights", &["yes", "no"], "yes"),
+    ("PixelLighting", &["yes", "no"], "yes"),
+    ("AnisotropicFiltering", &["0", "4", "8", "16"], "16"),
+    ("CloudShadows", &["yes", "no"], "yes"),
+    ("Clouds", &["yes", "no"], "no"),
+    ("UpdatedWater", &["yes", "no"], "yes"),
+    ("WaterReflections", &["yes", "no"], "yes"),
+    ("Shockwaves", &["yes", "no"], "yes"),
+    ("ScorchRelief", &["yes", "no"], "yes"),
+];
+
+/// Checks one effect setting; `Err` names what is wrong.
+pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
+    match EFFECTS.iter().find(|(k, _, _)| *k == key) {
+        Some((_, allowed, _)) if allowed.contains(&value) => Ok(()),
+        Some(_) => Err(format!("{value} is not a value for {key}")),
+        None => Err(format!("unknown effect setting {key}")),
+    }
+}
+
+/// `GEN_GFX` for the engine: every known setting the player changed, as `Key=value;Key=value` (they win over Options.ini).
+/// Unknown keys or values in the config are skipped, so nothing else reaches the engine's environment.
+pub fn effects_env(settings: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
+    let v: Vec<String> = EFFECTS
+        .iter()
+        .filter_map(|(k, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={v}")))
+        .collect();
+    (!v.is_empty()).then(|| ("GEN_GFX".into(), v.join(";")))
+}
+
+/// `GEN_ASSETS` for the Enhanced renderer: the engine bundle's `assets` folder (the generated scorch atlas and its height map),
+/// unless the player turned the scorch craters off or the folder is not there.
+pub fn assets_env(engine: &std::path::Path, effects: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
+    let dir = engine.parent()?.join("assets");
+    let off = effects.get("ScorchRelief").is_some_and(|v| v == "no");
+    (!off && dir.is_dir()).then(|| ("GEN_ASSETS".into(), dir.to_string_lossy().into_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assets_only_with_the_folder_and_craters_on() {
+        let t = std::env::temp_dir().join(format!("gen-assets-{}", std::process::id()));
+        let exe = t.join("x64").join("generalszh.exe");
+        let mut fx = std::collections::BTreeMap::new();
+        assert_eq!(assets_env(&exe, &fx), None);
+        std::fs::create_dir_all(t.join("x64/assets")).unwrap();
+        assert_eq!(assets_env(&exe, &fx).map(|e| e.0), Some("GEN_ASSETS".to_string()));
+        fx.insert("ScorchRelief".to_string(), "no".to_string());
+        assert_eq!(assets_env(&exe, &fx), None);
+        std::fs::remove_dir_all(t).unwrap();
+    }
+
+    #[test]
+    fn effect_settings_are_checked_and_joined() {
+        assert!(check_effect("Bloom", "no").is_ok());
+        assert!(check_effect("ShadowQuality", "ultra").is_err());
+        assert!(check_effect("Bloom;X", "no").is_err());
+        let mut m = std::collections::BTreeMap::new();
+        assert_eq!(effects_env(&m), None);
+        m.insert("Bloom".to_string(), "no".to_string());
+        m.insert("ShadowQuality".to_string(), "high".to_string());
+        m.insert("Evil".to_string(), "x;y=z".to_string());
+        m.insert("Shockwaves".to_string(), "maybe".to_string());
+        assert_eq!(effects_env(&m), Some(("GEN_GFX".into(), "Bloom=no;ShadowQuality=high".into())));
+    }
 
     #[test]
     fn enhanced_renderer_only_with_the_64_bit_engine() {

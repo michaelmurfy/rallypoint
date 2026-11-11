@@ -201,6 +201,8 @@ struct ConfigView {
     engines_bundled: bool,
     /// "classic" or "enhanced" (the Vulkan renderer, only in the 64-bit Windows engine).
     renderer: String,
+    /// The Enhanced renderer's effect settings: every one, with the player's value or the default.
+    effects: Vec<(String, String)>,
     /// The lobby name the player chose (empty: none), and the one used then (this computer's name).
     player_name: String,
     default_player_name: String,
@@ -224,6 +226,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
         renderer: if c.renderer == "enhanced" { "enhanced".into() } else { "classic".into() },
+        effects: graphics::EFFECTS.iter().map(|(k, _, d)| (k.to_string(), c.effects.get(*k).cloned().unwrap_or_else(|| d.to_string()))).collect(),
         player_name: c.player_name,
         default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
@@ -346,6 +349,16 @@ fn set_renderer(app: tauri::AppHandle, renderer: String) -> Result<(), String> {
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     c.renderer = if renderer == "enhanced" { "enhanced".into() } else { String::new() };
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// One effect setting of the Enhanced renderer (key and value checked against `graphics::EFFECTS`).
+#[tauri::command]
+fn set_effect(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+    graphics::check_effect(&key, &value)?;
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.effects.insert(key, value);
     c.save(&path).map_err(|e| e.to_string())
 }
 
@@ -930,7 +943,14 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
                 }
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
-            env.extend(graphics::renderer_env(&Config::load(&config_path(&app)?).renderer, &exe));
+            {
+                let c = Config::load(&config_path(&app)?);
+                if let Some(r) = graphics::renderer_env(&c.renderer, &exe) {
+                    env.push(r);
+                    env.extend(graphics::effects_env(&c.effects));
+                    env.extend(graphics::assets_env(&exe, &c.effects));
+                }
+            }
             // The window title names what is being played: the top mod, else the game.
             let title = ordered.last().and_then(|n| cat.iter().find(|m| &m.path == n)).map(|m| m.name.clone()).unwrap_or_else(|| "Command & Conquer Generals Zero Hour".to_string());
             env.push(("GEN_WINDOW_TITLE".to_string(), title));
@@ -990,7 +1010,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,

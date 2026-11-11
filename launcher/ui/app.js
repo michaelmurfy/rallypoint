@@ -1542,6 +1542,42 @@ function diagnosePanel() {
   return h("div", { class: "stack" }, setting("Check my install", h("span", {}, "If the game stops with \u201cYou have encountered a serious error\u201d, this looks for missing game files and a missing original Generals. ", fb.el), run), out);
 }
 
+/** The Enhanced renderer's effects: a switch for each on/off one, a menu for the rest. Saved one by one; they apply at the next start. */
+const EFFECT_TEXT = {
+  PostProcessing: ["Post processing", "Bloom, ambient occlusion and anti-aliasing. Off turns all three off."],
+  Bloom: ["Bloom", "Bright lights and explosions glow."],
+  AmbientOcclusion: ["Ambient occlusion", "Soft shade where things meet the ground."],
+  AmbientOcclusionQuality: ["Ambient occlusion quality", "Full resolution is sharper and slower.", { half: "Half resolution", full: "Full resolution" }],
+  AntiAliasingFXAA: ["Anti-aliasing (FXAA)", "Smooths jagged edges."],
+  SoftShadows: ["Soft shadows", "Shadow edges soften with distance."],
+  ShadowQuality: ["Shadow quality", "Sharper shadows cost more graphics memory.", { low: "Low", medium: "Medium", high: "High" }],
+  DynamicLights: ["Dynamic lights", "Explosions and muzzle flashes light up what is around them."],
+  PixelLighting: ["Per-pixel lighting", "Units and buildings get a soft sun highlight."],
+  AnisotropicFiltering: ["Texture filtering", "Ground textures stay sharp at a low angle.", { 0: "Off", 4: "4x", 8: "8x", 16: "16x" }],
+  CloudShadows: ["Cloud shadows", "Moving cloud shadows on the ground."],
+  Clouds: ["Clouds", "Visible clouds when you zoom far out."],
+  UpdatedWater: ["Updated water", "Waves, depth colour and foam."],
+  WaterReflections: ["Water reflections", "The scene mirrored in the water."],
+  Shockwaves: ["Explosion shockwaves", "A heat ripple rings out from big explosions."],
+  ScorchRelief: ["Scorch craters", "Scorch marks are lit as shallow craters."],
+};
+function effectsPanel(fb) {
+  const save = async (key, value) => {
+    try { await invoke("set_effect", { key, value }); fb.ok("Saved. It applies the next time you start the game."); } catch (e) { fb.bad(errText(e)); }
+  };
+  const rows = (store.cfg.effects || []).map(([key, value]) => {
+    const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
+    if (!choices) {
+      const box = h("input", { type: "checkbox", "aria-label": title, checked: value === "yes", onchange: () => save(key, box.checked ? "yes" : "no") });
+      return setting(title, desc, h("label", { class: "switch" }, box));
+    }
+    const sel = h("select", { "aria-label": title, onchange: () => save(key, sel.value) },
+      Object.entries(choices).map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
+    return setting(title, desc, sel);
+  });
+  return h("details", { class: "effects" }, h("summary", {}, "Enhanced effects"), ...rows);
+}
+
 /** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
 function graphicsCard() {
   const fb = liveStatus();
@@ -1571,11 +1607,15 @@ function graphicsCard() {
     try {
       await invoke("set_renderer", { renderer: renderer.value });
       store.cfg.renderer = renderer.value;
+      effects.hidden = renderer.value !== "enhanced";
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["classic", "Classic (default)"], ["enhanced", "Enhanced (Vulkan, new)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
+  const effects = effectsPanel(fb);
+  effects.hidden = (store.cfg.renderer || "classic") !== "enhanced";
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
     store.cfg.engines_bundled ? setting("Renderer", "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and soft particles. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
+    store.cfg.engines_bundled ? effects : null,
     store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
     setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
     setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),

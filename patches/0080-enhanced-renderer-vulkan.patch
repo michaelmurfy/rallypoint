@@ -19,16 +19,19 @@ index 99d3de7..0351ee5 100644
  #    Source/GameClient/GameClientDispatch.cpp
      Source/GameClient/GameText.cpp
 diff --git a/Core/GameEngine/Include/Common/OptionPreferences.h b/Core/GameEngine/Include/Common/OptionPreferences.h
-index e461392..65af961 100644
+index e461392..a54a2fe 100644
 --- a/Core/GameEngine/Include/Common/OptionPreferences.h
 +++ b/Core/GameEngine/Include/Common/OptionPreferences.h
-@@ -113,6 +113,9 @@ public:
+@@ -113,6 +113,12 @@ public:
  	Bool getUseHeatEffects();
  	Bool getDynamicLODEnabled();
  	Bool getFPSLimitEnabled();
 +	Bool getUpdatedWaterEnabled(); ///< updated water shaders, Options.ini key "UpdatedWater" (default yes)
 +	Bool getWaterReflectionsEnabled(); ///< planar reflection render of the updated water, Options.ini key "WaterReflections" (default yes)
 +	Bool getShockwavesEnabled(); ///< explosion shockwave ring effect, Options.ini key "Shockwaves" (default yes)
++	/// A graphics setting of the Enhanced renderer: the launcher's choice (GEN_GFX="Key=value;Key=value") wins over Options.ini.
++	/// Returns false when neither sets the key.
++	Bool getGraphicsSetting(const char* key, AsciiString& value);
  	Bool getBuildingOcclusionEnabled();
  	Int getParticleCap();
  
@@ -105,10 +108,10 @@ index 0000000..0ecbbae
 +
 +#define TheShockwaves (ShockwaveList::instance())
 diff --git a/Core/GameEngine/Source/Common/OptionPreferences.cpp b/Core/GameEngine/Source/Common/OptionPreferences.cpp
-index 9f9f5a0..34e9f7e 100644
+index 9f9f5a0..93bec4c 100644
 --- a/Core/GameEngine/Source/Common/OptionPreferences.cpp
 +++ b/Core/GameEngine/Source/Common/OptionPreferences.cpp
-@@ -649,6 +649,53 @@ Bool OptionPreferences::getDynamicLODEnabled()
+@@ -649,6 +649,70 @@ Bool OptionPreferences::getDynamicLODEnabled()
  	return FALSE;
  }
  
@@ -126,37 +129,54 @@ index 9f9f5a0..34e9f7e 100644
 +#endif
 +}
 +
++Bool OptionPreferences::getGraphicsSetting(const char* key, AsciiString& value)
++{
++	if (const char* all = getenv("GEN_GFX"))
++	{
++		const size_t keyLen = strlen(key);
++		for (const char* p = all; *p; )
++		{
++			const char* end = strchr(p, ';');
++			const size_t len = end ? (size_t)(end - p) : strlen(p);
++			if (len > keyLen && p[keyLen] == '=' && strnicmp(p, key, keyLen) == 0)
++			{
++				value.set(p + keyLen + 1, (Int)(len - keyLen - 1));
++				return TRUE;
++			}
++			if (!end)
++				break;
++			p = end + 1;
++		}
++	}
++	OptionPreferences::const_iterator it = find(key);
++	if (it == end())
++		return FALSE;
++	value = it->second;
++	return TRUE;
++}
++
 +Bool OptionPreferences::getUpdatedWaterEnabled()
 +{
 +	if (!enhancedRendererEffects())
 +		return FALSE;
-+	OptionPreferences::const_iterator it = find("UpdatedWater");
-+	if (it == end())
-+		return TRUE;
-+
-+	return stricmp(it->second.str(), "no") != 0;
++	AsciiString value;
++	return !getGraphicsSetting("UpdatedWater", value) || stricmp(value.str(), "no") != 0;
 +}
 +
 +Bool OptionPreferences::getWaterReflectionsEnabled()
 +{
 +	if (!enhancedRendererEffects())
 +		return FALSE;
-+	OptionPreferences::const_iterator it = find("WaterReflections");
-+	if (it == end())
-+		return TRUE;
-+
-+	return stricmp(it->second.str(), "no") != 0;
++	AsciiString value;
++	return !getGraphicsSetting("WaterReflections", value) || stricmp(value.str(), "no") != 0;
 +}
 +
 +Bool OptionPreferences::getShockwavesEnabled()
 +{
 +	if (!enhancedRendererEffects())
 +		return FALSE;
-+	OptionPreferences::const_iterator it = find("Shockwaves");
-+	if (it == end())
-+		return TRUE;
-+
-+	return stricmp(it->second.str(), "no") != 0;
++	AsciiString value;
++	return !getGraphicsSetting("Shockwaves", value) || stricmp(value.str(), "no") != 0;
 +}
 +
  Bool OptionPreferences::getFPSLimitEnabled()
@@ -332,6 +352,19 @@ index c264a0f..955ac65 100644
  #    Source/W3DDevice/GameClient/W3DShroud.cpp
      Source/W3DDevice/GameClient/W3DSmudge.cpp
      Source/W3DDevice/GameClient/W3DSnow.cpp
+diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/BaseHeightMap.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/BaseHeightMap.h
+index d5a4645..4cacbff 100644
+--- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/BaseHeightMap.h
++++ b/Core/GameEngineDevice/Include/W3DDevice/GameClient/BaseHeightMap.h
+@@ -247,6 +247,8 @@ protected:
+ 	DX8VertexBufferClass	*m_vertexScorch;	///<Scorch vertex buffer.
+ 	DX8IndexBufferClass			*m_indexScorch;	///<indices defining a triangles for the scorch drawing.
+ 	TextureClass *m_scorchTexture;	///<Scorch mark texture
++	TextureClass *m_scorchHeightTexture;	///<Height of the marks for the crater lighting of the Enhanced renderer (null: off)
++	Real m_scorchRelief;	///<Strength of that lighting
+ 	Int			m_curNumScorchVertices;	 ///<number of vertices used in m_vertexScorch.
+ 	Int			m_curNumScorchIndices;	 ///<number of indices used in m_indexScorch.
+ 	TScorch	m_scorches[MAX_SCORCH_MARKS];
 diff --git a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DShaderManager.h b/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DShaderManager.h
 index bb86bca..59def56 100644
 --- a/Core/GameEngineDevice/Include/W3DDevice/GameClient/W3DShaderManager.h
@@ -501,18 +534,48 @@ index 284eeff..43249f1 100644
  	void drawSea(RenderInfoClass & rinfo);	///< Draw the surface of the water
  	///bounding box of frustum clipped polygon plane
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
-index 1071ad7..e7f4555 100644
+index 1071ad7..5379414 100644
 --- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
 +++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/BaseHeightMap.cpp
-@@ -89,6 +89,7 @@
+@@ -89,6 +89,9 @@
  #include "W3DDevice/GameClient/W3DCustomScene.h"
  
  #include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.
++#include "Common/OptionPreferences.h"
++#include "Common/FileSystem.h"
 +#include "WW3D2/gfx_vulkan.h"
  #include "Common/CRCDebug.h"
  #include "W3DDevice/GameClient/BaseHeightMap.h"
  
-@@ -1480,7 +1481,7 @@ RenderObjClass *	 BaseHeightMapRenderObjClass::Clone() const
+@@ -189,9 +192,18 @@ void BaseHeightMapRenderObjClass::drawScorches()
+ 	DX8Wrapper::Set_Shader(ShaderClass::_PresetAlphaShader);
+ 
+ 	DX8Wrapper::Set_Texture(0,m_scorchTexture);
++	if (m_scorchHeightTexture) {
++		// Enhanced renderer: stage 1 holds the height of the marks, lit as shallow craters
++		DX8Wrapper::Set_Texture(1,m_scorchHeightTexture);
++		VkGfx_ScorchRelief(m_scorchRelief);
++	}
+ 	if (Is_Hidden() == 0) {
+ 		DX8Wrapper::Draw_Triangles(	0,m_curNumScorchIndices/3, 0,	m_curNumScorchVertices);
+ 	}
++	if (m_scorchHeightTexture) {
++		VkGfx_ScorchRelief(0.0f);
++		DX8Wrapper::Set_Texture(1,nullptr);
++	}
+ }
+ #endif
+ 
+@@ -292,6 +304,8 @@ BaseHeightMapRenderObjClass::BaseHeightMapRenderObjClass()
+ 	m_vertexScorch = nullptr;
+ 	m_indexScorch = nullptr;
+ 	m_scorchTexture = nullptr;
++	m_scorchHeightTexture = nullptr;
++	m_scorchRelief = 0.0f;
+ 	clearAllScorches();
+ 	m_shroud = nullptr;
+ #endif
+@@ -1480,7 +1494,7 @@ RenderObjClass *	 BaseHeightMapRenderObjClass::Clone() const
  //=============================================================================
  void BaseHeightMapRenderObjClass::loadRoadsAndBridges(W3DTerrainLogic *pTerrainLogic, Bool saveGame)
  {
@@ -521,7 +584,35 @@ index 1071ad7..e7f4555 100644
  		return;	//device not ready to render anything
  
  #ifdef DO_ROADS
-@@ -2520,10 +2521,10 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
+@@ -1910,6 +1924,7 @@ void BaseHeightMapRenderObjClass::freeScorchBuffers()
+ 	REF_PTR_RELEASE(m_vertexScorch);
+ 	REF_PTR_RELEASE(m_indexScorch);
+ 	REF_PTR_RELEASE(m_scorchTexture);
++	REF_PTR_RELEASE(m_scorchHeightTexture);
+ }
+ 
+ //=============================================================================
+@@ -1922,6 +1937,19 @@ void BaseHeightMapRenderObjClass::allocateScorchBuffers()
+ 	m_vertexScorch=NEW_REF(DX8VertexBufferClass,(DX8_FVF_XYZDUV1,MAX_SCORCH_VERTEX,DX8VertexBufferClass::USAGE_DEFAULT));
+ 	m_indexScorch=NEW_REF(DX8IndexBufferClass,(MAX_SCORCH_INDEX));
+ 	m_scorchTexture=NEW ScorchTextureClass;
++	// Enhanced renderer: the generated scorch atlas (the engine's assets folder, GEN_ASSETS) comes with a height map, and the marks
++	// are lit as shallow craters. ScorchRelief = no in the launcher or Options.ini turns it off; ScorchReliefStrength scales it.
++	if (VkGfx_NativeActive() && getenv("GEN_ASSETS"))
++	{
++		AsciiString path;
++		path.format("%s/Art/Textures/exscorch01_h.dds", getenv("GEN_ASSETS"));
++		OptionPreferences prefs;
++		AsciiString v;
++		const Bool wanted = !prefs.getGraphicsSetting("ScorchRelief", v) || stricmp(v.str(), "no") != 0;
++		m_scorchRelief = prefs.getGraphicsSetting("ScorchReliefStrength", v) ? (Real)atof(v.str()) : 1.0f;
++		if (wanted && m_scorchRelief > 0.0f && TheFileSystem->doesFileExist(path.str()))
++			m_scorchHeightTexture = NEW TextureClass("EXScorch01_h.tga", "EXScorch01_h.tga", MIP_LEVELS_ALL);
++	}
+ 	m_scorchesInBuffer = 0; // If we just allocated the buffers, we got no scorches in the buffer.
+ 	m_curNumScorchVertices=0;
+ 	m_curNumScorchIndices=0;
+@@ -2520,10 +2548,10 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
  	DX8Wrapper::Set_Material(vmat);
  	REF_PTR_RELEASE(vmat);
  	DX8Wrapper::Set_Texture(0,m_destAlphaTexture);
@@ -535,7 +626,7 @@ index 1071ad7..e7f4555 100644
  
  
  	while (j != m_numShoreLineTiles)
-@@ -2537,7 +2538,7 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
+@@ -2537,7 +2565,7 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
  			DynamicIBAccessClass::WriteLockClass lockib(&ib_access);
  			UnsignedShort *ib=lockib.Get_Index_Array();
  			if (!ib || !vb)
@@ -544,7 +635,7 @@ index 1071ad7..e7f4555 100644
  				return;
  			}
  
-@@ -2645,7 +2646,7 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
+@@ -2645,7 +2673,7 @@ void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
  	}
  
  	//Disable writes to destination alpha
@@ -553,7 +644,7 @@ index 1071ad7..e7f4555 100644
  	ShaderClass::Invalidate();
  }
  
-@@ -2704,10 +2705,10 @@ void BaseHeightMapRenderObjClass::renderShoreLinesSorted(CameraClass *pCamera)
+@@ -2704,10 +2732,10 @@ void BaseHeightMapRenderObjClass::renderShoreLinesSorted(CameraClass *pCamera)
  	DX8Wrapper::Set_Material(vmat);
  	REF_PTR_RELEASE(vmat);
  	DX8Wrapper::Set_Texture(0,m_destAlphaTexture);
@@ -567,7 +658,7 @@ index 1071ad7..e7f4555 100644
  
  	Bool isDone=FALSE;
  	Int lastRenderedTile=0;
-@@ -2723,7 +2724,7 @@ void BaseHeightMapRenderObjClass::renderShoreLinesSorted(CameraClass *pCamera)
+@@ -2723,7 +2751,7 @@ void BaseHeightMapRenderObjClass::renderShoreLinesSorted(CameraClass *pCamera)
  			DynamicIBAccessClass::WriteLockClass lockib(&ib_access);
  			UnsignedShort *ib=lockib.Get_Index_Array();
  			if (!ib || !vb)
@@ -576,7 +667,7 @@ index 1071ad7..e7f4555 100644
  				return;
  			}
  
-@@ -2985,7 +2986,7 @@ flushVertexBuffer1:
+@@ -2985,7 +3013,7 @@ flushVertexBuffer1:
  	}
  
  	//Disable writes to destination alpha
@@ -585,7 +676,7 @@ index 1071ad7..e7f4555 100644
  	ShaderClass::Invalidate();
  }
  
-@@ -3005,7 +3006,7 @@ void BaseHeightMapRenderObjClass::renderTrees(CameraClass * camera)
+@@ -3005,7 +3033,7 @@ void BaseHeightMapRenderObjClass::renderTrees(CameraClass * camera)
  	if (m_map==nullptr) return;
  	if (Scene==nullptr) return;
  	if (m_treeBuffer) {
@@ -594,7 +685,7 @@ index 1071ad7..e7f4555 100644
  		DX8Wrapper::Set_Material(m_vertexMaterialClass);
  		RTS3DScene *pMyScene = (RTS3DScene *)Scene;
  		RefRenderObjListIterator pDynamicLightsIterator(pMyScene->getDynamicLights());
-@@ -3051,5 +3052,6 @@ void BaseHeightMapRenderObjClass::loadPostProcess()
+@@ -3051,5 +3079,6 @@ void BaseHeightMapRenderObjClass::loadPostProcess()
  //=============================================================================
  Bool BaseHeightMapRenderObjClass::useCloud()
  {
@@ -47219,7 +47310,7 @@ index 42b2034..45f40e9 100644
  	ib = lockIdxBuffer.Get_Index_Array();
  
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
-index eca33a3..36222da 100644
+index eca33a3..42e722a 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 +++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
 @@ -35,6 +35,8 @@ static void drawFramerateBar();
@@ -47231,17 +47322,19 @@ index eca33a3..36222da 100644
  #include <stdlib.h>
  #include <windows.h>
  #include <io.h>
-@@ -834,6 +836,37 @@ void W3DDisplay::init()
+@@ -834,6 +836,39 @@ void W3DDisplay::init()
  		{
  			SortingRendererClass::SetMinVertexBufferSize(1);
  		}
 +		{
 +			// graphics settings of the native Vulkan renderer (Options.ini), applied before the renderer starts
 +			OptionPreferences prefs;
-+			auto flag = [&](const char* key, bool def) { auto it = prefs.find(key); return it == prefs.end() ? def : stricmp(it->second.str(), "no") != 0; };
-+			auto number = [&](const char* key, float def) { auto it = prefs.find(key); return it == prefs.end() ? def : (float)atof(it->second.str()); };
++			// the launcher's choices (GEN_GFX) win over Options.ini
++			AsciiString v;
++			auto flag = [&](const char* key, bool def) { return prefs.getGraphicsSetting(key, v) ? stricmp(v.str(), "no") != 0 : def; };
++			auto number = [&](const char* key, float def) { return prefs.getGraphicsSetting(key, v) ? (float)atof(v.str()) : def; };
 +			VkGfx_Settings gs;
-+			{ auto it = prefs.find("GraphicsMode"); gs.classic = it != prefs.end() && stricmp(it->second.str(), "classic") == 0; }
++			gs.classic = prefs.getGraphicsSetting("GraphicsMode", v) && stricmp(v.str(), "classic") == 0;
 +			gs.postProcessing = flag("PostProcessing", true);
 +			gs.bloom = flag("Bloom", true);
 +			gs.ambientOcclusion = flag("AmbientOcclusion", true);
@@ -47258,8 +47351,8 @@ index eca33a3..36222da 100644
 +			gs.cloudSpeed = number("CloudSpeed", gs.cloudSpeed);
 +			gs.cloudShadowStrength = number("CloudShadowStrength", gs.cloudShadowStrength);
 +			gs.dynamicLights = flag("DynamicLights", true);
-+			{ auto it = prefs.find("ShadowQuality"); if (it != prefs.end()) gs.shadowQuality = stricmp(it->second.str(), "low") == 0 ? 0 : (stricmp(it->second.str(), "medium") == 0 ? 1 : 2); }
-+			{ auto it = prefs.find("AmbientOcclusionQuality"); if (it != prefs.end()) gs.aoHalfResolution = stricmp(it->second.str(), "full") != 0; }
++			if (prefs.getGraphicsSetting("ShadowQuality", v)) gs.shadowQuality = stricmp(v.str(), "low") == 0 ? 0 : (stricmp(v.str(), "medium") == 0 ? 1 : 2);
++			if (prefs.getGraphicsSetting("AmbientOcclusionQuality", v)) gs.aoHalfResolution = stricmp(v.str(), "full") != 0;
 +			gs.dynamicLightStrength = number("DynamicLightStrength", gs.dynamicLightStrength);
 +			gs.anisotropy = (int)number("AnisotropicFiltering", (float)gs.anisotropy);
 +			gs.pixelLighting = flag("PixelLighting", true);
@@ -47269,7 +47362,7 @@ index eca33a3..36222da 100644
  		if (WW3D::Init( ApplicationHWnd ) != WW3D_ERROR_OK)
  			throw ERROR_INVALID_D3D;	//failed to initialize.  User probably doesn't have DX 8.1
  
-@@ -1815,6 +1848,34 @@ void W3DDisplay::step()
+@@ -1815,6 +1850,34 @@ void W3DDisplay::step()
  /** Draw the entire W3D Display */
  //=============================================================================
  //DECLARE_PERF_TIMER(W3DDisplay_draw)
@@ -47304,7 +47397,7 @@ index eca33a3..36222da 100644
  void W3DDisplay::draw()
  {
  	//USE_PERF_TIMER(W3DDisplay_draw)
-@@ -2063,7 +2124,7 @@ AGAIN:
+@@ -2063,7 +2126,7 @@ AGAIN:
                                             //-LORENZEN
  
  
@@ -47313,7 +47406,7 @@ index eca33a3..36222da 100644
  				TheWaterRenderObj->updateRenderTargetTextures(primaryW3DView->get3DCamera());	//do a render into each texture
  
  			//Can't render into textures while rendering to screen so these textures need to be updated
-@@ -2103,7 +2164,24 @@ AGAIN:
+@@ -2103,7 +2166,24 @@ AGAIN:
  				if (numRenderTargetPolygons || numRenderTargetVertices)
  					Debug_Statistics::Record_DX8_Polys_And_Vertices(numRenderTargetPolygons,numRenderTargetVertices,ShaderClass::_PresetOpaqueShader);
  
@@ -47339,7 +47432,7 @@ index eca33a3..36222da 100644
  #if defined(__APPLE__)
  				// macOS port bisect (persistent player-color rect):
  				//   GEN_NO_VIEWS=1       skip drawViews() entirely (3D scene + per-drawable
-@@ -2122,6 +2200,7 @@ AGAIN:
+@@ -2122,6 +2202,7 @@ AGAIN:
  				if (!s_skipViews)
  #endif
  				drawViews();
@@ -47347,7 +47440,7 @@ index eca33a3..36222da 100644
  
  				// draw the user interface
  #if defined(__APPLE__)
-@@ -2189,6 +2268,9 @@ AGAIN:
+@@ -2189,6 +2270,9 @@ AGAIN:
  					drawCurrentDebugDisplay();
  				}
  
@@ -47357,6 +47450,35 @@ index eca33a3..36222da 100644
  #if defined(RTS_DEBUG)
  				if (TheGlobalData->m_benchmarkTimer > 0)
  				{
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp
+index 80097fe..240fc28 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp
+@@ -168,6 +168,24 @@ char const * GameFileClass::Set_Name( char const *filename )
+ 
+ 	GameFileType fileType = getFileType(filename);
+ 
++	// Rallypoint: textures the launcher's engine bundle generates (GEN_ASSETS, set only for the Enhanced renderer: the scorch atlas
++	// and its height map) win over the game's own. Nothing from the game is in that folder.
++	if( isImageFileType(fileType) )
++	{
++		if (const char *assets = getenv("GEN_ASSETS"))
++		{
++			char lowered[_MAX_PATH];
++			strlcpy(lowered, filename, ARRAY_SIZE(lowered));
++			for (char *c = lowered; *c; ++c) *c = (char)tolower((unsigned char)*c);
++			snprintf(m_filePath, ARRAY_SIZE(m_filePath), "%s/Art/Textures/%s", assets, lowered);
++			if (TheFileSystem->doesFileExist( m_filePath ))
++			{
++				m_fileExists = TRUE;
++				return m_filename;
++			}
++		}
++	}
++
+ 	// We need to be able to grab w3d's from a localization dir, since Germany hates exploding people units.
+ 	if( fileType == FILE_TYPE_W3D )
+ 	{
 diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DInGameUI.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DInGameUI.cpp
 index d1fb63d..df48507 100644
 --- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DInGameUI.cpp
