@@ -41,6 +41,8 @@ jobs:
         run: |
           mkdir -p out/engine
           cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
+          # Textures of the Enhanced renderer (generated scorch atlas and height map, no game data), read through GEN_ASSETS.
+          cp -R patches/upstream/moderngeneralszh/assets out/engine/assets
           ls -la out/engine
           strings -a out/engine/generalszh | grep -q 'DebugFrame_' || { echo "sync log writer missing from the engine"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

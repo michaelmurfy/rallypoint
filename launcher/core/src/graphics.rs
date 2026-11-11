@@ -74,38 +74,51 @@ pub fn camera_env(height: u32) -> (String, String) {
     ("GEN_MAX_CAMERA_HEIGHT".into(), height.clamp(STANDARD_CAMERA, MAX_CAMERA).to_string())
 }
 
-/// The engine's renderer: "enhanced" runs the native Vulkan renderer with the added effects (`GENERALS_GFX=vulkan`). It
-/// exists only in the 64-bit Windows engine; anything else (and every other engine) keeps the classic Direct3D 8 path.
-pub fn renderer_env(renderer: &str, engine: &std::path::Path) -> Option<(String, String)> {
-    let x64 = engine.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "x64");
-    (renderer == "enhanced" && x64).then(|| ("GENERALS_GFX".into(), "vulkan".into()))
+/// The engine's renderer: "enhanced" runs the Enhanced renderer with the added effects. On Windows that is the native Vulkan
+/// renderer of the 64-bit engine (`GENERALS_GFX=vulkan`; the 32-bit engine has none), on macOS the Metal backend's Enhanced
+/// mode (`GENERALS_GFX=metal`). Anything else keeps the classic path.
+pub fn renderer_env(renderer: &str, engine: &std::path::Path, os: &str) -> Option<(String, String)> {
+    if renderer != "enhanced" {
+        return None;
+    }
+    match os {
+        "macos" => Some(("GENERALS_GFX".into(), "metal".into())),
+        "windows" if engine.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "x64") => Some(("GENERALS_GFX".into(), "vulkan".into())),
+        _ => None,
+    }
 }
 
-/// The Enhanced renderer's effect settings the launcher offers: (Options.ini key, allowed values, default). The first
-/// value of a yes/no setting is "yes". These are the engine's own defaults, so an unset key changes nothing.
-pub const EFFECTS: &[(&str, &[&str], &str)] = &[
-    ("PostProcessing", &["yes", "no"], "yes"),
-    ("Bloom", &["yes", "no"], "yes"),
-    ("AmbientOcclusion", &["yes", "no"], "yes"),
-    ("AmbientOcclusionQuality", &["half", "full"], "half"),
-    ("AntiAliasingFXAA", &["yes", "no"], "yes"),
-    ("SoftShadows", &["yes", "no"], "yes"),
-    ("ShadowQuality", &["low", "medium", "high"], "medium"),
-    ("DynamicLights", &["yes", "no"], "yes"),
-    ("PixelLighting", &["yes", "no"], "yes"),
-    ("AnisotropicFiltering", &["0", "4", "8", "16"], "16"),
-    ("CloudShadows", &["yes", "no"], "yes"),
-    ("Clouds", &["yes", "no"], "no"),
-    ("UpdatedWater", &["yes", "no"], "yes"),
-    ("WaterReflections", &["yes", "no"], "yes"),
-    ("Shockwaves", &["yes", "no"], "yes"),
-    ("ScorchRelief", &["yes", "no"], "yes"),
+/// Whether this platform has an Enhanced renderer at all (the Settings switch is shown only then).
+pub fn renderer_available(os: &str, both_windows_engines: bool) -> bool {
+    os == "macos" || (os == "windows" && both_windows_engines)
+}
+
+/// The Enhanced renderer's effect settings the launcher offers: (Options.ini key, allowed values, default, also on macOS).
+/// These are the engine's own defaults, so an unset key changes nothing. The macOS Enhanced mode (the Metal backend) has
+/// a subset: post processing, bloom, ambient occlusion, FXAA, dynamic lights, the water's depth colour, shockwaves, craters.
+pub const EFFECTS: &[(&str, &[&str], &str, bool)] = &[
+    ("PostProcessing", &["yes", "no"], "yes", true),
+    ("Bloom", &["yes", "no"], "yes", true),
+    ("AmbientOcclusion", &["yes", "no"], "yes", true),
+    ("AmbientOcclusionQuality", &["half", "full"], "half", false),
+    ("AntiAliasingFXAA", &["yes", "no"], "yes", true),
+    ("SoftShadows", &["yes", "no"], "yes", false),
+    ("ShadowQuality", &["low", "medium", "high"], "medium", false),
+    ("DynamicLights", &["yes", "no"], "yes", true),
+    ("PixelLighting", &["yes", "no"], "yes", false),
+    ("AnisotropicFiltering", &["0", "4", "8", "16"], "16", false),
+    ("CloudShadows", &["yes", "no"], "yes", false),
+    ("Clouds", &["yes", "no"], "no", false),
+    ("UpdatedWater", &["yes", "no"], "yes", true),
+    ("WaterReflections", &["yes", "no"], "yes", false),
+    ("Shockwaves", &["yes", "no"], "yes", true),
+    ("ScorchRelief", &["yes", "no"], "yes", true),
 ];
 
 /// Checks one effect setting; `Err` names what is wrong.
 pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
-    match EFFECTS.iter().find(|(k, _, _)| *k == key) {
-        Some((_, allowed, _)) if allowed.contains(&value) => Ok(()),
+    match EFFECTS.iter().find(|(k, _, _, _)| *k == key) {
+        Some((_, allowed, _, _)) if allowed.contains(&value) => Ok(()),
         Some(_) => Err(format!("{value} is not a value for {key}")),
         None => Err(format!("unknown effect setting {key}")),
     }
@@ -116,7 +129,7 @@ pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
 pub fn effects_env(settings: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
     let v: Vec<String> = EFFECTS
         .iter()
-        .filter_map(|(k, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={v}")))
+        .filter_map(|(k, _, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={v}")))
         .collect();
     (!v.is_empty()).then(|| ("GEN_GFX".into(), v.join(";")))
 }
@@ -161,13 +174,18 @@ mod tests {
     }
 
     #[test]
-    fn enhanced_renderer_only_with_the_64_bit_engine() {
+    fn enhanced_renderer_is_vulkan_on_64_bit_windows_and_metal_on_macos() {
         let x64 = std::path::Path::new("/app/engine/x64/generalszh.exe");
         let x86 = std::path::Path::new("/app/engine/generalszh.exe");
-        assert_eq!(renderer_env("enhanced", x64), Some(("GENERALS_GFX".into(), "vulkan".into())));
-        assert_eq!(renderer_env("enhanced", x86), None);
-        assert_eq!(renderer_env("", x64), None);
-        assert_eq!(renderer_env("classic", x64), None);
+        assert_eq!(renderer_env("enhanced", x64, "windows"), Some(("GENERALS_GFX".into(), "vulkan".into())));
+        assert_eq!(renderer_env("enhanced", x86, "windows"), None);
+        assert_eq!(renderer_env("", x64, "windows"), None);
+        assert_eq!(renderer_env("classic", x64, "windows"), None);
+        let mac = std::path::Path::new("/Applications/Rallypoint.app/Contents/Resources/engine/generalszh");
+        assert_eq!(renderer_env("enhanced", mac, "macos"), Some(("GENERALS_GFX".into(), "metal".into())));
+        assert_eq!(renderer_env("classic", mac, "macos"), None);
+        assert_eq!(renderer_env("enhanced", mac, "linux"), None);
+        assert!(renderer_available("macos", false) && renderer_available("windows", true) && !renderer_available("windows", false));
     }
 
     #[test]

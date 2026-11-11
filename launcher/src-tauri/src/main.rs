@@ -199,6 +199,8 @@ struct ConfigView {
     /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
     engine_arch: String,
     engines_bundled: bool,
+    /// This platform has an Enhanced renderer (macOS, or Windows with the 64-bit engine).
+    renderer_available: bool,
     /// "classic" or "enhanced" (the Vulkan renderer, only in the 64-bit Windows engine).
     renderer: String,
     /// The Enhanced renderer's effect settings: every one, with the player's value or the default.
@@ -225,8 +227,9 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         camera_height,
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
+        renderer_available: graphics::renderer_available(std::env::consts::OS, engine::both_bundled(app.path().resource_dir().ok().as_deref())),
         renderer: if c.renderer == "enhanced" { "enhanced".into() } else { "classic".into() },
-        effects: graphics::EFFECTS.iter().map(|(k, _, d)| (k.to_string(), c.effects.get(*k).cloned().unwrap_or_else(|| d.to_string()))).collect(),
+        effects: graphics::EFFECTS.iter().filter(|e| !cfg!(target_os = "macos") || e.3).map(|(k, _, d, _)| (k.to_string(), c.effects.get(*k).cloned().unwrap_or_else(|| d.to_string()))).collect(),
         player_name: c.player_name,
         default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
@@ -945,7 +948,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             {
                 let c = Config::load(&config_path(&app)?);
-                if let Some(r) = graphics::renderer_env(&c.renderer, &exe) {
+                if let Some(r) = graphics::renderer_env(&c.renderer, &exe, std::env::consts::OS) {
                     env.push(r);
                     env.extend(graphics::effects_env(&c.effects));
                     env.extend(graphics::assets_env(&exe, &c.effects));

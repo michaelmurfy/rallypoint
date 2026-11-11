@@ -1610,12 +1610,14 @@ function graphicsCard() {
       effects.hidden = renderer.value !== "enhanced";
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
-  } }, [["classic", "Classic (default)"], ["enhanced", "Enhanced (Vulkan, new)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
+  } }, [["classic", "Classic (default)"], ["enhanced", store.cfg.os === "macos" ? "Enhanced (new)" : "Enhanced (Vulkan, new)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
   const effects = effectsPanel(fb);
   effects.hidden = (store.cfg.renderer || "classic") !== "enhanced";
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
-    store.cfg.engines_bundled ? setting("Renderer", "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and soft particles. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
-    store.cfg.engines_bundled ? effects : null,
+    store.cfg.renderer_available ? setting("Renderer", store.cfg.os === "macos"
+      ? "Enhanced adds bloom, ambient occlusion, light from explosions, explosion shockwaves, soft particles and scorch craters on top of the Metal renderer."
+      : "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and soft particles. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
+    store.cfg.renderer_available ? effects : null,
     store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
     setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
     setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),

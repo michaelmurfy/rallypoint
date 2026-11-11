@@ -108,23 +108,23 @@ index 0000000..0ecbbae
 +
 +#define TheShockwaves (ShockwaveList::instance())
 diff --git a/Core/GameEngine/Source/Common/OptionPreferences.cpp b/Core/GameEngine/Source/Common/OptionPreferences.cpp
-index 9f9f5a0..93bec4c 100644
+index 9f9f5a0..c74b1e9 100644
 --- a/Core/GameEngine/Source/Common/OptionPreferences.cpp
 +++ b/Core/GameEngine/Source/Common/OptionPreferences.cpp
-@@ -649,6 +649,70 @@ Bool OptionPreferences::getDynamicLODEnabled()
+@@ -649,6 +649,73 @@ Bool OptionPreferences::getDynamicLODEnabled()
  	return FALSE;
  }
  
-+// The effects added for the Enhanced renderer (updated water, shockwaves) only run when the launcher starts the native Vulkan
-+// renderer (GENERALS_GFX=vulkan). The Classic renderer and macOS keep the original look.
++// The effects added for the Enhanced renderer (updated water, shockwaves) only run when the launcher starts it: the native Vulkan
++// renderer on Windows (GENERALS_GFX=vulkan), the Metal backend's Enhanced mode on macOS (GENERALS_GFX=metal). Classic keeps the original look.
 +static Bool enhancedRendererEffects()
 +{
-+#if defined(__APPLE__)
-+	return FALSE;
-+#else
 +	if (getenv("GENERALS_ORIGINAL"))
 +		return FALSE;
 +	const char* gfx = getenv("GENERALS_GFX");
++#if defined(__APPLE__)
++	return gfx && stricmp(gfx, "metal") == 0;		// the Metal backend's Enhanced mode (cmake/dx8_stub/metal_fx.inl)
++#else
 +	return gfx && stricmp(gfx, "vulkan") == 0;
 +#endif
 +}
@@ -165,6 +165,9 @@ index 9f9f5a0..93bec4c 100644
 +
 +Bool OptionPreferences::getWaterReflectionsEnabled()
 +{
++	#if defined(__APPLE__)
++	return FALSE;		// the reflection is rendered into a texture, which the Metal backend cannot do yet
++#endif
 +	if (!enhancedRendererEffects())
 +		return FALSE;
 +	AsciiString value;
@@ -3325,10 +3328,10 @@ index 16626ae..469c529 100644
  	DX8Wrapper::Invalidate_Cached_Render_States();
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShockwave.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShockwave.cpp
 new file mode 100644
-index 0000000..98f9a64
+index 0000000..9d008fd
 --- /dev/null
 +++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShockwave.cpp
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,305 @@
 +/*
 +**	Command & Conquer Generals Zero Hour(tm)
 +**
@@ -3443,6 +3446,39 @@ index 0000000..98f9a64
 +	g_captureW = g_captureH = 0;
 +}
 +
++#if defined(__APPLE__)
++extern "C" void MetalFx_AddShockwave(float cx, float cy, float e1x, float e1y, float e2x, float e2y, float amplitude, float relWidth, float life);
++
++// macOS: the Metal backend cannot copy its back buffer into a texture, so the rings are handed to its post processing pass,
++// which pushes the finished picture around them the same way (cmake/dx8_stub/metal_fx.inl).
++void W3DShockwave::render()
++{
++	const float scale = (float)TheTacticalView->getHeight() / 1080.0f;
++	const UnsignedInt now = timeGetTime();
++	for (Int i = 0; i < TheShockwaves.count(); ++i)
++	{
++		const ShockwaveInstance &wave = TheShockwaves.get(i);
++		const float t = ShockwaveList::progress(wave, now);
++		const float front = 1.0f - std::pow(1.0f - t, 2.2f);
++		const float worldRadius = wave.maxRadius * front;
++		if (worldRadius < 1.0f)
++			continue;
++		ICoord2D center;
++		float e1[2], e2[2];
++		if (!projectedBasis(wave, worldRadius, center, e1, e2))
++			continue;
++		const float meanRadius = 0.5f * (std::sqrt(e1[0] * e1[0] + e1[1] * e1[1]) + std::sqrt(e2[0] * e2[0] + e2[1] * e2[1]));
++		if (meanRadius < 2.0f)
++			continue;
++		const float life = std::pow(1.0f - t, 1.3f) * clampf(t * 8.0f, 0.0f, 1.0f);
++		const float amplitude = wave.strength * life * 18.0f * scale;
++		if (amplitude < 0.25f)
++			continue;
++		const float relWidth = std::max(0.22f, 12.0f * scale / meanRadius);
++		MetalFx_AddShockwave((float)center.x, (float)center.y, e1[0], e1[1], e2[0], e2[1], amplitude, relWidth, life);
++	}
++}
++#else
 +void W3DShockwave::render()
 +{
 +	SurfaceClass *backBuffer = DX8Wrapper::_Get_DX8_Back_Buffer();
@@ -3600,6 +3636,7 @@ index 0000000..98f9a64
 +	DX8Wrapper::Raw_Set_Texture(0, nullptr);
 +	DX8Wrapper::Invalidate_Cached_Render_States();
 +}
++#endif
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DSmudge.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DSmudge.cpp
 index 2d87b32..4078368 100644
 --- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DSmudge.cpp
@@ -4046,22 +4083,53 @@ index 599c385..6901b85 100644
  		DX8Wrapper::Draw_Triangles(	0, m_curNumTreeIndices[bNdx]/3, 0,	m_curNumTreeVertices[bNdx]);
  	}
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
-index d510700..17c0a2f 100644
+index d510700..827199d 100644
 --- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
 +++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DView.cpp
-@@ -88,6 +88,8 @@
+@@ -88,6 +88,9 @@
  #include "W3DDevice/GameClient/W3DView.h"
  #include "d3dx8math.h"
  #include "W3DDevice/GameClient/W3DShaderManager.h"
 +#include "W3DDevice/GameClient/W3DShockwave.h"
++#include "WW3D2/gfx_vulkan.h"
 +#include "GameClient/Shockwave.h"
  #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
  #include "W3DDevice/GameClient/W3DCustomScene.h"
  
-@@ -1892,6 +1894,16 @@ void W3DView::draw()
+@@ -1892,6 +1895,46 @@ void W3DView::draw()
  		m_isWireFrameEnabled = m_nextWireFrameEnabled;
  	}
  
++	// Development aid for the Enhanced renderer (GENERALS_TESTFX=1): every three seconds an explosion-like event at the camera's
++	// target (a shockwave, a scorch mark and a light), so the effects can be checked without a battle. Client side only.
++	if (!skipRender && TheGameLogic && !TheGameLogic->isInShellGame() && getenv("GENERALS_TESTFX"))
++	{
++		static UnsignedInt s_next = 0;
++		static Coord3D s_pos;
++		static UnsignedInt s_lightUntil = 0;
++		const UnsignedInt now = timeGetTime();
++		if (now >= s_next)
++		{
++			static Int s_n = 0;
++			s_pos = getPosition();
++			s_pos.x += (Real)((s_n % 3) - 1) * 70.0f;
++			s_pos.y += (Real)(((s_n / 3) % 3) - 1) * 50.0f;
++			s_pos.z = TheTerrainLogic ? TheTerrainLogic->getGroundHeight(s_pos.x, s_pos.y) : 0.0f;
++			++s_n;
++			TheShockwaves.spawn(s_pos, 140.0f, 0.8f);
++			TheGameClient->addScorch(&s_pos, 22.0f, (Scorches)(s_n % 4));
++			s_next = now + 3000;
++			s_lightUntil = now + 900;
++		}
++		if (now < s_lightUntil)
++		{
++			const float k = (float)(s_lightUntil - now) / 900.0f;
++			const float where[3] = { s_pos.x, s_pos.y, s_pos.z + 25.0f };
++			const float color[3] = { 2.2f * k, 1.4f * k, 0.6f * k };
++			VkGfx_AddDynamicLight(where, color, 160.0f);
++		}
++	}
++
 +	// Explosion shockwave rings, drawn over the finished 3D scene. A script view filter that renders the scene into a
 +	// texture owns the picture until its own post render, so the rings are skipped while one is active.
 +	if (!skipRender &&
@@ -20174,10 +20242,10 @@ index 0000000..04a3c9e
 +}
 diff --git a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
 new file mode 100644
-index 0000000..4c7610b
+index 0000000..0460674
 --- /dev/null
 +++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
-@@ -0,0 +1,2371 @@
+@@ -0,0 +1,2408 @@
 +/*
 +**	Native Vulkan backend (experimental).
 +**
@@ -22524,6 +22592,43 @@ index 0000000..4c7610b
 +	if (!B.ready || !B.postOn || B.stage != 0) return;
 +	if (!RunPostProcess()) { B.stage = 1; B.scene3D = false; }
 +}
++
++#elif defined(__APPLE__)	// macOS: the Enhanced renderer's effects live in the Metal backend (cmake/dx8_stub/metal_fx.inl)
++
++extern "C" {
++int  MetalFx_Active(void);
++void MetalFx_Configure(int post, int bloom, int ao, int aoHalf, int fxaa, int lights, float lightStrength);
++void MetalFx_BeginScene3D(float sunX, float sunY, float sunZ);
++void MetalFx_EndScene3D(void);
++void MetalFx_SoftDraws(int soft);
++int  MetalFx_SoftDrawsActive(void);
++void MetalFx_ScorchRelief(float strength);
++void MetalFx_ClearDynamicLights(void);
++void MetalFx_AddDynamicLight(const float pos[3], const float color[3], float range);
++}
++
++void VkGfx_Configure(const VkGfx_Settings& s)
++{
++	MetalFx_Configure(s.postProcessing, s.bloom, s.ambientOcclusion, s.aoHalfResolution, s.fxaa, s.dynamicLights, s.dynamicLightStrength);
++}
++void VkGfx_SetEffectToggles(bool, bool, bool, bool) {}
++void VkGfx_SetMoreEffectToggles(bool, bool, bool, bool, bool) {}
++bool VkGfx_CloudShadowsReplaceGameClouds() { return false; }
++bool VkGfx_NativeActive() { return MetalFx_Active() != 0; }
++bool VkGfx_Requested() { return false; }
++IDirect3D8* WINAPI VkGfx_Direct3DCreate8(UINT) { return nullptr; }
++void VkGfx_BeginScene3D(float x, float y, float z) { MetalFx_BeginScene3D(x, y, z); }
++bool VkGfx_ShadowMapsActive() { return false; }
++void VkGfx_SuppressSceneDraws(bool) {}
++void VkGfx_SoftDraws(bool soft) { MetalFx_SoftDraws(soft ? 1 : 0); }
++bool VkGfx_SoftDrawsActive() { return MetalFx_SoftDrawsActive() != 0; }
++void VkGfx_EndScene3D() { MetalFx_EndScene3D(); }
++void VkGfx_SetSceneLighting(const float*, const float*) {}
++void VkGfx_SetGameTime(float) {}
++void VkGfx_ScorchRelief(float s) { MetalFx_ScorchRelief(s); }
++void VkGfx_ClearDynamicLights() { MetalFx_ClearDynamicLights(); }
++void VkGfx_RequestScreenshot(const char*) {}
++void VkGfx_AddDynamicLight(const float* p, const float* c, float r) { MetalFx_AddDynamicLight(p, c, r); }
 +
 +#else	// no Vulkan headers in this configuration
 +
@@ -49809,3 +49914,848 @@ index 10b1445..6bbb355 100644
  else()
      set(RTS_USE_D3DX8_COMPAT FALSE)
  
+diff --git a/cmake/dx8_stub/dx8_device.cpp b/cmake/dx8_stub/dx8_device.cpp
+index 7654696..e3a9740 100644
+--- a/cmake/dx8_stub/dx8_device.cpp
++++ b/cmake/dx8_stub/dx8_device.cpp
+@@ -1492,6 +1492,8 @@ private:
+ 
+         dc.texture = nullptr;
+         if (m_textures[0]) dc.texture = static_cast<MetalTexture8*>(m_textures[0])->dxTexture();
++        // Stage 1 is only read by the Enhanced renderer (scorch height map, see metal_fx.inl).
++        dc.texture1 = m_textures[1] ? static_cast<MetalTexture8*>(m_textures[1])->dxTexture() : nullptr;
+ 
+         dc.blendEnable     = (int)m_renderStates[D3DRS_ALPHABLENDENABLE];
+         dc.srcBlend        = (int)m_renderStates[D3DRS_SRCBLEND];
+diff --git a/cmake/dx8_stub/metal_backend.h b/cmake/dx8_stub/metal_backend.h
+index b0de9ef..4b441e2 100644
+--- a/cmake/dx8_stub/metal_backend.h
++++ b/cmake/dx8_stub/metal_backend.h
+@@ -242,6 +242,8 @@ typedef struct MetalDrawCall {
+     float    globalAmbient[4]; // D3DRS_AMBIENT unpacked
+     float    world[16];        // column-major world matrix (normal/pos lighting)
+     MetalLight lights[8];
++    // Stage-1 texture (MTLTexture*, null when none). Only read by the Enhanced renderer: the height map of the scorch marks.
++    void*    texture1;
+ } MetalDrawCall;
+ 
+ void MetalContext_Draw(MetalContext* ctx, const MetalDrawCall* dc);
+@@ -338,6 +340,21 @@ int  MetalCursor_Show(int show);  // show!=0 => increment; show==0 => decrement
+ // screen coords and warp the system cursor there. Returns 1 on success.
+ int  MetalCursor_WarpClient(int clientX, int clientY);
+ 
++// ---------------------------------------------------------------------------
++// Enhanced renderer (GENERALS_GFX=metal): post processing and effects, see metal_fx.inl. The engine reaches these through
++// the VkGfx_* hooks of gfx_vulkan.cpp.
++// ---------------------------------------------------------------------------
++int  MetalFx_Active(void);
++void MetalFx_Configure(int post, int bloom, int ao, int aoHalf, int fxaa, int lights, float lightStrength);
++void MetalFx_BeginScene3D(float sunX, float sunY, float sunZ);
++void MetalFx_EndScene3D(void);
++void MetalFx_SoftDraws(int soft);
++int  MetalFx_SoftDrawsActive(void);
++void MetalFx_ScorchRelief(float strength);
++void MetalFx_ClearDynamicLights(void);
++void MetalFx_AddDynamicLight(const float pos[3], const float color[3], float range);
++void MetalFx_AddShockwave(float cx, float cy, float e1x, float e1y, float e2x, float e2y, float amplitude, float relWidth, float life);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 2e2b4ed..c06e278 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -372,6 +372,9 @@ vertex VSOut vs_main(VSIn in [[stage_in]], constant Uniforms& u [[buffer(1)]]) {
+     int   _pad2;
+     int   _pad3;
+     float4 tfactor;
++    float4 fx;      // Enhanced: scorch relief strength, soft particle fade distance (0 = off), unused, unused
++    float4 fx2;     // Enhanced: view depth from depth buffer z = fx2.y / (d - fx2.x)
++    float4 sun;     // Enhanced: world direction towards the sun
+ };
+ 
+ // Depth-only fragment for the shadow pass. The pipeline has no color
+@@ -429,6 +432,8 @@ static inline float FFDoOp1(int op, float a1, float a2) {
+ fragment float4 fs_main(VSOut in [[stage_in]],
+                         texture2d<float> tex          [[texture(0)]],
+                         depth2d<float>   shadowTex    [[texture(2)]],
++                        texture2d<float> heightTex    [[texture(3)]],
++                        depth2d<float>   sceneDepth   [[texture(4)]],
+                         sampler smp                   [[sampler(0)]],
+                         sampler shadowSmp             [[sampler(2)]],
+                         constant FSParams& p          [[buffer(0)]]) {
+@@ -462,6 +467,25 @@ fragment float4 fs_main(VSOut in [[stage_in]],
+ 
+     if (p.alphaTestEnable != 0 && c.a < p.alphaRef) discard_fragment();
+ 
++    // Enhanced: scorch marks lit as shallow craters from their height map (stage 1, 0.5 = flat)
++    if (p.fx.x > 0.0) {
++        float2 ts = 1.0 / float2(heightTex.get_width(), heightTex.get_height());
++        float hx = heightTex.sample(smp, in.uv + float2(ts.x, 0)).a - heightTex.sample(smp, in.uv - float2(ts.x, 0)).a;
++        float hy = heightTex.sample(smp, in.uv + float2(0, ts.y)).a - heightTex.sample(smp, in.uv - float2(0, ts.y)).a;
++        float3 n = normalize(float3(-hx * 24.0 * p.fx.x, hy * 24.0 * p.fx.x, 1.0));
++        float3 L = normalize(p.sun.xyz);
++        float gain = (0.45 + 0.75 * max(dot(n, L), 0.0)) / (0.45 + 0.75 * max(L.z, 0.05));
++        c.rgb *= clamp(gain, 0.4, 1.6);
++        c.a = max(c.a, saturate(abs(hx) + abs(hy)) * 0.5 * c.a);
++    }
++    // Enhanced: soft particles fade where they meet the scene behind them
++    if (p.fx.y > 0.0) {
++        float sd = sceneDepth.read(uint2(in.pos.xy));
++        float zs = p.fx2.y / (sd - p.fx2.x), zf = p.fx2.y / (in.pos.z - p.fx2.x);
++        float fade = saturate((zs - zf) / p.fx.y);
++        c *= fade;
++    }
++
+     // Stage 6: shadow mapping with 3×3 PCF (Percentage-Closer Filtering).
+     // Perspective divide light-space pos to NDC, flip Y (Metal top-left vs
+     // NDC bottom-left), then sample shadowTex 9 times in a 3×3 kernel around
+@@ -667,6 +691,9 @@ - (void)setFrameSize:(NSSize)newSize { [super setFrameSize:newSize]; [self layou
+     int   _pad2;     // 16-aligned MSL `float4 tfactor` lands at the same
+     int   _pad3;     // offset on CPU + GPU.
+     float tfactor[4];
++    float fx[4];     // Enhanced renderer (metal_fx.inl), mirrors the MSL fields
++    float fx2[4];
++    float sun[4];
+ };
+ 
+ struct MetalContext {
+@@ -1547,6 +1574,9 @@ static inline uint64_t MakeDSHash(const DSKey& k)
+ // textureType2DMultisample with matching sampleCount, and storage flips to
+ // Memoryless — depth never leaves tile memory on TBDR (resolve action is
+ // DontCare for the main pass).
++extern "C" { extern MetalContext* g_activeMetalCtx; }
++#include "metal_fx.inl"
++
+ static void EnsureDepthTexture(MetalContext* ctx)
+ {
+     if (ctx->depthTex && ctx->depthW == ctx->width && ctx->depthH == ctx->height) return;
+@@ -1558,6 +1588,7 @@ static void EnsureDepthTexture(MetalContext* ctx)
+     dd.height        = (NSUInteger)(ctx->height > 0 ? ctx->height : 1);
+     dd.mipmapLevelCount = 1;
+     dd.usage         = MTLTextureUsageRenderTarget;
++    if (FxRequested()) dd.usage |= MTLTextureUsageShaderRead;   // Enhanced: the post passes read the scene depth
+     if (s > 1) {
+         dd.textureType = MTLTextureType2DMultisample;
+         dd.sampleCount = (NSUInteger)s;
+@@ -1714,7 +1745,15 @@ static bool EnsureEncoder(MetalContext* ctx)
+     EnsureMSAAColor(ctx);
+ 
+     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+-    if (ctx->msaaSamples > 1 && ctx->msaaColor) {
++    MTLLoadAction fxColorLoad = MTLLoadActionClear, fxDepthLoad = MTLLoadActionClear;
++    MTLStoreAction fxDepthStore = MTLStoreActionDontCare;
++    id<MTLTexture> fxTarget = FxColorTarget(ctx, &fxColorLoad, &fxDepthLoad, &fxDepthStore);
++    if (fxTarget) {
++        // Enhanced renderer: the 3D scene goes into its own texture, the interface onto the drawable after the post passes
++        pass.colorAttachments[0].texture        = fxTarget;
++        pass.colorAttachments[0].loadAction     = fxColorLoad;
++        pass.colorAttachments[0].storeAction    = MTLStoreActionStore;
++    } else if (ctx->msaaSamples > 1 && ctx->msaaColor) {
+         // MSAA path: render into memoryless multisampled tile target, resolve
+         // into the drawable at storeAction time. resolveTexture *must* be the
+         // non-MSAA drawable (sampleCount=1), formats must match (BGRA8Unorm).
+@@ -1730,16 +1769,16 @@ static bool EnsureEncoder(MetalContext* ctx)
+     pass.colorAttachments[0].clearColor  = ctx->clearColor;
+     if (getenv("MTL_TESTCLEAR")) pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.6, 1.0);
+     pass.depthAttachment.texture     = ctx->depthTex;
+-    pass.depthAttachment.loadAction  = MTLLoadActionClear;
+-    pass.depthAttachment.storeAction = MTLStoreActionDontCare;
++    pass.depthAttachment.loadAction  = fxTarget ? fxDepthLoad : MTLLoadActionClear;
++    pass.depthAttachment.storeAction = fxTarget ? fxDepthStore : MTLStoreActionDontCare;
+     pass.depthAttachment.clearDepth  = 1.0;
+     // Stencil shares the depth attachment (Depth32Float_Stencil8). The
+     // RTS3DScene occlusion pass + stencil shadow volumes expect the buffer
+     // cleared to 0 at the start of each frame, matching the engine's
+     // D3DCLEAR_STENCIL on the legacy DX path.
+     pass.stencilAttachment.texture     = ctx->depthTex;
+-    pass.stencilAttachment.loadAction  = MTLLoadActionClear;
+-    pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
++    pass.stencilAttachment.loadAction  = fxTarget ? fxDepthLoad : MTLLoadActionClear;
++    pass.stencilAttachment.storeAction = fxTarget ? fxDepthStore : MTLStoreActionDontCare;
+     pass.stencilAttachment.clearStencil = 0;
+     ctx->enc = [[ctx->cmd renderCommandEncoderWithDescriptor:pass] retain];
+ 
+@@ -1907,6 +1946,7 @@ static inline void DiagTexFree(void* tp) {
+             else if (v == 8)      ctx->msaaSamples = 8;
+             else                  ctx->msaaSamples = 1;
+         }
++        if (FxRequested()) ctx->msaaSamples = 1;   // Enhanced renderer: FXAA in the post chain instead
+         // Verify the device actually supports the requested sample count for
+         // BGRA8Unorm (M-series supports 1/2/4/8; the API still returns NO
+         // for unsupported counts e.g. on older hardware).
+@@ -2776,6 +2816,7 @@ static void RunShadowReplay(MetalContext* ctx)
+         // If nothing was drawn this frame, still clear+present.
+         if (!ctx->enc && !ctx->drawable) EnsureEncoder(ctx);
+         if (ctx->enc) { [ctx->enc endEncoding]; [ctx->enc release]; ctx->enc = nil; }
++        FxPresent(ctx);   // Enhanced renderer: a scene left open is post processed now
+ 
+         // Regenerate mip chains for textures uploaded this frame, batched into a
+         // single command buffer and committed here — before the frame's render
+@@ -2805,7 +2846,9 @@ static void RunShadowReplay(MetalContext* ctx)
+                         (ctx->frameIndex == 5 || ctx->frameIndex == 60 ||
+                          ctx->frameIndex == 180 || ctx->frameIndex == 360 ||
+                          ctx->frameIndex == 600 || ctx->frameIndex == 900 ||
+-                         (ctx->frameIndex % 600) == 0);
++                         (ctx->frameIndex % 600) == 0 ||
++                         (getenv("MTL_DUMP_EVERY") && atoi(getenv("MTL_DUMP_EVERY")) > 0 &&
++                          ctx->frameIndex > 900 && (ctx->frameIndex % atoi(getenv("MTL_DUMP_EVERY"))) == 0));
+         if (wantDump) {
+             MTLTextureDescriptor* dd =
+                 [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+@@ -4382,6 +4425,7 @@ static void DrawShadowPass(MetalContext* ctx, const MetalDrawCall* dc)
+         fp.tfactor[1] = ((dc->tfactor >>  8) & 0xFF) / 255.0f;  // G
+         fp.tfactor[2] = ((dc->tfactor      ) & 0xFF) / 255.0f;  // B
+         fp.tfactor[3] = ((dc->tfactor >> 24) & 0xFF) / 255.0f;  // A
++        FxBeforeDraw(ctx, dc, fp);
+         [ctx->enc setFragmentBytes:&fp length:sizeof(fp) atIndex:0];
+         if (tex != ctx->boundTex0) { [ctx->enc setFragmentTexture:tex atIndex:0]; ctx->boundTex0 = tex; }
+         // Per-draw sampler based on D3DTSS_ADDRESSU/V (CLAMP for the terrain
+diff --git a/cmake/dx8_stub/metal_fx.inl b/cmake/dx8_stub/metal_fx.inl
+new file mode 100644
+index 0000000..55cb42a
+--- /dev/null
++++ b/cmake/dx8_stub/metal_fx.inl
+@@ -0,0 +1,641 @@
++// Rallypoint: the Enhanced renderer's effects on Metal (macOS). Included by metal_backend.mm before the render encoder code.
++//
++// The Windows build gets these effects from the native Vulkan backend (WW3D2/gfx_vulkan.cpp, from ModernGeneralsZH). The engine
++// talks to both through the same hooks (VkGfx_* in gfx_vulkan.h); on macOS they forward to the MetalFx_* functions below.
++//
++// Frame flow with Enhanced on (GENERALS_GFX=metal, set by the launcher):
++//   VkGfx_BeginScene3D -> the 3D views are drawn into fx.scene (an offscreen colour texture) with a depth buffer that is kept
++//   VkGfx_EndScene3D   -> post passes: dynamic lights (added onto the scene), ambient occlusion, bloom, shockwave distortion,
++//                         grading, FXAA into the drawable; the interface is then drawn on top of it as before.
++// Inside the scene: particle draws (VkGfx_SoftDraws) fade where they meet the ground, from a copy of the depth buffer taken at
++// the first particle draw; scorch marks (VkGfx_ScorchRelief) are lit as shallow craters from their height map in stage 1.
++// MSAA is off with Enhanced (FXAA replaces it); the backend's own experimental shadow maps are not used.
++
++static NSString* const kPostShaderSource = @R"METAL(
++#include <metal_stdlib>
++using namespace metal;
++
++struct PostU {
++    float4 texel;       // 1/w, 1/h, w, h of the pass' output
++    float4 p0;          // bloom threshold, knee, bloom intensity, ambient occlusion strength
++    float4 p1;          // saturation, contrast, fxaa on, dynamic light strength
++    float4 vp;          // the 3D viewport in pixels (x, y, w, h) of the full size scene
++    float4 full;        // full scene size (w, h), number of lights, number of shockwaves
++    float4x4 invVP;     // clip space -> world
++    float4x4 VP;        // world -> clip space
++    float4 cam;         // camera position (world), ao radius
++    float4 lightPos[12];
++    float4 lightCol[12];
++    float4 wave[24];    // per shockwave: (cx, cy, amplitude, relative width) (e1.xy, e2.xy) (life, 0, 0, 0)
++};
++
++struct VOut { float4 pos [[position]]; float2 uv; };
++
++vertex VOut post_vs(uint vid [[vertex_id]]) {
++    float2 p = float2((vid << 1) & 2, vid & 2);
++    VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); o.uv = float2(p.x, 1.0 - p.y);
++    return o;
++}
++
++static float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
++
++static float hashNoise(float2 p) {
++    uint2 v = uint2(p);
++    v = v * 1664525u + 1013904223u;
++    v.x += v.y * 1664525u; v.y += v.x * 1664525u;
++    v ^= v >> 16u;
++    v.x += v.y * 1664525u; v.y += v.x * 1664525u;
++    v ^= v >> 16u;
++    return float(v.x) * (1.0 / 4294967296.0);
++}
++
++// world position of a full size pixel, from the scene depth
++static float3 worldAt(depth2d<float> depth, constant PostU& u, float2 pix) {
++    uint2 q = uint2(clamp(pix, float2(0.0), u.full.xy - 1.0));
++    float d = depth.read(q);
++    float2 ndc = float2((pix.x - u.vp.x) / u.vp.z * 2.0 - 1.0, 1.0 - (pix.y - u.vp.y) / u.vp.w * 2.0);
++    float4 w = u.invVP * float4(ndc, d, 1.0);
++    return w.xyz / w.w;
++}
++
++static bool inScene(constant PostU& u, float2 pix) {
++    return pix.x >= u.vp.x && pix.y >= u.vp.y && pix.x < u.vp.x + u.vp.z && pix.y < u.vp.y + u.vp.w;
++}
++
++// bright pass and first down sample (13 taps would be nicer; 4 bilinear taps of a 2x2 box are enough at this size)
++static float2 srcTexel(texture2d<float> t) { return 1.0 / float2(t.get_width(), t.get_height()); }
++
++fragment float4 bloom_down0(VOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 o = srcTexel(src);
++    float3 c = 0.25 * (src.sample(s, in.uv + float2(-o.x, -o.y)).rgb + src.sample(s, in.uv + float2(o.x, -o.y)).rgb +
++                       src.sample(s, in.uv + float2(-o.x, o.y)).rgb + src.sample(s, in.uv + float2(o.x, o.y)).rgb);
++    float b = max(c.r, max(c.g, c.b));
++    float soft = clamp(b - u.p0.x + u.p0.y, 0.0, 2.0 * u.p0.y);
++    soft = soft * soft / (4.0 * u.p0.y + 1e-4);
++    float w = max(soft, b - u.p0.x) / max(b, 1e-4);
++    return float4(c * w, 1.0);
++}
++
++fragment float4 bloom_down(VOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 o = srcTexel(src);
++    float3 c = 0.5 * src.sample(s, in.uv).rgb;
++    c += 0.125 * (src.sample(s, in.uv + float2(-o.x, -o.y)).rgb + src.sample(s, in.uv + float2(o.x, -o.y)).rgb +
++                  src.sample(s, in.uv + float2(-o.x, o.y)).rgb + src.sample(s, in.uv + float2(o.x, o.y)).rgb);
++    return float4(c, 1.0);
++}
++
++// up sample (tent), added onto the next larger level by the pipeline's blend
++fragment float4 bloom_up(VOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 o = srcTexel(src);
++    float3 c = 4.0 * src.sample(s, in.uv).rgb;
++    c += 2.0 * (src.sample(s, in.uv + float2(o.x, 0)).rgb + src.sample(s, in.uv - float2(o.x, 0)).rgb +
++                src.sample(s, in.uv + float2(0, o.y)).rgb + src.sample(s, in.uv - float2(0, o.y)).rgb);
++    c += src.sample(s, in.uv + o).rgb + src.sample(s, in.uv - o).rgb + src.sample(s, in.uv + float2(o.x, -o.y)).rgb + src.sample(s, in.uv + float2(-o.x, o.y)).rgb;
++    return float4(c / 16.0, 1.0);
++}
++
++// ambient occlusion: a hemisphere of world space samples around the pixel's surface, at half resolution
++fragment float4 ao_pass(VOut in [[stage_in]], depth2d<float> depth [[texture(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 pix = in.uv * u.full.xy;
++    if (!inScene(u, pix)) return float4(1.0);
++    float d = depth.read(uint2(clamp(pix, float2(0.0), u.full.xy - 1.0)));
++    if (d >= 0.99999) return float4(1.0);
++    float3 P = worldAt(depth, u, pix);
++    float3 Px = worldAt(depth, u, pix + float2(2.0, 0.0)) - P;
++    float3 Py = worldAt(depth, u, pix + float2(0.0, 2.0)) - P;
++    float3 N = normalize(cross(Py, Px));
++    if (dot(N, u.cam.xyz - P) < 0.0) N = -N;
++    float3 T = normalize(abs(N.z) < 0.9 ? cross(N, float3(0, 0, 1)) : cross(N, float3(1, 0, 0)));
++    float3 B = cross(N, T);
++    float rot = hashNoise(pix) * 6.2831853;
++    float R = u.cam.w;
++    float occl = 0.0;
++    const int K = 12;
++    for (int k = 0; k < K; ++k) {
++        float fk = (float(k) + 0.5) / float(K);
++        float a = rot + float(k) * 2.3999632;               // golden angle
++        float r = sqrt(fk);
++        float h = sqrt(max(0.0, 1.0 - r * r));
++        float3 dir = (T * cos(a) + B * sin(a)) * r + N * h;
++        float3 S = P + dir * R * mix(0.25, 1.0, fk);
++        float4 c = u.VP * float4(S, 1.0);
++        if (c.w <= 0.0) continue;
++        float2 ndc = c.xy / c.w;
++        float2 sp = float2(u.vp.x + (ndc.x * 0.5 + 0.5) * u.vp.z, u.vp.y + (0.5 - ndc.y * 0.5) * u.vp.w);
++        if (!inScene(u, sp)) continue;
++        float3 Q = worldAt(depth, u, sp);
++        float dq = distance(Q, u.cam.xyz), ds = distance(S, u.cam.xyz);
++        if (dq < ds - 0.5) occl += saturate(1.0 - distance(Q, P) / (R * 2.5));
++    }
++    float ao = 1.0 - occl / float(K);
++    return float4(ao, ao, ao, 1.0);
++}
++
++fragment float4 ao_blur(VOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 o = srcTexel(src);
++    float a = 0.0;
++    for (int y = -1; y <= 1; ++y)
++        for (int x = -1; x <= 1; ++x)
++            a += src.sample(s, in.uv + float2(x, y) * o).r;
++    return float4(a / 9.0);
++}
++
++// light pulses of the game (explosions, muzzle flashes) lighting their surroundings: multiplied onto the scene through
++// programmable blending (Apple GPUs read the colour attachment)
++fragment float4 lights_pass(VOut in [[stage_in]], float4 dst [[color(0)]], depth2d<float> depth [[texture(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 pix = in.uv * u.full.xy;
++    if (!inScene(u, pix)) return dst;
++    float d = depth.read(uint2(clamp(pix, float2(0.0), u.full.xy - 1.0)));
++    if (d >= 0.99999) return dst;
++    float3 P = worldAt(depth, u, pix);
++    float3 N = normalize(cross(worldAt(depth, u, pix + float2(0.0, 1.0)) - P, worldAt(depth, u, pix + float2(1.0, 0.0)) - P));
++    if (dot(N, u.cam.xyz - P) < 0.0) N = -N;
++    float3 sum = float3(0.0);
++    int n = int(u.full.z);
++    for (int i = 0; i < n; ++i) {
++        float3 L = u.lightPos[i].xyz - P;
++        float dist = length(L);
++        float range = u.lightPos[i].w;
++        if (dist >= range) continue;
++        float att = 1.0 - dist / range;
++        att *= att;
++        float ndl = saturate(dot(N, L / max(dist, 1e-3)) * 0.6 + 0.4);
++        sum += u.lightCol[i].rgb * att * ndl;
++    }
++    return float4(dst.rgb * (1.0 + sum * u.p1.w), dst.a);
++}
++
++// shockwave rings: a radial push of the picture in front of the wave and a pull behind it, with a faint bright crest
++static float2 shockOffset(constant PostU& u, float2 pix, thread float& bright) {
++    float2 off = float2(0.0);
++    int n = int(u.full.w);
++    for (int i = 0; i < n; ++i) {
++        float4 a = u.wave[i * 3], b = u.wave[i * 3 + 1], c = u.wave[i * 3 + 2];
++        float2 e1 = b.xy, e2 = b.zw;
++        float det = e1.x * e2.y - e1.y * e2.x;
++        if (abs(det) < 1e-3) continue;
++        float2 rel = pix - a.xy;
++        float2 q = float2(rel.x * e2.y - rel.y * e2.x, -rel.x * e1.y + rel.y * e1.x) / det;   // ellipse coordinates, ring at 1
++        float r = length(q);
++        float x = (r - 1.0) / a.w;
++        if (abs(x) > 2.4) continue;
++        float g = 2.95 * x * exp(-1.6 * x * x);
++        float2 dir = length(rel) > 1e-3 ? normalize(rel) : float2(0.0);
++        off -= dir * a.z * g;
++        bright += 0.30 * exp(-3.0 * x * x) * c.x;
++    }
++    return off;
++}
++
++// scene + bloom, ambient occlusion, shockwaves, soft highlight roll-off and grading
++fragment float4 composite(VOut in [[stage_in]], texture2d<float> scene [[texture(0)]], texture2d<float> bloom [[texture(1)]],
++                          texture2d<float> ao [[texture(2)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 pix = in.uv * u.full.xy;
++    float bright = 0.0;
++    float2 uv = in.uv;
++    if (u.full.w > 0.0 && inScene(u, pix)) uv = (pix + shockOffset(u, pix, bright)) / u.full.xy;
++    float3 c = scene.sample(s, uv).rgb;
++    c *= 1.0 + bright;
++    if (inScene(u, pix)) {
++        if (u.p0.w > 0.0) c *= mix(1.0, ao.sample(s, in.uv).r, u.p0.w);
++        if (u.p0.z > 0.0) c += bloom.sample(s, in.uv).rgb * u.p0.z;
++        // soft roll-off of highlights instead of a hard clip, then saturation and contrast
++        float m = max(c.r, max(c.g, c.b));
++        if (m > 0.8) c *= (0.8 + (1.0 - exp(-(m - 0.8) * 2.5)) * 0.2) / m;
++        float l = luma(c);
++        c = mix(float3(l), c, u.p1.x);
++        c = (c - 0.5) * u.p1.y + 0.5;
++    }
++    if (u.texel.z < 0.0) return float4(ao.sample(s, in.uv).rrr, 1.0);     // MTL_FX_DEBUG=ao: the ambient occlusion buffer alone
++    float n = hashNoise(pix) + hashNoise(pix + float2(173.0, 91.0)) - 1.0;
++    return float4(saturate(c + n / 255.0), 1.0);
++}
++
++// FXAA (a compact variant of the quality preset) into the drawable
++fragment float4 fxaa_pass(VOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]], constant PostU& u [[buffer(0)]]) {
++    float2 o = srcTexel(src);
++    float3 rgbM = src.sample(s, in.uv).rgb;
++    if (u.p1.z < 0.5) return float4(rgbM, 1.0);
++    float lNW = luma(src.sample(s, in.uv + float2(-o.x, -o.y)).rgb), lNE = luma(src.sample(s, in.uv + float2(o.x, -o.y)).rgb);
++    float lSW = luma(src.sample(s, in.uv + float2(-o.x, o.y)).rgb), lSE = luma(src.sample(s, in.uv + float2(o.x, o.y)).rgb);
++    float lM = luma(rgbM);
++    float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE))), lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
++    if (lMax - lMin < max(0.0312, lMax * 0.125)) return float4(rgbM, 1.0);
++    float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), ((lNW + lSW) - (lNE + lSE)));
++    float reduce = max((lNW + lNE + lSW + lSE) * 0.03125, 1.0 / 128.0);
++    float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
++    dir = clamp(dir * rcp, float2(-8.0), float2(8.0)) * o;
++    float3 a = 0.5 * (src.sample(s, in.uv + dir * (1.0 / 3.0 - 0.5)).rgb + src.sample(s, in.uv + dir * (2.0 / 3.0 - 0.5)).rgb);
++    float3 b = a * 0.5 + 0.25 * (src.sample(s, in.uv - dir * 0.5).rgb + src.sample(s, in.uv + dir * 0.5).rgb);
++    float lB = luma(b);
++    return float4((lB < lMin || lB > lMax) ? a : b, 1.0);
++}
++)METAL";
++
++extern "C" { extern MetalContext* g_activeMetalCtx; }
++
++namespace {
++
++struct PostUCPU {
++    float texel[4], p0[4], p1[4], vp[4], full[4];
++    float invVP[16], VP[16];
++    float cam[4];
++    float lightPos[12][4], lightCol[12][4];
++    float wave[24][4];
++};
++
++enum { kFxBloomLevels = 5, kFxMaxLights = 12, kFxMaxWaves = 8 };
++
++struct MetalFxState {
++    // settings (VkGfx_Configure / the launcher's GEN_GFX)
++    int requested = -1;              // GENERALS_GFX=metal; -1 = not read yet
++    bool post = true, bloom = true, ao = true, aoHalf = true, fxaa = true, lights = true;
++    float lightStrength = 1.0f;
++    // per frame
++    bool inScene = false;
++    bool sceneColorLoaded = false, sceneDepthLoaded = false;
++    bool drawableLoaded = false;     // the drawable already holds this frame's picture: encoders load it
++    bool haveProj = false;
++    float VP[16], invVP[16], cam[3];
++    int vp[4];
++    float projA = 0.0f, projB = 0.0f; // view depth from depth buffer: z = B / (d - A)
++    float sun[3] = { 0.5f, -0.4f, 0.75f };
++    bool soft = false, depthCopied = false;
++    float scorchRelief = 0.0f;
++    float lightPos[kFxMaxLights][4], lightCol[kFxMaxLights][4];
++    int numLights = 0;
++    float wave[kFxMaxWaves * 3][4];
++    int numWaves = 0;
++    // GPU resources
++    id<MTLLibrary> lib = nil;
++    id<MTLRenderPipelineState> psBloomDown0 = nil, psBloomDown = nil, psBloomUp = nil, psAo = nil, psAoBlur = nil, psLights = nil, psComposite = nil, psFxaa = nil;
++    id<MTLSamplerState> linearClamp = nil;
++    id<MTLTexture> scene = nil, ldr = nil, depthCopy = nil, aoA = nil, aoB = nil;
++    id<MTLTexture> bloomTex[kFxBloomLevels] = { nil, nil, nil, nil, nil };
++    int texW = 0, texH = 0;
++    bool failed = false;
++};
++
++MetalFxState g_fx;
++
++bool FxRequested()
++{
++    if (g_fx.requested < 0) {
++        const char* g = getenv("GENERALS_GFX");
++        g_fx.requested = (g && strcasecmp(g, "metal") == 0) ? 1 : 0;
++    }
++    return g_fx.requested == 1;
++}
++
++// Column-major 4x4 inverse (MESA's gluInvertMatrix). Returns false when singular.
++bool Invert4(const float m[16], float out[16])
++{
++    float inv[16];
++    inv[0] = m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
++    inv[4] = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
++    inv[8] = m[4]*m[9]*m[15] - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
++    inv[12] = -m[4]*m[9]*m[14] + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
++    inv[1] = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
++    inv[5] = m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
++    inv[9] = -m[0]*m[9]*m[15] + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
++    inv[13] = m[0]*m[9]*m[14] - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
++    inv[2] = m[1]*m[6]*m[15] - m[1]*m[7]*m[14] - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7] - m[13]*m[3]*m[6];
++    inv[6] = -m[0]*m[6]*m[15] + m[0]*m[7]*m[14] + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7] + m[12]*m[3]*m[6];
++    inv[10] = m[0]*m[5]*m[15] - m[0]*m[7]*m[13] - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7] - m[12]*m[3]*m[5];
++    inv[14] = -m[0]*m[5]*m[14] + m[0]*m[6]*m[13] + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6] + m[12]*m[2]*m[5];
++    inv[3] = -m[1]*m[6]*m[11] + m[1]*m[7]*m[10] + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7] + m[9]*m[3]*m[6];
++    inv[7] = m[0]*m[6]*m[11] - m[0]*m[7]*m[10] - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7] - m[8]*m[3]*m[6];
++    inv[11] = -m[0]*m[5]*m[11] + m[0]*m[7]*m[9] + m[4]*m[1]*m[11] - m[4]*m[3]*m[9] - m[8]*m[1]*m[7] + m[8]*m[3]*m[5];
++    inv[15] = m[0]*m[5]*m[10] - m[0]*m[6]*m[9] - m[4]*m[1]*m[10] + m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5];
++    float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
++    if (det == 0.0f) return false;
++    det = 1.0f / det;
++    for (int i = 0; i < 16; ++i) out[i] = inv[i] * det;
++    return true;
++}
++
++void Mul4(const float a[16], const float b[16], float out[16])   // column-major: out = a * b
++{
++    for (int c = 0; c < 4; ++c)
++        for (int r = 0; r < 4; ++r)
++            out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] + a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
++}
++
++id<MTLRenderPipelineState> FxPipeline(MetalContext* ctx, const char* fs, MTLPixelFormat fmt, bool additive)
++{
++    id<MTLFunction> v = [g_fx.lib newFunctionWithName:@"post_vs"];
++    id<MTLFunction> f = [g_fx.lib newFunctionWithName:[NSString stringWithUTF8String:fs]];
++    if (!v || !f) { [v release]; [f release]; return nil; }
++    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
++    pd.vertexFunction = v;
++    pd.fragmentFunction = f;
++    pd.colorAttachments[0].pixelFormat = fmt;
++    if (additive) {
++        pd.colorAttachments[0].blendingEnabled = YES;
++        pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
++        pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
++        pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
++        pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
++    }
++    NSError* err = nil;
++    id<MTLRenderPipelineState> ps = [ctx->device newRenderPipelineStateWithDescriptor:pd error:&err];
++    if (!ps) fprintf(stderr, "[fx] pipeline %s failed: %s\n", fs, err ? [[err localizedDescription] UTF8String] : "?");
++    [pd release]; [v release]; [f release];
++    return ps;
++}
++
++bool FxBuildShaders(MetalContext* ctx)
++{
++    if (g_fx.lib || g_fx.failed) return g_fx.lib != nil;
++    NSError* err = nil;
++    g_fx.lib = [ctx->device newLibraryWithSource:kPostShaderSource options:nil error:&err];
++    if (!g_fx.lib) {
++        fprintf(stderr, "[fx] post shaders failed to compile: %s\n", err ? [[err localizedDescription] UTF8String] : "?");
++        g_fx.failed = true;
++        return false;
++    }
++    g_fx.psBloomDown0 = FxPipeline(ctx, "bloom_down0", MTLPixelFormatRGBA16Float, false);
++    g_fx.psBloomDown = FxPipeline(ctx, "bloom_down", MTLPixelFormatRGBA16Float, false);
++    g_fx.psBloomUp = FxPipeline(ctx, "bloom_up", MTLPixelFormatRGBA16Float, true);
++    g_fx.psAo = FxPipeline(ctx, "ao_pass", MTLPixelFormatR16Float, false);
++    g_fx.psAoBlur = FxPipeline(ctx, "ao_blur", MTLPixelFormatR16Float, false);
++    g_fx.psLights = FxPipeline(ctx, "lights_pass", MTLPixelFormatBGRA8Unorm, false);
++    g_fx.psComposite = FxPipeline(ctx, "composite", MTLPixelFormatBGRA8Unorm, false);
++    g_fx.psFxaa = FxPipeline(ctx, "fxaa_pass", MTLPixelFormatBGRA8Unorm, false);
++    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
++    sd.minFilter = MTLSamplerMinMagFilterLinear; sd.magFilter = MTLSamplerMinMagFilterLinear;
++    sd.sAddressMode = MTLSamplerAddressModeClampToEdge; sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
++    g_fx.linearClamp = [ctx->device newSamplerStateWithDescriptor:sd];
++    [sd release];
++    if (!g_fx.psComposite || !g_fx.psFxaa) { g_fx.failed = true; return false; }
++    fprintf(stderr, "[fx] Enhanced renderer (Metal): post processing ready\n");
++    return true;
++}
++
++id<MTLTexture> FxTexture(MetalContext* ctx, MTLPixelFormat fmt, int w, int h, MTLTextureUsage usage)
++{
++    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:(NSUInteger)(w > 0 ? w : 1)
++                                                                                height:(NSUInteger)(h > 0 ? h : 1) mipmapped:NO];
++    d.usage = usage;
++    d.storageMode = MTLStorageModePrivate;
++    return [ctx->device newTextureWithDescriptor:d];
++}
++
++void FxReleaseTargets()
++{
++    id<MTLTexture>* all[] = { &g_fx.scene, &g_fx.ldr, &g_fx.depthCopy, &g_fx.aoA, &g_fx.aoB };
++    for (id<MTLTexture>* t : all) { if (*t) { [*t release]; *t = nil; } }
++    for (int i = 0; i < kFxBloomLevels; ++i) if (g_fx.bloomTex[i]) { [g_fx.bloomTex[i] release]; g_fx.bloomTex[i] = nil; }
++    g_fx.texW = g_fx.texH = 0;
++}
++
++bool FxEnsureTargets(MetalContext* ctx)
++{
++    if (!FxBuildShaders(ctx)) return false;
++    if (g_fx.scene && g_fx.texW == ctx->width && g_fx.texH == ctx->height) return true;
++    FxReleaseTargets();
++    const int w = ctx->width, h = ctx->height;
++    const MTLTextureUsage rt = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++    g_fx.scene = FxTexture(ctx, MTLPixelFormatBGRA8Unorm, w, h, rt);
++    g_fx.ldr = FxTexture(ctx, MTLPixelFormatBGRA8Unorm, w, h, rt);
++    g_fx.depthCopy = FxTexture(ctx, MTLPixelFormatDepth32Float_Stencil8, w, h, MTLTextureUsageShaderRead);
++    g_fx.aoA = FxTexture(ctx, MTLPixelFormatR16Float, w / 2, h / 2, rt);
++    g_fx.aoB = FxTexture(ctx, MTLPixelFormatR16Float, w / 2, h / 2, rt);
++    int bw = w / 2, bh = h / 2;
++    for (int i = 0; i < kFxBloomLevels; ++i, bw /= 2, bh /= 2)
++        g_fx.bloomTex[i] = FxTexture(ctx, MTLPixelFormatRGBA16Float, bw > 1 ? bw : 1, bh > 1 ? bh : 1, rt);
++    g_fx.texW = w; g_fx.texH = h;
++    return g_fx.scene && g_fx.ldr;
++}
++
++void FxPass(MetalContext* ctx, id<MTLRenderPipelineState> ps, id<MTLTexture> target, MTLLoadAction load,
++            id<MTLTexture> t0, id<MTLTexture> t1, id<MTLTexture> t2, PostUCPU& u)
++{
++    if (!ps || !target) return;
++    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
++    pass.colorAttachments[0].texture = target;
++    pass.colorAttachments[0].loadAction = load;
++    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
++    id<MTLRenderCommandEncoder> e = [ctx->cmd renderCommandEncoderWithDescriptor:pass];
++    u.texel[0] = 1.0f / (float)target.width; u.texel[1] = 1.0f / (float)target.height;
++    u.texel[2] = (float)target.width; u.texel[3] = (float)target.height;
++    static int s_dbg = -1;
++    if (s_dbg < 0) { const char* d = getenv("MTL_FX_DEBUG"); s_dbg = (d && strcmp(d, "ao") == 0) ? 1 : 0; }
++    if (s_dbg && ps == g_fx.psComposite) u.texel[2] = -1.0f;
++    [e setRenderPipelineState:ps];
++    [e setFragmentBytes:&u length:sizeof(u) atIndex:0];
++    if (t0) [e setFragmentTexture:t0 atIndex:0];
++    if (t1) [e setFragmentTexture:t1 atIndex:1];
++    if (t2) [e setFragmentTexture:t2 atIndex:2];
++    [e setFragmentSamplerState:g_fx.linearClamp atIndex:0];
++    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++    [e endEncoding];
++}
++
++// The post chain: the finished 3D scene (fx.scene, depth in ctx->depthTex) -> the drawable.
++void FxRunPost(MetalContext* ctx)
++{
++    if (!ctx->drawable) {
++        ctx->drawable = [[ctx->layer nextDrawable] retain];
++        if (!ctx->drawable) return;
++    }
++    if (!ctx->cmd) ctx->cmd = [[ctx->queue commandBuffer] retain];
++
++    PostUCPU u;
++    memset(&u, 0, sizeof(u));
++    u.p0[0] = 0.75f; u.p0[1] = 0.25f; u.p0[2] = (g_fx.post && g_fx.bloom) ? 0.55f : 0.0f;
++    u.p0[3] = (g_fx.post && g_fx.ao && g_fx.haveProj) ? 0.65f : 0.0f;
++    u.p1[0] = g_fx.post ? 1.08f : 1.0f; u.p1[1] = g_fx.post ? 1.04f : 1.0f; u.p1[2] = (g_fx.post && g_fx.fxaa) ? 1.0f : 0.0f;
++    u.p1[3] = g_fx.lightStrength;
++    if (g_fx.haveProj) {
++        u.vp[0] = (float)g_fx.vp[0]; u.vp[1] = (float)g_fx.vp[1]; u.vp[2] = (float)g_fx.vp[2]; u.vp[3] = (float)g_fx.vp[3];
++    } else {
++        u.vp[2] = (float)ctx->width; u.vp[3] = (float)ctx->height;
++    }
++    u.full[0] = (float)ctx->width; u.full[1] = (float)ctx->height;
++    memcpy(u.invVP, g_fx.invVP, sizeof(u.invVP));
++    memcpy(u.VP, g_fx.VP, sizeof(u.VP));
++    u.cam[0] = g_fx.cam[0]; u.cam[1] = g_fx.cam[1]; u.cam[2] = g_fx.cam[2]; u.cam[3] = 9.0f;    // ambient occlusion radius, world units
++    const int nl = (g_fx.lights && g_fx.haveProj) ? g_fx.numLights : 0;
++    u.full[2] = (float)nl;
++    memcpy(u.lightPos, g_fx.lightPos, sizeof(u.lightPos));
++    memcpy(u.lightCol, g_fx.lightCol, sizeof(u.lightCol));
++    u.full[3] = (float)g_fx.numWaves;
++    memcpy(u.wave, g_fx.wave, sizeof(u.wave));
++
++    // lights: multiplied into the scene in place
++    if (nl > 0 && g_fx.post) {
++        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
++        pass.colorAttachments[0].texture = g_fx.scene;
++        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
++        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++        id<MTLRenderCommandEncoder> e = [ctx->cmd renderCommandEncoderWithDescriptor:pass];
++        u.texel[0] = 1.0f / ctx->width; u.texel[1] = 1.0f / ctx->height; u.texel[2] = ctx->width; u.texel[3] = ctx->height;
++        [e setRenderPipelineState:g_fx.psLights];
++        [e setFragmentBytes:&u length:sizeof(u) atIndex:0];
++        [e setFragmentTexture:ctx->depthTex atIndex:0];
++        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++        [e endEncoding];
++    }
++    // ambient occlusion at half resolution, blurred
++    if (u.p0[3] > 0.0f && g_fx.aoA) {
++        FxPass(ctx, g_fx.psAo, g_fx.aoA, MTLLoadActionDontCare, ctx->depthTex, nil, nil, u);
++        FxPass(ctx, g_fx.psAoBlur, g_fx.aoB, MTLLoadActionDontCare, g_fx.aoA, nil, nil, u);
++    }
++    // bloom: bright pass, down sampling chain, up sampling added onto each larger level
++    if (u.p0[2] > 0.0f) {
++        FxPass(ctx, g_fx.psBloomDown0, g_fx.bloomTex[0], MTLLoadActionDontCare, g_fx.scene, nil, nil, u);
++        for (int i = 1; i < kFxBloomLevels; ++i)
++            FxPass(ctx, g_fx.psBloomDown, g_fx.bloomTex[i], MTLLoadActionDontCare, g_fx.bloomTex[i - 1], nil, nil, u);
++        for (int i = kFxBloomLevels - 1; i >= 1; --i) {
++            FxPass(ctx, g_fx.psBloomUp, g_fx.bloomTex[i - 1], MTLLoadActionLoad, g_fx.bloomTex[i], nil, nil, u);
++        }
++    }
++    // composite into the LDR image, then FXAA into the drawable
++    FxPass(ctx, g_fx.psComposite, g_fx.ldr, MTLLoadActionDontCare, g_fx.scene, g_fx.bloomTex[0] ? g_fx.bloomTex[0] : g_fx.scene,
++           g_fx.aoB ? g_fx.aoB : g_fx.scene, u);
++    FxPass(ctx, g_fx.psFxaa, ctx->drawable.texture, MTLLoadActionDontCare, g_fx.ldr, nil, nil, u);
++    g_fx.drawableLoaded = true;
++}
++
++} // namespace
++
++// ---- hooks used by metal_backend.mm ---------------------------------------------------------
++
++// Where the next main encoder renders. nil when Enhanced is off (the original behaviour).
++static id<MTLTexture> FxColorTarget(MetalContext* ctx, MTLLoadAction* colorLoad, MTLLoadAction* depthLoad, MTLStoreAction* depthStore)
++{
++    if (!FxRequested() || g_fx.failed) return nil;
++    *depthStore = MTLStoreActionStore;
++    if (g_fx.inScene && FxEnsureTargets(ctx)) {
++        *colorLoad = g_fx.sceneColorLoaded ? MTLLoadActionLoad : MTLLoadActionClear;
++        *depthLoad = g_fx.sceneDepthLoaded ? MTLLoadActionLoad : MTLLoadActionClear;
++        g_fx.sceneColorLoaded = g_fx.sceneDepthLoaded = true;
++        return g_fx.scene;
++    }
++    if (!ctx->drawable) return nil;
++    *colorLoad = g_fx.drawableLoaded ? MTLLoadActionLoad : MTLLoadActionClear;
++    *depthLoad = MTLLoadActionClear;
++    g_fx.drawableLoaded = true;
++    return ctx->drawable.texture;
++}
++
++// Per draw: the scene's camera (first 3D draw of the scene), soft particles and scorch relief.
++static void FxBeforeDraw(MetalContext* ctx, const MetalDrawCall* dc, FSParams& fp)
++{
++    fp.fx[0] = fp.fx[1] = fp.fx[2] = fp.fx[3] = 0.0f;
++    if (!FxRequested() || !g_fx.inScene) return;
++    if (!g_fx.haveProj && dc->posFloats == 3 && dc->zEnable && dc->vpW > 0) {
++        float invW[16], vpm[16];
++        if (Invert4(dc->world, invW)) {
++            Mul4(dc->mvp, invW, vpm);
++            if (Invert4(vpm, g_fx.invVP)) {
++                memcpy(g_fx.VP, vpm, sizeof(vpm));
++                float iv[16];
++                if (Invert4(dc->view, iv)) { g_fx.cam[0] = iv[12]; g_fx.cam[1] = iv[13]; g_fx.cam[2] = iv[14]; }
++                g_fx.vp[0] = dc->vpX; g_fx.vp[1] = dc->vpY; g_fx.vp[2] = dc->vpW; g_fx.vp[3] = dc->vpH;
++                // projection P = VP * inverse(view): view depth from the depth buffer for the soft particles
++                float P[16];
++                if (Invert4(dc->view, iv)) { Mul4(vpm, iv, P); g_fx.projA = P[10] / (P[11] != 0.0f ? P[11] : 1.0f); g_fx.projB = P[14]; }
++                g_fx.haveProj = true;
++            }
++        }
++    }
++    if (g_fx.soft && g_fx.post && g_fx.depthCopied && g_fx.projB != 0.0f) {
++        fp.fx[1] = 18.0f;                    // fade distance in world units
++        fp.fx2[0] = g_fx.projA; fp.fx2[1] = g_fx.projB;
++        [ctx->enc setFragmentTexture:g_fx.depthCopy atIndex:4];
++    }
++    if (g_fx.scorchRelief > 0.0f && dc->texture1) {
++        fp.fx[0] = g_fx.scorchRelief;
++        fp.sun[0] = g_fx.sun[0]; fp.sun[1] = g_fx.sun[1]; fp.sun[2] = g_fx.sun[2];
++        [ctx->enc setFragmentTexture:(id<MTLTexture>)dc->texture1 atIndex:3];
++    }
++}
++
++// End of frame: a scene the engine left open is finished; per-frame state is reset.
++static void FxPresent(MetalContext* ctx)
++{
++    if (!FxRequested()) return;
++    if (g_fx.inScene) {
++        g_fx.inScene = false;
++        if (g_fx.scene) FxRunPost(ctx);
++    }
++    g_fx.drawableLoaded = false;
++    g_fx.numWaves = 0;
++}
++
++// ---- the engine's hooks (gfx_vulkan.cpp forwards VkGfx_* here on macOS) -----------------------
++
++extern "C" int MetalFx_Active(void) { return (FxRequested() && !g_fx.failed && g_activeMetalCtx) ? 1 : 0; }
++
++extern "C" void MetalFx_Configure(int post, int bloom, int ao, int aoHalf, int fxaa, int lights, float lightStrength)
++{
++    g_fx.post = post != 0; g_fx.bloom = bloom != 0; g_fx.ao = ao != 0; g_fx.aoHalf = aoHalf != 0; g_fx.fxaa = fxaa != 0;
++    g_fx.lights = lights != 0; g_fx.lightStrength = lightStrength;
++}
++
++extern "C" void MetalFx_BeginScene3D(float sx, float sy, float sz)
++{
++    MetalContext* ctx = g_activeMetalCtx;
++    if (!MetalFx_Active() || !ctx) return;
++    if (ctx->enc) { [ctx->enc endEncoding]; [ctx->enc release]; ctx->enc = nil; }
++    const float l = sqrtf(sx * sx + sy * sy + sz * sz);
++    if (l > 1e-4f) { g_fx.sun[0] = sx / l; g_fx.sun[1] = sy / l; g_fx.sun[2] = sz / l; }
++    g_fx.inScene = true;
++    g_fx.sceneColorLoaded = g_fx.sceneDepthLoaded = false;
++    g_fx.haveProj = false;
++    g_fx.depthCopied = false;
++}
++
++extern "C" void MetalFx_EndScene3D(void)
++{
++    MetalContext* ctx = g_activeMetalCtx;
++    if (!ctx || !g_fx.inScene) return;
++    if (ctx->enc) { [ctx->enc endEncoding]; [ctx->enc release]; ctx->enc = nil; }
++    g_fx.inScene = false;
++    @autoreleasepool { if (g_fx.scene) FxRunPost(ctx); }
++}
++
++extern "C" void MetalFx_SoftDraws(int soft)
++{
++    MetalContext* ctx = g_activeMetalCtx;
++    g_fx.soft = soft != 0;
++    if (!ctx || !g_fx.soft || !g_fx.inScene || g_fx.depthCopied || !g_fx.post || !g_fx.depthCopy) return;
++    // the first particle draw of the scene: a copy of the depth buffer so far, which the particles read
++    if (!ctx->enc || !ctx->cmd || !ctx->depthTex) return;
++    [ctx->enc endEncoding]; [ctx->enc release]; ctx->enc = nil;
++    @autoreleasepool {
++        id<MTLBlitCommandEncoder> b = [ctx->cmd blitCommandEncoder];
++        [b copyFromTexture:ctx->depthTex toTexture:g_fx.depthCopy];
++        [b endEncoding];
++    }
++    g_fx.depthCopied = true;
++    static int s_logged = 0;
++    if (!s_logged++) fprintf(stderr, "[fx] soft particles: depth copied for the first particle draw\n");
++}
++
++extern "C" int MetalFx_SoftDrawsActive(void) { return g_fx.soft ? 1 : 0; }
++extern "C" void MetalFx_ScorchRelief(float strength) { g_fx.scorchRelief = strength; }
++extern "C" void MetalFx_ClearDynamicLights(void) { g_fx.numLights = 0; }
++
++extern "C" void MetalFx_AddDynamicLight(const float pos[3], const float color[3], float range)
++{
++    if (g_fx.numLights >= kFxMaxLights || range <= 0.0f) return;
++    float* p = g_fx.lightPos[g_fx.numLights];
++    float* c = g_fx.lightCol[g_fx.numLights];
++    p[0] = pos[0]; p[1] = pos[1]; p[2] = pos[2]; p[3] = range;
++    c[0] = color[0]; c[1] = color[1]; c[2] = color[2]; c[3] = 1.0f;
++    ++g_fx.numLights;
++}
++
++extern "C" void MetalFx_AddShockwave(float cx, float cy, float e1x, float e1y, float e2x, float e2y, float amplitude, float relWidth, float life)
++{
++    if (g_fx.numWaves >= kFxMaxWaves) return;
++    float* w = g_fx.wave[g_fx.numWaves * 3];
++    w[0] = cx; w[1] = cy; w[2] = amplitude; w[3] = relWidth;
++    w[4] = e1x; w[5] = e1y; w[6] = e2x; w[7] = e2y;
++    w[8] = life; w[9] = w[10] = w[11] = 0.0f;
++    ++g_fx.numWaves;
++}
