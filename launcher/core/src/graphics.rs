@@ -74,9 +74,26 @@ pub fn camera_env(height: u32) -> (String, String) {
     ("GEN_MAX_CAMERA_HEIGHT".into(), height.clamp(STANDARD_CAMERA, MAX_CAMERA).to_string())
 }
 
+/// The engine's renderer: "enhanced" runs the native Vulkan renderer with the added effects (`GENERALS_GFX=vulkan`). It
+/// exists only in the 64-bit Windows engine; anything else (and every other engine) keeps the classic Direct3D 8 path.
+pub fn renderer_env(renderer: &str, engine: &std::path::Path) -> Option<(String, String)> {
+    let x64 = engine.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "x64");
+    (renderer == "enhanced" && x64).then(|| ("GENERALS_GFX".into(), "vulkan".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enhanced_renderer_only_with_the_64_bit_engine() {
+        let x64 = std::path::Path::new("/app/engine/x64/generalszh.exe");
+        let x86 = std::path::Path::new("/app/engine/generalszh.exe");
+        assert_eq!(renderer_env("enhanced", x64), Some(("GENERALS_GFX".into(), "vulkan".into())));
+        assert_eq!(renderer_env("enhanced", x86), None);
+        assert_eq!(renderer_env("", x64), None);
+        assert_eq!(renderer_env("classic", x64), None);
+    }
 
     #[test]
     fn merge_changes_in_place_adds_missing_and_keeps_the_rest() {

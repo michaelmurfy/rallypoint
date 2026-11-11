@@ -1567,7 +1567,15 @@ function graphicsCard() {
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["x64", "64-bit (default)"], ["x86", "32-bit (the older build)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.engine_arch || "x64") }, label)));
+  const renderer = h("select", { "aria-label": "Renderer", onchange: async () => {
+    try {
+      await invoke("set_renderer", { renderer: renderer.value });
+      store.cfg.renderer = renderer.value;
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
+  } }, [["classic", "Classic (default)"], ["enhanced", "Enhanced (Vulkan, new)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
+    store.cfg.engines_bundled ? setting("Renderer", "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and soft particles. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
     store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
     setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
     setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
