@@ -101,7 +101,7 @@ index 94a6bbb..8a52360 100644
              "name": "win32-vcpkg-profile",
              "configurePreset": "win32-vcpkg-profile",
 diff --git a/Core/GameEngine/CMakeLists.txt b/Core/GameEngine/CMakeLists.txt
-index 11d96a4..bf6a22f 100644
+index 11d96a4..99d3de7 100644
 --- a/Core/GameEngine/CMakeLists.txt
 +++ b/Core/GameEngine/CMakeLists.txt
 @@ -1187,9 +1187,12 @@ target_link_libraries(corei_gameengine_private INTERFACE
@@ -111,8 +111,8 @@ index 11d96a4..bf6a22f 100644
 -target_compile_definitions(corei_gameengine_private INTERFACE
 -    IG_DEBUG_STACKTRACE
 -)
-+# x86-only stack walking; unsupported on 64-bit builds.
-+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
++# The stack walker reads x86 registers: not available on 64-bit Windows.
++if(NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8))
 +    target_compile_definitions(corei_gameengine_private INTERFACE
 +        IG_DEBUG_STACKTRACE
 +    )
@@ -120,21 +120,6 @@ index 11d96a4..bf6a22f 100644
  
  target_precompile_headers(corei_gameengine_private INTERFACE
  #    Include/Precompiled/PreRTS.h
-diff --git a/Core/GameEngine/Source/Common/System/Debug.cpp b/Core/GameEngine/Source/Common/System/Debug.cpp
-index be22e87..cd2f5e2 100644
---- a/Core/GameEngine/Source/Common/System/Debug.cpp
-+++ b/Core/GameEngine/Source/Common/System/Debug.cpp
-@@ -66,9 +66,7 @@
- #include "GameClient/GameText.h"
- #include "GameClient/Keyboard.h"
- #include "GameClient/Mouse.h"
--#if defined(DEBUG_STACKTRACE) || defined(IG_DEBUG_STACKTRACE)
--	#include "Common/StackDump.h"
--#endif
-+#include "Common/StackDump.h" // provides no-op fallbacks when stack tracing is compiled out
- #ifdef RTS_ENABLE_CRASHDUMP
- #include "Common/MiniDumper.h"
- #endif
 diff --git a/Core/GameEngine/Source/Common/System/LocalFile.cpp b/Core/GameEngine/Source/Common/System/LocalFile.cpp
 index 9fea19a..f8d6c90 100644
 --- a/Core/GameEngine/Source/Common/System/LocalFile.cpp
