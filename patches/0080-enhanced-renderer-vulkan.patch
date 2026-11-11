@@ -5058,10 +5058,18 @@ index 0000000..e23fdf8
 +	0x80E40000, 0x80E40001, 0x0000FFFF,
 +};
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
-index f6e4ae7..b154faf 100644
+index f6e4ae7..f848083 100644
 --- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
 +++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
-@@ -55,9 +55,16 @@
+@@ -43,6 +43,7 @@
+ #include "camera.h"
+ #include "scene.h"
+ #include "dx8wrapper.h"
++#include "gfx_vulkan.h"
+ #include "light.h"
+ #include "d3dx8math.h"
+ #include "simplevec.h"
+@@ -55,9 +56,16 @@
  #include "Common/PerfTimer.h"
  #include "Common/Xfer.h"
  #include "Common/GameLOD.h"
@@ -5078,7 +5086,7 @@ index f6e4ae7..b154faf 100644
  #include "GameLogic/GameLogic.h"
  #include "GameLogic/PolygonTrigger.h"
  #include "GameLogic/ScriptEngine.h"
-@@ -65,6 +72,8 @@
+@@ -65,6 +73,8 @@
  #include "W3DDevice/GameClient/W3DDisplay.h"
  #include "W3DDevice/GameClient/W3DPoly.h"
  #include "W3DDevice/GameClient/W3DScene.h"
@@ -5087,7 +5095,7 @@ index f6e4ae7..b154faf 100644
  #include "W3DDevice/GameClient/W3DCustomScene.h"
  
  
-@@ -102,6 +111,7 @@ extern "C" int MetalDebug_InTrapezoidWater(void) { return g_inTrapWater; }
+@@ -102,6 +112,7 @@ extern "C" int MetalDebug_InTrapezoidWater(void) { return g_inTrapWater; }
  #define PATCH_UV_TILES	42	//number of times the bump map texture is tiled across patch (must be integer!).
  #define PATCH_SCALE (4.0f * MAP_XY_FACTOR)	//horizontal scale factor. Adjust this and size to get desired vertex density.
  #define SEA_REFLECTION_SIZE 256		//dimensions of reflection texture
@@ -5095,7 +5103,7 @@ index f6e4ae7..b154faf 100644
  
  #define SEA_BUMP_SCALE		(0.06f)		//scales the du/dv offsets stored in bump map (~ amount to perturb)
  #define BUMP_SIZE (50.f)
-@@ -175,6 +185,29 @@ static ShaderClass blendStagesShader(SC_DETAIL_BLEND);
+@@ -175,6 +186,29 @@ static ShaderClass blendStagesShader(SC_DETAIL_BLEND);
  
  WaterRenderObjClass *TheWaterRenderObj=nullptr; ///<global water rendering object
  
@@ -5125,7 +5133,7 @@ index f6e4ae7..b154faf 100644
  static Int getRiverVertexDiffuse(W3DShroud *shroud, Real x, Real y, Real shadeR, Real shadeG, Real shadeB, Int diffuse)
  {
  	if (!shroud)
-@@ -233,38 +266,38 @@ void WaterRenderObjClass::setupJbaWaterShader()
+@@ -233,38 +267,38 @@ void WaterRenderObjClass::setupJbaWaterShader()
  
  
  	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
@@ -5180,7 +5188,7 @@ index f6e4ae7..b154faf 100644
  		D3DXMATRIX inv;
  		float det;
  		D3DXMatrixInverse(&inv, &det, &curView);
-@@ -273,20 +306,25 @@ void WaterRenderObjClass::setupJbaWaterShader()
+@@ -273,20 +307,25 @@ void WaterRenderObjClass::setupJbaWaterShader()
  		D3DXMATRIX destMatrix = inv * scale;
  		D3DXMatrixTranslation(&scale, m_riverVOrigin, m_riverVOrigin,0);
  		destMatrix = destMatrix*scale;
@@ -5219,7 +5227,7 @@ index f6e4ae7..b154faf 100644
  	}
  }
  
-@@ -364,6 +402,21 @@ WaterRenderObjClass::WaterRenderObjClass()
+@@ -364,6 +403,21 @@ WaterRenderObjClass::WaterRenderObjClass()
  	m_vertexBufferD3DOffset=0;
  
  	m_dwWavePixelShader=0;
@@ -5241,7 +5249,7 @@ index f6e4ae7..b154faf 100644
  	m_dwWaveVertexShader=0;
  	m_meshData=nullptr;
  	m_meshDataSize = 0;
-@@ -444,7 +497,7 @@ RenderObjClass *	 WaterRenderObjClass::Clone() const
+@@ -444,7 +498,7 @@ RenderObjClass *	 WaterRenderObjClass::Clone() const
  /** Copies raw bits from pBumpSrc (a regular grayscale texture) into a D3D
  	*   bump-map format. */
  //-------------------------------------------------------------------------------------------------
@@ -5250,7 +5258,7 @@ index f6e4ae7..b154faf 100644
  {
      SurfaceClass::SurfaceDescription    d3dsd;
  	SurfaceClass * surf;
-@@ -471,7 +524,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
+@@ -471,7 +525,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
  	else
  		return S_OK;
  
@@ -5259,7 +5267,7 @@ index f6e4ae7..b154faf 100644
  
  	for (Int level=0; level < numLevels; level++)
  	{
-@@ -516,21 +569,21 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
+@@ -516,21 +570,21 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
  				// The luminance bump value (land masses are less shiny)
  				WORD uL = ( v00>1 ) ? 63 : 127;
  
@@ -5285,7 +5293,7 @@ index f6e4ae7..b154faf 100644
  						*pDstT++ = (BYTE)iDu;
  						*pDstT++ = (BYTE)iDv;
  						*pDstT++ = (BYTE)uL;
-@@ -557,7 +610,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
+@@ -557,7 +611,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
  	pSrc=(unsigned char *)surf->Lock((int *)&dwSrcPitch);
  
      // Create the bumpmap's surface and texture objects
@@ -5294,7 +5302,7 @@ index f6e4ae7..b154faf 100644
  
      // Fill the bits of the new texture surface with bits from
      // a private format.
-@@ -599,21 +652,21 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
+@@ -599,21 +653,21 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass
              // The luminance bump value (land masses are less shiny)
              WORD uL = ( v00>1 ) ? 63 : 127;
  
@@ -5320,7 +5328,7 @@ index f6e4ae7..b154faf 100644
                      *pDstT++ = (BYTE)iDu;
                      *pDstT++ = (BYTE)iDv;
                      *pDstT++ = (BYTE)uL;
-@@ -668,8 +721,7 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
+@@ -668,8 +722,7 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
  	if (m_vertexBufferD3D == nullptr)
  	{	// Create vertex buffer
  
@@ -5330,7 +5338,7 @@ index f6e4ae7..b154faf 100644
  			m_numVertices*vertexSize,
  			usage,
  			fvf,
-@@ -690,7 +742,7 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
+@@ -690,7 +743,7 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
  		0,
  		m_numVertices*sizeof(SEA_PATCH_VERTEX),
  		(BYTE**)&pVertices,
@@ -5339,7 +5347,7 @@ index f6e4ae7..b154faf 100644
  	)))
  		return hr;
  
-@@ -733,12 +785,11 @@ HRESULT WaterRenderObjClass::generateIndexBuffer(Int sizeX, Int sizeY)
+@@ -733,12 +786,11 @@ HRESULT WaterRenderObjClass::generateIndexBuffer(Int sizeX, Int sizeY)
  	// Create index buffer
  	WORD* pIndices;
  
@@ -5356,7 +5364,7 @@ index f6e4ae7..b154faf 100644
  		&m_indexBufferD3D
  	)))
  		return hr;
-@@ -833,19 +884,21 @@ void WaterRenderObjClass::ReleaseResources()
+@@ -833,19 +885,21 @@ void WaterRenderObjClass::ReleaseResources()
  		m_waterTrackSystem->ReleaseResources();
  
  	if (m_dwWavePixelShader)
@@ -5383,7 +5391,7 @@ index f6e4ae7..b154faf 100644
  
  	m_dwWavePixelShader=0;
  	m_dwWaveVertexShader=0;
-@@ -926,7 +979,8 @@ void WaterRenderObjClass::ReAcquireResources()
+@@ -926,7 +980,8 @@ void WaterRenderObjClass::ReAcquireResources()
  	if (m_waterTrackSystem)
  		m_waterTrackSystem->ReAcquireResources();
  
@@ -5393,7 +5401,7 @@ index f6e4ae7..b154faf 100644
  	{
  		ID3DXBuffer *compiledShader;
  		const char *shader =
-@@ -942,9 +996,26 @@ void WaterRenderObjClass::ReAcquireResources()
+@@ -942,9 +997,26 @@ void WaterRenderObjClass::ReAcquireResources()
  			add r0.rgb, r0, r1\n";
  		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
  		if (hr==0) {
@@ -5421,7 +5429,7 @@ index f6e4ae7..b154faf 100644
  		shader =
  			"ps.1.1\n \
  			tex t0 \n\
-@@ -955,7 +1026,7 @@ void WaterRenderObjClass::ReAcquireResources()
+@@ -955,7 +1027,7 @@ void WaterRenderObjClass::ReAcquireResources()
  			add r0.rgb, r0, r1";
  		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
  		if (hr==0) {
@@ -5430,7 +5438,7 @@ index f6e4ae7..b154faf 100644
  			compiledShader->Release();
  		}
  		shader =
-@@ -970,7 +1041,7 @@ void WaterRenderObjClass::ReAcquireResources()
+@@ -970,7 +1042,7 @@ void WaterRenderObjClass::ReAcquireResources()
  			;\n";
  		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
  		if (hr==0) {
@@ -5439,7 +5447,7 @@ index f6e4ae7..b154faf 100644
  			compiledShader->Release();
  		}
  	}
-@@ -999,6 +1070,8 @@ void WaterRenderObjClass::ReAcquireResources()
+@@ -999,6 +1071,8 @@ void WaterRenderObjClass::ReAcquireResources()
  
  void WaterRenderObjClass::load()
  {
@@ -5448,7 +5456,7 @@ index f6e4ae7..b154faf 100644
  	if (m_waterTrackSystem)
  		m_waterTrackSystem->loadTracks();
  }
-@@ -1439,9 +1512,39 @@ void WaterRenderObjClass::loadSetting( Setting *setting, TimeOfDay timeOfDay )
+@@ -1439,9 +1513,39 @@ void WaterRenderObjClass::loadSetting( Setting *setting, TimeOfDay timeOfDay )
  //-------------------------------------------------------------------------------------------------
  void WaterRenderObjClass::updateRenderTargetTextures(CameraClass *cam)
  {
@@ -5491,7 +5499,7 @@ index f6e4ae7..b154faf 100644
  }
  
  //-------------------------------------------------------------------------------------------------
-@@ -1457,7 +1560,8 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
+@@ -1457,7 +1561,8 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
  	Matrix3D	OldCameraMatrix=cam->Get_Transform();
  	Matrix4x4	FullMatrix4(cam->Get_Transform());	//copy 3x4 matrix into a 4x4
  	Vector3		WaterNormal(0,0,1);	//normal of plane used for reflection
@@ -5501,7 +5509,7 @@ index f6e4ae7..b154faf 100644
  	Vector3		rRight,rUp,rN,rPos;	//orientation and translation vectors of camera
  
  	Matrix4x4	FullMatrix(FullMatrix4.Transpose());	//swap rows/columns
-@@ -1502,6 +1606,14 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
+@@ -1502,6 +1607,14 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
  	//flip the winding order of polygons to draw the reflected back sides.
  	ShaderClass::Invert_Backface_Culling(true);
  
@@ -5516,7 +5524,7 @@ index f6e4ae7..b154faf 100644
  	// Render the scene
  	renderSky();
  	if (m_tod == TIME_OF_DAY_NIGHT)
-@@ -1509,6 +1621,9 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
+@@ -1509,6 +1622,9 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
  
  	WW3D::Render(m_parentScene,cam);
  
@@ -5526,7 +5534,7 @@ index f6e4ae7..b154faf 100644
  	cam->Set_Transform(OldCameraMatrix);	//restore original non-reflected matrix
   	cam->Set_Viewport(vOldMin,vOldMax);
  
-@@ -1519,7 +1634,7 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
+@@ -1519,7 +1635,7 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
  	WW3D::End_Render(false);
  
  	// Change the rendertarget back to the main backbuffer
@@ -5535,7 +5543,7 @@ index f6e4ae7..b154faf 100644
  }
  
  //-------------------------------------------------------------------------------------------------
-@@ -1636,14 +1751,14 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
+@@ -1636,14 +1752,14 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
  				WaterPlane.W *= -1.0f;	//flip sign of plane distance for D3D use.
  
  			//	DX8Wrapper::Set_DX8_Clip_Plane( 0, &WaterPlane.X );
@@ -5552,7 +5560,7 @@ index f6e4ae7..b154faf 100644
  
  				//get inverse of view matrix(= view to world matrix)
  				D3DXMATRIX inv;
-@@ -1660,33 +1775,33 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
+@@ -1660,33 +1776,33 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
  				inv *=clipMatrix;
  
  				// Change texture wrapping mode to 'clamp' for texture stage 1
@@ -5602,7 +5610,7 @@ index f6e4ae7..b154faf 100644
  
  				// Set clipping texture
  				m_alphaClippingTexture->Set_U_Addr_Mode(TextureClass::TEXTURE_ADDRESS_CLAMP);
-@@ -1735,11 +1850,11 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
+@@ -1735,11 +1851,11 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
  
  			#ifdef CLIP_GEOMETRY_TO_PLANE
  				//restore default culling mode
@@ -5617,7 +5625,7 @@ index f6e4ae7..b154faf 100644
  			#endif
  
  				ShaderClass::Invert_Backface_Culling(false);	//return culling back to normal
-@@ -1834,7 +1949,7 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1834,7 +1950,7 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  	matWW3D._23=1.0f;
  	matWW3D._44=1.0f;
  
@@ -5626,7 +5634,7 @@ index f6e4ae7..b154faf 100644
  	DX8Wrapper::Set_Texture(0,nullptr);	//we'll be setting our own textures, so reset W3D
  	DX8Wrapper::Set_Texture(1,nullptr);	//we'll be setting our own textures, so reset W3D
  
-@@ -1845,61 +1960,61 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1845,61 +1961,61 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  
  	rinfo.Camera.Get_Transform().Get_Translation(&camTran);
  
@@ -5733,7 +5741,7 @@ index f6e4ae7..b154faf 100644
  
  	D3DXMATRIX mat;
  	memset(&mat,0,sizeof(D3DXMATRIX));
-@@ -1909,26 +2024,26 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1909,26 +2025,26 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  	mat._31 = 0.0f; mat._32 = 0.0f; mat._33 = 0.0f;   mat._34=1.0f;
  	mat._41 = 0.0f; mat._42 = 0.0f; mat._43 = 0.0f;   mat._44=1.0f;
  
@@ -5772,7 +5780,7 @@ index f6e4ae7..b154faf 100644
  
  	Int patchX,patchY,startX,startY;
  
-@@ -1939,8 +2054,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1939,8 +2055,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  	patchMatrix._33=PATCH_SCALE;
  	patchMatrix._44=1.0f;
  
@@ -5783,7 +5791,7 @@ index f6e4ae7..b154faf 100644
  
  	for (startY=patchY=(seaBox.Center.Y-seaBox.Extent.Y)/(PATCH_WIDTH*PATCH_SCALE); (patchY*PATCH_WIDTH*PATCH_SCALE)<(seaBox.Center.Y+seaBox.Extent.Y); patchY++)
  	{
-@@ -1956,41 +2071,41 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1956,41 +2072,41 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  			D3DXMatrixMultiply(&matWorldViewProj, &matTemp, &matProj);
  			//matrices must be transposed before loading into vertex shader registers
  			D3DXMatrixTranspose(&matWorldViewProj, &matWorldViewProj);
@@ -5850,7 +5858,7 @@ index f6e4ae7..b154faf 100644
  
  	DX8Wrapper::Invalidate_Cached_Render_States();
  
-@@ -1999,8 +2114,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -1999,8 +2115,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  		//do second pass to apply the shroud on water plane
  		W3DShaderManager::setTexture(0,TheTerrainRenderObject->getShroud()->getShroudTexture());
  		W3DShaderManager::setShader(W3DShaderManager::ST_SHROUD_TEXTURE, 0);
@@ -5861,7 +5869,7 @@ index f6e4ae7..b154faf 100644
  		for (startY=patchY=(seaBox.Center.Y-seaBox.Extent.Y)/(PATCH_WIDTH*PATCH_SCALE); (patchY*PATCH_WIDTH*PATCH_SCALE)<(seaBox.Center.Y+seaBox.Extent.Y); patchY++)
  		{
  			for (startX=patchX=(seaBox.Center.X-seaBox.Extent.X)/(PATCH_WIDTH*PATCH_SCALE); (patchX*PATCH_WIDTH*PATCH_SCALE)<(seaBox.Center.X+seaBox.Extent.X); patchX++)
-@@ -2011,9 +2126,9 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -2011,9 +2127,9 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  
  				D3DXMatrixMultiply(&matTemp, &patchMatrix, &matWW3D);
  
@@ -5873,7 +5881,7 @@ index f6e4ae7..b154faf 100644
  			}
  		}
  		W3DShaderManager::resetShader(W3DShaderManager::ST_SHROUD_TEXTURE);
-@@ -2030,6 +2145,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
+@@ -2030,6 +2146,8 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
  //-------------------------------------------------------------------------------------------------
  void WaterRenderObjClass::renderWater()
  {
@@ -5882,7 +5890,7 @@ index f6e4ae7..b154faf 100644
  	for (PolygonTrigger *pTrig=PolygonTrigger::getFirstPolygonTrigger(); pTrig; pTrig = pTrig->getNext()) {
  		if (pTrig->isWaterArea()) {
  			if (pTrig->getNumPoints()>2) {
-@@ -2154,7 +2271,7 @@ void WaterRenderObjClass::renderSky()
+@@ -2154,7 +2272,7 @@ void WaterRenderObjClass::renderSky()
  
  	Matrix3D tm(1);
  	tm.Set_Translation(Vector3(0,0,0));
@@ -5891,7 +5899,7 @@ index f6e4ae7..b154faf 100644
  
  	DX8Wrapper::Draw_Triangles(	0,2, 0,	4);	//draw a quad, 2 triangles, 4 verts
  }
-@@ -2196,7 +2313,7 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
+@@ -2196,7 +2314,7 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
  	tm.Adjust_Translation(Vector3(SKYBODY_X,SKYBODY_Y,SKYBODY_HEIGHT));
  
  
@@ -5900,7 +5908,7 @@ index f6e4ae7..b154faf 100644
  
  
  	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
-@@ -2408,7 +2525,7 @@ void WaterRenderObjClass::renderWaterMesh()
+@@ -2408,7 +2526,7 @@ void WaterRenderObjClass::renderWaterMesh()
  
  	m_vertexBufferD3D->Unlock();
  
@@ -5909,7 +5917,7 @@ index f6e4ae7..b154faf 100644
  	DX8Wrapper::Set_Material(m_meshVertexMaterialClass);
  
  	ShaderClass::CullModeType oldCullMode=m_shaderClass.Get_Cull_Mode();
-@@ -2420,7 +2537,12 @@ void WaterRenderObjClass::renderWaterMesh()
+@@ -2420,7 +2538,12 @@ void WaterRenderObjClass::renderWaterMesh()
  
  	DX8Wrapper::Set_Shader(m_shaderClass);
  #if 1
@@ -5923,7 +5931,7 @@ index f6e4ae7..b154faf 100644
  #else
  	//DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
  	DX8Wrapper::Set_Texture(0,setting->waterTexture);
-@@ -2431,20 +2553,20 @@ void WaterRenderObjClass::renderWaterMesh()
+@@ -2431,20 +2554,20 @@ void WaterRenderObjClass::renderWaterMesh()
  	DX8Wrapper::Set_Light(2,nullptr);
  	DX8Wrapper::Set_Light(3,nullptr);
  /*
@@ -5951,7 +5959,7 @@ index f6e4ae7..b154faf 100644
  
  
  	if (TheTerrainRenderObject->getShroud() && !m_trapezoidWaterPixelShader)
-@@ -2454,26 +2576,26 @@ void WaterRenderObjClass::renderWaterMesh()
+@@ -2454,26 +2577,26 @@ void WaterRenderObjClass::renderWaterMesh()
  		W3DShaderManager::setShader(W3DShaderManager::ST_SHROUD_TEXTURE, 1);
  
  		//modulate with shroud texture
@@ -5988,7 +5996,7 @@ index f6e4ae7..b154faf 100644
  
  	m_vertexBufferD3DOffset += mx*my;	//advance past vertices already in buffer
  
-@@ -2741,10 +2863,334 @@ Real WaterRenderObjClass::getWaterHeight(Real x, Real y)
+@@ -2741,10 +2864,334 @@ Real WaterRenderObjClass::getWaterHeight(Real x, Real y)
  }
  
  //-------------------------------------------------------------------------------------------------
@@ -6324,7 +6332,7 @@ index f6e4ae7..b154faf 100644
  	DX8Wrapper::Invalidate_Cached_Render_States();	///@todo: Figure out why rivers don't draw without reset of all states.
  
  	Int rectangleCount = pTrig->getNumPoints()/2;
-@@ -2895,7 +3341,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
+@@ -2895,7 +3342,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
  
  			vb->z=innerPt.z;
  
@@ -6333,7 +6341,7 @@ index f6e4ae7..b154faf 100644
  
  			Real wobbleConst=-m_riverVOrigin+vScale*(Real)i + WWMath::Fast_Sin(2*PI*(vScale*(Real)i) - constA)/22.0f;
   			//old slower version
-@@ -2918,7 +3364,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
+@@ -2918,7 +3365,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
  			vb->y=y;
  			vb->z=outerPt.z;
  
@@ -6342,7 +6350,7 @@ index f6e4ae7..b154faf 100644
   			//old slower version
  			//vb->v1=-m_riverVOrigin+vScale*(Real)i + wobble(vScale*i, m_riverVOrigin, doWobble);
  			vb->v1=wobbleConst;
-@@ -2937,7 +3383,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
+@@ -2937,7 +3384,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
  
  	Matrix3D tm(1);
  
@@ -6351,7 +6359,7 @@ index f6e4ae7..b154faf 100644
  	DX8Wrapper::Set_Index_Buffer(ib_access,0);
  	DX8Wrapper::Set_Vertex_Buffer(vb_access);
  	DX8Wrapper::Set_Texture(0,m_riverTexture);	//set to blue
-@@ -2947,30 +3393,34 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
+@@ -2947,30 +3394,34 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
  	//In additive blending we need to use the alpha at the edges of river to darken
  	//rgb instead.
  	if (TheWaterTransparency->m_additiveBlend)
@@ -6395,7 +6403,7 @@ index f6e4ae7..b154faf 100644
  
  
  }
-@@ -3006,7 +3456,7 @@ void WaterRenderObjClass::setupFlatWaterShader()
+@@ -3006,7 +3457,7 @@ void WaterRenderObjClass::setupFlatWaterShader()
  			W3DShaderManager::setShader(W3DShaderManager::ST_SHROUD_TEXTURE, 3);
  			//Shroud shader uses z-compare of EQUAL which wouldn't work on water because it doesn't
  			//write to the zbuffer.  Change to LESSEQUAL.
@@ -6404,7 +6412,7 @@ index f6e4ae7..b154faf 100644
  		}
  		else
  		{	//Assume no shroud, so stage 3 will be null texture but using actual white because
-@@ -3021,13 +3471,13 @@ void WaterRenderObjClass::setupFlatWaterShader()
+@@ -3021,13 +3472,13 @@ void WaterRenderObjClass::setupFlatWaterShader()
  				surface->Unlock();
  				REF_PTR_RELEASE(surface);
  			}
@@ -6422,7 +6430,7 @@ index f6e4ae7..b154faf 100644
  
  	Bool doSparkles = true;
  
-@@ -3036,24 +3486,24 @@ void WaterRenderObjClass::setupFlatWaterShader()
+@@ -3036,24 +3487,24 @@ void WaterRenderObjClass::setupFlatWaterShader()
  		if (!m_waterSparklesTexture->Is_Initialized())
  			m_waterSparklesTexture->Init();
  
@@ -6456,7 +6464,7 @@ index f6e4ae7..b154faf 100644
  		D3DXMATRIX inv;
  		float det;
  		D3DXMatrixInverse(&inv, &det, &curView);
-@@ -3062,18 +3512,23 @@ void WaterRenderObjClass::setupFlatWaterShader()
+@@ -3062,18 +3513,23 @@ void WaterRenderObjClass::setupFlatWaterShader()
  		D3DXMATRIX destMatrix = inv * scale;
  		D3DXMatrixTranslation(&scale, m_riverVOrigin, m_riverVOrigin,0);
  		destMatrix = destMatrix*scale;
@@ -6490,7 +6498,7 @@ index f6e4ae7..b154faf 100644
  	}
  }
  
-@@ -3082,6 +3537,7 @@ void WaterRenderObjClass::setupFlatWaterShader()
+@@ -3082,6 +3538,7 @@ void WaterRenderObjClass::setupFlatWaterShader()
  //-------------------------------------------------------------------------------------------------
  void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  {
@@ -6498,7 +6506,7 @@ index f6e4ae7..b154faf 100644
  	Vector3 origin(points[0]);
  	Vector3 uVec1(points[1]);
  	Vector3 vVec1(points[3]);
-@@ -3242,7 +3698,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
+@@ -3242,7 +3699,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  				wave = (sin(phase) - 1.0f) * amplitude;
  
  				vb->z = (vertex.Z + wave);
@@ -6507,7 +6515,7 @@ index f6e4ae7..b154faf 100644
  				vb->u1 = (vertex.X/waterFactor) + 0.02*cos(11*m_riverVOrigin)*wave;
  				vb->v1 = (vertex.Y/waterFactor) + 0.02*cos(5*m_riverVOrigin)*wave;
  				vb->u2 = vertex.X/BUMP_SIZE;
-@@ -3286,7 +3742,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
+@@ -3286,7 +3743,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  				vb->y=vertex.Y;
  				vb->z=vertex.Z;
  
@@ -6516,7 +6524,7 @@ index f6e4ae7..b154faf 100644
  				//Old slower version
   				//vb->u1=(vertex.X/waterFactor) + 0.02*cos(11*m_riverVOrigin)*sin(25*m_riverVOrigin+vertex.X*PI/(4*MAP_XY_FACTOR));
   				//vb->v1=(vertex.Y/waterFactor) + 0.02*cos(5*m_riverVOrigin)*sin(25*m_riverVOrigin+vertex.Y*PI/(4*MAP_XY_FACTOR));
-@@ -3310,7 +3766,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
+@@ -3310,7 +3767,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  
  	Matrix3D tm(1);
  
@@ -6525,7 +6533,7 @@ index f6e4ae7..b154faf 100644
  	DX8Wrapper::Set_Index_Buffer(ib_access,0);
  	DX8Wrapper::Set_Vertex_Buffer(vb_access);
  
-@@ -3318,15 +3774,15 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
+@@ -3318,15 +3775,15 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  
  	//If video card supports it and it's enabled, feather the water edge using destination alpha
  	if (DX8Wrapper::getBackBufferFormat() == WW3D_FORMAT_A8R8G8B8 && TheGlobalData->m_showSoftWaterEdge && TheWaterTransparency->m_transparentWaterDepth !=0)
@@ -6545,7 +6553,7 @@ index f6e4ae7..b154faf 100644
  
  
  
-@@ -3361,23 +3817,24 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
+@@ -3361,23 +3818,24 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
  
  
  	if (false) {
@@ -6579,7 +6587,7 @@ index f6e4ae7..b154faf 100644
  	}
  
  	if (TheTerrainRenderObject->getShroud())
-@@ -3497,7 +3954,7 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
+@@ -3497,7 +3955,7 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
  	Matrix3D tm(1);
  	//set position of skybody in world
  //	tm.Set_Translation(Vector3(40,0,0));
