@@ -331,10 +331,20 @@ index 3f85a55..6a5088d 100644
  		}
  	}
 diff --git a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
-index c312827..98334a5 100644
+index c312827..d016111 100644
 --- a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
 +++ b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
-@@ -37,7 +37,7 @@ bool  getStringFromRegistry(HKEY root, std::string path, std::string key, std::s
+@@ -21,6 +21,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "Registry.h"
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ #include <string>
+ #include "win.h"
+ 
+@@ -37,7 +40,7 @@ bool  getStringFromRegistry(HKEY root, std::string path, std::string key, std::s
  	DWORD type;
  	int returnValue;
  
@@ -343,7 +353,7 @@ index c312827..98334a5 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -61,7 +61,7 @@ bool getUnsignedIntFromRegistry(HKEY root, std::string path, std::string key, un
+@@ -61,7 +64,7 @@ bool getUnsignedIntFromRegistry(HKEY root, std::string path, std::string key, un
  	DWORD type;
  	int returnValue;
  
@@ -352,7 +362,7 @@ index c312827..98334a5 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -84,7 +84,7 @@ bool setStringInRegistry( HKEY root, std::string path, std::string key, std::str
+@@ -84,7 +87,7 @@ bool setStringInRegistry( HKEY root, std::string path, std::string key, std::str
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -361,7 +371,7 @@ index c312827..98334a5 100644
  	{
  		type = REG_SZ;
  		size = val.length()+1;
-@@ -103,7 +103,7 @@ bool setUnsignedIntInRegistry( HKEY root, std::string path, std::string key, uns
+@@ -103,7 +106,7 @@ bool setUnsignedIntInRegistry( HKEY root, std::string path, std::string key, uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -426,10 +436,20 @@ index 35ecf90..b129e53 100644
  
  
 diff --git a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
-index 94eeee4..44c4552 100644
+index 94eeee4..84ec46a 100644
 --- a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
 +++ b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
-@@ -48,7 +48,7 @@ bool RegistryClass::IsLocked = false;
+@@ -34,6 +34,9 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "registry.h"
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ #include "RAWFILE.h"
+ #include "INI.h"
+ #include "inisup.h"
+@@ -48,7 +51,7 @@ bool RegistryClass::IsLocked = false;
  bool RegistryClass::Exists(const char* sub_key)
  {
  	HKEY hKey;
@@ -438,7 +458,7 @@ index 94eeee4..44c4552 100644
  
  	if (ERROR_SUCCESS == result) {
  		RegCloseKey(hKey);
-@@ -72,14 +72,14 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
+@@ -72,14 +75,14 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
  	if (create && !IsLocked) {
  		DWORD disposition;
  		result = RegCreateKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, nullptr, 0,
@@ -456,7 +476,7 @@ index 94eeee4..44c4552 100644
  	}
  }
  
-@@ -440,7 +440,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
+@@ -440,7 +443,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
  	memset(&file_time, 0, sizeof(file_time));
  
  
@@ -465,7 +485,7 @@ index 94eeee4..44c4552 100644
  
  	WWASSERT(result == ERROR_SUCCESS);
  
-@@ -465,7 +465,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
+@@ -465,7 +468,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
  				unsigned long num_subs = 0;
  				unsigned long num_values = 0;
  
@@ -474,7 +494,7 @@ index 94eeee4..44c4552 100644
  				if (new_result == ERROR_SUCCESS) {
  					new_result = RegQueryInfoKey(sub_key, nullptr, nullptr, nullptr, &num_subs, nullptr, nullptr, &num_values, nullptr, nullptr, nullptr, nullptr);
  
-@@ -665,7 +665,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
+@@ -665,7 +668,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
  		int max_times = 1000;
  
  
@@ -483,7 +503,7 @@ index 94eeee4..44c4552 100644
  
  		if (result == ERROR_SUCCESS) {
  			Delete_Registry_Values(base_key);
-@@ -688,7 +688,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
+@@ -688,7 +691,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
  					unsigned long num_subs = 0;
  					unsigned long num_values = 0;
  
@@ -3122,10 +3142,20 @@ index 2d11b75..cf45852 100644
  #endif // Unsure about this one -ML 3/25/03
  #if defined(RTS_DEBUG) || defined(IG_DEBUG_STACKTRACE)
 diff --git a/Generals/Code/GameEngine/Source/Common/System/registry.cpp b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
-index 258f5d5..2039394 100644
+index 258f5d5..4b8431a 100644
 --- a/Generals/Code/GameEngine/Source/Common/System/registry.cpp
 +++ b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
-@@ -39,7 +39,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
+@@ -27,6 +27,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ 
+ #include "Common/Registry.h"
+ 
+@@ -39,7 +42,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
  	unsigned long type;
  	int returnValue;
  
@@ -3134,7 +3164,7 @@ index 258f5d5..2039394 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -62,7 +62,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
+@@ -62,7 +65,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
  	unsigned long type;
  	int returnValue;
  
@@ -3143,7 +3173,7 @@ index 258f5d5..2039394 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -85,7 +85,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
+@@ -85,7 +88,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3152,7 +3182,7 @@ index 258f5d5..2039394 100644
  	{
  		type = REG_SZ;
  		size = val.getLength()+1;
-@@ -104,7 +104,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
+@@ -104,7 +107,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3224,10 +3254,20 @@ index 51aaeea..3d5dd06 100644
  #endif
  
 diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
-index e65c259..17f6361 100644
+index e65c259..e39f19b 100644
 --- a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
 +++ b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
-@@ -40,7 +40,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
+@@ -27,6 +27,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ 
+ #include "Common/Registry.h"
+ 
+@@ -40,7 +43,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
  	DWORD type;
  	int returnValue;
  
@@ -3236,7 +3276,7 @@ index e65c259..17f6361 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -63,7 +63,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
+@@ -63,7 +66,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
  	DWORD type;
  	int returnValue;
  
@@ -3245,7 +3285,7 @@ index e65c259..17f6361 100644
  	{
  		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
  		RegCloseKey( handle );
-@@ -86,7 +86,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
+@@ -86,7 +89,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
  	int size;
  	char lpClass[] = "REG_NONE";
  
@@ -3254,7 +3294,7 @@ index e65c259..17f6361 100644
  	{
  		type = REG_SZ;
  		size = val.getLength()+1;
-@@ -105,7 +105,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
+@@ -105,7 +108,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
  	int size;
  	char lpClass[] = "REG_NONE";
  
