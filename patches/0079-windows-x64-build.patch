@@ -198,6 +198,42 @@ index 2d6e55d..4be2996 100644
  
  		FFmpegVideoStream(FFmpegFile* file);																///< only BinkVideoPlayer can create these
  		virtual ~FFmpegVideoStream();
+diff --git a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
+index ce8c4cc..291bf04 100644
+--- a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
++++ b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
+@@ -66,6 +66,13 @@
+ 
+ #include "Common/file.h"
+ 
++// 64-bit builds use MiniMiles, whose user data is a 32-bit value (the retail Miles takes a pointer-sized one).
++#ifdef RTS_MINIMILES
++#define MILES_USER_DATA(v) ((S32)(v))
++#else
++#define MILES_USER_DATA(v) ((void *)(v))
++#endif
++
+ 
+ enum { INFINITE_LOOP_COUNT = 1000000 };
+ 
+@@ -2905,7 +2912,7 @@ void MilesAudioManager::initSamplePools()
+ 		DEBUG_ASSERTCRASH(sample, ("Couldn't get %d 2D samples", i + 1));
+ 		if (sample) {
+ 			AIL_init_sample(sample);
+-			AIL_set_sample_user_data(sample, 0, (void *)(i + 1));
++			AIL_set_sample_user_data(sample, 0, MILES_USER_DATA(i + 1));
+ 			m_availableSamples.push_back(sample);
+ 			++m_num2DSamples;
+ 		}
+@@ -2915,7 +2922,7 @@ void MilesAudioManager::initSamplePools()
+ 		H3DSAMPLE sample = AIL_allocate_3D_sample_handle(m_provider3D[m_selectedProvider].id);
+ 		DEBUG_ASSERTCRASH(sample, ("Couldn't get %d 3D samples", i + 1));
+ 		if (sample) {
+-			AIL_set_3D_user_data(sample, 0, (void *)(i + 1));
++			AIL_set_3D_user_data(sample, 0, MILES_USER_DATA(i + 1));
+ 			m_available3DSamples.push_back(sample);
+ 			++m_num3DSamples;
+ 		}
 diff --git a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
 index a8a1e6e..8f25546 100644
 --- a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
