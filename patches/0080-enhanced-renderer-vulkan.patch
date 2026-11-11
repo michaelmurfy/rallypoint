@@ -1604,7 +1604,7 @@ index 90a8d93..7d03d44 100644
  	// copy the small surface pixels from GPU to CPU
  	RECT srcRect = { 0, 0, PROFILER_FRAME_IMAGE_SIZE, smallRenderDesc.Height };
 diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
-index 16626ae..18e79b9 100644
+index 16626ae..469c529 100644
 --- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
 +++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DShaderManager.cpp
 @@ -88,8 +88,8 @@ public:
@@ -1796,6 +1796,24 @@ index 16626ae..18e79b9 100644
  
  	struct _TRANS_LIT_TEX_VERTEX {
  		D3DXVECTOR4 p;
+@@ -552,7 +549,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
+ 
+ 	//draw polygons like this is very inefficient but for only 2 triangles, it's
+ 	//not worth bothering with index/vertex buffers.
+-	pDev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
++	DX8Wrapper::Raw_Set_Vertex_Shader(GFX_FVF_XYZRHW | GFX_FVF_DIFFUSE | GFX_FVF_TEX1);
+ 
+ 	//Draw B&W version first
+ 	if (DX8Wrapper::Get_Current_Caps()->Support_Dot3())
+@@ -576,7 +573,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
+ 
+ 	DX8Wrapper::_Get_D3D_Device8()->SetTexture(0,tex);	//previously rendered frame inside this texture
+ 
+-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
++	DX8Wrapper::Raw_Draw_Primitive_UP(GFX_PT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+ 
+ 	//Draw normal view blended by current fade level
+ 	ShaderClass::Invalidate();	//reset DOT3 blend from above.
 @@ -585,9 +582,9 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
  	DX8Wrapper::Set_Shader(shader);
  	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
