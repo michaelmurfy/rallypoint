@@ -120,6 +120,21 @@ index 11d96a4..99d3de7 100644
  
  target_precompile_headers(corei_gameengine_private INTERFACE
  #    Include/Precompiled/PreRTS.h
+diff --git a/Core/GameEngine/Source/Common/System/Debug.cpp b/Core/GameEngine/Source/Common/System/Debug.cpp
+index be22e87..cd2f5e2 100644
+--- a/Core/GameEngine/Source/Common/System/Debug.cpp
++++ b/Core/GameEngine/Source/Common/System/Debug.cpp
+@@ -66,9 +66,7 @@
+ #include "GameClient/GameText.h"
+ #include "GameClient/Keyboard.h"
+ #include "GameClient/Mouse.h"
+-#if defined(DEBUG_STACKTRACE) || defined(IG_DEBUG_STACKTRACE)
+-	#include "Common/StackDump.h"
+-#endif
++#include "Common/StackDump.h" // provides no-op fallbacks when stack tracing is compiled out
+ #ifdef RTS_ENABLE_CRASHDUMP
+ #include "Common/MiniDumper.h"
+ #endif
 diff --git a/Core/GameEngine/Source/Common/System/LocalFile.cpp b/Core/GameEngine/Source/Common/System/LocalFile.cpp
 index 9fea19a..f8d6c90 100644
 --- a/Core/GameEngine/Source/Common/System/LocalFile.cpp
