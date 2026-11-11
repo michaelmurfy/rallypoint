@@ -183,42 +183,6 @@ index 2d6e55d..4be2996 100644
  
  		FFmpegVideoStream(FFmpegFile* file);																///< only BinkVideoPlayer can create these
  		virtual ~FFmpegVideoStream();
-diff --git a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
-index ce8c4cc..291bf04 100644
---- a/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
-+++ b/Core/GameEngineDevice/Source/MilesAudioDevice/MilesAudioManager.cpp
-@@ -66,6 +66,13 @@
- 
- #include "Common/file.h"
- 
-+// 64-bit builds use MiniMiles, whose user data is a 32-bit value (the retail Miles takes a pointer-sized one).
-+#ifdef RTS_MINIMILES
-+#define MILES_USER_DATA(v) ((S32)(v))
-+#else
-+#define MILES_USER_DATA(v) ((void *)(v))
-+#endif
-+
- 
- enum { INFINITE_LOOP_COUNT = 1000000 };
- 
-@@ -2905,7 +2912,7 @@ void MilesAudioManager::initSamplePools()
- 		DEBUG_ASSERTCRASH(sample, ("Couldn't get %d 2D samples", i + 1));
- 		if (sample) {
- 			AIL_init_sample(sample);
--			AIL_set_sample_user_data(sample, 0, (void *)(i + 1));
-+			AIL_set_sample_user_data(sample, 0, MILES_USER_DATA(i + 1));
- 			m_availableSamples.push_back(sample);
- 			++m_num2DSamples;
- 		}
-@@ -2915,7 +2922,7 @@ void MilesAudioManager::initSamplePools()
- 		H3DSAMPLE sample = AIL_allocate_3D_sample_handle(m_provider3D[m_selectedProvider].id);
- 		DEBUG_ASSERTCRASH(sample, ("Couldn't get %d 3D samples", i + 1));
- 		if (sample) {
--			AIL_set_3D_user_data(sample, 0, (void *)(i + 1));
-+			AIL_set_3D_user_data(sample, 0, MILES_USER_DATA(i + 1));
- 			m_available3DSamples.push_back(sample);
- 			++m_num3DSamples;
- 		}
 diff --git a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
 index a8a1e6e..8f25546 100644
 --- a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
@@ -1629,7 +1593,7 @@ index 0000000..4029ea3
 +};
 diff --git a/Dependencies/Miles/MiniMiles.cpp b/Dependencies/Miles/MiniMiles.cpp
 new file mode 100644
-index 0000000..705183b
+index 0000000..3d429c6
 --- /dev/null
 +++ b/Dependencies/Miles/MiniMiles.cpp
 @@ -0,0 +1,1223 @@
@@ -1934,7 +1898,7 @@ index 0000000..705183b
 +	int sampleRate;                  // native rate of the decoded data
 +	int rateOverride;                // value set through *_playback_rate, 0 = native
 +	LONG loopCount;                  // as set by the engine, 0 = endless
-+	S32 userData[8];
++	void* userData[8];
 +
 +	bool started;                    // between start and stop
 +	volatile LONG ended;             // set by the audio thread when the sound reached its end
@@ -2605,10 +2569,10 @@ index 0000000..705183b
 +	return (U32)(frames * 2);
 +}
 +
-+void __stdcall AIL_set_sample_user_data(HSAMPLE s, U32 index, S32 value) { Voice* v = (Voice*)s; if (v && index < 8) v->userData[index] = value; }
-+S32 __stdcall AIL_sample_user_data(HSAMPLE s, U32 index) { Voice* v = (Voice*)s; return (v && index < 8) ? v->userData[index] : 0; }
-+void __stdcall AIL_set_3D_user_data(H3DPOBJECT o, U32 index, S32 value) { Voice* v = (Voice*)o; if (v && index < 8) v->userData[index] = value; }
-+S32 __stdcall AIL_3D_user_data(H3DPOBJECT o, U32 index) { Voice* v = (Voice*)o; return (v && index < 8) ? v->userData[index] : 0; }
++void __stdcall AIL_set_sample_user_data(HSAMPLE s, U32 index, void* value) { Voice* v = (Voice*)s; if (v && index < 8) v->userData[index] = value; }
++void* __stdcall AIL_sample_user_data(HSAMPLE s, U32 index) { Voice* v = (Voice*)s; return (v && index < 8) ? v->userData[index] : nullptr; }
++void __stdcall AIL_set_3D_user_data(H3DPOBJECT o, U32 index, void* value) { Voice* v = (Voice*)o; if (v && index < 8) v->userData[index] = value; }
++void* __stdcall AIL_3D_user_data(H3DPOBJECT o, U32 index) { Voice* v = (Voice*)o; return (v && index < 8) ? v->userData[index] : nullptr; }
 +
 +// ---- 3D -----------------------------------------------------------------------------------------
 +void __stdcall AIL_set_3D_position(H3DPOBJECT obj, F32 x, F32 y, F32 z)
@@ -2873,7 +2837,7 @@ index 0000000..567adef
 +void MiniMiles_VideoAudioClose(void* handle);
 diff --git a/Dependencies/Miles/mss/mss.h b/Dependencies/Miles/mss/mss.h
 new file mode 100644
-index 0000000..1203a40
+index 0000000..c09b21d
 --- /dev/null
 +++ b/Dependencies/Miles/mss/mss.h
 @@ -0,0 +1,272 @@
@@ -3111,7 +3075,7 @@ index 0000000..1203a40
 +    AIL_file_seek_callback seekcb, AIL_file_read_callback readcb);
 +void __stdcall AIL_release_3D_sample_handle(H3DSAMPLE sample);
 +H3DSAMPLE __stdcall AIL_allocate_3D_sample_handle(HPROVIDER lib);
-+void __stdcall AIL_set_3D_user_data(H3DPOBJECT obj, U32 index, S32 value);
++void __stdcall AIL_set_3D_user_data(H3DPOBJECT obj, U32 index, void* value);
 +void __stdcall AIL_unlock(void);
 +void __stdcall AIL_unlock_mutex(void);
 +void __stdcall AIL_lock(void);
@@ -3122,10 +3086,10 @@ index 0000000..1203a40
 +M3DRESULT __stdcall AIL_open_3D_provider(HPROVIDER lib);
 +char* __stdcall AIL_last_error(void);
 +H3DPOBJECT __stdcall AIL_open_3D_listener(HPROVIDER lib);
-+S32 __stdcall AIL_3D_user_data(H3DPOBJECT obj, U32 index);
-+S32 __stdcall AIL_sample_user_data(HSAMPLE sample, U32 index);
++void* __stdcall AIL_3D_user_data(H3DPOBJECT obj, U32 index);
++void* __stdcall AIL_sample_user_data(HSAMPLE sample, U32 index);
 +HSAMPLE __stdcall AIL_allocate_sample_handle(HDIGDRIVER dig);
-+void __stdcall AIL_set_sample_user_data(HSAMPLE sample, U32 index, S32 value);
++void __stdcall AIL_set_sample_user_data(HSAMPLE sample, U32 index, void* value);
 +S32 __stdcall AIL_decompress_ADPCM(const AILSOUNDINFO *info, void **outdata, U32 *outsize);
 +void __stdcall AIL_get_DirectSound_info(HSAMPLE sample, AILLPDIRECTSOUND *lplpDS, AILLPDIRECTSOUNDBUFFER *lplpDSB);
 +void __stdcall AIL_mem_free_lock(void *ptr);
