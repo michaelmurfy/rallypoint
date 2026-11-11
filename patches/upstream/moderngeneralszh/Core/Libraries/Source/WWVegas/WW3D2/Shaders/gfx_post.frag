@@ -1,0 +1,503 @@
+#version 450
+// Native Vulkan backend: post processing of the 3D scene. One source file, built once per pass with -DPASS_x.
+//   BLOOM_DOWN0  bright pass and first down sample of the HDR scene
+//   BLOOM_DOWN   down sample of a bloom level
+//   BLOOM_UP     up sample, added onto the next larger level
+//   COMPOSITE    scene + bloom, soft highlight roll-off and colour grading
+//   FXAA         edge anti-aliasing of the finished image
+//   APPLY        multiplies ambient occlusion and shadows into the scene (blend mode: scene * output)
+//   LIGHTS       light pulses of the game (explosions, impacts) lighting the scene around them, in screen space; the strongest one casts shadows
+
+layout(std140, set = 0, binding = 0) uniform Post
+{
+	vec4 texel;         // 1 / width, 1 / height, width, height of the source image of the pass
+	vec4 p0;            // bloom threshold, bloom knee, bloom intensity, unused
+	vec4 p1;            // saturation, contrast, ambient occlusion strength, shadow strength
+	vec4 p2;            // fxaa on, 3D scene present, time, unused
+	vec4 proj;          // projection: [0][0], [1][1], [2][2], [3][2]
+	mat4 invView;       // camera space to world space
+	mat4 lightVP;       // world space to shadow map clip space
+	vec4 sunDir;        // world space direction towards the sun
+	vec4 shadowParams;  // shadow map size, light size, bias, unused
+	vec4 viewRect;      // viewport of the 3D scene in pixels
+	vec4 cloudA;        // cloud base height, thickness, coverage, density
+	vec4 cloudB;        // time in seconds, speed, shadow strength, shadows on
+	vec4 cloudC;        // visible clouds on, fade range above the base, camera height
+	vec4 lightCfg;      // number of lights, strength, shadow bias, unused
+	vec4 lightPos[12];  // xyz world position, w range
+	vec4 lightCol[12];
+} u;
+
+layout(set = 0, binding = 1) uniform sampler2D t0;
+layout(set = 0, binding = 2) uniform sampler2D t1;
+layout(set = 0, binding = 3) uniform sampler2D t2;
+layout(set = 0, binding = 4) uniform sampler2D t3;
+
+layout(location = 0) in vec2 uv;
+layout(location = 0) out vec4 outColor;
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// white noise from an integer hash (PCG): no lattice, so nothing survives the blur as a pattern
+uvec2 pcg2d(uvec2 v)
+{
+	v = v * 1664525u + 1013904223u;
+	v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+	v ^= v >> 16u;
+	v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+	v ^= v >> 16u;
+	return v;
+}
+float hashNoise(vec2 p) { return float(pcg2d(uvec2(p)).x) * (1.0 / 4294967296.0); }
+
+// one level of triangular noise before the 8 bit output: smooth gradients (shadows, occlusion on large flat ground) otherwise step in visible bands
+vec3 dither(vec3 c)
+{
+	float n = hashNoise(gl_FragCoord.xy) + hashNoise(gl_FragCoord.xy + vec2(173.0, 91.0)) - 1.0;
+	return c + vec3(n) * (1.0 / 255.0);
+}
+
+#if defined(PASS_AO) || defined(PASS_AOBLUR) || defined(PASS_SHADOW) || defined(PASS_CLOUDS) || defined(PASS_LIGHTS)
+
+// view space depth of a depth buffer value; the sign of the projection's [2][3] element is in p2.w
+float viewZ(float d) { return u.proj.w / (u.p2.w * d - u.proj.z); }
+
+// depth at the pixel that contains uv p. texelFetch with a small bias instead of a nearest sampler: with the half resolution ambient occlusion the sample
+// points lie exactly on pixel borders, and rounding noise decided between the pixel above and below (whole rows came out wrong: horizontal stripes)
+float depthAt(sampler2D s, vec2 p) { return texelFetch(s, clamp(ivec2(floor(p * u.texel.zw + 0.25)), ivec2(0), ivec2(u.texel.zw) - 1), 0).r; }
+
+vec3 viewPos(vec2 p)
+{
+	float z = viewZ(depthAt(t0, p));
+	vec2 pix = p * u.texel.zw;
+	vec2 ndc = vec2((pix.x - u.viewRect.x) / u.viewRect.z * 2.0 - 1.0, 1.0 - (pix.y - u.viewRect.y) / u.viewRect.w * 2.0);
+	return vec3(ndc.x * u.p2.w * z / u.proj.x, ndc.y * u.p2.w * z / u.proj.y, z);
+}
+
+#endif
+
+#if defined(PASS_SHADOW) || defined(PASS_CLOUDS)
+
+// ---- procedural clouds: value noise, four octaves, a height profile inside the layer, drifting with the wind
+float hash3(vec3 p)
+{
+	p = fract(p * 0.3183099 + 0.1);
+	p *= 17.0;
+	return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise3(vec3 x)
+{
+	vec3 i = floor(x), f = fract(x);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(hash3(i + vec3(0, 0, 0)), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+	           mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+
+float cloudDensity(vec3 p, bool detail)
+{
+	float h = (p.z - u.cloudA.x) / u.cloudA.y;
+	if (h < 0.0 || h > 1.0) return 0.0;
+	float profile = smoothstep(0.0, 0.18, h) * smoothstep(1.0, 0.55, h);
+	vec3 q = p / 420.0 + vec3(0.37, 0.21, 0.0) * u.cloudB.x * u.cloudB.y * 0.05;
+	float n = noise3(q) * 0.55 + noise3(q * 2.07 + 11.0) * 0.28;
+	if (detail) n += noise3(q * 4.3 + 23.0) * 0.12 + noise3(q * 8.9 + 5.0) * 0.05;
+	else n += 0.085;
+	float z = (n - 0.5) / 0.12;						// roughly normally distributed
+	float z0 = (0.5 - u.cloudA.z) * 3.0;			// coverage 0.5 puts the threshold at the median
+	return smoothstep(z0, z0 + 0.9, z) * profile * u.cloudA.w;
+}
+
+#endif
+
+#if defined(PASS_CLOUDS)
+
+float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * 3.14159 * pow(1.0 + g2 - 2.0 * g * c, 1.5)); }
+
+void main()
+{
+	vec2 pix = uv * u.texel.zw;
+	vec2 ndc = vec2((pix.x - u.viewRect.x) / u.viewRect.z * 2.0 - 1.0, 1.0 - (pix.y - u.viewRect.y) / u.viewRect.w * 2.0);
+	if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 || u.cloudC.x < 0.5) { outColor = vec4(0.0); return; }
+	vec3 dv = vec3(ndc.x / u.proj.x, ndc.y / u.proj.y, -u.p2.w);
+	vec3 dirW = normalize((u.invView * vec4(dv, 0.0)).xyz);
+	vec3 cam = (u.invView * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float base = u.cloudA.x, top = u.cloudA.x + u.cloudA.y;
+	if (cam.z < base || dirW.z > -0.02) { outColor = vec4(0.0); return; }
+
+	float tEnter = max((top - cam.z) / dirW.z, 0.0);
+	float tExit = (base - cam.z) / dirW.z;
+	float d = texture(t0, uv).r;
+	if (d < 0.99999)
+	{
+		float zv = abs(viewZ(d));
+		tExit = min(tExit, zv * length(dv));
+	}
+	if (tExit <= tEnter) { outColor = vec4(0.0); return; }
+	float span = tExit - tEnter;
+	const int N = 20;
+	float dt = span / float(N);
+	float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+	vec3 sun = normalize(u.sunDir.xyz);
+	float phase = hg(dot(dirW, sun), 0.55) * 0.6 + 0.4 * hg(dot(dirW, sun), -0.2) + 0.05;
+	vec3 sunCol = vec3(1.0, 0.94, 0.82) * 2.6;
+	vec3 skyAmb = vec3(0.50, 0.62, 0.82) * 0.55;
+	float T = 1.0;
+	vec3 col = vec3(0.0);
+	for (int i = 0; i < N; ++i)
+	{
+		vec3 p = cam + dirW * (tEnter + (float(i) + jitter) * dt);
+		float dens = cloudDensity(p, true);
+		if (dens > 0.004)
+		{
+			float sigma = dens * 0.035;
+			// light reaching this sample through the cloud towards the sun
+			float lightD = 0.0;
+			for (int k = 1; k <= 3; ++k) lightD += cloudDensity(p + sun * (float(k) * 50.0), false);
+			float lightT = exp(-lightD * 50.0 * 0.035);
+			float h = clamp((p.z - base) / u.cloudA.y, 0.0, 1.0);
+			vec3 amb = skyAmb * mix(0.55, 1.0, h);
+			vec3 s = sunCol * lightT * phase + amb;
+			float a = 1.0 - exp(-sigma * dt);
+			col += T * s * a;
+			T *= 1.0 - a;
+			if (T < 0.02) break;
+		}
+	}
+	// the clouds only appear when the camera comes up to them
+	float fade = smoothstep(0.0, u.cloudC.y, cam.z - base);
+	col = min(col, vec3(6.0));
+	if (any(isnan(col)) || isnan(T)) { outColor = vec4(0.0); return; }
+	outColor = vec4(col * fade, (1.0 - T) * fade);
+}
+
+#elif defined(PASS_APPLY)
+
+void main()
+{
+	float ao = u.p1.z > 0.0 ? texture(t0, uv).r : 1.0;
+	float vis = u.sunDir.w > 0.0 ? texture(t1, uv).r : 1.0;
+	outColor = vec4(vec3(ao * vis), 1.0);
+}
+
+#elif defined(PASS_LIGHTS)
+
+// shadow of the strongest light: a perspective depth map seen from a virtual lamp above it (lightVP); shadowParams: map size, depth constants A and B (depth = A + B / distance)
+float lightShadow(vec3 Pw)
+{
+	if (u.shadowParams.x < 1.0) return 1.0;
+	vec4 lc = u.lightVP * vec4(Pw, 1.0);
+	if (lc.w <= 1.0) return 1.0;
+	vec3 n = lc.xyz / lc.w;
+	vec2 suv = vec2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+	if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) return 1.0;
+	float zd = lc.w;
+	float bias = 1.5 + 0.03 * zd;
+	float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+	mat2 rot = mat2(cos(ang), sin(ang), -sin(ang), cos(ang));
+	const vec2 disk[8] = vec2[](vec2(0.1, 0.2), vec2(-0.5, 0.15), vec2(0.4, -0.35), vec2(-0.15, -0.6), vec2(0.7, 0.3), vec2(-0.75, -0.2), vec2(0.25, 0.75), vec2(-0.4, 0.65));
+	float lit = 0.0;
+	for (int i = 0; i < 8; ++i)
+	{
+		float d = texture(t1, suv + rot * disk[i] * (2.5 / u.shadowParams.x)).r;
+		float zs = u.shadowParams.z / (d - u.shadowParams.y);
+		lit += (zd - zs < bias) ? 1.0 : 0.0;
+	}
+	return lit / 8.0;
+}
+
+void main()
+{
+	float d = texture(t0, uv).r;
+	if (d >= 0.99999) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }		// no depth (sky, water): unchanged
+	vec2 px = u.texel.xy;
+	vec3 P = viewPos(uv);
+	vec3 Pr = viewPos(uv + vec2(px.x, 0.0)), Pl = viewPos(uv - vec2(px.x, 0.0));
+	vec3 Pu = viewPos(uv - vec2(0.0, px.y)), Pd = viewPos(uv + vec2(0.0, px.y));
+	vec3 dx = abs(Pr.z - P.z) < abs(P.z - Pl.z) ? Pr - P : P - Pl;
+	vec3 dy = abs(Pu.z - P.z) < abs(P.z - Pd.z) ? Pu - P : P - Pd;
+	vec3 n = normalize(cross(dx, dy));
+	if (dot(n, -P) < 0.0) n = -n;
+	vec3 Pw = (u.invView * vec4(P, 1.0)).xyz;
+	vec3 nw = normalize((u.invView * vec4(n, 0.0)).xyz);
+	vec3 sum = vec3(0.0);
+	int count = int(u.lightCfg.x);
+	for (int i = 0; i < 12; ++i)
+	{
+		if (i >= count) break;
+		vec3 L = u.lightPos[i].xyz - Pw;
+		float dist = length(L);
+		float r = u.lightPos[i].w;
+		if (dist >= r) continue;
+		float att = 1.0 - dist / r;
+		att *= att;
+		float ndl = dot(nw, L / max(dist, 1e-3));
+		float facing = 0.4 + 0.6 * clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
+		float vis = i == 0 ? lightShadow(Pw) : 1.0;
+		sum += u.lightCol[i].rgb * att * facing * vis;
+	}
+	sum = min(sum * u.lightCfg.y, vec3(6.0));
+	if (any(isnan(sum))) sum = vec3(0.0);
+	// blend: scene * alpha + rgb  ->  brightens the surface by its own colour and adds a little of the light's colour on top
+	outColor = vec4(sum * 0.12, 1.0 + 1.2 * dot(sum, vec3(0.3, 0.5, 0.2)));
+}
+
+#elif defined(PASS_SHADOW)
+
+const vec2 kDisk[24] = vec2[](
+	vec2(0.1, 0.2), vec2(-0.45, 0.12), vec2(0.38, -0.31), vec2(-0.12, -0.52), vec2(0.62, 0.21), vec2(-0.68, -0.18),
+	vec2(0.22, 0.68), vec2(-0.31, 0.61), vec2(0.78, -0.35), vec2(-0.82, 0.31), vec2(0.05, -0.85), vec2(0.45, 0.58),
+	vec2(-0.58, -0.62), vec2(0.88, 0.1), vec2(-0.1, 0.92), vec2(0.62, -0.7), vec2(-0.9, -0.1), vec2(0.3, 0.95),
+	vec2(-0.5, 0.82), vec2(0.95, 0.38), vec2(-0.25, -0.95), vec2(0.7, 0.72), vec2(-0.95, 0.5), vec2(0.15, -0.5));
+
+float visibility()
+{
+	float d = texture(t0, uv).r;
+	if (d >= 0.99999) return 1.0;
+	vec3 P = viewPos(uv);
+	vec3 Pw = (u.invView * vec4(P, 1.0)).xyz;
+
+	// cloud shadow: march from the surface towards the sun through the cloud layer
+	float cs = 1.0;
+	if (u.cloudB.w > 0.5 && u.sunDir.z > 0.1 && Pw.z < u.cloudA.x + u.cloudA.y)
+	{
+		float t0c = max((u.cloudA.x - Pw.z) / u.sunDir.z, 0.0);
+		float t1c = (u.cloudA.x + u.cloudA.y - Pw.z) / u.sunDir.z;
+		float dtc = (t1c - t0c) / 6.0;
+		float acc = 0.0;
+		for (int i = 0; i < 6; ++i) acc += cloudDensity(Pw + u.sunDir.xyz * (t0c + (float(i) + 0.5) * dtc), false);
+		cs = mix(1.0, exp(-acc * dtc * 0.022), u.cloudB.z);
+	}
+	float strength = u.p0.w;
+
+	if (u.shadowParams.x < 1.0) return cs;
+	vec4 lc = u.lightVP * vec4(Pw, 1.0);
+	vec2 suv = vec2(lc.x * 0.5 + 0.5, 0.5 - lc.y * 0.5);
+	if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || lc.z > 1.0) return cs;
+
+	float size = u.shadowParams.x;
+	float range = u.shadowParams.z;
+	float mapWorld = u.shadowParams.w;
+	float texelWorld = mapWorld / size;
+	float zr = lc.z - (texelWorld * 2.2 + 0.12) / range;
+	float lightSize = u.shadowParams.y;
+	float ang = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+	mat2 rot = mat2(cos(ang), sin(ang), -sin(ang), cos(ang));
+
+	// blocker search: how far in front of this point is the geometry that shades it
+	float searchWorld = lightSize * range * 0.35;
+	float searchUV = clamp(searchWorld / mapWorld, 2.0 / size, 0.03);
+	float sum = 0.0; float cnt = 0.0;
+	const int nBlock = u.p2.x > 0.5 ? 16 : 8, nFilter = u.p2.x > 0.5 ? 24 : 12;
+	for (int i = 0; i < nBlock; ++i)
+	{
+		vec2 o = rot * kDisk[i] * searchUV;
+		float sd = texture(t1, suv + o).r;
+		if (sd < zr) { sum += sd; cnt += 1.0; }
+	}
+	if (cnt < 0.5) return cs;
+	float zb = sum / cnt;
+	// penumbra: grows with the distance between caster and receiver
+	float penWorld = (zr - zb) * range * lightSize;
+	float rUV = clamp(penWorld / mapWorld, 1.4 / size, 0.02);
+	float lit = 0.0;
+	for (int i = 0; i < nFilter; ++i)
+	{
+		vec2 o = rot * kDisk[i] * rUV;
+		lit += (texture(t1, suv + o).r < zr) ? 0.0 : 1.0;
+	}
+	return mix(1.0, lit / float(nFilter), strength * cs * cs) * cs;		// object shadows fade out where a cloud already blocks the sun
+}
+
+void main()
+{
+	float v = visibility();
+	float d = texture(t0, uv).r;
+	if (d < 0.99999 && u.lightCfg.x > 0.5)
+	{
+		// light pulses wash out the sun's shadows around them
+		vec3 Pw = (u.invView * vec4(viewPos(uv), 1.0)).xyz;
+		float wash = 0.0;
+		for (int i = 0; i < 12; ++i)
+		{
+			if (i >= int(u.lightCfg.x)) break;
+			float dist = length(u.lightPos[i].xyz - Pw);
+			float att = clamp(1.0 - dist / u.lightPos[i].w, 0.0, 1.0);
+			wash += att * att * dot(u.lightCol[i].rgb, vec3(0.3, 0.5, 0.2)) * u.lightCfg.y;
+		}
+		v = mix(v, 1.0, clamp(wash * 1.4, 0.0, 0.92));
+	}
+	outColor = vec4(v, 0.0, 0.0, 1.0);
+}
+
+#elif defined(PASS_AO)
+
+void main()
+{
+	float d = texture(t0, uv).r;
+	if (d >= 0.99999) { outColor = vec4(1.0); return; }
+	vec2 px = u.texel.xy;
+	vec3 P = viewPos(uv);
+	vec3 Pr = viewPos(uv + vec2(px.x, 0.0)), Pl = viewPos(uv - vec2(px.x, 0.0));
+	vec3 Pu = viewPos(uv - vec2(0.0, px.y)), Pd = viewPos(uv + vec2(0.0, px.y));
+	vec3 dx = abs(Pr.z - P.z) < abs(P.z - Pl.z) ? Pr - P : P - Pl;
+	vec3 dy = abs(Pu.z - P.z) < abs(P.z - Pd.z) ? Pu - P : P - Pd;
+	vec3 n = normalize(cross(dx, dy));
+	if (dot(n, -P) < 0.0) n = -n;
+
+	float radius = u.p1.w;
+	float dist = abs(P.z);
+	float rpx = clamp(radius * abs(u.proj.x) * 0.5 * u.texel.z / dist, 3.0, 110.0);
+	float ang = 6.2831853 * hashNoise(gl_FragCoord.xy);		// not interleaved gradient noise: after the blur its regular structure left faint horizontal stripes on flat ground
+	float occ = 0.0;
+	const int N = 20;
+	for (int i = 0; i < N; ++i)
+	{
+		float t = (float(i) + 0.5) / float(N);
+		float a = ang + float(i) * 2.399963;
+		vec2 o = vec2(cos(a), sin(a)) * rpx * (0.15 + 0.85 * t) * px;
+		vec3 S = viewPos(uv + o);
+		vec3 v = S - P;
+		float len = length(v);
+		float ndv = dot(n, v) / max(len, 1e-4);
+		float fall = 1.0 - clamp(len / radius, 0.0, 1.0);
+		occ += max(ndv - 0.10, 0.0) * fall;
+	}
+	occ = occ / float(N) * 2.4;
+	outColor = vec4(1.0 - clamp(occ * u.p1.z, 0.0, 0.85), 0.0, 0.0, 1.0);
+}
+
+#elif defined(PASS_AOBLUR)
+
+// depth aware blur along the direction in p2.xy (in uv units per tap), depth buffer in t1
+void main()
+{
+	float zc = abs(viewZ(depthAt(t1, uv)));
+	float sum = texture(t0, uv).r, wsum = 1.0;
+	for (int k = -4; k <= 4; ++k)
+	{
+		if (k == 0) continue;
+		vec2 p = uv + u.p2.xy * float(k);
+		float z = abs(viewZ(depthAt(t1, p)));
+		float w = (1.0 - abs(float(k)) / 5.0) * exp(-abs(z - zc) / max(zc, 1.0) * 120.0);
+		sum += texture(t0, p).r * w;
+		wsum += w;
+	}
+	outColor = vec4(sum / wsum, 0.0, 0.0, 1.0);
+}
+
+#elif defined(PASS_BLOOM_DOWN0) || defined(PASS_BLOOM_DOWN)
+
+vec3 prefilter(vec3 c)
+{
+#ifdef PASS_BLOOM_DOWN0
+	float br = max(c.r, max(c.g, c.b));
+	float knee = max(u.p0.y, 1e-4);
+	float soft = clamp(br - u.p0.x + knee, 0.0, 2.0 * knee);
+	soft = soft * soft / (4.0 * knee);
+	float contrib = max(soft, br - u.p0.x) / max(br, 1e-4);
+	return c * contrib;
+#else
+	return c;
+#endif
+}
+
+vec3 tap(vec2 p) { vec3 c = texture(t0, p).rgb; if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0); return prefilter(min(c, vec3(16.0))); }
+
+void main()
+{
+	vec2 d = u.texel.xy;
+	vec3 a = tap(uv + d * vec2(-2.0, -2.0));
+	vec3 b = tap(uv + d * vec2( 0.0, -2.0));
+	vec3 c = tap(uv + d * vec2( 2.0, -2.0));
+	vec3 dd = tap(uv + d * vec2(-2.0,  0.0));
+	vec3 e = tap(uv);
+	vec3 f = tap(uv + d * vec2( 2.0,  0.0));
+	vec3 g = tap(uv + d * vec2(-2.0,  2.0));
+	vec3 h = tap(uv + d * vec2( 0.0,  2.0));
+	vec3 i = tap(uv + d * vec2( 2.0,  2.0));
+	vec3 j = tap(uv + d * vec2(-1.0, -1.0));
+	vec3 k = tap(uv + d * vec2( 1.0, -1.0));
+	vec3 l = tap(uv + d * vec2(-1.0,  1.0));
+	vec3 m = tap(uv + d * vec2( 1.0,  1.0));
+	vec3 col = e * 0.125 + (a + c + g + i) * 0.03125 + (b + dd + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+	outColor = vec4(col, 1.0);
+}
+
+#elif defined(PASS_BLOOM_UP)
+
+void main()
+{
+	vec2 d = u.texel.xy;
+	vec3 a = texture(t0, uv + d * vec2(-1.0, -1.0)).rgb;
+	vec3 b = texture(t0, uv + d * vec2( 0.0, -1.0)).rgb;
+	vec3 c = texture(t0, uv + d * vec2( 1.0, -1.0)).rgb;
+	vec3 dd = texture(t0, uv + d * vec2(-1.0,  0.0)).rgb;
+	vec3 e = texture(t0, uv).rgb;
+	vec3 f = texture(t0, uv + d * vec2( 1.0,  0.0)).rgb;
+	vec3 g = texture(t0, uv + d * vec2(-1.0,  1.0)).rgb;
+	vec3 h = texture(t0, uv + d * vec2( 0.0,  1.0)).rgb;
+	vec3 i = texture(t0, uv + d * vec2( 1.0,  1.0)).rgb;
+	vec3 col = (e * 4.0 + (b + dd + f + h) * 2.0 + (a + c + g + i)) * (1.0 / 16.0);
+	outColor = vec4(col * 0.9, 1.0);
+}
+
+#elif defined(PASS_COMPOSITE)
+
+vec3 rolloff(vec3 x)
+{
+	// identity up to 0.9, then a smooth shoulder: values that additive effects push above 1 compress instead of clipping
+	vec3 over = max(x - 0.9, vec3(0.0));
+	vec3 comp = 0.9 + 0.1 * tanh(over / 0.1);
+	return mix(x, comp, step(vec3(0.9), x));
+}
+
+void main()
+{
+	vec3 c = texture(t0, uv).rgb;
+	if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+	if (u.p2.z > 0.5 && u.p2.y > 0.5 && u.p1.z > 0.0) { outColor = vec4(vec3(0.85 + (texture(t2, uv).r - 1.0) * 14.0), 1.0); return; }		// debug view of the ambient occlusion
+	if (u.p2.y > 0.5)
+	{
+		if (u.p1.z > 0.0)
+			c *= texture(t2, uv).r;
+		if (u.sunDir.w > 0.0)
+			c *= texture(t3, uv).r;
+		vec3 bloom = texture(t1, uv).rgb;
+		c += bloom * u.p0.z;
+		c = rolloff(c);
+		// colour grading: a little more saturation and contrast around the mid grey
+		float l = luma(c);
+		c = mix(vec3(l), c, u.p1.x);
+		c = (c - 0.5) * u.p1.y + 0.5;
+	}
+	outColor = vec4(clamp(dither(c), 0.0, 1.0), 1.0);
+}
+
+#elif defined(PASS_FXAA)
+
+void main()
+{
+	if (u.p2.x < 0.5) { outColor = vec4(texture(t0, uv).rgb, 1.0); return; }		// FXAA off: the composite pass already dithered
+	vec2 px = u.texel.xy;
+	vec3 rgbNW = texture(t0, uv + vec2(-1.0, -1.0) * px).rgb;
+	vec3 rgbNE = texture(t0, uv + vec2( 1.0, -1.0) * px).rgb;
+	vec3 rgbSW = texture(t0, uv + vec2(-1.0,  1.0) * px).rgb;
+	vec3 rgbSE = texture(t0, uv + vec2( 1.0,  1.0) * px).rgb;
+	vec3 rgbM  = texture(t0, uv).rgb;
+	float lNW = luma(rgbNW), lNE = luma(rgbNE), lSW = luma(rgbSW), lSE = luma(rgbSE), lM = luma(rgbM);
+	float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+	float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+	vec2 dir;
+	dir.x = -((lNW + lNE) - (lSW + lSE));
+	dir.y =  ((lNW + lSW) - (lNE + lSE));
+	float dirReduce = max((lNW + lNE + lSW + lSE) * 0.25 * (1.0 / 8.0), 1.0 / 128.0);
+	float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+	dir = clamp(dir * rcpDirMin, vec2(-8.0), vec2(8.0)) * px;
+	vec3 rgbA = 0.5 * (texture(t0, uv + dir * (1.0 / 3.0 - 0.5)).rgb + texture(t0, uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+	vec3 rgbB = rgbA * 0.5 + 0.25 * (texture(t0, uv + dir * -0.5).rgb + texture(t0, uv + dir * 0.5).rgb);
+	float lB = luma(rgbB);
+	outColor = vec4(clamp(dither((lB < lMin || lB > lMax) ? rgbA : rgbB), 0.0, 1.0), 1.0);
+}
+
+#endif
