@@ -3,12 +3,16 @@ use std::path::{Path, PathBuf};
 
 pub const EXE: &str = if cfg!(windows) { "generalszh.exe" } else { "generalszh" };
 
-/// First existing of: explicit override, the bundled 64-bit engine `<resources>/engine/x64/` (Windows only; set
-/// `RALLYPOINT_ENGINE_X86=1` to skip it), bundled `<resources>/engine/`, and the engine launcher's install at
+/// First existing of: explicit override, the bundled 64-bit engine `<resources>/engine/x64/` (Windows only, unless
+/// `x86` asks for the 32-bit one), bundled `<resources>/engine/`, and the engine launcher's install at
 /// `<data>/GeneralsZH/runtime/`.
-pub fn find(override_path: Option<&str>, resources: Option<&Path>, data: &Path) -> Option<PathBuf> {
-    let x64 = cfg!(windows) && std::env::var_os("RALLYPOINT_ENGINE_X86").is_none();
-    find_with(override_path, resources, data, x64)
+pub fn find(override_path: Option<&str>, resources: Option<&Path>, data: &Path, x86: bool) -> Option<PathBuf> {
+    find_with(override_path, resources, data, cfg!(windows) && !x86)
+}
+
+/// Both engines are bundled, so the Settings switch means something.
+pub fn both_bundled(resources: Option<&Path>) -> bool {
+    resources.is_some_and(|r| r.join("engine").join("x64").join(EXE).is_file() && r.join("engine").join(EXE).is_file())
 }
 
 fn find_with(override_path: Option<&str>, resources: Option<&Path>, data: &Path, prefer_x64: bool) -> Option<PathBuf> {
@@ -31,15 +35,15 @@ mod tests {
         let (res, data) = (t.join("res"), t.join("data"));
         std::fs::create_dir_all(res.join("engine")).unwrap();
         std::fs::create_dir_all(data.join("GeneralsZH/runtime")).unwrap();
-        assert_eq!(find(None, Some(&res), &data), None);
+        assert_eq!(find(None, Some(&res), &data, false), None);
         std::fs::write(data.join("GeneralsZH/runtime").join(EXE), "").unwrap();
-        assert_eq!(find(None, Some(&res), &data), Some(data.join("GeneralsZH/runtime").join(EXE)));
+        assert_eq!(find(None, Some(&res), &data, false), Some(data.join("GeneralsZH/runtime").join(EXE)));
         std::fs::write(res.join("engine").join(EXE), "").unwrap();
-        assert_eq!(find(None, Some(&res), &data), Some(res.join("engine").join(EXE)));
+        assert_eq!(find(None, Some(&res), &data, false), Some(res.join("engine").join(EXE)));
         let custom = t.join("custom");
         std::fs::write(&custom, "").unwrap();
-        assert_eq!(find(custom.to_str(), Some(&res), &data), Some(custom));
-        assert_eq!(find(Some("/nonexistent/x"), Some(&res), &data), Some(res.join("engine").join(EXE)));
+        assert_eq!(find(custom.to_str(), Some(&res), &data, false), Some(custom));
+        assert_eq!(find(Some("/nonexistent/x"), Some(&res), &data, false), Some(res.join("engine").join(EXE)));
         std::fs::remove_dir_all(t).unwrap();
     }
 
@@ -53,6 +57,7 @@ mod tests {
         std::fs::write(res.join("engine/x64").join(EXE), "").unwrap();
         assert_eq!(find_with(None, Some(&res), &data, true), Some(res.join("engine/x64").join(EXE)));
         assert_eq!(find_with(None, Some(&res), &data, false), Some(res.join("engine").join(EXE)));
+        assert!(both_bundled(Some(&res)));
         std::fs::remove_dir_all(t).unwrap();
     }
 }
