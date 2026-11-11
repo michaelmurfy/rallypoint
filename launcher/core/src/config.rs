@@ -55,6 +55,9 @@ pub struct Config {
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
     pub camera_height: u32,
+    /// Which Windows engine to run: empty or "x64" is the 64-bit one, "x86" the 32-bit one. Ignored where only one is bundled.
+    #[serde(default)]
+    pub engine_arch: String,
     /// The name other players see in the game's LAN lobby. Empty means this computer's name.
     #[serde(default)]
     pub player_name: String,

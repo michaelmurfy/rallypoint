@@ -104,16 +104,102 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
+  # The 64-bit Windows engine (patches/0079). Direct3D 8 has no 64-bit Windows driver, so the engine ships DXVK's d3d8.dll
+  # (Direct3D 8 on Vulkan); audio is the miniaudio based MiniMiles, movies are FFmpeg from vcpkg. Kept next to the
+  # x86 job until it is proven in real games; the launcher prefers this one.
+  engine-windows-x64:
+    name: Engine (Windows x64)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      DXVK_VERSION: '3.1.1'
+      DXVK_SHA256: '40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608' # dxvk-3.1.1.tar.gz from github.com/doitsujin/dxvk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - run: sh patches/apply.sh
+        shell: bash
+      - name: Visual Studio x64 environment
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools was not found" }
+          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          cmd /c "`"$bat`" x64 > nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Add-Content -Path $env:GITHUB_ENV -Value "$($Matches[1])=$($Matches[2])" -Encoding utf8 }
+          }
+          # vcpkg is preinstalled on the runner; the preset reads VCPKG_ROOT. Its binary cache keeps FFmpeg from being rebuilt every run.
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP\vcpkg-cache" -Encoding utf8
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+      # The simulation maths (DetMath) must give the same bits as on macOS: the golden hashes in the test are the ones
+      # every other platform checks. Compiled the way the engine is (MSVC, /fp:precise), cheap, so it runs first.
+      - name: Maths test (MSVC x64)
+        shell: pwsh
+        run: |
+          cl /nologo /std:c++17 /EHsc /O2 /fp:precise /Iengine/Core/GameEngine/Include /Iengine/Core/Libraries/Source/WWVegas/WWLib tests/detmath_test.cpp /Fe:detmath_x64.exe
+          if ($LASTEXITCODE -ne 0) { throw "detmath_test did not compile" }
+          ./detmath_x64.exe
+          if ($LASTEXITCODE -ne 0) { throw "the simulation maths differs on x64" }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\vcpkg-cache
+          key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}
+      - name: Configure and build
+        working-directory: engine
+        shell: pwsh
+        run: |
+          # RTS.RC includes MFC's afxres.h; a forwarding header keeps the build independent of the MFC component.
+          New-Item -ItemType Directory -Force -Path build/shim | Out-Null
+          Set-Content build/shim/afxres.h "#include <winres.h>`n"
+          cmake --preset win64-vcpkg -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF -DRTS_BUILD_OPTION_FFMPEG=ON "-DCMAKE_RC_FLAGS=-DWIN32 /I$PWD/build/shim"
+          cmake --build --preset win64-vcpkg
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out/engine | Out-Null
+          Get-ChildItem engine/build/win64-vcpkg/Core/Release, engine/build/win64-vcpkg/GeneralsMD/Release -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.exe', '.dll' } | Copy-Item -Destination out/engine -Verbose
+          if (-not (Get-ChildItem out/engine -Filter *.exe | Select-String -Pattern 'DebugFrame_' -Quiet)) { throw "sync log writer missing from the engine" }
+          # The engine must run on the VC++ runtime it was built with (see the x86 job). The 64-bit runtime also has vcruntime140_1.dll.
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+          if (-not $crt) { throw "no x64 CRT under $env:VCToolsRedistDir" }
+          'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll', 'vcruntime140_1.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
+          # DXVK's Direct3D 8 (the d3d8.dll that 64-bit Windows does not have), pinned by version and checked against its hash.
+          $url = "https://github.com/doitsujin/dxvk/releases/download/v$env:DXVK_VERSION/dxvk-$env:DXVK_VERSION.tar.gz"
+          Invoke-WebRequest -Uri $url -OutFile dxvk.tar.gz
+          if ((Get-FileHash dxvk.tar.gz -Algorithm SHA256).Hash.ToLower() -ne $env:DXVK_SHA256) { throw "dxvk archive hash mismatch" }
+          New-Item -ItemType Directory -Force -Path dxvk | Out-Null
+          tar -xzf dxvk.tar.gz -C dxvk
+          Copy-Item "dxvk/dxvk-$env:DXVK_VERSION/x64/d3d8.dll" out/engine -Verbose
+          Copy-Item "dxvk/dxvk-$env:DXVK_VERSION/x64/d3d9.dll" out/engine -Verbose
+          Get-ChildItem out/engine | Format-Table Name, Length
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-windows-x64
+          path: out/engine
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-windows-x64-symbols
+          path: |
+            engine/build/win64-vcpkg/GeneralsMD/Release/*.pdb
+            engine/build/win64-vcpkg/GeneralsMD/Release/*.map
+          if-no-files-found: ignore
+          retention-days: 90
+
   # ---- launcher app (engine bundled in as a resource) ----------------------------------------
   launcher:
     name: Launcher (${{ matrix.os }})
-    needs: [engine-macos, engine-windows]
+    needs: [engine-macos, engine-windows, engine-windows-x64]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15, engine: engine-macos, bundles: "" }
-          - { os: windows-latest, engine: engine-windows, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
+          - { os: macos-15, engine: engine-macos, engine64: '', bundles: "" }
+          - { os: windows-latest, engine: engine-windows, engine64: engine-windows-x64, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -132,6 +218,12 @@ jobs:
         with:
           name: ${{ matrix.engine }}
           path: launcher/src-tauri/engine
+      # The 64-bit engine goes in a subfolder; the launcher prefers it (engine::find) and falls back to the 32-bit one.
+      - if: matrix.engine64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.engine64 }}
+          path: launcher/src-tauri/engine/x64
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
       - id: tauri-cli

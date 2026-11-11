@@ -1,0 +1,3594 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 232f691..e283e71 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,12 +56,13 @@ endif()
+ # Find/Add build dependencies and stubs shared by all projects.
+ #
+ # Miles (audio) and Bink (video) are Windows-only proprietary middleware; they
+-# are only fetched on the legacy 32-bit Windows path. The DX8 stub headers are
++# are only fetched on the 32-bit Windows path; 64-bit Windows builds a miniaudio based
++# Miles replacement and a Bink stub (movies go through FFmpeg). The DX8 stub headers are
+ # needed everywhere they are referenced, but the runtime DX8 path is also gated
+ # to 32-bit Windows. macOS and 64-bit builds substitute their own backends
+ # (OpenAL Soft for audio, FFmpeg for video, d3d8to9 -> dxvk-native -> MoltenVK
+ # for graphics).
+-if((WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows") AND ${CMAKE_SIZEOF_VOID_P} EQUAL 4)
++if(WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows")
+     include(cmake/miles.cmake)
+     include(cmake/bink.cmake)
+     include(cmake/dx8.cmake)
+diff --git a/CMakePresets.json b/CMakePresets.json
+index 94a6bbb..8a52360 100644
+--- a/CMakePresets.json
++++ b/CMakePresets.json
+@@ -105,6 +105,24 @@
+                 }
+             }
+         },
++    {
++            "name": "win64",
++            "inherits": "default",
++            "hidden": false,
++            "displayName": "Windows 64bit Release (experimental)",
++            "architecture": {
++                "value": "x64",
++                "strategy": "external"
++            },
++            "cacheVariables": {
++                "RTS_FLAGS": "/W3"
++            },
++            "vendor": {
++                "jetbrains.com/clion": {
++                    "toolchain": "Visual Studio"
++                }
++            }
++        },
+         {
+             "name": "win32-profile",
+             "inherits": "win32",
+@@ -140,6 +158,24 @@
+                 }
+             }
+         },
++    {
++            "name": "win64-vcpkg",
++            "inherits": "default-vcpkg",
++            "hidden": false,
++            "displayName": "Windows 64bit VCPKG Release (experimental)",
++            "architecture": {
++                "value": "x64",
++                "strategy": "external"
++            },
++            "cacheVariables": {
++                "RTS_FLAGS": "/W3"
++            },
++            "vendor": {
++                "jetbrains.com/clion": {
++                    "toolchain": "Visual Studio"
++                }
++            }
++        },
+         {
+             "name": "win32-vcpkg-profile",
+             "inherits": "win32-vcpkg",
+@@ -268,6 +304,13 @@
+             "description": "Build Windows 32bit Release",
+             "configuration": "Release"
+         },
++    {
++            "name": "win64",
++            "configurePreset": "win64",
++            "displayName": "Build Windows 64bit (experimental) Release",
++            "description": "Build Windows 64bit (experimental) Release",
++            "configuration": "Release"
++        },
+         {
+             "name": "win32-profile",
+             "configurePreset": "win32-profile",
+@@ -289,6 +332,13 @@
+             "description": "Build Windows 32bit VCPKG Release",
+             "configuration": "Release"
+         },
++    {
++            "name": "win64-vcpkg",
++            "configurePreset": "win64-vcpkg",
++            "displayName": "Build Windows 64bit (experimental) VCPKG Release",
++            "description": "Build Windows 64bit (experimental) VCPKG Release",
++            "configuration": "Release"
++        },
+         {
+             "name": "win32-vcpkg-profile",
+             "configurePreset": "win32-vcpkg-profile",
+diff --git a/Core/GameEngine/CMakeLists.txt b/Core/GameEngine/CMakeLists.txt
+index 11d96a4..99d3de7 100644
+--- a/Core/GameEngine/CMakeLists.txt
++++ b/Core/GameEngine/CMakeLists.txt
+@@ -1187,9 +1187,12 @@ target_link_libraries(corei_gameengine_private INTERFACE
+     corei_always
+ )
+ 
+-target_compile_definitions(corei_gameengine_private INTERFACE
+-    IG_DEBUG_STACKTRACE
+-)
++# The stack walker reads x86 registers: not available on 64-bit Windows.
++if(NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8))
++    target_compile_definitions(corei_gameengine_private INTERFACE
++        IG_DEBUG_STACKTRACE
++    )
++endif()
+ 
+ target_precompile_headers(corei_gameengine_private INTERFACE
+ #    Include/Precompiled/PreRTS.h
+diff --git a/Core/GameEngine/Source/Common/System/Debug.cpp b/Core/GameEngine/Source/Common/System/Debug.cpp
+index be22e87..cd2f5e2 100644
+--- a/Core/GameEngine/Source/Common/System/Debug.cpp
++++ b/Core/GameEngine/Source/Common/System/Debug.cpp
+@@ -66,9 +66,7 @@
+ #include "GameClient/GameText.h"
+ #include "GameClient/Keyboard.h"
+ #include "GameClient/Mouse.h"
+-#if defined(DEBUG_STACKTRACE) || defined(IG_DEBUG_STACKTRACE)
+-	#include "Common/StackDump.h"
+-#endif
++#include "Common/StackDump.h" // provides no-op fallbacks when stack tracing is compiled out
+ #ifdef RTS_ENABLE_CRASHDUMP
+ #include "Common/MiniDumper.h"
+ #endif
+diff --git a/Core/GameEngine/Source/Common/System/LocalFile.cpp b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+index 9fea19a..f8d6c90 100644
+--- a/Core/GameEngine/Source/Common/System/LocalFile.cpp
++++ b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+@@ -374,7 +374,7 @@ Int LocalFile::readChar()
+ 	Int ret = read( &character, sizeof(character) );
+ 
+ 	if (ret == sizeof(character))
+-		return (Int)character;
++		return (Int)(intptr_t)character;
+ 
+ 	return EOF;
+ }
+@@ -390,7 +390,7 @@ Int LocalFile::readWideChar()
+ 	Int ret = read( &character, sizeof(character) );
+ 
+ 	if (ret == sizeof(character))
+-		return (Int)character;
++		return (Int)(intptr_t)character;
+ 
+ 	return WEOF;
+ }
+diff --git a/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp b/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
+index ffc8d60..762acdb 100644
+--- a/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
++++ b/Core/GameEngine/Source/GameClient/GUI/Gadget/GadgetProgressBar.cpp
+@@ -90,7 +90,7 @@ WindowMsgHandledType GadgetProgressBarSystem( GameWindow *window, UnsignedInt ms
+       if (newPos < 0 || newPos > 100)
+         break;
+ 
+-      window->winSetUserData( (void *)newPos );
++      window->winSetUserData( (void *)(intptr_t)newPos );
+ 
+ 			break;
+ 
+diff --git a/Core/GameEngine/Source/GameClient/MapUtil.cpp b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+index 3b58a49..c404ce5 100644
+--- a/Core/GameEngine/Source/GameClient/MapUtil.cpp
++++ b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+@@ -848,7 +848,7 @@ static Bool addMapToMapListbox(
+ 
+ 		if (lbData.numColumns > 1)
+ 		{
+-			GadgetListBoxSetItemData( lbData.listbox, (void *)imageItemData, index, 1 );
++			GadgetListBoxSetItemData( lbData.listbox, (void *)(intptr_t)imageItemData, index, 1 );
+ 		}
+ 
+ 		// TheSuperHackers @performance Now stops processing when the list is full.
+diff --git a/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h b/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
+index 2d6e55d..4be2996 100644
+--- a/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
++++ b/Core/GameEngineDevice/Include/VideoDevice/FFmpeg/FFmpegVideoPlayer.h
+@@ -63,6 +63,10 @@ class FFmpegVideoStream : public VideoStream
+ 		Char			*m_memFile;				///< Pointer to memory resident file
+ 		UnsignedInt64	m_startTime = 0;		///< Time the stream started
+ 		UnsignedByte *	m_audioBuffer = nullptr;///< Audio buffer for the stream
++		void *			m_videoAudio = nullptr;	///< sound of the movie (MiniMiles video audio, builds without OpenAL)
++		struct SwrContext *m_swr = nullptr;		///< converts the decoded sound to 16 bit interleaved
++		Bool			m_audioFailed = false;
++		void pushAudio(AVFrame *frame);
+ 
+ 		FFmpegVideoStream(FFmpegFile* file);																///< only BinkVideoPlayer can create these
+ 		virtual ~FFmpegVideoStream();
+diff --git a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
+index a8a1e6e..8f25546 100644
+--- a/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
++++ b/Core/GameEngineDevice/Source/VideoDevice/FFmpeg/FFmpegVideoPlayer.cpp
+@@ -44,6 +44,9 @@
+ extern "C" {
+ 	#include <libavcodec/avcodec.h>
+ 	#include <libswscale/swscale.h>
++	#include <libswresample/swresample.h>
++	#include <libavutil/channel_layout.h>
++	#include <libavutil/samplefmt.h>
+ }
+ 
+ #ifdef RTS_HAS_OPENAL
+@@ -52,6 +55,11 @@ extern "C" {
+ #endif
+ 
+ #include <chrono>
++#include <vector>
++#include <algorithm>
++#ifdef RTS_MINIMILES
++#include "MiniMilesVideo.h"
++#endif
+ 
+ //----------------------------------------------------------------------------
+ //         Externals
+@@ -335,6 +343,11 @@ FFmpegVideoStream::FFmpegVideoStream(FFmpegFile* file)
+ 
+ FFmpegVideoStream::~FFmpegVideoStream()
+ {
++#ifdef RTS_MINIMILES
++	MiniMiles_VideoAudioClose(m_videoAudio);
++	m_videoAudio = nullptr;
++	swr_free(&m_swr);
++#endif
+ 	av_freep(&m_audioBuffer);
+ 	av_frame_free(&m_frame);
+ 	sws_freeContext(m_swsContext);
+@@ -384,9 +397,52 @@ void FFmpegVideoStream::onFrame(AVFrame *frame, int stream_idx, int stream_type,
+ 		ALenum format = OpenALAudioManager::getALFormat(frame->ch_layout.nb_channels, bytesPerSample * 8);
+ 		audioStream->bufferData(frameData, frameSize, format, frame->sample_rate);
+ 	}
++#elif defined(RTS_MINIMILES)
++	else if (stream_type == AVMEDIA_TYPE_AUDIO) {
++		videoStream->pushAudio(frame);
++	}
+ #endif
+ }
+ 
++#ifdef RTS_MINIMILES
++//============================================================================
++// FFmpegVideoStream::pushAudio
++// Converts one decoded audio frame to 16 bit interleaved and hands it to the video audio of MiniMiles.
++//============================================================================
++void FFmpegVideoStream::pushAudio(AVFrame *frame)
++{
++	if (m_audioFailed || frame->nb_samples <= 0)
++		return;
++	const int outChannels = frame->ch_layout.nb_channels >= 2 ? 2 : 1;
++	if (!m_videoAudio)
++	{
++		m_videoAudio = MiniMiles_VideoAudioOpen((unsigned)outChannels, (unsigned)frame->sample_rate);
++		AVChannelLayout outLayout;
++		av_channel_layout_default(&outLayout, outChannels);
++		if (!m_videoAudio || swr_alloc_set_opts2(&m_swr, &outLayout, AV_SAMPLE_FMT_S16, frame->sample_rate, &frame->ch_layout, static_cast<AVSampleFormat>(frame->format), frame->sample_rate, 0, nullptr) < 0 || swr_init(m_swr) < 0)
++		{
++			av_channel_layout_uninit(&outLayout);
++			MiniMiles_VideoAudioClose(m_videoAudio);
++			m_videoAudio = nullptr;
++			swr_free(&m_swr);
++			m_audioFailed = true;
++			DEBUG_LOG(("Video audio could not be started"));
++			return;
++		}
++		av_channel_layout_uninit(&outLayout);
++		// the voice volume of the game, but never so low that a movie is inaudible
++		Real volume = TheAudio ? TheAudio->getVolume(AudioAffect_Speech) : 1.0f;
++		MiniMiles_VideoAudioSetVolume(m_videoAudio, std::max<Real>(volume, 0.6f));
++	}
++	const int maxOut = swr_get_out_samples(m_swr, frame->nb_samples) + 64;
++	std::vector<short> out((size_t)maxOut * outChannels);
++	uint8_t *dst = reinterpret_cast<uint8_t *>(out.data());
++	const int got = swr_convert(m_swr, &dst, maxOut, const_cast<const uint8_t **>(frame->extended_data), frame->nb_samples);
++	if (got > 0)
++		MiniMiles_VideoAudioWrite(m_videoAudio, out.data(), (unsigned)got);
++}
++#endif
++
+ 
+ //============================================================================
+ // FFmpegVideoStream::update
+diff --git a/Core/Libraries/Source/Compression/EAC/huffencode.cpp b/Core/Libraries/Source/Compression/EAC/huffencode.cpp
+index 06f51b3..7dcae21 100644
+--- a/Core/Libraries/Source/Compression/EAC/huffencode.cpp
++++ b/Core/Libraries/Source/Compression/EAC/huffencode.cpp
+@@ -1050,8 +1050,8 @@ static void HUFF_pack(struct HuffEncodeContext *EC,
+ 		if (!i3)
+ 			HUFF_writecode(EC,dest,i);
+ 
+-		if (((long) bptr1- (long) EC->buffer) >= (long)(EC->plen+curpc))
+-			curpc = (long) bptr1 - (long) EC->buffer - EC->plen;
++		if (((long)(bptr1 - EC->buffer)) >= (long)(EC->plen+curpc))
++			curpc = (long)(bptr1 - EC->buffer) - EC->plen;
+ 	}
+ 
+ 	/* write EOF ([clue] 0gn [10]) */
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp b/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
+index acc5afc..92a3b8a 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/dx8webbrowser.cpp
+@@ -217,7 +217,7 @@ void	DX8WebBrowser::CreateBrowser(const char* browsername, const char* url, int
+ 	if(pBrowser)
+ 	{
+ 		_bstr_t brsname(browsername);
+-		pBrowser->CreateBrowser(brsname, _bstr_t(url), reinterpret_cast<long>(hWnd), x, y, w, h, options, gamedispatch);
++		pBrowser->CreateBrowser(brsname, _bstr_t(url), static_cast<long>(reinterpret_cast<intptr_t>(hWnd)), x, y, w, h, options, gamedispatch);
+ 		pBrowser->SetUpdateRate(brsname, updateticks);
+ 	}
+ }
+diff --git a/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h b/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
+index 3f85a55..6a5088d 100644
+--- a/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
++++ b/Core/Libraries/Source/WWVegas/WWAudio/SoundSceneObj.h
+@@ -242,7 +242,7 @@ SoundSceneObjClass::On_Event
+ 				break;
+ 
+ 			case AudioCallbackClass::EVENT_LOGICAL_HEARD:
+-				m_pCallback->On_Logical_Heard ((LogicalListenerClass *)param1, (LogicalSoundClass *)param2);
++				m_pCallback->On_Logical_Heard ((LogicalListenerClass *)(uintptr_t)param1, (LogicalSoundClass *)(uintptr_t)param2);
+ 				break;
+ 		}
+ 	}
+diff --git a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
+index c312827..d016111 100644
+--- a/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
++++ b/Core/Libraries/Source/WWVegas/WWDownload/registry.cpp
+@@ -21,6 +21,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "Registry.h"
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ #include <string>
+ #include "win.h"
+ 
+@@ -37,7 +40,7 @@ bool  getStringFromRegistry(HKEY root, std::string path, std::string key, std::s
+ 	DWORD type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.c_str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.c_str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -61,7 +64,7 @@ bool getUnsignedIntFromRegistry(HKEY root, std::string path, std::string key, un
+ 	DWORD type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.c_str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.c_str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.c_str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -84,7 +87,7 @@ bool setStringInRegistry( HKEY root, std::string path, std::string key, std::str
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.c_str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.c_str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_SZ;
+ 		size = val.length()+1;
+@@ -103,7 +106,7 @@ bool setUnsignedIntInRegistry( HKEY root, std::string path, std::string key, uns
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.c_str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.c_str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_DWORD;
+ 		size = 4;
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/Except.cpp b/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
+index 35ecf90..b129e53 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
++++ b/Core/Libraries/Source/WWVegas/WWLib/Except.cpp
+@@ -278,6 +278,19 @@ static void Add_Txt (char const *txt)
+  * HISTORY:                                                                                    *
+  *    7/22/97 12:21PM ST : Created                                                             *
+  *=============================================================================================*/
++#ifdef _WIN64
++// The register/stack dump below is x86 specific. On x64 just record the exception code and address.
++void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
++{
++	char text[256];
++	_snprintf(text, sizeof(text), "Exception code %08lX at address %p\r\n",
++		e_info && e_info->ExceptionRecord ? e_info->ExceptionRecord->ExceptionCode : 0UL,
++		e_info && e_info->ExceptionRecord ? e_info->ExceptionRecord->ExceptionAddress : nullptr);
++	text[sizeof(text) - 1] = 0;
++	strncpy(ExceptionText, text, sizeof(ExceptionText) - 1);
++	ExceptionText[sizeof(ExceptionText) - 1] = 0;
++}
++#else
+ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
+ {
+ 	/*
+@@ -734,6 +747,8 @@ void Dump_Exception_Info(EXCEPTION_POINTERS *e_info)
+ 
+ 
+ 
++#endif // _WIN64
++
+ /***********************************************************************************************
+  * Exception_Handler -- Exception handler filter function                                      *
+  *                                                                                             *
+@@ -1204,6 +1219,13 @@ bool Lookup_Symbol(void *code_ptr, char *symbol, int &displacement)
+  * HISTORY:                                                                                    *
+  *   6/12/2001 11:57AM ST : Created                                                            *
+  *=============================================================================================*/
++#ifdef _WIN64
++int Stack_Walk(unsigned long *, int, CONTEXT *)
++{
++	// Return addresses do not fit in 32-bit values; stack walking is not supported on x64.
++	return 0;
++}
++#else
+ int Stack_Walk(unsigned long *return_addresses, int num_addresses, CONTEXT *context)
+ {
+ 	static HINSTANCE _imagehelp = (HINSTANCE) -1;
+@@ -1290,6 +1312,7 @@ here:
+ 
+ 	return(pointer_index);
+ }
++#endif // _WIN64
+ 
+ 
+ 
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
+index 94eeee4..84ec46a 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
++++ b/Core/Libraries/Source/WWVegas/WWLib/registry.cpp
+@@ -34,6 +34,9 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "registry.h"
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ #include "RAWFILE.h"
+ #include "INI.h"
+ #include "inisup.h"
+@@ -48,7 +51,7 @@ bool RegistryClass::IsLocked = false;
+ bool RegistryClass::Exists(const char* sub_key)
+ {
+ 	HKEY hKey;
+-	LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, KEY_READ, &hKey);
++	LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, KEY_READ | KEY_WOW64_32KEY, &hKey);
+ 
+ 	if (ERROR_SUCCESS == result) {
+ 		RegCloseKey(hKey);
+@@ -72,14 +75,14 @@ RegistryClass::RegistryClass( const char * sub_key, bool create ) :
+ 	if (create && !IsLocked) {
+ 		DWORD disposition;
+ 		result = RegCreateKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, nullptr, 0,
+-			KEY_ALL_ACCESS, nullptr, &key, &disposition);
++			KEY_ALL_ACCESS | KEY_WOW64_32KEY, nullptr, &key, &disposition);
+ 	} else {
+-		result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, IsLocked ? KEY_READ : KEY_ALL_ACCESS, &key);
++		result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, sub_key, 0, IsLocked ? (KEY_READ | KEY_WOW64_32KEY) : (KEY_ALL_ACCESS | KEY_WOW64_32KEY), &key);
+ 	}
+ 
+ 	if (ERROR_SUCCESS == result) {
+ 		IsValid = true;
+-		Key = (int)key;
++		Key = (uintptr_t)key;
+ 	}
+ }
+ 
+@@ -440,7 +443,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
+ 	memset(&file_time, 0, sizeof(file_time));
+ 
+ 
+-	long result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, path, 0, KEY_ALL_ACCESS, &base_key);
++	long result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, path, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, &base_key);
+ 
+ 	WWASSERT(result == ERROR_SUCCESS);
+ 
+@@ -465,7 +468,7 @@ void RegistryClass::Save_Registry_Tree(char *path, INIClass *ini)
+ 				unsigned long num_subs = 0;
+ 				unsigned long num_values = 0;
+ 
+-				long new_result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, new_key_path, 0, KEY_ALL_ACCESS, &sub_key);
++				long new_result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, new_key_path, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, &sub_key);
+ 				if (new_result == ERROR_SUCCESS) {
+ 					new_result = RegQueryInfoKey(sub_key, nullptr, nullptr, nullptr, &num_subs, nullptr, nullptr, &num_values, nullptr, nullptr, nullptr, nullptr);
+ 
+@@ -665,7 +668,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
+ 		int max_times = 1000;
+ 
+ 
+-		long result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, path, 0, KEY_ALL_ACCESS, &base_key);
++		long result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, path, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, &base_key);
+ 
+ 		if (result == ERROR_SUCCESS) {
+ 			Delete_Registry_Values(base_key);
+@@ -688,7 +691,7 @@ void RegistryClass::Delete_Registry_Tree(char *path)
+ 					unsigned long num_subs = 0;
+ 					unsigned long num_values = 0;
+ 
+-					long new_result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, new_key_path, 0, KEY_ALL_ACCESS, &sub_key);
++					long new_result = RegOpenKeyEx(HKEY_LOCAL_MACHINE, new_key_path, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, &sub_key);
+ 					if (new_result == ERROR_SUCCESS) {
+ 						new_result = RegQueryInfoKey(sub_key, nullptr, nullptr, nullptr, &num_subs, nullptr, nullptr, &num_values, nullptr, nullptr, nullptr, nullptr);
+ 
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/registry.h b/Core/Libraries/Source/WWVegas/WWLib/registry.h
+index deccd44..bb5bf8e 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/registry.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/registry.h
+@@ -107,7 +107,7 @@ private:
+ 	static void Save_Registry_Values(HKEY key, char *path, INIClass *ini);
+ 
+ 
+-	int	Key;
++	uintptr_t	Key; // holds an HKEY, which is pointer sized
+ 	bool	IsValid;
+ 
+ 	//
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/thread.h b/Core/Libraries/Source/WWVegas/WWLib/thread.h
+index f8c58cb..72a9977 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/thread.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/thread.h
+@@ -91,6 +91,6 @@ protected:
+ 
+ private:
+ 	static void __cdecl Internal_Thread_Function(void*);
+-	volatile unsigned long handle;
++	volatile uintptr_t handle; // holds the _beginthread handle, which is pointer sized
+ 	int thread_priority;
+ };
+diff --git a/Core/Libraries/Source/debug/debug_debug.cpp b/Core/Libraries/Source/debug/debug_debug.cpp
+index c3c05fb..8b78980 100644
+--- a/Core/Libraries/Source/debug/debug_debug.cpp
++++ b/Core/Libraries/Source/debug/debug_debug.cpp
+@@ -33,6 +33,9 @@
+ #include "internal_io.h"
+ #include <stdlib.h>
+ #include <windows.h>
++#ifdef _MSC_VER
++#include <intrin.h>
++#endif
+ #include <WWCommon.h>
+ #include <new>      // needed for placement new prototype
+ 
+@@ -315,7 +318,9 @@ bool Debug::SkipNext()
+   // do not implement this function inline, we do need
+   // a valid frame pointer here!
+   unsigned help;
+-#if defined(_MSC_VER)
++#if defined(_MSC_VER) && defined(_WIN64)
++  help = (unsigned)(uintptr_t)_ReturnAddress();
++#elif defined(_MSC_VER)
+   _asm
+   {
+     mov eax,[ebp+4]   // return address
+@@ -450,7 +455,7 @@ bool Debug::AssertDone()
+           break;
+         case IDRETRY:
+ #if defined(_MSC_VER)
+-          _asm int 0x03
++          __debugbreak();
+ #elif defined(__GNUC__)
+           __builtin_trap();
+ #else
+@@ -724,7 +729,7 @@ bool Debug::CrashDone(bool die)
+             break;
+           case IDRETRY:
+ #if defined(_MSC_VER)
+-            _asm int 0x03
++            __debugbreak();
+ #elif defined(__GNUC__)
+             __builtin_trap();
+ #else
+diff --git a/Core/Libraries/Source/debug/debug_except.cpp b/Core/Libraries/Source/debug/debug_except.cpp
+index 5574fa6..c028f90 100644
+--- a/Core/Libraries/Source/debug/debug_except.cpp
++++ b/Core/Libraries/Source/debug/debug_except.cpp
+@@ -40,6 +40,19 @@
+ 
+ #include <commctrl.h>
+ 
++#ifdef _WIN64
++// The x86 register names map onto their 64-bit counterparts in CONTEXT.
++#define Eax Rax
++#define Ebx Rbx
++#define Ecx Rcx
++#define Edx Rdx
++#define Esi Rsi
++#define Edi Rdi
++#define Eip Rip
++#define Esp Rsp
++#define Ebp Rbp
++#endif
++
+ DebugExceptionhandler::DebugExceptionhandler()
+ {
+   // don't do anything here!
+@@ -157,6 +170,10 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
+     return;
+   }
+ 
++#ifdef _WIN64
++  dbg << "x87 register dump not available on x64";
++  return;
++#else
+   FLOATING_SAVE_AREA &flt=ctx.FloatSave;
+   dbg << Debug::Bin() << Debug::FillChar('0')
+       << "CW:" << Debug::Width(16) << (flt.ControlWord&0xffff) << "\n"
+@@ -190,6 +207,7 @@ void DebugExceptionhandler::LogFPURegisters(Debug &dbg, struct _EXCEPTION_POINTE
+     dbg << "\n";
+   }
+   dbg << Debug::FillChar() << Debug::Dec();
++#endif // _WIN64
+ }
+ 
+ // include exception dialog box
+@@ -204,7 +222,7 @@ static char regInfo[1024],verInfo[256];
+ // and this saves us from doing a stack walk twice
+ static DebugStackwalk::Signature sig;
+ 
+-static BOOL CALLBACK ExceptionDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
++static INT_PTR CALLBACK ExceptionDlgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+ {
+   switch(uMsg)
+   {
+diff --git a/Core/Libraries/Source/debug/debug_stack.cpp b/Core/Libraries/Source/debug/debug_stack.cpp
+index db4d50c..533338f 100644
+--- a/Core/Libraries/Source/debug/debug_stack.cpp
++++ b/Core/Libraries/Source/debug/debug_stack.cpp
+@@ -344,6 +344,18 @@ bool DebugStackwalk::IsOldDbghelp()
+   return g_oldDbghelp;
+ }
+ 
++#ifdef _WIN64
++// dbghelp.h maps StackWalk to StackWalk64 on x64, but the class declares the plain name.
++#pragma push_macro("StackWalk")
++#undef StackWalk
++int DebugStackwalk::StackWalk(Signature &sig, struct _CONTEXT *)
++{
++  // Stack walking relies on x86 registers; not supported on x64.
++  sig.m_numAddr=0;
++  return 0;
++}
++#pragma pop_macro("StackWalk")
++#else
+ int DebugStackwalk::StackWalk(Signature &sig, struct _CONTEXT *ctx)
+ {
+   InitDbghelp();
+@@ -413,6 +425,8 @@ int DebugStackwalk::StackWalk(Signature &sig, struct _CONTEXT *ctx)
+ 	return sig.m_numAddr;
+ }
+ 
++#endif // _WIN64
++
+ #else // !_WIN32
+ 
+ // TheSuperHackers @port macos: POSIX stub implementation. No symbolic stack
+diff --git a/Dependencies/D3DX8Compat/CMakeLists.txt b/Dependencies/D3DX8Compat/CMakeLists.txt
+new file mode 100644
+index 0000000..423453a
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/CMakeLists.txt
+@@ -0,0 +1,5 @@
++# Minimal reimplementation of the few D3DX8 functions the game uses.
++# Microsoft only ever shipped d3dx8.lib for x86, so 64-bit builds link this instead.
++add_library(deps_d3dx8compat STATIC D3DX8Compat.cpp D3DX8Surface.cpp D3DX8Shader.cpp)
++target_include_directories(deps_d3dx8compat PRIVATE ${dx8_SOURCE_DIR})
++target_compile_definitions(deps_d3dx8compat PRIVATE BUILD_WITH_D3D8 NOMINMAX)
+diff --git a/Dependencies/D3DX8Compat/D3DX8Compat.cpp b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
+new file mode 100644
+index 0000000..21f79e9
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
+@@ -0,0 +1,153 @@
++// x64 replacement for the subset of d3dx8.lib used by Generals/Zero Hour.
++#include <windows.h>
++#include <d3d8.h>
++#include <d3dx8.h>
++#include <cmath>
++#include <cstring>
++#include <algorithm>
++
++extern "C" {
++
++// ---------------------------------------------------------------- math
++D3DXMATRIX* WINAPI D3DXMatrixTranspose(D3DXMATRIX* out, const D3DXMATRIX* m)
++{
++	D3DXMATRIX t;
++	for (int i = 0; i < 4; ++i)
++		for (int j = 0; j < 4; ++j)
++			t.m[i][j] = m->m[j][i];
++	*out = t;
++	return out;
++}
++
++D3DXMATRIX* WINAPI D3DXMatrixMultiply(D3DXMATRIX* out, const D3DXMATRIX* a, const D3DXMATRIX* b)
++{
++	D3DXMATRIX t;
++	for (int i = 0; i < 4; ++i)
++		for (int j = 0; j < 4; ++j)
++			t.m[i][j] = a->m[i][0] * b->m[0][j] + a->m[i][1] * b->m[1][j] + a->m[i][2] * b->m[2][j] + a->m[i][3] * b->m[3][j];
++	*out = t;
++	return out;
++}
++
++D3DXMATRIX* WINAPI D3DXMatrixInverse(D3DXMATRIX* out, FLOAT* det, const D3DXMATRIX* in)
++{
++	// Gauss-Jordan elimination with partial pivoting.
++	double a[4][8];
++	for (int i = 0; i < 4; ++i)
++		for (int j = 0; j < 4; ++j) {
++			a[i][j] = in->m[i][j];
++			a[i][4 + j] = (i == j) ? 1.0 : 0.0;
++		}
++	double d = 1.0;
++	for (int c = 0; c < 4; ++c) {
++		int p = c;
++		for (int r = c + 1; r < 4; ++r)
++			if (std::fabs(a[r][c]) > std::fabs(a[p][c])) p = r;
++		if (a[p][c] == 0.0) {
++			if (det) *det = 0.0f;
++			return nullptr;
++		}
++		if (p != c) {
++			for (int k = 0; k < 8; ++k) std::swap(a[p][k], a[c][k]);
++			d = -d;
++		}
++		d *= a[c][c];
++		const double inv = 1.0 / a[c][c];
++		for (int k = 0; k < 8; ++k) a[c][k] *= inv;
++		for (int r = 0; r < 4; ++r) {
++			if (r == c) continue;
++			const double f = a[r][c];
++			if (f == 0.0) continue;
++			for (int k = 0; k < 8; ++k) a[r][k] -= f * a[c][k];
++		}
++	}
++	if (det) *det = (FLOAT)d;
++	for (int i = 0; i < 4; ++i)
++		for (int j = 0; j < 4; ++j)
++			out->m[i][j] = (FLOAT)a[i][4 + j];
++	return out;
++}
++
++D3DXMATRIX* WINAPI D3DXMatrixScaling(D3DXMATRIX* out, FLOAT sx, FLOAT sy, FLOAT sz)
++{
++	D3DXMatrixIdentity(out);
++	out->_11 = sx; out->_22 = sy; out->_33 = sz;
++	return out;
++}
++
++D3DXMATRIX* WINAPI D3DXMatrixTranslation(D3DXMATRIX* out, FLOAT x, FLOAT y, FLOAT z)
++{
++	D3DXMatrixIdentity(out);
++	out->_41 = x; out->_42 = y; out->_43 = z;
++	return out;
++}
++
++D3DXMATRIX* WINAPI D3DXMatrixRotationZ(D3DXMATRIX* out, FLOAT angle)
++{
++	D3DXMatrixIdentity(out);
++	const FLOAT s = std::sin(angle), c = std::cos(angle);
++	out->_11 = c; out->_12 = s; out->_21 = -s; out->_22 = c;
++	return out;
++}
++
++D3DXVECTOR4* WINAPI D3DXVec4Transform(D3DXVECTOR4* out, const D3DXVECTOR4* v, const D3DXMATRIX* m)
++{
++	D3DXVECTOR4 t;
++	t.x = v->x * m->_11 + v->y * m->_21 + v->z * m->_31 + v->w * m->_41;
++	t.y = v->x * m->_12 + v->y * m->_22 + v->z * m->_32 + v->w * m->_42;
++	t.z = v->x * m->_13 + v->y * m->_23 + v->z * m->_33 + v->w * m->_43;
++	t.w = v->x * m->_14 + v->y * m->_24 + v->z * m->_34 + v->w * m->_44;
++	*out = t;
++	return out;
++}
++
++D3DXVECTOR4* WINAPI D3DXVec3Transform(D3DXVECTOR4* out, const D3DXVECTOR3* v, const D3DXMATRIX* m)
++{
++	D3DXVECTOR4 in(v->x, v->y, v->z, 1.0f);
++	return D3DXVec4Transform(out, &in, m);
++}
++
++UINT WINAPI D3DXGetFVFVertexSize(DWORD fvf)
++{
++	UINT size = 0;
++	switch (fvf & D3DFVF_POSITION_MASK) {
++		case D3DFVF_XYZ: size += 12; break;
++		case D3DFVF_XYZRHW: size += 16; break;
++		case D3DFVF_XYZB1: size += 16; break;
++		case D3DFVF_XYZB2: size += 20; break;
++		case D3DFVF_XYZB3: size += 24; break;
++		case D3DFVF_XYZB4: size += 28; break;
++		case D3DFVF_XYZB5: size += 32; break;
++	}
++	if (fvf & D3DFVF_NORMAL) size += 12;
++	if (fvf & D3DFVF_DIFFUSE) size += 4;
++	if (fvf & D3DFVF_SPECULAR) size += 4;
++	const UINT texCount = (fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
++	for (UINT i = 0; i < texCount; ++i) {
++		switch ((fvf >> (16 + i * 2)) & 3) {
++			case D3DFVF_TEXTUREFORMAT1: size += 4; break;
++			case D3DFVF_TEXTUREFORMAT2: size += 8; break;
++			case D3DFVF_TEXTUREFORMAT3: size += 12; break;
++			case D3DFVF_TEXTUREFORMAT4: size += 16; break;
++		}
++	}
++	return size;
++}
++
++// ---------------------------------------------------------------- unsupported
++HRESULT WINAPI D3DXCreateFont(LPDIRECT3DDEVICE8, HFONT, LPD3DXFONT*) { return E_NOTIMPL; }
++
++HRESULT WINAPI D3DXGetErrorStringA(HRESULT hr, LPSTR buf, UINT len)
++{
++	if (!buf || !len) return D3DERR_INVALIDCALL;
++	_snprintf_s(buf, len, _TRUNCATE, "HRESULT 0x%08lX", (unsigned long)hr);
++	return D3D_OK;
++}
++
++HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE8, LPCSTR, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
++	DWORD, DWORD, D3DCOLOR, D3DXIMAGE_INFO*, PALETTEENTRY*, LPDIRECT3DTEXTURE8*)
++{
++	return E_NOTIMPL;
++}
++
++} // extern "C"
+diff --git a/Dependencies/D3DX8Compat/D3DX8Shader.cpp b/Dependencies/D3DX8Compat/D3DX8Shader.cpp
+new file mode 100644
+index 0000000..2c00300
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Shader.cpp
+@@ -0,0 +1,308 @@
++// Minimal Direct3D 8 pixel shader assembler (ps.1.0 - ps.1.3 instruction set) for the 64-bit d3dx8 replacement.
++// The game assembles a few small pixel shaders from source text at run time (water); Microsoft's d3dx8.lib is not
++// available for x64, so this produces the same token stream. Vertex shaders are loaded precompiled by the game.
++
++#include <windows.h>
++#include <d3d8.h>
++#include <d3dx8.h>
++#include <cctype>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#ifndef D3DXERR_INVALIDDATA
++#define D3DXERR_INVALIDDATA ((HRESULT)0x88760b59L)
++#endif
++
++namespace
++{
++
++class CompatBuffer : public ID3DXBuffer
++{
++public:
++	explicit CompatBuffer(const std::vector<DWORD>& data) : m_refs(1), m_data(data) {}
++
++	STDMETHOD(QueryInterface)(REFIID iid, LPVOID* out) override
++	{
++		if (!out) return E_POINTER;
++		*out = this;
++		AddRef();
++		(void)iid;
++		return S_OK;
++	}
++	STDMETHOD_(ULONG, AddRef)() override { return (ULONG)InterlockedIncrement(&m_refs); }
++	STDMETHOD_(ULONG, Release)() override
++	{
++		const ULONG r = (ULONG)InterlockedDecrement(&m_refs);
++		if (r == 0) delete this;
++		return r;
++	}
++	STDMETHOD_(LPVOID, GetBufferPointer)() override { return m_data.empty() ? nullptr : &m_data[0]; }
++	STDMETHOD_(DWORD, GetBufferSize)() override { return (DWORD)(m_data.size() * sizeof(DWORD)); }
++
++private:
++	LONG m_refs;
++	std::vector<DWORD> m_data;
++};
++
++enum RegType { RT_TEMP = 0, RT_INPUT = 1, RT_CONST = 2, RT_TEXTURE = 3 };
++
++struct OpInfo { const char* name; DWORD code; int operands; };
++
++const OpInfo kOps[] = {
++	{ "nop", 0, 0 },   { "mov", 1, 2 },    { "add", 2, 3 },     { "sub", 3, 3 },    { "mad", 4, 4 },
++	{ "mul", 5, 3 },   { "dp3", 8, 3 },    { "dp4", 9, 3 },     { "lrp", 18, 4 },   { "cnd", 80, 4 },
++	{ "cmp", 88, 4 },  { "tex", 66, 1 },   { "texbem", 67, 2 }, { "texbeml", 68, 2 }, { "texcoord", 64, 1 },
++	{ "texkill", 65, 1 }, { "texreg2ar", 69, 2 }, { "texreg2gb", 70, 2 }, { "texm3x2pad", 71, 2 },
++	{ "texm3x2tex", 72, 2 }, { "texm3x3pad", 73, 2 }, { "texm3x3tex", 74, 2 }, { "texm3x3spec", 76, 3 },
++	{ "texm3x3vspec", 77, 2 }, { "texreg2rgb", 82, 2 }, { "texdp3tex", 83, 2 }, { "texm3x2depth", 84, 2 },
++	{ "texdp3", 85, 2 }, { "texm3x3", 86, 2 }, { "texdepth", 87, 1 }, { "bem", 89, 3 },
++};
++
++struct Parser
++{
++	std::string error;
++
++	static std::string lower(std::string s)
++	{
++		for (size_t i = 0; i < s.size(); ++i) s[i] = (char)tolower((unsigned char)s[i]);
++		return s;
++	}
++
++	static std::string trim(const std::string& s)
++	{
++		size_t a = 0, b = s.size();
++		while (a < b && isspace((unsigned char)s[a])) ++a;
++		while (b > a && isspace((unsigned char)s[b - 1])) --b;
++		return s.substr(a, b - a);
++	}
++
++	static int component(char c)
++	{
++		switch (c) {
++			case 'r': case 'x': return 0;
++			case 'g': case 'y': return 1;
++			case 'b': case 'z': return 2;
++			case 'a': case 'w': return 3;
++		}
++		return -1;
++	}
++
++	static DWORD regToken(RegType type, int num)
++	{
++		return 0x80000000u | ((DWORD)(type & 7) << 28) | (((DWORD)(type & 0x18) >> 3) << 11) | (DWORD)(num & 0x7FF);
++	}
++
++	bool parseReg(const std::string& text, RegType& type, int& num, std::string& suffix)
++	{
++		if (text.empty()) return false;
++		switch (text[0]) {
++			case 'r': type = RT_TEMP; break;
++			case 'v': type = RT_INPUT; break;
++			case 'c': type = RT_CONST; break;
++			case 't': type = RT_TEXTURE; break;
++			default: return false;
++		}
++		size_t i = 1;
++		if (i >= text.size() || !isdigit((unsigned char)text[i])) return false;
++		num = 0;
++		while (i < text.size() && isdigit((unsigned char)text[i])) num = num * 10 + (text[i++] - '0');
++		suffix = text.substr(i);
++		return true;
++	}
++
++	// destination: reg[.mask]
++	bool parseDest(std::string text, DWORD& token, DWORD modifiers)
++	{
++		RegType type; int num; std::string suffix;
++		if (!parseReg(text, type, num, suffix)) { error = "bad destination '" + text + "'"; return false; }
++		DWORD mask = 0xF;
++		if (!suffix.empty()) {
++			if (suffix[0] != '.') { error = "bad destination '" + text + "'"; return false; }
++			mask = 0;
++			for (size_t i = 1; i < suffix.size(); ++i) {
++				const int c = component(suffix[i]);
++				if (c < 0) { error = "bad write mask '" + text + "'"; return false; }
++				mask |= 1u << c;
++			}
++		}
++		token = regToken(type, num) | (mask << 16) | modifiers;
++		return true;
++	}
++
++	// source: [-|1-]reg[.swizzle][_bx2|_bias|_x2|_dz|_dw]
++	bool parseSource(std::string text, DWORD& token)
++	{
++		DWORD mod = 0;
++		bool negate = false, complement = false;
++		if (text.compare(0, 2, "1-") == 0) { complement = true; text = text.substr(2); }
++		else if (!text.empty() && text[0] == '-') { negate = true; text = text.substr(1); }
++
++		std::string suffixMod;
++		const size_t us = text.find('_');
++		if (us != std::string::npos) { suffixMod = text.substr(us); text = text.substr(0, us); }
++
++		RegType type; int num; std::string swz;
++		if (!parseReg(text, type, num, swz)) { error = "bad source '" + text + "'"; return false; }
++
++		DWORD swizzle = 0xE4;
++		if (!swz.empty()) {
++			if (swz[0] != '.') { error = "bad swizzle '" + text + "'"; return false; }
++			std::string comps = swz.substr(1);
++			if (comps.size() == 1) {
++				const int c = component(comps[0]);
++				if (c < 0) { error = "bad swizzle '" + text + "'"; return false; }
++				swizzle = (DWORD)(c | (c << 2) | (c << 4) | (c << 6));
++			} else if (comps == "rgb" || comps == "xyz") {
++				swizzle = 0xE4; // alpha is handled by the separate alpha pipeline
++			} else if (comps.size() == 4) {
++				swizzle = 0;
++				for (int j = 0; j < 4; ++j) {
++					const int c = component(comps[j]);
++					if (c < 0) { error = "bad swizzle '" + text + "'"; return false; }
++					swizzle |= (DWORD)c << (2 * j);
++				}
++			} else {
++				error = "unsupported swizzle '" + text + "'";
++				return false;
++			}
++		}
++
++		if (complement) mod = 6;                       // 1-x
++		else if (suffixMod == "_bx2") mod = negate ? 5 : 4;   // signed scale
++		else if (suffixMod == "_bias") mod = negate ? 3 : 2;
++		else if (suffixMod == "_x2") mod = negate ? 8 : 7;
++		else if (suffixMod == "_dz") mod = 9;
++		else if (suffixMod == "_dw") mod = 10;
++		else if (!suffixMod.empty()) { error = "unknown source modifier '" + suffixMod + "'"; return false; }
++		else if (negate) mod = 1;
++
++		token = regToken(type, num) | (swizzle << 16) | (mod << 24);
++		return true;
++	}
++
++	bool assemble(const char* src, size_t len, std::vector<DWORD>& out)
++	{
++		std::string text(src, len);
++		size_t pos = 0;
++		bool haveVersion = false;
++		int lineNo = 0;
++
++		while (pos <= text.size()) {
++			size_t eol = text.find_first_of("\r\n", pos);
++			if (eol == std::string::npos) eol = text.size();
++			std::string line = text.substr(pos, eol - pos);
++			pos = eol + 1;
++			++lineNo;
++
++			const size_t semi = line.find(';');
++			if (semi != std::string::npos) line = line.substr(0, semi);
++			const size_t slash = line.find("//");
++			if (slash != std::string::npos) line = line.substr(0, slash);
++			// line continuation backslash used inside C string literals
++			for (size_t k = 0; k < line.size(); ++k) if (line[k] == '\\') line[k] = ' ';
++			line = lower(trim(line));
++			if (line.empty()) continue;
++
++			if (!haveVersion) {
++				int major = 0, minor = 0;
++				if (sscanf(line.c_str(), "ps.%d.%d", &major, &minor) != 2 || major != 1 || minor > 3) {
++					error = "only ps.1.0 - ps.1.3 is supported";
++					return false;
++				}
++				out.push_back(0xFFFF0000u | ((DWORD)major << 8) | (DWORD)minor);
++				haveVersion = true;
++				continue;
++			}
++
++			bool coissue = false;
++			if (line[0] == '+') { coissue = true; line = trim(line.substr(1)); }
++
++			// mnemonic with optional modifiers: mul_x2_sat
++			size_t sp = line.find_first_of(" \t");
++			std::string mnemonic = line.substr(0, sp);
++			std::string operands = sp == std::string::npos ? "" : trim(line.substr(sp));
++
++			DWORD destMods = 0;
++			const size_t us = mnemonic.find('_');
++			if (us != std::string::npos) {
++				std::string mods = mnemonic.substr(us);
++				mnemonic = mnemonic.substr(0, us);
++				size_t m = 0;
++				while (m < mods.size()) {
++					const size_t next = mods.find('_', m + 1);
++					const std::string one = mods.substr(m, next == std::string::npos ? std::string::npos : next - m);
++					if (one == "_sat") destMods |= 1u << 20;
++					else if (one == "_x2") destMods |= 1u << 24;
++					else if (one == "_x4") destMods |= 2u << 24;
++					else if (one == "_d2") destMods |= 15u << 24;
++					else if (one == "_d4") destMods |= 14u << 24;
++					else { error = "unknown instruction modifier '" + one + "'"; return false; }
++					if (next == std::string::npos) break;
++					m = next;
++				}
++			}
++
++			const OpInfo* op = nullptr;
++			for (size_t k = 0; k < sizeof(kOps) / sizeof(kOps[0]); ++k)
++				if (mnemonic == kOps[k].name) { op = &kOps[k]; break; }
++			if (!op) { error = "unknown instruction '" + mnemonic + "'"; return false; }
++
++			std::vector<std::string> args;
++			if (!operands.empty()) {
++				size_t a = 0;
++				for (;;) {
++					const size_t comma = operands.find(',', a);
++					args.push_back(trim(operands.substr(a, comma == std::string::npos ? std::string::npos : comma - a)));
++					if (comma == std::string::npos) break;
++					a = comma + 1;
++				}
++			}
++			if ((int)args.size() != op->operands) { error = "wrong operand count for '" + mnemonic + "'"; return false; }
++
++			out.push_back(op->code | (coissue ? 0x40000000u : 0u));
++			for (int k = 0; k < op->operands; ++k) {
++				DWORD tok = 0;
++				if (k == 0) {
++					if (!parseDest(args[k], tok, destMods)) return false;
++				} else if (!parseSource(args[k], tok)) {
++					return false;
++				}
++				out.push_back(tok);
++			}
++		}
++
++		if (!haveVersion) { error = "missing version"; return false; }
++		out.push_back(0x0000FFFFu); // end
++		return true;
++	}
++};
++
++} // namespace
++
++extern "C" HRESULT WINAPI D3DXAssembleShader(LPCVOID pSrcData, UINT SrcDataLen, DWORD, LPD3DXBUFFER* ppConstants,
++	LPD3DXBUFFER* ppCompiledShader, LPD3DXBUFFER* ppCompilationErrors)
++{
++	if (ppConstants) *ppConstants = nullptr;
++	if (ppCompiledShader) *ppCompiledShader = nullptr;
++	if (ppCompilationErrors) *ppCompilationErrors = nullptr;
++	if (!pSrcData || !ppCompiledShader)
++		return D3DERR_INVALIDCALL;
++
++	Parser parser;
++	std::vector<DWORD> tokens;
++	if (!parser.assemble((const char*)pSrcData, SrcDataLen, tokens)) {
++		if (ppCompilationErrors) {
++			const std::string& e = parser.error;
++			std::vector<DWORD> msg((e.size() + 4) / 4 + 1, 0);
++			memcpy(&msg[0], e.c_str(), e.size());
++			*ppCompilationErrors = new CompatBuffer(msg);
++		}
++		return D3DXERR_INVALIDDATA;
++	}
++
++	*ppCompiledShader = new CompatBuffer(tokens);
++	return D3D_OK;
++}
+diff --git a/Dependencies/D3DX8Compat/D3DX8Surface.cpp b/Dependencies/D3DX8Compat/D3DX8Surface.cpp
+new file mode 100644
+index 0000000..9565c94
+--- /dev/null
++++ b/Dependencies/D3DX8Compat/D3DX8Surface.cpp
+@@ -0,0 +1,363 @@
++// Surface/texture helpers of the x64 d3dx8 replacement: format conversion, resampling and
++// DXT1/DXT3/DXT5 encoding + decoding. Pixels are processed as float ARGB; quality is
++// "good enough for game textures", not a reference compressor.
++#include <windows.h>
++#include <d3d8.h>
++#include <d3dx8.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++
++namespace {
++
++struct Px { float a, r, g, b; };
++
++bool IsDXT(D3DFORMAT f)
++{
++	return f == D3DFMT_DXT1 || f == D3DFMT_DXT2 || f == D3DFMT_DXT3 || f == D3DFMT_DXT4 || f == D3DFMT_DXT5;
++}
++
++bool BytesPerPixel(D3DFORMAT f, UINT& bpp)
++{
++	switch (f) {
++		case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: bpp = 4; return true;
++		case D3DFMT_R5G6B5: case D3DFMT_A1R5G5B5: case D3DFMT_X1R5G5B5: case D3DFMT_A4R4G4B4: case D3DFMT_A8L8: bpp = 2; return true;
++		case D3DFMT_R8G8B8: bpp = 3; return true;
++		case D3DFMT_L8: case D3DFMT_A8: bpp = 1; return true;
++		default: return false;
++	}
++}
++
++float Norm(unsigned v, unsigned bits) { return float(v) / float((1u << bits) - 1); }
++
++unsigned Quant(float v, unsigned bits)
++{
++	v = std::min(1.0f, std::max(0.0f, v));
++	return unsigned(v * float((1u << bits) - 1) + 0.5f);
++}
++
++Px DecodePx(D3DFORMAT f, const BYTE* p)
++{
++	switch (f) {
++		case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: {
++			DWORD v; memcpy(&v, p, 4);
++			return { f == D3DFMT_X8R8G8B8 ? 1.0f : Norm(v >> 24, 8), Norm((v >> 16) & 255, 8), Norm((v >> 8) & 255, 8), Norm(v & 255, 8) };
++		}
++		case D3DFMT_R8G8B8: return { 1.0f, Norm(p[2], 8), Norm(p[1], 8), Norm(p[0], 8) };
++		case D3DFMT_R5G6B5: { WORD v; memcpy(&v, p, 2); return { 1.0f, Norm(v >> 11, 5), Norm((v >> 5) & 63, 6), Norm(v & 31, 5) }; }
++		case D3DFMT_A1R5G5B5: case D3DFMT_X1R5G5B5: {
++			WORD v; memcpy(&v, p, 2);
++			return { f == D3DFMT_X1R5G5B5 ? 1.0f : float(v >> 15), Norm((v >> 10) & 31, 5), Norm((v >> 5) & 31, 5), Norm(v & 31, 5) };
++		}
++		case D3DFMT_A4R4G4B4: { WORD v; memcpy(&v, p, 2); return { Norm(v >> 12, 4), Norm((v >> 8) & 15, 4), Norm((v >> 4) & 15, 4), Norm(v & 15, 4) }; }
++		case D3DFMT_A8L8: { WORD v; memcpy(&v, p, 2); const float l = Norm(v & 255, 8); return { Norm(v >> 8, 8), l, l, l }; }
++		case D3DFMT_L8: { const float l = Norm(*p, 8); return { 1.0f, l, l, l }; }
++		case D3DFMT_A8: return { Norm(*p, 8), 0, 0, 0 };
++		default: return { 1, 0, 0, 0 };
++	}
++}
++
++void EncodePx(D3DFORMAT f, BYTE* p, const Px& c)
++{
++	switch (f) {
++		case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: {
++			const DWORD v = ((f == D3DFMT_X8R8G8B8 ? 255u : Quant(c.a, 8)) << 24) | (Quant(c.r, 8) << 16) | (Quant(c.g, 8) << 8) | Quant(c.b, 8);
++			memcpy(p, &v, 4); break;
++		}
++		case D3DFMT_R8G8B8: p[2] = BYTE(Quant(c.r, 8)); p[1] = BYTE(Quant(c.g, 8)); p[0] = BYTE(Quant(c.b, 8)); break;
++		case D3DFMT_R5G6B5: { const WORD v = WORD((Quant(c.r, 5) << 11) | (Quant(c.g, 6) << 5) | Quant(c.b, 5)); memcpy(p, &v, 2); break; }
++		case D3DFMT_A1R5G5B5: case D3DFMT_X1R5G5B5: {
++			const WORD v = WORD(((f == D3DFMT_X1R5G5B5 ? 1u : Quant(c.a, 1)) << 15) | (Quant(c.r, 5) << 10) | (Quant(c.g, 5) << 5) | Quant(c.b, 5));
++			memcpy(p, &v, 2); break;
++		}
++		case D3DFMT_A4R4G4B4: { const WORD v = WORD((Quant(c.a, 4) << 12) | (Quant(c.r, 4) << 8) | (Quant(c.g, 4) << 4) | Quant(c.b, 4)); memcpy(p, &v, 2); break; }
++		case D3DFMT_A8L8: { const WORD v = WORD((Quant(c.a, 8) << 8) | Quant((c.r + c.g + c.b) / 3.0f, 8)); memcpy(p, &v, 2); break; }
++		case D3DFMT_L8: *p = BYTE(Quant((c.r + c.g + c.b) / 3.0f, 8)); break;
++		case D3DFMT_A8: *p = BYTE(Quant(c.a, 8)); break;
++		default: break;
++	}
++}
++
++// ------------------------------------------------------------------ DXT
++Px From565(unsigned c) { return { 1.0f, Norm(c >> 11, 5), Norm((c >> 5) & 63, 6), Norm(c & 31, 5) }; }
++
++void DecodeColorBlock(const BYTE* b, Px out[16], bool dxt1)
++{
++	WORD c0, c1; memcpy(&c0, b, 2); memcpy(&c1, b + 2, 2);
++	DWORD bits; memcpy(&bits, b + 4, 4);
++	Px pal[4] = { From565(c0), From565(c1), {}, {} };
++	if (c0 > c1 || !dxt1) {
++		const Px &a = pal[0], &b1 = pal[1];
++		pal[2] = { 1, (2 * a.r + b1.r) / 3, (2 * a.g + b1.g) / 3, (2 * a.b + b1.b) / 3 };
++		pal[3] = { 1, (a.r + 2 * b1.r) / 3, (a.g + 2 * b1.g) / 3, (a.b + 2 * b1.b) / 3 };
++	} else {
++		pal[2] = { 1, (pal[0].r + pal[1].r) * 0.5f, (pal[0].g + pal[1].g) * 0.5f, (pal[0].b + pal[1].b) * 0.5f };
++		pal[3] = { 0, 0, 0, 0 };
++	}
++	for (int i = 0; i < 16; ++i) out[i] = pal[(bits >> (2 * i)) & 3];
++}
++
++void DecodeBlock(D3DFORMAT f, const BYTE* b, Px out[16])
++{
++	if (f == D3DFMT_DXT1) { DecodeColorBlock(b, out, true); return; }
++	DecodeColorBlock(b + 8, out, false);
++	if (f == D3DFMT_DXT2 || f == D3DFMT_DXT3) {
++		for (int i = 0; i < 16; ++i) {
++			const unsigned v = (b[i / 2] >> ((i & 1) * 4)) & 15;
++			out[i].a = Norm(v, 4);
++		}
++	} else {
++		float a[8]; a[0] = b[0] / 255.0f; a[1] = b[1] / 255.0f;
++		if (b[0] > b[1]) for (int k = 1; k < 7; ++k) a[1 + k] = ((7 - k) * a[0] + k * a[1]) / 7.0f;
++		else { for (int k = 1; k < 5; ++k) a[1 + k] = ((5 - k) * a[0] + k * a[1]) / 5.0f; a[6] = 0; a[7] = 1; }
++		uint64_t bits = 0; memcpy(&bits, b + 2, 6);
++		for (int i = 0; i < 16; ++i) out[i].a = a[(bits >> (3 * i)) & 7];
++	}
++}
++
++void EncodeColorBlock(const Px in[16], BYTE* b, bool dxt1)
++{
++	bool hasAlpha = false;
++	float lo[3] = { 1, 1, 1 }, hi[3] = { 0, 0, 0 };
++	for (int i = 0; i < 16; ++i) {
++		if (dxt1 && in[i].a < 0.5f) { hasAlpha = true; continue; }
++		const float v[3] = { in[i].r, in[i].g, in[i].b };
++		for (int c = 0; c < 3; ++c) { lo[c] = std::min(lo[c], v[c]); hi[c] = std::max(hi[c], v[c]); }
++	}
++	if (lo[0] > hi[0]) { lo[0] = lo[1] = lo[2] = hi[0] = hi[1] = hi[2] = 0; } // fully transparent block
++	// Slightly inset the box to reduce the error of the min/max endpoints.
++	for (int c = 0; c < 3; ++c) { const float d = (hi[c] - lo[c]) * (1.0f / 16); lo[c] += d; hi[c] -= d; }
++	auto pack = [](const float* v) { return unsigned((Quant(v[0], 5) << 11) | (Quant(v[1], 6) << 5) | Quant(v[2], 5)); };
++	unsigned c0 = pack(hi), c1 = pack(lo);
++	Px p0 = From565(c0), p1 = From565(c1);
++	bool fourColor = true;
++	if (hasAlpha) { // 3-colour + transparent mode requires c0 <= c1
++		if (c0 > c1) std::swap(c0, c1);
++		fourColor = false;
++	} else if (c0 < c1) {
++		std::swap(c0, c1);
++	}
++	if (c0 == c1 && fourColor) { /* flat block: any index works */ }
++	p0 = From565(c0); p1 = From565(c1);
++	Px pal[4] = { p0, p1, {}, {} };
++	if (fourColor) {
++		pal[2] = { 1, (2 * p0.r + p1.r) / 3, (2 * p0.g + p1.g) / 3, (2 * p0.b + p1.b) / 3 };
++		pal[3] = { 1, (p0.r + 2 * p1.r) / 3, (p0.g + 2 * p1.g) / 3, (p0.b + 2 * p1.b) / 3 };
++	} else {
++		pal[2] = { 1, (p0.r + p1.r) / 2, (p0.g + p1.g) / 2, (p0.b + p1.b) / 2 };
++	}
++	DWORD idx = 0;
++	for (int i = 0; i < 16; ++i) {
++		int best = 0;
++		if (!fourColor && in[i].a < 0.5f) best = 3;
++		else {
++			float bd = 1e9f;
++			for (int k = 0; k < (fourColor ? 4 : 3); ++k) {
++				const float dr = in[i].r - pal[k].r, dg = in[i].g - pal[k].g, db = in[i].b - pal[k].b;
++				const float d = dr * dr + dg * dg + db * db;
++				if (d < bd) { bd = d; best = k; }
++			}
++		}
++		idx |= DWORD(best) << (2 * i);
++	}
++	const WORD w0 = WORD(c0), w1 = WORD(c1);
++	memcpy(b, &w0, 2); memcpy(b + 2, &w1, 2); memcpy(b + 4, &idx, 4);
++}
++
++void EncodeBlock(D3DFORMAT f, const Px in[16], BYTE* b)
++{
++	if (f == D3DFMT_DXT1) { EncodeColorBlock(in, b, true); return; }
++	if (f == D3DFMT_DXT2 || f == D3DFMT_DXT3) {
++		for (int i = 0; i < 8; ++i) b[i] = BYTE(Quant(in[2 * i].a, 4) | (Quant(in[2 * i + 1].a, 4) << 4));
++	} else {
++		float lo = 1, hi = 0;
++		for (int i = 0; i < 16; ++i) { lo = std::min(lo, in[i].a); hi = std::max(hi, in[i].a); }
++		const unsigned a0 = Quant(hi, 8), a1 = Quant(lo, 8);
++		b[0] = BYTE(a0); b[1] = BYTE(a1);
++		float pal[8]; pal[0] = a0 / 255.0f; pal[1] = a1 / 255.0f;
++		if (a0 > a1) for (int k = 1; k < 7; ++k) pal[1 + k] = ((7 - k) * pal[0] + k * pal[1]) / 7.0f;
++		else for (int k = 2; k < 8; ++k) pal[k] = pal[0]; // flat alpha: every index maps to a0
++		uint64_t bits = 0;
++		for (int i = 0; i < 16; ++i) {
++			int best = 0; float bd = 1e9f;
++			for (int k = 0; k < 8; ++k) { const float d = std::fabs(in[i].a - pal[k]); if (d < bd) { bd = d; best = k; } }
++			bits |= uint64_t(best) << (3 * i);
++		}
++		memcpy(b + 2, &bits, 6);
++	}
++	EncodeColorBlock(in, b + 8, false);
++}
++
++// ------------------------------------------------------------------ surface IO
++struct Image { int w = 0, h = 0; std::vector<Px> px; };
++
++bool ReadSurface(LPDIRECT3DSURFACE8 s, const D3DSURFACE_DESC& d, const RECT& r, Image& out)
++{
++	D3DLOCKED_RECT lr;
++	if (FAILED(s->LockRect(&lr, nullptr, D3DLOCK_READONLY))) return false;
++	out.w = r.right - r.left; out.h = r.bottom - r.top;
++	out.px.resize(size_t(out.w) * out.h);
++	const BYTE* base = (const BYTE*)lr.pBits;
++	if (IsDXT(d.Format)) {
++		const int bsz = d.Format == D3DFMT_DXT1 ? 8 : 16;
++		for (int y = 0; y < out.h; ++y)
++			for (int x = 0; x < out.w; ++x) {
++				const int sx = r.left + x, sy = r.top + y;
++				Px blk[16];
++				DecodeBlock(d.Format, base + (sy / 4) * lr.Pitch + (sx / 4) * bsz, blk);
++				out.px[size_t(y) * out.w + x] = blk[(sy & 3) * 4 + (sx & 3)];
++			}
++	} else {
++		UINT bpp = 0; BytesPerPixel(d.Format, bpp);
++		for (int y = 0; y < out.h; ++y)
++			for (int x = 0; x < out.w; ++x)
++				out.px[size_t(y) * out.w + x] = DecodePx(d.Format, base + (r.top + y) * lr.Pitch + (r.left + x) * bpp);
++	}
++	s->UnlockRect();
++	return true;
++}
++
++bool WriteSurface(LPDIRECT3DSURFACE8 s, const D3DSURFACE_DESC& d, const RECT& r, const Image& in)
++{
++	D3DLOCKED_RECT lr;
++	if (FAILED(s->LockRect(&lr, nullptr, 0))) return false;
++	BYTE* base = (BYTE*)lr.pBits;
++	if (IsDXT(d.Format)) {
++		const int bsz = d.Format == D3DFMT_DXT1 ? 8 : 16;
++		for (int by = r.top / 4; by < (r.bottom + 3) / 4; ++by)
++			for (int bx = r.left / 4; bx < (r.right + 3) / 4; ++bx) {
++				Px blk[16];
++				for (int j = 0; j < 4; ++j)
++					for (int i = 0; i < 4; ++i) {
++						const int x = std::min(std::max<int>(bx * 4 + i - r.left, 0), in.w - 1);
++						const int y = std::min(std::max<int>(by * 4 + j - r.top, 0), in.h - 1);
++						blk[j * 4 + i] = in.px[size_t(y) * in.w + x];
++					}
++				EncodeBlock(d.Format, blk, base + by * lr.Pitch + bx * bsz);
++			}
++	} else {
++		UINT bpp = 0; BytesPerPixel(d.Format, bpp);
++		for (int y = 0; y < in.h; ++y)
++			for (int x = 0; x < in.w; ++x)
++				EncodePx(d.Format, base + (r.top + y) * lr.Pitch + (r.left + x) * bpp, in.px[size_t(y) * in.w + x]);
++	}
++	s->UnlockRect();
++	return true;
++}
++
++// Box filter when shrinking, bilinear when enlarging.
++Image Resample(const Image& src, int dw, int dh)
++{
++	if (src.w == dw && src.h == dh) return src;
++	Image out; out.w = dw; out.h = dh; out.px.resize(size_t(dw) * dh);
++	for (int y = 0; y < dh; ++y)
++		for (int x = 0; x < dw; ++x) {
++			Px acc = { 0, 0, 0, 0 };
++			if (dw <= src.w && dh <= src.h) {
++				const int x0 = x * src.w / dw, x1 = std::max(x0 + 1, (x + 1) * src.w / dw);
++				const int y0 = y * src.h / dh, y1 = std::max(y0 + 1, (y + 1) * src.h / dh);
++				int n = 0;
++				for (int yy = y0; yy < y1; ++yy)
++					for (int xx = x0; xx < x1; ++xx) {
++						const Px& p = src.px[size_t(yy) * src.w + xx];
++						acc.a += p.a; acc.r += p.r; acc.g += p.g; acc.b += p.b; ++n;
++					}
++				const float inv = 1.0f / n; acc = { acc.a * inv, acc.r * inv, acc.g * inv, acc.b * inv };
++			} else {
++				const float fx = (x + 0.5f) * src.w / dw - 0.5f, fy = (y + 0.5f) * src.h / dh - 0.5f;
++				const int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
++				const float tx = fx - x0, ty = fy - y0;
++				auto at = [&](int xx, int yy) -> const Px& {
++					return src.px[size_t(std::min(std::max(yy, 0), src.h - 1)) * src.w + std::min(std::max(xx, 0), src.w - 1)];
++				};
++				const Px &p00 = at(x0, y0), &p10 = at(x0 + 1, y0), &p01 = at(x0, y0 + 1), &p11 = at(x0 + 1, y0 + 1);
++				auto lerp = [&](float a, float b, float c, float d) { return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty; };
++				acc = { lerp(p00.a, p10.a, p01.a, p11.a), lerp(p00.r, p10.r, p01.r, p11.r), lerp(p00.g, p10.g, p01.g, p11.g), lerp(p00.b, p10.b, p01.b, p11.b) };
++			}
++			out.px[size_t(y) * dw + x] = acc;
++		}
++	return out;
++}
++
++bool Supported(D3DFORMAT f) { UINT b; return IsDXT(f) || BytesPerPixel(f, b); }
++
++} // namespace
++
++extern "C" {
++
++HRESULT WINAPI D3DXLoadSurfaceFromSurface(LPDIRECT3DSURFACE8 dst, const PALETTEENTRY*, const RECT* dstRect,
++	LPDIRECT3DSURFACE8 src, const PALETTEENTRY*, const RECT* srcRect, DWORD, D3DCOLOR)
++{
++	if (!dst || !src) return D3DERR_INVALIDCALL;
++	D3DSURFACE_DESC sd, dd;
++	src->GetDesc(&sd);
++	dst->GetDesc(&dd);
++	if (!Supported(sd.Format) || !Supported(dd.Format)) return E_NOTIMPL;
++
++	const RECT sr = srcRect ? *srcRect : RECT{ 0, 0, (LONG)sd.Width, (LONG)sd.Height };
++	const RECT dr = dstRect ? *dstRect : RECT{ 0, 0, (LONG)dd.Width, (LONG)dd.Height };
++
++	// Same compressed format and size: copy the blocks untouched.
++	if (sd.Format == dd.Format && IsDXT(sd.Format) && !srcRect && !dstRect && sd.Width == dd.Width && sd.Height == dd.Height) {
++		D3DLOCKED_RECT sl, dl;
++		if (FAILED(src->LockRect(&sl, nullptr, D3DLOCK_READONLY))) return D3DERR_INVALIDCALL;
++		if (FAILED(dst->LockRect(&dl, nullptr, 0))) { src->UnlockRect(); return D3DERR_INVALIDCALL; }
++		const UINT bsz = sd.Format == D3DFMT_DXT1 ? 8 : 16;
++		const UINT rows = (sd.Height + 3) / 4, rowBytes = ((sd.Width + 3) / 4) * bsz;
++		for (UINT y = 0; y < rows; ++y)
++			memcpy((BYTE*)dl.pBits + y * dl.Pitch, (const BYTE*)sl.pBits + y * sl.Pitch, rowBytes);
++		dst->UnlockRect();
++		src->UnlockRect();
++		return D3D_OK;
++	}
++
++	Image img;
++	if (!ReadSurface(src, sd, sr, img)) return D3DERR_INVALIDCALL;
++	const Image scaled = Resample(img, dr.right - dr.left, dr.bottom - dr.top);
++	return WriteSurface(dst, dd, dr, scaled) ? D3D_OK : D3DERR_INVALIDCALL;
++}
++
++HRESULT WINAPI D3DXCreateTexture(LPDIRECT3DDEVICE8 dev, UINT w, UINT h, UINT levels, DWORD usage, D3DFORMAT fmt,
++	D3DPOOL pool, LPDIRECT3DTEXTURE8* out)
++{
++	if (!dev || !out) return D3DERR_INVALIDCALL;
++	if (levels == D3DX_DEFAULT) levels = 0; // 0 = full chain in D3D8
++	return dev->CreateTexture(w, h, levels, usage, fmt, pool, out);
++}
++
++HRESULT WINAPI D3DXCreateCubeTexture(LPDIRECT3DDEVICE8 dev, UINT size, UINT levels, DWORD usage, D3DFORMAT fmt,
++	D3DPOOL pool, LPDIRECT3DCUBETEXTURE8* out)
++{
++	if (!dev || !out) return D3DERR_INVALIDCALL;
++	if (levels == D3DX_DEFAULT) levels = 0;
++	return dev->CreateCubeTexture(size, levels, usage, fmt, pool, out);
++}
++
++HRESULT WINAPI D3DXCreateVolumeTexture(LPDIRECT3DDEVICE8 dev, UINT w, UINT h, UINT d, UINT levels, DWORD usage,
++	D3DFORMAT fmt, D3DPOOL pool, LPDIRECT3DVOLUMETEXTURE8* out)
++{
++	if (!dev || !out) return D3DERR_INVALIDCALL;
++	if (levels == D3DX_DEFAULT) levels = 0;
++	return dev->CreateVolumeTexture(w, h, d, levels, usage, fmt, pool, out);
++}
++
++HRESULT WINAPI D3DXFilterTexture(LPDIRECT3DBASETEXTURE8 base, const PALETTEENTRY*, UINT srcLevel, DWORD)
++{
++	if (!base || base->GetType() != D3DRTYPE_TEXTURE) return D3DERR_INVALIDCALL;
++	LPDIRECT3DTEXTURE8 tex = (LPDIRECT3DTEXTURE8)base;
++	const DWORD levels = tex->GetLevelCount();
++	for (DWORD l = srcLevel; l + 1 < levels; ++l) {
++		LPDIRECT3DSURFACE8 s = nullptr, d = nullptr;
++		if (FAILED(tex->GetSurfaceLevel(l, &s))) return D3DERR_INVALIDCALL;
++		if (FAILED(tex->GetSurfaceLevel(l + 1, &d))) { s->Release(); return D3DERR_INVALIDCALL; }
++		const HRESULT hr = D3DXLoadSurfaceFromSurface(d, nullptr, nullptr, s, nullptr, nullptr, D3DX_FILTER_BOX, 0);
++		s->Release();
++		d->Release();
++		if (FAILED(hr)) return hr;
++	}
++	return D3D_OK;
++}
++
++} // extern "C"
+diff --git a/Dependencies/Miles/CMakeLists.txt b/Dependencies/Miles/CMakeLists.txt
+new file mode 100644
+index 0000000..e9e7b1f
+--- /dev/null
++++ b/Dependencies/Miles/CMakeLists.txt
+@@ -0,0 +1,23 @@
++# 64-bit Windows: mss32.dll (Miles) has no 64-bit build and cannot be redistributed, so the part of the Miles
++# API that the engine uses is implemented on top of miniaudio (MiniMiles.cpp). The target keeps the name of the
++# 32-bit stub library so that the engine links it unchanged.
++# miniaudio 0.11.25 (public domain / MIT-0), a single header. Not built on its own.
++FetchContent_Declare(
++    miniaudio
++    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
++    GIT_TAG        9634bedb5b5a2ca38c1ee7108a9358a4e233f14d
++    SOURCE_SUBDIR  headers-only-do-not-add
++)
++FetchContent_MakeAvailable(miniaudio)
++
++add_library(milesstub STATIC MiniMiles.cpp MilesLoader.h mss/mss.h)
++
++target_include_directories(milesstub PUBLIC
++    ${CMAKE_CURRENT_SOURCE_DIR}
++    ${CMAKE_CURRENT_SOURCE_DIR}/mss
++)
++
++target_include_directories(milesstub PRIVATE ${miniaudio_SOURCE_DIR})
++target_compile_definitions(milesstub PRIVATE NOMINMAX)
++# Movies play their sound through MiniMiles (no OpenAL on this platform).
++target_compile_definitions(milesstub PUBLIC RTS_MINIMILES)
+diff --git a/Dependencies/Miles/MilesLoader.h b/Dependencies/Miles/MilesLoader.h
+new file mode 100644
+index 0000000..4029ea3
+--- /dev/null
++++ b/Dependencies/Miles/MilesLoader.h
+@@ -0,0 +1,54 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**	Copyright 2026 TheSuperHackers
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++#pragma once
++
++// This static class loads and unloads mss32.dll at runtime.
++//
++// The Miles functions declared in mss/mss.h are implemented in this class and forward to
++// the matching export of the loaded module. Loading the module explicitly, rather than importing
++// mss32.dll into the executable, is what allows the library to be picked up from a working
++// directory that was chosen on the command line, because the process no longer needs to resolve
++// it before WinMain runs.
++//
++// A missing export is not an error. The retail mss32.dll does not export every function the
++// engine was built against, and an unresolved function returns the same neutral value the Miles
++// SDK stub library used to return. A missing mss32.dll therefore disables audio instead of
++// preventing the program from starting.
++//
++// Is not thread safe. Every call to load needs a paired call to unload, no matter if the load
++// was successful. Both are expected to be called from the main thread, before AIL_startup has
++// created the Miles timer thread and after AIL_shutdown has ended it, which is why the forwarding
++// functions can stay free of locking.
++
++class MilesLoader
++{
++public:
++
++	// Returns whether mss32.dll is loaded
++	static bool isLoaded();
++
++	// Returns whether mss32.dll was attempted to be loaded but failed
++	static bool isFailed();
++
++	// Returns the system error code of the failed load attempt
++	static unsigned long getLastError();
++
++	static bool load();
++	static void unload();
++};
+diff --git a/Dependencies/Miles/MiniMiles.cpp b/Dependencies/Miles/MiniMiles.cpp
+new file mode 100644
+index 0000000..3d429c6
+--- /dev/null
++++ b/Dependencies/Miles/MiniMiles.cpp
+@@ -0,0 +1,1223 @@
++/*
++**	Command & Conquer Generals Zero Hour(tm)
++**
++**	This program is free software: you can redistribute it and/or modify
++**	it under the terms of the GNU General Public License as published by
++**	the Free Software Foundation, either version 3 of the License, or
++**	(at your option) any later version.
++**
++**	This program is distributed in the hope that it will be useful,
++**	but WITHOUT ANY WARRANTY; without even the implied warranty of
++**	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++**	GNU General Public License for more details.
++**
++**	You should have received a copy of the GNU General Public License
++**	along with this program.  If not, see <http://www.gnu.org/licenses/>.
++*/
++
++// MiniMiles: a miniaudio based implementation of the subset of the Miles Sound System API (mss/mss.h)
++// that the engine uses. Used on 64-bit builds, where the 32-bit only mss32.dll cannot be loaded.
++//
++// Mapping:
++//  * HSAMPLE / H3DSAMPLE / HSTREAM / HAUDIO are all "voices": a decoder wrapped in a looping data source
++//    that is played by a miniaudio engine sound.
++//  * Samples play from an in-memory WAV image owned by the engine's audio cache.
++//  * Streams (music, speech) are read completely through the engine's file callbacks (so they work from
++//    inside .big archives) and decoded from memory.
++//  * 3D samples are positioned by this code, not by miniaudio: distance attenuation and left/right pan are
++//    recomputed on a worker thread. The same thread fires the end-of-sample callbacks, like the Miles timer thread.
++//  * Loop counts follow Miles: 1 = play once, N = play N times, 0 = endless. AIL_stream_loop_count reports the
++//    plays that are left, which the engine uses to detect how often a music track completed.
++
++#include "MilesLoader.h"
++#include "mss/mss.h"
++
++#include <windows.h>
++#include <cmath>
++#include <cstdlib>
++#include <cstring>
++#include <cstdio>
++#include <vector>
++#include <list>
++
++#define MA_NO_ENCODING
++#define MA_NO_GENERATION
++#define MA_NO_NODE_GRAPH_TESTS
++#define MINIAUDIO_IMPLEMENTATION
++#include <miniaudio.h>
++
++namespace
++{
++
++// ------------------------------------------------------------------------------------------------
++// WAV helpers
++// ------------------------------------------------------------------------------------------------
++struct WavInfo
++{
++	unsigned short format;
++	unsigned short channels;
++	unsigned short bits;
++	unsigned short blockAlign;
++	unsigned rate;
++	const unsigned char* data;
++	unsigned dataLen;
++	size_t imageSize; // bytes from the start of the image to the end of the data chunk
++};
++
++static unsigned short rd16(const unsigned char* p) { return (unsigned short)(p[0] | (p[1] << 8)); }
++static unsigned rd32(const unsigned char* p) { return (unsigned)(p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned)p[3] << 24)); }
++
++static bool parseWav(const void* image, WavInfo& w)
++{
++	memset(&w, 0, sizeof(w));
++	const unsigned char* b = (const unsigned char*)image;
++	if (!b || memcmp(b, "RIFF", 4) != 0 || memcmp(b + 8, "WAVE", 4) != 0)
++		return false;
++
++	const unsigned char* p = b + 12;
++	bool haveFmt = false;
++	for (int guard = 0; guard < 64; ++guard)
++	{
++		const unsigned size = rd32(p + 4);
++		if (memcmp(p, "fmt ", 4) == 0)
++		{
++			w.format = rd16(p + 8);
++			w.channels = rd16(p + 10);
++			w.rate = rd32(p + 12);
++			w.blockAlign = rd16(p + 20);
++			w.bits = rd16(p + 22);
++			haveFmt = true;
++		}
++		else if (memcmp(p, "data", 4) == 0)
++		{
++			w.data = p + 8;
++			w.dataLen = size;
++			w.imageSize = (size_t)(p + 8 - b) + size;
++			return haveFmt;
++		}
++		p += 8 + size + (size & 1);
++	}
++	return false;
++}
++
++static const int kImaIndexTable[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
++static const int kImaStepTable[89] = {
++	7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
++	130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060,
++	1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484,
++	7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767 };
++
++static short imaDecodeNibble(int nibble, int& predictor, int& index)
++{
++	int step = kImaStepTable[index];
++	int diff = step >> 3;
++	if (nibble & 4) diff += step;
++	if (nibble & 2) diff += step >> 1;
++	if (nibble & 1) diff += step >> 2;
++	if (nibble & 8) predictor -= diff; else predictor += diff;
++	if (predictor > 32767) predictor = 32767;
++	if (predictor < -32768) predictor = -32768;
++	index += kImaIndexTable[nibble];
++	if (index < 0) index = 0;
++	if (index > 88) index = 88;
++	return (short)predictor;
++}
++
++// Decodes Microsoft IMA ADPCM into a complete 16 bit PCM WAV image (malloc'ed).
++static void* decodeImaAdpcm(const WavInfo& w, unsigned& outSize)
++{
++	const int ch = w.channels;
++	const int block = w.blockAlign;
++	if (ch < 1 || ch > 2 || block < 4 * ch)
++		return nullptr;
++
++	const int samplesPerBlock = (block - 4 * ch) * 2 / ch + 1;
++	const unsigned blocks = w.dataLen / block;
++	const unsigned totalFrames = blocks * samplesPerBlock;
++	const unsigned pcmBytes = totalFrames * ch * 2;
++
++	unsigned char* out = (unsigned char*)malloc(44 + pcmBytes);
++	if (!out)
++		return nullptr;
++
++	memcpy(out, "RIFF", 4);
++	const unsigned riffSize = 36 + pcmBytes;
++	memcpy(out + 4, &riffSize, 4);
++	memcpy(out + 8, "WAVEfmt ", 8);
++	const unsigned fmtSize = 16;
++	memcpy(out + 16, &fmtSize, 4);
++	const unsigned short fmtTag = 1, channels = (unsigned short)ch, bits = 16;
++	const unsigned short align = (unsigned short)(ch * 2);
++	const unsigned byteRate = w.rate * ch * 2;
++	memcpy(out + 20, &fmtTag, 2);
++	memcpy(out + 22, &channels, 2);
++	memcpy(out + 24, &w.rate, 4);
++	memcpy(out + 28, &byteRate, 4);
++	memcpy(out + 32, &align, 2);
++	memcpy(out + 34, &bits, 2);
++	memcpy(out + 36, "data", 4);
++	memcpy(out + 40, &pcmBytes, 4);
++
++	short* pcm = (short*)(out + 44);
++	for (unsigned b = 0; b < blocks; ++b)
++	{
++		const unsigned char* src = w.data + (size_t)b * block;
++		short* dst = pcm + (size_t)b * samplesPerBlock * ch;
++		int predictor[2] = { 0, 0 }, index[2] = { 0, 0 };
++		for (int c = 0; c < ch; ++c)
++		{
++			predictor[c] = (short)rd16(src + c * 4);
++			index[c] = src[c * 4 + 2];
++			if (index[c] > 88) index[c] = 88;
++			dst[c] = (short)predictor[c];
++		}
++		const unsigned char* d = src + 4 * ch;
++		if (ch == 1)
++		{
++			for (int i = 1; i < samplesPerBlock; i += 2)
++			{
++				const unsigned char v = *d++;
++				dst[i] = imaDecodeNibble(v & 15, predictor[0], index[0]);
++				if (i + 1 < samplesPerBlock)
++					dst[i + 1] = imaDecodeNibble(v >> 4, predictor[0], index[0]);
++			}
++		}
++		else
++		{
++			// Groups of 8 samples: 4 bytes for the left channel followed by 4 bytes for the right channel.
++			for (int i = 1; i < samplesPerBlock; i += 8)
++			{
++				for (int c = 0; c < 2; ++c)
++					for (int k = 0; k < 4; ++k)
++					{
++						const unsigned char v = *d++;
++						const int s0 = i + k * 2;
++						if (s0 < samplesPerBlock)
++							dst[s0 * 2 + c] = imaDecodeNibble(v & 15, predictor[c], index[c]);
++						if (s0 + 1 < samplesPerBlock)
++							dst[(s0 + 1) * 2 + c] = imaDecodeNibble(v >> 4, predictor[c], index[c]);
++					}
++			}
++		}
++	}
++
++	outSize = 44 + pcmBytes;
++	return out;
++}
++
++// ------------------------------------------------------------------------------------------------
++// Looping data source. Plays the decoder N times (Miles loop count semantics), gapless.
++// ------------------------------------------------------------------------------------------------
++struct LoopSource
++{
++	ma_data_source_base base;
++	ma_decoder* decoder;
++	volatile LONG remaining; // plays left including the current one, <= 0 means endless
++	volatile LONG loopsDone;
++};
++
++static ma_result loopRead(ma_data_source* ds, void* out, ma_uint64 frameCount, ma_uint64* pRead)
++{
++	LoopSource* s = (LoopSource*)ds;
++	ma_format format; ma_uint32 channels;
++	ma_data_source_get_data_format(s->decoder, &format, &channels, nullptr, nullptr, 0);
++	const size_t bpf = ma_get_bytes_per_frame(format, channels);
++
++	ma_uint64 total = 0;
++	int emptyReads = 0;
++	while (total < frameCount)
++	{
++		ma_uint64 got = 0;
++		ma_result r = ma_decoder_read_pcm_frames(s->decoder, (char*)out + total * bpf, frameCount - total, &got);
++		total += got;
++		if (got > 0)
++			emptyReads = 0;
++
++		if (r == MA_AT_END || (r == MA_SUCCESS && got == 0))
++		{
++			const LONG rem = s->remaining;
++			if ((rem <= 0 || rem > 1) && ++emptyReads < 3)
++			{
++				if (rem > 1)
++					InterlockedDecrement(&s->remaining);
++				InterlockedIncrement(&s->loopsDone);
++				if (ma_decoder_seek_to_pcm_frame(s->decoder, 0) != MA_SUCCESS)
++					break;
++				continue;
++			}
++			*pRead = total;
++			return total > 0 ? MA_SUCCESS : MA_AT_END;
++		}
++		if (r != MA_SUCCESS)
++			break;
++	}
++	*pRead = total;
++	return MA_SUCCESS;
++}
++
++static ma_result loopSeek(ma_data_source* ds, ma_uint64 frame)
++{
++	return ma_decoder_seek_to_pcm_frame(((LoopSource*)ds)->decoder, frame);
++}
++
++static ma_result loopGetFormat(ma_data_source* ds, ma_format* f, ma_uint32* c, ma_uint32* r, ma_channel* map, size_t mapCap)
++{
++	return ma_data_source_get_data_format(((LoopSource*)ds)->decoder, f, c, r, map, mapCap);
++}
++
++static ma_result loopGetCursor(ma_data_source* ds, ma_uint64* cursor)
++{
++	return ma_decoder_get_cursor_in_pcm_frames(((LoopSource*)ds)->decoder, cursor);
++}
++
++static ma_result loopGetLength(ma_data_source* ds, ma_uint64* length)
++{
++	return ma_decoder_get_length_in_pcm_frames(((LoopSource*)ds)->decoder, length);
++}
++
++static ma_data_source_vtable g_loopVtable = { loopRead, loopSeek, loopGetFormat, loopGetCursor, loopGetLength, nullptr, 0 };
++
++// ------------------------------------------------------------------------------------------------
++// Voices
++// ------------------------------------------------------------------------------------------------
++enum VoiceKind { VK_SAMPLE, VK_SAMPLE3D, VK_STREAM, VK_QUICK, VK_LISTENER };
++
++struct Voice
++{
++	VoiceKind kind;
++	bool allocated;
++
++	const void* image;               // samples: external WAV image
++	std::vector<unsigned char> own;  // streams: complete file data
++	ma_decoder decoder;
++	bool decoderReady;
++	LoopSource source;
++	ma_sound sound;
++	bool soundReady;
++
++	float volume, pan;
++	int sampleRate;                  // native rate of the decoded data
++	int rateOverride;                // value set through *_playback_rate, 0 = native
++	LONG loopCount;                  // as set by the engine, 0 = endless
++	void* userData[8];
++
++	bool started;                    // between start and stop
++	volatile LONG ended;             // set by the audio thread when the sound reached its end
++	bool endNotified;
++	AIL_sample_callback eosSample;
++	AIL_3dsample_callback eos3D;
++	AIL_stream_callback eosStream;
++
++	// 3D
++	float pos[3], face[3], up[3];
++	float minDist, maxDist;
++	float occlusion;
++};
++
++static CRITICAL_SECTION g_lock;
++static bool g_lockInit = false;
++static ma_engine g_engine;
++static bool g_engineReady = false;
++static HANDLE g_thread = nullptr;
++static volatile LONG g_threadRun = 0;
++static std::list<Voice*> g_voices;      // every voice ever allocated and not yet destroyed
++static Voice* g_listener = nullptr;
++static DIG_DRIVER g_dig;
++static AIL_file_open_callback g_fileOpen = nullptr;
++static AIL_file_close_callback g_fileClose = nullptr;
++static AIL_file_seek_callback g_fileSeek = nullptr;
++static AIL_file_read_callback g_fileRead = nullptr;
++static char g_lastError[64] = "";
++static const char* kProviderName = "Miles Fast 2D Positional Audio";
++
++struct Lock
++{
++	Lock() { EnterCriticalSection(&g_lock); }
++	~Lock() { LeaveCriticalSection(&g_lock); }
++};
++
++static Voice* newVoice(VoiceKind kind)
++{
++	Lock l;
++
++	// Released voices are recycled rather than freed: the worker thread and the engine may still hold a
++	// pointer to one for a short while, and recycling keeps that memory valid.
++	Voice* v = nullptr;
++	for (std::list<Voice*>::iterator it = g_voices.begin(); it != g_voices.end(); ++it)
++	{
++		if (!(*it)->allocated && (*it)->kind == kind)
++		{
++			v = *it;
++			break;
++		}
++	}
++	const bool recycled = (v != nullptr);
++	if (!recycled)
++		v = new Voice();
++
++	memset(&v->decoder, 0, sizeof(v->decoder));
++	memset(&v->sound, 0, sizeof(v->sound));
++	memset(&v->source, 0, sizeof(v->source));
++	v->kind = kind;
++	v->allocated = true;
++	v->image = nullptr;
++	v->decoderReady = false;
++	v->soundReady = false;
++	v->volume = 1.0f;
++	v->pan = 0.5f;
++	v->sampleRate = 22050;
++	v->rateOverride = 0;
++	v->loopCount = 1;
++	memset(v->userData, 0, sizeof(v->userData));
++	v->started = false;
++	v->ended = 0;
++	v->endNotified = false;
++	v->eosSample = nullptr;
++	v->eos3D = nullptr;
++	v->eosStream = nullptr;
++	v->pos[0] = v->pos[1] = v->pos[2] = 0.0f;
++	v->face[0] = 0; v->face[1] = 1; v->face[2] = 0;
++	v->up[0] = 0; v->up[1] = 0; v->up[2] = 1;
++	v->minDist = 100.0f;
++	v->maxDist = 1000.0f;
++	v->occlusion = 0.0f;
++	if (!recycled)
++		g_voices.push_back(v);
++	return v;
++}
++
++static void soundEnded(void* user, ma_sound*)
++{
++	Voice* v = (Voice*)user;
++	InterlockedExchange(&v->ended, 1);
++}
++
++static void teardownPlayback(Voice* v)
++{
++	if (v->soundReady)
++	{
++		ma_sound_uninit(&v->sound);
++		v->soundReady = false;
++	}
++	if (v->decoderReady)
++	{
++		ma_data_source_uninit(&v->source.base);
++		ma_decoder_uninit(&v->decoder);
++		v->decoderReady = false;
++	}
++	v->started = false;
++	InterlockedExchange(&v->ended, 0);
++	v->endNotified = false;
++}
++
++static void destroyVoice(Voice* v)
++{
++	Lock l;
++	teardownPlayback(v);
++	v->own.clear();
++	v->own.shrink_to_fit();
++	v->allocated = false;
++}
++
++static void applyGain(Voice* v);
++
++// Creates decoder + data source + sound for the voice from a memory image.
++static bool prepare(Voice* v, const void* data, size_t size)
++{
++	if (!g_engineReady || !data || size == 0)
++		return false;
++
++	teardownPlayback(v);
++
++	ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
++	if (ma_decoder_init_memory(data, size, &cfg, &v->decoder) != MA_SUCCESS)
++		return false;
++	v->decoderReady = true;
++
++	ma_format fmt; ma_uint32 ch = 0, rate = 0;
++	ma_data_source_get_data_format(&v->decoder, &fmt, &ch, &rate, nullptr, 0);
++	v->sampleRate = (int)rate;
++
++	ma_data_source_config dsc = ma_data_source_config_init();
++	dsc.vtable = &g_loopVtable;
++	if (ma_data_source_init(&dsc, &v->source.base) != MA_SUCCESS)
++	{
++		ma_decoder_uninit(&v->decoder);
++		v->decoderReady = false;
++		return false;
++	}
++	v->source.decoder = &v->decoder;
++	v->source.remaining = v->loopCount == 0 ? -1 : v->loopCount;
++	v->source.loopsDone = 0;
++
++	const ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
++	if (ma_sound_init_from_data_source(&g_engine, &v->source.base, flags, nullptr, &v->sound) != MA_SUCCESS)
++	{
++		ma_data_source_uninit(&v->source.base);
++		ma_decoder_uninit(&v->decoder);
++		v->decoderReady = false;
++		return false;
++	}
++	v->soundReady = true;
++	ma_sound_set_end_callback(&v->sound, soundEnded, v);
++	ma_sound_set_pan_mode(&v->sound, ma_pan_mode_balance);
++	if (v->rateOverride > 0 && v->sampleRate > 0)
++		ma_sound_set_pitch(&v->sound, (float)v->rateOverride / (float)v->sampleRate);
++	applyGain(v);
++	return true;
++}
++
++static void spatialize(Voice* v, float& gain, float& pan)
++{
++	gain = 1.0f;
++	pan = 0.0f;
++	if (!g_listener)
++		return;
++
++	const float dx = v->pos[0] - g_listener->pos[0];
++	const float dy = v->pos[1] - g_listener->pos[1];
++	const float dz = v->pos[2] - g_listener->pos[2];
++	const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
++
++	if (dist > v->minDist)
++	{
++		const float range = v->maxDist - v->minDist;
++		gain = range > 0.0f ? 1.0f - (dist - v->minDist) / range : 0.0f;
++		if (gain < 0.0f) gain = 0.0f;
++	}
++
++	// Right vector of the listener on the ground plane (face x up with up = +Z).
++	const float fx = g_listener->face[0], fy = g_listener->face[1];
++	const float fl = std::sqrt(fx * fx + fy * fy);
++	const float hd = std::sqrt(dx * dx + dy * dy);
++	if (fl > 1e-4f && hd > 1.0f)
++	{
++		const float rx = fy / fl, ry = -fx / fl;
++		pan = (dx * rx + dy * ry) / hd;
++		pan *= 0.85f;
++	}
++}
++
++static void applyGain(Voice* v)
++{
++	if (!v->soundReady)
++		return;
++	float gain = v->volume;
++	float pan = (v->pan - 0.5f) * 2.0f;
++	if (v->kind == VK_SAMPLE3D)
++	{
++		float sg, sp;
++		spatialize(v, sg, sp);
++		gain *= sg * (1.0f - v->occlusion * 0.5f);
++		pan = sp;
++	}
++	ma_sound_set_volume(&v->sound, gain);
++	ma_sound_set_pan(&v->sound, pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan));
++}
++
++static void startVoice(Voice* v)
++{
++	if (!v->soundReady)
++		return;
++	ma_sound_stop(&v->sound);
++	ma_sound_seek_to_pcm_frame(&v->sound, 0);
++	v->source.remaining = v->loopCount == 0 ? -1 : v->loopCount;
++	v->source.loopsDone = 0;
++	InterlockedExchange(&v->ended, 0);
++	v->endNotified = false;
++	applyGain(v);
++	ma_sound_start(&v->sound);
++	v->started = true;
++}
++
++static void stopVoice(Voice* v)
++{
++	if (v->soundReady)
++		ma_sound_stop(&v->sound);
++	v->started = false;
++}
++
++static void resumeVoice(Voice* v)
++{
++	if (v->soundReady)
++	{
++		ma_sound_start(&v->sound);
++		v->started = true;
++	}
++}
++
++static DWORD WINAPI workerMain(LPVOID)
++{
++	while (g_threadRun)
++	{
++		struct Pending { Voice* v; };
++		std::vector<Pending> fire;
++		{
++			Lock l;
++			for (std::list<Voice*>::iterator it = g_voices.begin(); it != g_voices.end(); ++it)
++			{
++				Voice* v = *it;
++				if (!v->allocated || !v->soundReady)
++					continue;
++				if (v->kind == VK_SAMPLE3D && v->started)
++					applyGain(v);
++				if (v->ended && !v->endNotified && v->started)
++				{
++					v->endNotified = true;
++					v->started = false;
++					fire.push_back({ v });
++				}
++			}
++		}
++		for (size_t i = 0; i < fire.size(); ++i)
++		{
++			Voice* v = fire[i].v;
++			switch (v->kind)
++			{
++				case VK_SAMPLE: if (v->eosSample) v->eosSample((HSAMPLE)v); break;
++				case VK_SAMPLE3D: if (v->eos3D) v->eos3D((H3DPOBJECT)v); break;
++				case VK_STREAM: if (v->eosStream) v->eosStream((HSTREAM)v); break;
++				default: break;
++			}
++		}
++		Sleep(10);
++	}
++	return 0;
++}
++
++static bool readWholeFile(const char* name, std::vector<unsigned char>& out)
++{
++	if (!g_fileOpen || !g_fileRead || !g_fileClose)
++		return false;
++
++	void* handle = nullptr;
++	if (!g_fileOpen(name, &handle) || !handle)
++		return false;
++
++	out.clear();
++	const U32 chunk = 64 * 1024;
++	size_t used = 0;
++	for (;;)
++	{
++		out.resize(used + chunk);
++		const U32 got = g_fileRead(handle, &out[used], chunk);
++		used += got;
++		if (got < chunk)
++			break;
++	}
++	out.resize(used);
++	g_fileClose(handle);
++	return used > 0;
++}
++
++static float msOf(Voice* v, bool total)
++{
++	if (!v->decoderReady || v->sampleRate <= 0)
++		return 0.0f;
++	ma_uint64 frames = 0;
++	if (total)
++		ma_decoder_get_length_in_pcm_frames(&v->decoder, &frames);
++	else if (v->soundReady)
++		ma_decoder_get_cursor_in_pcm_frames(&v->decoder, &frames);
++	return (float)frames * 1000.0f / (float)v->sampleRate;
++}
++
++} // namespace
++
++// ================================================================================================
++// MilesLoader
++// ================================================================================================
++bool MilesLoader::isLoaded() { return true; }
++bool MilesLoader::isFailed() { return false; }
++unsigned long MilesLoader::getLastError() { return 0; }
++bool MilesLoader::load() { return true; }
++void MilesLoader::unload() {}
++
++// ================================================================================================
++// Miles API
++// ================================================================================================
++extern "C"
++{
++
++S32 __stdcall AIL_startup(void)
++{
++	if (!g_lockInit)
++	{
++		InitializeCriticalSection(&g_lock);
++		g_lockInit = true;
++	}
++	return 1;
++}
++
++void __stdcall AIL_shutdown(void)
++{
++	if (g_threadRun)
++	{
++		InterlockedExchange(&g_threadRun, 0);
++		WaitForSingleObject(g_thread, 2000);
++		CloseHandle(g_thread);
++		g_thread = nullptr;
++	}
++	if (g_lockInit)
++	{
++		Lock l;
++		for (std::list<Voice*>::iterator it = g_voices.begin(); it != g_voices.end(); ++it)
++		{
++			teardownPlayback(*it);
++			delete *it;
++		}
++		g_voices.clear();
++		g_listener = nullptr;
++	}
++	if (g_engineReady)
++	{
++		ma_engine_uninit(&g_engine);
++		g_engineReady = false;
++	}
++}
++
++S32 __stdcall AIL_quick_startup(S32, S32, U32, S32, S32)
++{
++	AIL_startup();
++	if (g_engineReady)
++		return 1;
++
++	ma_engine_config cfg = ma_engine_config_init();
++	cfg.channels = 2;
++	if (ma_engine_init(&cfg, &g_engine) != MA_SUCCESS)
++	{
++		strcpy(g_lastError, "miniaudio engine init failed");
++		return 0;
++	}
++	g_engineReady = true;
++
++	InterlockedExchange(&g_threadRun, 1);
++	g_thread = CreateThread(nullptr, 0, workerMain, nullptr, 0, nullptr);
++	return 1;
++}
++
++void __stdcall AIL_quick_handles(HDIGDRIVER* pdig, HMDIDRIVER* pmdi, HDLSDEVICE* pdls)
++{
++	if (pdig) *pdig = &g_dig;
++	if (pmdi) *pmdi = nullptr;
++	if (pdls) *pdls = nullptr;
++}
++
++char* __stdcall AIL_last_error(void) { return g_lastError; }
++char* __stdcall AIL_set_redist_directory(const char*) { return nullptr; }
++S32 __stdcall AIL_set_preference(U32, S32) { return 0; }
++S32 __stdcall AIL_waveOutOpen(HDIGDRIVER*, LPHWAVEOUT*, S32, LPWAVEFORMAT) { return 1; }
++void __stdcall AIL_waveOutClose(HDIGDRIVER) {}
++void __stdcall AIL_stop_timer(HTIMER) {}
++void __stdcall AIL_release_timer_handle(HTIMER) {}
++U32 __stdcall AIL_get_timer_highest_delay(void) { return 0; }
++void __stdcall AIL_lock(void) {}
++void __stdcall AIL_unlock(void) {}
++void __stdcall AIL_lock_mutex(void) {}
++void __stdcall AIL_unlock_mutex(void) {}
++
++void __stdcall AIL_set_file_callbacks(AIL_file_open_callback o, AIL_file_close_callback c, AIL_file_seek_callback s, AIL_file_read_callback r)
++{
++	g_fileOpen = o; g_fileClose = c; g_fileSeek = s; g_fileRead = r;
++}
++
++void __stdcall AIL_get_DirectSound_info(HSAMPLE, AILLPDIRECTSOUND* ds, AILLPDIRECTSOUNDBUFFER* dsb)
++{
++	if (ds) *ds = nullptr;
++	if (dsb) *dsb = nullptr;
++}
++
++// ---- providers / filters ------------------------------------------------------------------------
++S32 __stdcall AIL_enumerate_3D_providers(HPROENUM* next, HPROVIDER* dest, char** name)
++{
++	if (!next || *next != 0)
++		return 0;
++	*next = 1;
++	if (dest) *dest = (HPROVIDER)kProviderName;
++	if (name) *name = (char*)kProviderName;
++	return 1;
++}
++
++S32 __stdcall AIL_enumerate_filters(HPROENUM*, HPROVIDER*, char**) { return 0; }
++M3DRESULT __stdcall AIL_open_3D_provider(HPROVIDER) { return M3D_NOERR; }
++void __stdcall AIL_close_3D_provider(HPROVIDER) {}
++void __stdcall AIL_set_3D_speaker_type(HPROVIDER, S32) {}
++
++H3DPOBJECT __stdcall AIL_open_3D_listener(HPROVIDER)
++{
++	Lock l;
++	if (!g_listener)
++		g_listener = newVoice(VK_LISTENER);
++	return (H3DPOBJECT)g_listener;
++}
++
++void __stdcall AIL_close_3D_listener(H3DPOBJECT listener)
++{
++	Lock l;
++	if (listener && (Voice*)listener == g_listener)
++		g_listener = nullptr;
++	if (listener)
++		destroyVoice((Voice*)listener);
++}
++
++// ---- file info ----------------------------------------------------------------------------------
++S32 __stdcall AIL_WAV_info(const void* data, AILSOUNDINFO* info)
++{
++	WavInfo w;
++	if (!info || !parseWav(data, w))
++		return 0;
++	memset(info, 0, sizeof(*info));
++	info->format = w.format;
++	info->data_ptr = w.data;
++	info->data_len = w.dataLen;
++	info->rate = w.rate;
++	info->bits = w.bits;
++	info->channels = w.channels;
++	info->block_size = w.blockAlign;
++	info->initial_ptr = data;
++	if (w.channels && w.bits)
++		info->samples = w.dataLen / (w.channels * ((w.bits + 7) / 8));
++	return 1;
++}
++
++S32 __stdcall AIL_decompress_ADPCM(const AILSOUNDINFO* info, void** outdata, U32* outsize)
++{
++	if (!info || !outdata || !outsize || info->format != WAVE_FORMAT_IMA_ADPCM)
++		return 0;
++	WavInfo w;
++	memset(&w, 0, sizeof(w));
++	w.format = (unsigned short)info->format;
++	w.channels = (unsigned short)info->channels;
++	w.bits = (unsigned short)info->bits;
++	w.blockAlign = (unsigned short)info->block_size;
++	w.rate = info->rate;
++	w.data = (const unsigned char*)info->data_ptr;
++	w.dataLen = info->data_len;
++	unsigned size = 0;
++	void* out = decodeImaAdpcm(w, size);
++	if (!out)
++		return 0;
++	*outdata = out;
++	*outsize = size;
++	return 1;
++}
++
++void __stdcall AIL_mem_free_lock(void* ptr) { free(ptr); }
++
++// ---- sample handles -----------------------------------------------------------------------------
++HSAMPLE __stdcall AIL_allocate_sample_handle(HDIGDRIVER) { return (HSAMPLE)newVoice(VK_SAMPLE); }
++H3DSAMPLE __stdcall AIL_allocate_3D_sample_handle(HPROVIDER) { return (H3DSAMPLE)newVoice(VK_SAMPLE3D); }
++void __stdcall AIL_release_sample_handle(HSAMPLE s) { if (s) destroyVoice((Voice*)s); }
++void __stdcall AIL_release_3D_sample_handle(H3DSAMPLE s) { if (s) destroyVoice((Voice*)s); }
++
++void __stdcall AIL_init_sample(HSAMPLE sample)
++{
++	Voice* v = (Voice*)sample;
++	if (!v) return;
++	Lock l;
++	teardownPlayback(v);
++	v->image = nullptr;
++	v->volume = 1.0f;
++	v->pan = 0.5f;
++	v->rateOverride = 0;
++	v->loopCount = 1;
++	v->eosSample = nullptr;
++}
++
++S32 __stdcall AIL_set_sample_file(HSAMPLE sample, const void* file_image, S32)
++{
++	Voice* v = (Voice*)sample;
++	WavInfo w;
++	if (!v || !parseWav(file_image, w))
++		return 0;
++	Lock l;
++	v->image = file_image;
++	return prepare(v, file_image, w.imageSize) ? 1 : 0;
++}
++
++S32 __stdcall AIL_set_3D_sample_file(H3DSAMPLE sample, const void* file_image)
++{
++	Voice* v = (Voice*)sample;
++	WavInfo w;
++	if (!v || !parseWav(file_image, w))
++		return 0;
++	Lock l;
++	v->image = file_image;
++	return prepare(v, file_image, w.imageSize) ? 1 : 0;
++}
++
++S32 __stdcall AIL_set_named_sample_file(HSAMPLE sample, const char*, const void* file_image, S32, S32 block)
++{
++	return AIL_set_sample_file(sample, file_image, block);
++}
++
++HPROVIDER __stdcall AIL_set_sample_processor(HSAMPLE, SAMPLESTAGE, HPROVIDER) { return nullptr; }
++void __stdcall AIL_set_filter_sample_preference(HSAMPLE, const char*, const void*) {}
++
++void __stdcall AIL_start_sample(HSAMPLE s) { Voice* v = (Voice*)s; if (v) { Lock l; startVoice(v); } }
++void __stdcall AIL_stop_sample(HSAMPLE s) { Voice* v = (Voice*)s; if (v) { Lock l; stopVoice(v); } }
++void __stdcall AIL_resume_sample(HSAMPLE s) { Voice* v = (Voice*)s; if (v) { Lock l; resumeVoice(v); } }
++void __stdcall AIL_end_sample(HSAMPLE s) { Voice* v = (Voice*)s; if (v) { Lock l; stopVoice(v); } }
++
++void __stdcall AIL_start_3D_sample(H3DSAMPLE s) { AIL_start_sample((HSAMPLE)s); }
++void __stdcall AIL_stop_3D_sample(H3DSAMPLE s) { AIL_stop_sample((HSAMPLE)s); }
++void __stdcall AIL_resume_3D_sample(H3DSAMPLE s) { AIL_resume_sample((HSAMPLE)s); }
++void __stdcall AIL_end_3D_sample(H3DSAMPLE s) { AIL_end_sample((HSAMPLE)s); }
++
++AIL_sample_callback __stdcall AIL_register_EOS_callback(HSAMPLE s, AIL_sample_callback cb)
++{
++	Voice* v = (Voice*)s; if (!v) return nullptr;
++	Lock l; AIL_sample_callback old = v->eosSample; v->eosSample = cb; return old;
++}
++
++AIL_3dsample_callback __stdcall AIL_register_3D_EOS_callback(H3DSAMPLE s, AIL_3dsample_callback cb)
++{
++	Voice* v = (Voice*)s; if (!v) return nullptr;
++	Lock l; AIL_3dsample_callback old = v->eos3D; v->eos3D = cb; return old;
++}
++
++void __stdcall AIL_set_sample_volume_pan(HSAMPLE s, F32 volume, F32 pan)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l; v->volume = volume; v->pan = pan; applyGain(v);
++}
++
++void __stdcall AIL_sample_volume_pan(HSAMPLE s, F32* volume, F32* pan)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	if (volume) *volume = v->volume;
++	if (pan) *pan = v->pan;
++}
++
++F32 __stdcall AIL_3D_sample_volume(H3DSAMPLE s) { Voice* v = (Voice*)s; return v ? v->volume : 0.0f; }
++void __stdcall AIL_set_3D_sample_volume(H3DSAMPLE s, F32 volume)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l; v->volume = volume; applyGain(v);
++}
++
++void __stdcall AIL_set_sample_playback_rate(HSAMPLE s, S32 rate)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l;
++	v->rateOverride = rate;
++	if (v->soundReady && v->sampleRate > 0 && rate > 0)
++		ma_sound_set_pitch(&v->sound, (float)rate / (float)v->sampleRate);
++}
++
++S32 __stdcall AIL_sample_playback_rate(HSAMPLE s)
++{
++	Voice* v = (Voice*)s; if (!v) return 0;
++	return v->rateOverride > 0 ? v->rateOverride : v->sampleRate;
++}
++
++void __stdcall AIL_set_3D_sample_playback_rate(H3DSAMPLE s, S32 rate) { AIL_set_sample_playback_rate((HSAMPLE)s, rate); }
++S32 __stdcall AIL_3D_sample_playback_rate(H3DSAMPLE s) { return AIL_sample_playback_rate((HSAMPLE)s); }
++
++void __stdcall AIL_set_sample_loop_count(HSAMPLE s, S32 count)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l;
++	v->loopCount = count;
++	if (v->decoderReady)
++		v->source.remaining = count == 0 ? -1 : count;
++}
++
++S32 __stdcall AIL_sample_loop_count(HSAMPLE s)
++{
++	Voice* v = (Voice*)s; if (!v) return 0;
++	return v->decoderReady ? (v->source.remaining < 0 ? 0 : v->source.remaining) : v->loopCount;
++}
++
++void __stdcall AIL_set_3D_sample_loop_count(H3DSAMPLE s, U32 count) { AIL_set_sample_loop_count((HSAMPLE)s, (S32)count); }
++U32 __stdcall AIL_3D_sample_loop_count(H3DSAMPLE s) { return (U32)AIL_sample_loop_count((HSAMPLE)s); }
++
++void __stdcall AIL_sample_ms_position(HSAMPLE s, S32* total, S32* current)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l;
++	if (total) *total = (S32)msOf(v, true);
++	if (current) *current = (S32)msOf(v, false);
++}
++
++void __stdcall AIL_set_sample_ms_position(HSAMPLE s, S32 pos)
++{
++	Voice* v = (Voice*)s; if (!v || !v->soundReady) return;
++	Lock l;
++	ma_sound_seek_to_pcm_frame(&v->sound, (ma_uint64)((double)pos * v->sampleRate / 1000.0));
++}
++
++void __stdcall AIL_set_3D_sample_offset(H3DSAMPLE s, U32 offset)
++{
++	Voice* v = (Voice*)s; if (!v || !v->soundReady) return;
++	Lock l;
++	ma_sound_seek_to_pcm_frame(&v->sound, offset / 2);
++}
++
++U32 __stdcall AIL_3D_sample_length(H3DSAMPLE s)
++{
++	Voice* v = (Voice*)s; if (!v || !v->decoderReady) return 0;
++	ma_uint64 frames = 0;
++	ma_decoder_get_length_in_pcm_frames(&v->decoder, &frames);
++	return (U32)(frames * 2);
++}
++
++U32 __stdcall AIL_3D_sample_offset(H3DSAMPLE s)
++{
++	Voice* v = (Voice*)s; if (!v || !v->decoderReady) return 0;
++	ma_uint64 frames = 0;
++	ma_decoder_get_cursor_in_pcm_frames(&v->decoder, &frames);
++	return (U32)(frames * 2);
++}
++
++void __stdcall AIL_set_sample_user_data(HSAMPLE s, U32 index, void* value) { Voice* v = (Voice*)s; if (v && index < 8) v->userData[index] = value; }
++void* __stdcall AIL_sample_user_data(HSAMPLE s, U32 index) { Voice* v = (Voice*)s; return (v && index < 8) ? v->userData[index] : nullptr; }
++void __stdcall AIL_set_3D_user_data(H3DPOBJECT o, U32 index, void* value) { Voice* v = (Voice*)o; if (v && index < 8) v->userData[index] = value; }
++void* __stdcall AIL_3D_user_data(H3DPOBJECT o, U32 index) { Voice* v = (Voice*)o; return (v && index < 8) ? v->userData[index] : nullptr; }
++
++// ---- 3D -----------------------------------------------------------------------------------------
++void __stdcall AIL_set_3D_position(H3DPOBJECT obj, F32 x, F32 y, F32 z)
++{
++	Voice* v = (Voice*)obj; if (!v) return;
++	Lock l;
++	v->pos[0] = x; v->pos[1] = y; v->pos[2] = z;
++	if (v->kind == VK_SAMPLE3D)
++		applyGain(v);
++}
++
++void __stdcall AIL_set_3D_orientation(H3DPOBJECT obj, F32 xf, F32 yf, F32 zf, F32 xu, F32 yu, F32 zu)
++{
++	Voice* v = (Voice*)obj; if (!v) return;
++	Lock l;
++	v->face[0] = xf; v->face[1] = yf; v->face[2] = zf;
++	v->up[0] = xu; v->up[1] = yu; v->up[2] = zu;
++}
++
++void __stdcall AIL_set_3D_velocity_vector(H3DPOBJECT, F32, F32, F32) {}
++void __stdcall AIL_set_3D_sample_effects_level(H3DSAMPLE, F32) {}
++
++void __stdcall AIL_set_3D_sample_distances(H3DSAMPLE s, F32 max_dist, F32 min_dist)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l;
++	v->maxDist = max_dist;
++	v->minDist = min_dist;
++}
++
++void __stdcall AIL_set_3D_sample_occlusion(H3DSAMPLE s, F32 occlusion)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l; v->occlusion = occlusion; applyGain(v);
++}
++
++// ---- streams ------------------------------------------------------------------------------------
++HSTREAM __stdcall AIL_open_stream(HDIGDRIVER, const char* filename, S32)
++{
++	if (!g_engineReady || !filename)
++		return nullptr;
++
++	std::vector<unsigned char> bytes;
++	if (!readWholeFile(filename, bytes))
++		return nullptr;
++
++	Voice* v = newVoice(VK_STREAM);
++	{
++		Lock l;
++		v->own.swap(bytes);
++		if (!prepare(v, &v->own[0], v->own.size()))
++		{
++			destroyVoice(v);
++			return nullptr;
++		}
++	}
++	return (HSTREAM)v;
++}
++
++void __stdcall AIL_close_stream(HSTREAM s) { Voice* v = (Voice*)s; if (v) destroyVoice(v); }
++
++void __stdcall AIL_start_stream(HSTREAM s) { Voice* v = (Voice*)s; if (v) { Lock l; startVoice(v); } }
++
++void __stdcall AIL_pause_stream(HSTREAM s, S32 onoff)
++{
++	Voice* v = (Voice*)s; if (!v) return;
++	Lock l;
++	if (onoff) stopVoice(v); else resumeVoice(v);
++}
++
++AIL_stream_callback __stdcall AIL_register_stream_callback(HSTREAM s, AIL_stream_callback cb)
++{
++	Voice* v = (Voice*)s; if (!v) return nullptr;
++	Lock l; AIL_stream_callback old = v->eosStream; v->eosStream = cb; return old;
++}
++
++void __stdcall AIL_set_stream_volume_pan(HSTREAM s, F32 volume, F32 pan) { AIL_set_sample_volume_pan((HSAMPLE)s, volume, pan); }
++void __stdcall AIL_stream_volume_pan(HSTREAM s, F32* volume, F32* pan) { AIL_sample_volume_pan((HSAMPLE)s, volume, pan); }
++
++void __stdcall AIL_set_stream_loop_count(HSTREAM s, S32 count) { AIL_set_sample_loop_count((HSAMPLE)s, count); }
++S32 __stdcall AIL_stream_loop_count(HSTREAM s) { return AIL_sample_loop_count((HSAMPLE)s); }
++void __stdcall AIL_set_stream_loop_block(HSTREAM, S32, S32) {}
++void __stdcall AIL_set_stream_playback_rate(HSTREAM s, S32 rate) { AIL_set_sample_playback_rate((HSAMPLE)s, rate); }
++S32 __stdcall AIL_stream_playback_rate(HSTREAM s) { return AIL_sample_playback_rate((HSAMPLE)s); }
++void __stdcall AIL_stream_ms_position(HSTREAM s, S32* total, S32* current) { AIL_sample_ms_position((HSAMPLE)s, total, current); }
++void __stdcall AIL_set_stream_ms_position(HSTREAM s, S32 pos) { AIL_set_sample_ms_position((HSAMPLE)s, pos); }
++
++// ---- quick play (used for forced one-shot audio such as mission briefings) ----------------------------
++HAUDIO __stdcall AIL_quick_load_and_play(const char* filename, U32 loop_count, S32)
++{
++	if (!g_engineReady || !filename)
++		return nullptr;
++
++	std::vector<unsigned char> bytes;
++	if (!readWholeFile(filename, bytes))
++		return nullptr;
++
++	Voice* v = newVoice(VK_QUICK);
++	{
++		Lock l;
++		v->loopCount = (LONG)loop_count;
++		v->own.swap(bytes);
++		if (!prepare(v, &v->own[0], v->own.size()))
++		{
++			destroyVoice(v);
++			return nullptr;
++		}
++		startVoice(v);
++	}
++	return (HAUDIO)v;
++}
++
++void __stdcall AIL_quick_set_volume(HAUDIO a, F32 volume, F32 extravol)
++{
++	Voice* v = (Voice*)a; if (!v) return;
++	Lock l; v->volume = volume; v->pan = extravol; applyGain(v);
++}
++
++void __stdcall AIL_quick_unload(HAUDIO a) { Voice* v = (Voice*)a; if (v) destroyVoice(v); }
++
++} // extern "C"
++
++// ------------------------------------------------------------------------------------------------
++// Sound of movies (not Miles API): a ring buffer that the video player fills, played as a sound of the engine
++// ------------------------------------------------------------------------------------------------
++#include "MiniMilesVideo.h"
++
++namespace
++{
++struct VideoAudio
++{
++	ma_data_source_base base;	// first member: the engine passes this pointer around
++	ma_pcm_rb rb;
++	ma_uint32 channels;
++	ma_uint32 sampleRate;
++	ma_sound sound;
++	bool soundReady;
++};
++
++ma_result videoAudioRead(ma_data_source* ds, void* out, ma_uint64 frameCount, ma_uint64* framesRead)
++{
++	VideoAudio* v = (VideoAudio*)ds;
++	const ma_uint32 bytesPerFrame = v->channels * 2;
++	char* dst = (char*)out;
++	ma_uint64 got = 0;
++	while (got < frameCount)
++	{
++		ma_uint32 n = (ma_uint32)(frameCount - got);
++		void* p = nullptr;
++		if (ma_pcm_rb_acquire_read(&v->rb, &n, &p) != MA_SUCCESS || n == 0)
++			break;
++		memcpy(dst + got * bytesPerFrame, p, (size_t)n * bytesPerFrame);
++		ma_pcm_rb_commit_read(&v->rb, n);
++		got += n;
++	}
++	if (got < frameCount)
++		memset(dst + got * bytesPerFrame, 0, (size_t)(frameCount - got) * bytesPerFrame);		// nothing decoded yet: silence, the sound never ends
++	*framesRead = frameCount;
++	return MA_SUCCESS;
++}
++
++ma_result videoAudioSeek(ma_data_source*, ma_uint64) { return MA_NOT_IMPLEMENTED; }
++
++ma_result videoAudioFormat(ma_data_source* ds, ma_format* f, ma_uint32* c, ma_uint32* r, ma_channel* map, size_t mapCap)
++{
++	VideoAudio* v = (VideoAudio*)ds;
++	*f = ma_format_s16; *c = v->channels; *r = v->sampleRate;
++	if (map && mapCap > 0)
++		ma_channel_map_init_standard(ma_standard_channel_map_default, map, mapCap, v->channels);
++	return MA_SUCCESS;
++}
++
++ma_result videoAudioCursor(ma_data_source*, ma_uint64*) { return MA_NOT_IMPLEMENTED; }
++ma_result videoAudioLength(ma_data_source*, ma_uint64*) { return MA_NOT_IMPLEMENTED; }
++
++ma_data_source_vtable g_videoAudioVtable = { videoAudioRead, videoAudioSeek, videoAudioFormat, videoAudioCursor, videoAudioLength, nullptr, 0 };
++}
++
++void* MiniMiles_VideoAudioOpen(unsigned channels, unsigned sampleRate)
++{
++	if (!g_engineReady || channels < 1 || channels > 2 || sampleRate < 8000)
++		return nullptr;
++	VideoAudio* v = new VideoAudio();
++	memset(&v->sound, 0, sizeof(v->sound));
++	v->channels = channels; v->sampleRate = sampleRate; v->soundReady = false;
++	if (ma_pcm_rb_init(ma_format_s16, channels, sampleRate * 4, nullptr, nullptr, &v->rb) != MA_SUCCESS)
++	{
++		delete v;
++		return nullptr;
++	}
++	ma_data_source_config dsc = ma_data_source_config_init();
++	dsc.vtable = &g_videoAudioVtable;
++	if (ma_data_source_init(&dsc, &v->base) != MA_SUCCESS)
++	{
++		ma_pcm_rb_uninit(&v->rb);
++		delete v;
++		return nullptr;
++	}
++	if (ma_sound_init_from_data_source(&g_engine, &v->base, MA_SOUND_FLAG_NO_SPATIALIZATION, nullptr, &v->sound) != MA_SUCCESS)
++	{
++		ma_data_source_uninit(&v->base);
++		ma_pcm_rb_uninit(&v->rb);
++		delete v;
++		return nullptr;
++	}
++	v->soundReady = true;
++	ma_sound_start(&v->sound);
++	return v;
++}
++
++void MiniMiles_VideoAudioWrite(void* handle, const short* interleaved, unsigned frames)
++{
++	VideoAudio* v = (VideoAudio*)handle;
++	if (!v)
++		return;
++	const ma_uint32 bytesPerFrame = v->channels * 2;
++	unsigned done = 0;
++	while (done < frames)
++	{
++		ma_uint32 n = frames - done;
++		void* p = nullptr;
++		if (ma_pcm_rb_acquire_write(&v->rb, &n, &p) != MA_SUCCESS || n == 0)
++			break;		// full: the rest is dropped
++		memcpy(p, (const char*)interleaved + (size_t)done * bytesPerFrame, (size_t)n * bytesPerFrame);
++		ma_pcm_rb_commit_write(&v->rb, n);
++		done += n;
++	}
++}
++
++void MiniMiles_VideoAudioSetVolume(void* handle, float volume)
++{
++	VideoAudio* v = (VideoAudio*)handle;
++	if (v && v->soundReady)
++		ma_sound_set_volume(&v->sound, volume < 0.0f ? 0.0f : volume);
++}
++
++void MiniMiles_VideoAudioClose(void* handle)
++{
++	VideoAudio* v = (VideoAudio*)handle;
++	if (!v)
++		return;
++	if (v->soundReady)
++		ma_sound_uninit(&v->sound);
++	ma_data_source_uninit(&v->base);
++	ma_pcm_rb_uninit(&v->rb);
++	delete v;
++}
+diff --git a/Dependencies/Miles/MiniMilesVideo.h b/Dependencies/Miles/MiniMilesVideo.h
+new file mode 100644
+index 0000000..567adef
+--- /dev/null
++++ b/Dependencies/Miles/MiniMilesVideo.h
+@@ -0,0 +1,9 @@
++// Not part of the Miles API: lets the video player play the sound of a movie through the miniaudio engine of MiniMiles.
++// The player decodes the sound to interleaved 16 bit samples and pushes them in; they are played as soon as they arrive.
++#pragma once
++
++// returns a handle, or nullptr when the audio engine is not running (no sound card, audio off)
++void* MiniMiles_VideoAudioOpen(unsigned channels, unsigned sampleRate);
++void MiniMiles_VideoAudioWrite(void* handle, const short* interleaved, unsigned frames);
++void MiniMiles_VideoAudioSetVolume(void* handle, float volume);	// 0..1
++void MiniMiles_VideoAudioClose(void* handle);
+diff --git a/Dependencies/Miles/mss/mss.h b/Dependencies/Miles/mss/mss.h
+new file mode 100644
+index 0000000..c09b21d
+--- /dev/null
++++ b/Dependencies/Miles/mss/mss.h
+@@ -0,0 +1,272 @@
++/**
++ * @file
++ *
++ * @author OmniBlade
++ *
++ * @brief Subset of the mss32.dll API as used by the W3D engine.
++ *
++ * @copyright This is free software: you can redistribute it and/or
++ *            modify it under the terms of the GNU General Public License
++ *            as published by the Free Software Foundation, either version
++ *            3 of the License, or (at your option) any later version.
++ *            A full copy of the GNU General Public License can be found in
++ *            LICENSE
++ */
++
++#pragma once
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++
++#ifndef WIN32_EXTRA_LEAN
++#define WIN32_EXTRA_LEAN
++#endif
++
++#ifndef STRICT
++#define STRICT
++#endif
++
++#ifdef _WIN32
++#include <windows.h>
++#include <mmsystem.h>
++#else
++typedef struct WAVEOUT* HWAVEOUT;
++typedef struct WAVEHDR* LPWAVEHDR;
++typedef struct WAVEFORMAT *LPWAVEFORMAT;
++#include <stdint.h>
++
++typedef struct WAVEFORMAT
++{
++    uint16_t wFormatTag;
++    uint16_t nChannels;
++    uint32_t nSamplesPerSec;
++    uint32_t nAvgBytesPerSec;
++    uint16_t nBlockAlign;
++    uint16_t wBitsPerSample;
++    uint16_t cbSize;
++} WAVEFORMAT;
++
++typedef struct PCMWAVEFORMAT
++{
++    WAVEFORMAT wf;
++    uint16_t wBitsPerSample;
++} PCMWAVEFORMAT;
++
++#define WAVE_FORMAT_PCM 0x0001
++
++typedef HWAVEOUT *LPHWAVEOUT;
++#endif
++
++#if !defined _MSC_VER
++#if !defined(__stdcall)
++#if defined __has_attribute && __has_attribute(stdcall)
++#define __stdcall __attribute__((stdcall))
++#else
++#define __stdcall
++#endif
++#endif /* !defined __stdcall */
++#endif /* !defined COMPILER_MSVC */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef unsigned long U32;
++typedef long S32;
++typedef float F32;
++
++/*
++ * These will have been structs in the real SDK headers, but are only accessed through pointers
++ * so we don't care unless access to the internals is required.
++ */
++typedef struct h3DPOBJECT
++{
++    unsigned int junk;
++} h3DPOBJECT;
++typedef h3DPOBJECT *H3DPOBJECT;
++typedef H3DPOBJECT H3DSAMPLE;
++typedef struct _SAMPLE *HSAMPLE;
++typedef struct _STREAM *HSTREAM;
++typedef struct _DIG_DRIVER
++{
++    char pad[168];
++    int emulated_ds; // We only care about this particular member for our purposes.
++} DIG_DRIVER;
++typedef struct _DIG_DRIVER *HDIGDRIVER;
++typedef struct _AUDIO *HAUDIO;
++typedef struct _HMDIDRIVER *HMDIDRIVER;
++typedef struct _HDLSDEVICE *HDLSDEVICE;
++typedef void *HPROVIDER;
++typedef S32 HTIMER;
++typedef U32 HPROENUM;
++typedef S32 M3DRESULT;
++
++typedef void *AILLPDIRECTSOUND;
++typedef void *AILLPDIRECTSOUNDBUFFER;
++
++typedef struct _AILSOUNDINFO
++{
++    S32 format;
++    const void *data_ptr;
++    U32 data_len;
++    U32 rate;
++    S32 bits;
++    S32 channels;
++    U32 samples;
++    U32 block_size;
++    const void *initial_ptr;
++} AILSOUNDINFO;
++
++typedef enum
++{
++    DP_ASI_DECODER = 0, // Must be "ASI codec stream" provider
++    DP_FILTER, // Must be "MSS pipeline filter" provider
++    DP_MERGE, // Must be "MSS mixer" provider
++    N_SAMPLE_STAGES, // Placeholder for end of list (= # of valid stages)
++    SAMPLE_ALL_STAGES // Used to signify all pipeline stages, for shutdown
++} SAMPLESTAGE;
++
++#define AILCALLBACK __stdcall
++
++#define AIL_set_3D_object_user_data AIL_set_3D_user_data
++#define AIL_3D_object_user_data AIL_3D_user_data
++#define AIL_3D_open_listener AIL_open_3D_listener
++
++/*
++ * Various callback typedefs.
++ */
++typedef U32(__stdcall *AIL_file_open_callback)(const char *, void**);
++typedef void(__stdcall *AIL_file_close_callback)(void*);
++typedef S32(__stdcall *AIL_file_seek_callback)(void*, S32, U32);
++typedef U32(__stdcall *AIL_file_read_callback)(void*, void *, U32);
++typedef void(__stdcall *AIL_stream_callback)(HSTREAM);
++typedef void(__stdcall *AIL_3dsample_callback)(H3DPOBJECT);
++typedef void(__stdcall *AIL_sample_callback)(HSAMPLE);
++
++#define DIG_USE_WAVEOUT 15
++#define AIL_LOCK_PROTECTION 18
++#define WAVE_FORMAT_IMA_ADPCM 0x11
++#define ENVIRONMENT_GENERIC 0
++#define HPROENUM_FIRST 0
++#define AIL_NO_ERROR 0
++#define AIL_FILE_SEEK_BEGIN 0
++#define AIL_FILE_SEEK_CURRENT 1
++#define AIL_FILE_SEEK_END 2
++#define AIL_3D_2_SPEAKER 0
++#define AIL_3D_HEADPHONE 1
++#define AIL_3D_SURROUND 2
++#define AIL_3D_4_SPEAKER 3
++#define AIL_3D_51_SPEAKER 4
++#define AIL_3D_71_SPEAKER 5
++#define AIL_MSS_version(a, b)
++#define M3D_NOERR 0
++
++#ifndef YES
++#define YES 1
++#endif
++
++#ifndef NO
++#define NO  0
++#endif
++
++F32 __stdcall AIL_3D_sample_volume(H3DSAMPLE sample);
++void __stdcall AIL_set_3D_sample_volume(H3DSAMPLE sample, F32 volume);
++void __stdcall AIL_end_3D_sample(H3DSAMPLE sample);
++void __stdcall AIL_resume_3D_sample(H3DSAMPLE sample);
++void __stdcall AIL_stop_3D_sample(H3DSAMPLE sample);
++void __stdcall AIL_start_3D_sample(H3DSAMPLE sample);
++U32 __stdcall AIL_3D_sample_loop_count(H3DSAMPLE sample);
++void __stdcall AIL_set_3D_sample_offset(H3DSAMPLE sample, U32 offset);
++U32 __stdcall AIL_3D_sample_length(H3DSAMPLE sample);
++U32 __stdcall AIL_3D_sample_offset(H3DSAMPLE sample);
++S32 __stdcall AIL_3D_sample_playback_rate(H3DSAMPLE sample);
++void __stdcall AIL_set_3D_sample_playback_rate(H3DSAMPLE sample, S32 playback_rate);
++S32 __stdcall AIL_set_3D_sample_file(H3DSAMPLE sample, const void* file_image);
++HPROVIDER __stdcall AIL_set_sample_processor(HSAMPLE sample, SAMPLESTAGE pipeline_stage, HPROVIDER provider);
++void __stdcall AIL_set_filter_sample_preference(HSAMPLE sample, const char* name, const void* val);
++void __stdcall AIL_release_sample_handle(HSAMPLE sample);
++void __stdcall AIL_close_3D_provider(HPROVIDER lib);
++S32 __stdcall AIL_set_preference(U32 number, S32 value);
++S32 __stdcall AIL_waveOutOpen(HDIGDRIVER* driver, LPHWAVEOUT* waveout, S32 id, LPWAVEFORMAT format);
++void __stdcall AIL_waveOutClose(HDIGDRIVER driver);
++void __stdcall AIL_set_3D_sample_loop_count(H3DSAMPLE sample, U32 count);
++void __stdcall AIL_set_stream_playback_rate(HSTREAM stream, S32 rate);
++S32 __stdcall AIL_stream_playback_rate(HSTREAM stream);
++void __stdcall AIL_stream_ms_position(HSTREAM sample, S32* total_milliseconds, S32* current_milliseconds);
++void __stdcall AIL_set_stream_ms_position(HSTREAM stream, S32 pos);
++S32 __stdcall AIL_stream_loop_count(HSTREAM stream);
++void __stdcall AIL_set_stream_loop_block(HSTREAM stream, S32 loop_start, S32 loop_end);
++void __stdcall AIL_set_stream_loop_count(HSTREAM stream, S32 count);
++void __stdcall AIL_close_stream(HSTREAM stream);
++void __stdcall AIL_pause_stream(HSTREAM stream, S32 onoff);
++AIL_stream_callback __stdcall AIL_register_stream_callback(HSTREAM stream, AIL_stream_callback callback);
++AIL_3dsample_callback __stdcall AIL_register_3D_EOS_callback(H3DSAMPLE sample, AIL_3dsample_callback EOS);
++AIL_sample_callback __stdcall AIL_register_EOS_callback(HSAMPLE sample, AIL_sample_callback EOS);
++void __stdcall AIL_start_stream(HSTREAM stream);
++void __stdcall AIL_set_sample_playback_rate(HSAMPLE sample, S32 playback_rate);
++S32 __stdcall AIL_sample_playback_rate(HSAMPLE sample);
++void __stdcall AIL_sample_ms_position(HSAMPLE sample, S32* total_ms, S32* current_ms);
++void __stdcall AIL_set_sample_ms_position(HSAMPLE sample, S32 pos);
++S32 __stdcall AIL_sample_loop_count(HSAMPLE sample);
++void __stdcall AIL_set_sample_loop_count(HSAMPLE sample, S32 count);
++void __stdcall AIL_end_sample(HSAMPLE sample);
++void __stdcall AIL_resume_sample(HSAMPLE sample);
++void __stdcall AIL_stop_sample(HSAMPLE sample);
++void __stdcall AIL_start_sample(HSAMPLE sample);
++void __stdcall AIL_init_sample(HSAMPLE sample);
++S32 __stdcall AIL_set_named_sample_file(
++    HSAMPLE sample, const char* file_name, const void* file_image, S32 file_size, S32 block);
++void __stdcall AIL_set_3D_sample_effects_level(H3DSAMPLE sample, F32 effect_level);
++void __stdcall AIL_set_3D_sample_distances(H3DSAMPLE sample, F32 max_dist, F32 min_dist);
++void __stdcall AIL_set_3D_velocity_vector(H3DPOBJECT obj, F32 x, F32 y, F32 z);
++void __stdcall AIL_set_3D_position(H3DPOBJECT obj, F32 X, F32 Y, F32 Z);
++void __stdcall AIL_set_3D_orientation(
++    H3DPOBJECT obj, F32 X_face, F32 Y_face, F32 Z_face, F32 X_up, F32 Y_up, F32 Z_up);
++S32 __stdcall AIL_WAV_info(const void* data, AILSOUNDINFO* info);
++void __stdcall AIL_stop_timer(HTIMER timer);
++void __stdcall AIL_release_timer_handle(HTIMER timer);
++void __stdcall AIL_shutdown(void);
++S32 __stdcall AIL_enumerate_filters(HPROENUM* next, HPROVIDER* dest, char** name);
++void __stdcall AIL_set_file_callbacks(AIL_file_open_callback opencb, AIL_file_close_callback closecb,
++    AIL_file_seek_callback seekcb, AIL_file_read_callback readcb);
++void __stdcall AIL_release_3D_sample_handle(H3DSAMPLE sample);
++H3DSAMPLE __stdcall AIL_allocate_3D_sample_handle(HPROVIDER lib);
++void __stdcall AIL_set_3D_user_data(H3DPOBJECT obj, U32 index, void* value);
++void __stdcall AIL_unlock(void);
++void __stdcall AIL_unlock_mutex(void);
++void __stdcall AIL_lock(void);
++void __stdcall AIL_lock_mutex(void);
++void __stdcall AIL_set_3D_speaker_type(HPROVIDER lib, S32 speaker_type);
++void __stdcall AIL_close_3D_listener(H3DPOBJECT listener);
++S32 __stdcall AIL_enumerate_3D_providers(HPROENUM* next, HPROVIDER* dest, char** name);
++M3DRESULT __stdcall AIL_open_3D_provider(HPROVIDER lib);
++char* __stdcall AIL_last_error(void);
++H3DPOBJECT __stdcall AIL_open_3D_listener(HPROVIDER lib);
++void* __stdcall AIL_3D_user_data(H3DPOBJECT obj, U32 index);
++void* __stdcall AIL_sample_user_data(HSAMPLE sample, U32 index);
++HSAMPLE __stdcall AIL_allocate_sample_handle(HDIGDRIVER dig);
++void __stdcall AIL_set_sample_user_data(HSAMPLE sample, U32 index, void* value);
++S32 __stdcall AIL_decompress_ADPCM(const AILSOUNDINFO *info, void **outdata, U32 *outsize);
++void __stdcall AIL_get_DirectSound_info(HSAMPLE sample, AILLPDIRECTSOUND *lplpDS, AILLPDIRECTSOUNDBUFFER *lplpDSB);
++void __stdcall AIL_mem_free_lock(void *ptr);
++HSTREAM __stdcall AIL_open_stream(HDIGDRIVER dig, const char *filename, S32 stream_mem);
++S32 __stdcall AIL_startup(void);
++void __stdcall AIL_quick_unload(HAUDIO audio);
++HAUDIO __stdcall AIL_quick_load_and_play(const char *filename, U32 loop_count, S32 wait_request);
++void __stdcall AIL_quick_set_volume(HAUDIO audio, F32 volume, F32 extravol);
++S32 __stdcall AIL_quick_startup(
++    S32 use_digital, S32 use_MIDI, U32 output_rate, S32 output_bits, S32 output_channels);
++void __stdcall AIL_quick_handles(HDIGDRIVER *pdig, HMDIDRIVER *pmdi, HDLSDEVICE *pdls);
++void __stdcall AIL_sample_volume_pan(HSAMPLE sample, F32 *volume, F32 *pan);
++void __stdcall AIL_set_3D_sample_occlusion(H3DSAMPLE sample, F32 occlusion);
++char *__stdcall AIL_set_redist_directory(const char *dir);
++S32 __stdcall AIL_set_sample_file(HSAMPLE sample, const void *file_image, S32 block);
++void __stdcall AIL_set_sample_volume_pan(HSAMPLE sample, F32 volume, F32 pan);
++void __stdcall AIL_set_stream_volume_pan(HSTREAM stream, F32 volume, F32 pan);
++void __stdcall AIL_stream_volume_pan(HSTREAM stream, F32 *volume, F32 *pan);
++U32 __stdcall AIL_get_timer_highest_delay(void);
++
++#ifdef __cplusplus
++} // extern "C"
++#endif
+diff --git a/Generals/Code/GameEngine/Include/Common/StackDump.h b/Generals/Code/GameEngine/Include/Common/StackDump.h
+index 2d11b75..cf45852 100644
+--- a/Generals/Code/GameEngine/Include/Common/StackDump.h
++++ b/Generals/Code/GameEngine/Include/Common/StackDump.h
+@@ -24,7 +24,7 @@
+ 
+ #pragma once
+ 
+-#ifndef IG_DEBUG_STACKTRACE
++#if !defined(IG_DEBUG_STACKTRACE) && !defined(_WIN64) // stack walking is x86 only
+ #define IG_DEBUG_STACKTRACE	1
+ #endif // Unsure about this one -ML 3/25/03
+ #if defined(RTS_DEBUG) || defined(IG_DEBUG_STACKTRACE)
+diff --git a/Generals/Code/GameEngine/Source/Common/System/registry.cpp b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
+index 258f5d5..4b8431a 100644
+--- a/Generals/Code/GameEngine/Source/Common/System/registry.cpp
++++ b/Generals/Code/GameEngine/Source/Common/System/registry.cpp
+@@ -27,6 +27,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ 
+ #include "Common/Registry.h"
+ 
+@@ -39,7 +42,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
+ 	unsigned long type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -62,7 +65,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
+ 	unsigned long type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -85,7 +88,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_SZ;
+ 		size = val.getLength()+1;
+@@ -104,7 +107,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_DWORD;
+ 		size = 4;
+diff --git a/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h b/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+index 2b3b92a..6ea1302 100644
+--- a/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
++++ b/Generals/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+@@ -138,7 +138,7 @@ struct LegacyDDSURFACEDESC2 {
+ 	};
+ 	unsigned AlphaBitDepth;
+ 	unsigned Reserved;
+-	void* Surface;
++	unsigned Surface;				// was a pointer in DX7 (4 bytes); keep the on-disk layout on 64-bit
+ 	union
+ 	{
+ 		LegacyDDCOLORKEY CKDestOverlay;
+@@ -152,6 +152,8 @@ struct LegacyDDSURFACEDESC2 {
+ 	unsigned TextureStage;
+ };
+ 
++static_assert(sizeof(LegacyDDSURFACEDESC2) == 124, "DDS file header layout must match the on-disk size");
++
+ 
+ enum DDSType
+ {
+diff --git a/Generals/Code/Main/CMakeLists.txt b/Generals/Code/Main/CMakeLists.txt
+index f40c743..dd471c1 100644
+--- a/Generals/Code/Main/CMakeLists.txt
++++ b/Generals/Code/Main/CMakeLists.txt
+@@ -11,7 +11,7 @@ target_link_libraries(g_generals PRIVATE
+     binkstub
+     comctl32
+     d3d8
+-    d3dx8
++    $<IF:$<BOOL:${RTS_USE_D3DX8_COMPAT}>,deps_d3dx8compat,d3dx8>
+     dinput8
+     dxguid
+     g_gameengine
+diff --git a/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h b/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
+index ce84c0a..740d9b5 100644
+--- a/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
++++ b/GeneralsMD/Code/GameEngine/Include/Common/StackDump.h
+@@ -24,7 +24,7 @@
+ 
+ #pragma once
+ 
+-#ifndef IG_DEBUG_STACKTRACE
++#if !defined(IG_DEBUG_STACKTRACE) && !defined(_WIN64) // stack walking is x86 only
+ #define IG_DEBUG_STACKTRACE	1
+ #endif // Unsure about this one -ML 3/25/03
+ #if defined(RTS_DEBUG) || defined(IG_DEBUG_STACKTRACE)
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
+index 51aaeea..3d5dd06 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/StackDump.cpp
+@@ -647,5 +647,9 @@ void DumpExceptionInfo( unsigned int u, EXCEPTION_POINTERS* e_info )
+ 
+ #pragma pack(pop)
+ 
++#else // stack tracing disabled (e.g. 64-bit builds)
++
++AsciiString g_LastErrorDump;
++
+ #endif
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
+index e65c259..e39f19b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/registry.cpp
+@@ -27,6 +27,9 @@
+ // Author: Matthew D. Campbell, December 2001
+ 
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
++#ifndef KEY_WOW64_32KEY
++#define KEY_WOW64_32KEY 0 // 64-bit Windows only; no registry elsewhere
++#endif
+ 
+ #include "Common/Registry.h"
+ 
+@@ -40,7 +43,7 @@ Bool  getStringFromRegistry(HKEY root, AsciiString path, AsciiString key, AsciiS
+ 	DWORD type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -63,7 +66,7 @@ Bool getUnsignedIntFromRegistry(HKEY root, AsciiString path, AsciiString key, Un
+ 	DWORD type;
+ 	int returnValue;
+ 
+-	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ, &handle )) == ERROR_SUCCESS)
++	if ((returnValue = RegOpenKeyEx( root, path.str(), 0, KEY_READ | KEY_WOW64_32KEY, &handle )) == ERROR_SUCCESS)
+ 	{
+ 		returnValue = RegQueryValueEx(handle, key.str(), nullptr, &type, (unsigned char *) &buffer, &size);
+ 		RegCloseKey( handle );
+@@ -86,7 +89,7 @@ Bool setStringInRegistry( HKEY root, AsciiString path, AsciiString key, AsciiStr
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_SZ;
+ 		size = val.getLength()+1;
+@@ -105,7 +108,7 @@ Bool setUnsignedIntInRegistry( HKEY root, AsciiString path, AsciiString key, Uns
+ 	int size;
+ 	char lpClass[] = "REG_NONE";
+ 
+-	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
++	if ((returnValue = RegCreateKeyEx( root, path.str(), 0, lpClass, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_32KEY, nullptr, &handle, nullptr )) == ERROR_SUCCESS)
+ 	{
+ 		type = REG_DWORD;
+ 		size = 4;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
+index f0bf8df..738491d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/OptionsMenu.cpp
+@@ -1073,7 +1073,7 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
+ 		count++;
+ 		str.translate(IPlist->getIPstring());
+ 		index = GadgetComboBoxAddEntry(comboBoxLANIP, str, color);
+-		GadgetComboBoxSetItemData(comboBoxLANIP, index, (void *)(IPlist->getIP()));
++		GadgetComboBoxSetItemData(comboBoxLANIP, index, (void *)(uintptr_t)(IPlist->getIP()));
+ 		if (selectedIP == IPlist->getIP())
+ 		{
+ 			selectedIndex = index;
+@@ -1109,7 +1109,7 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
+ 			count++;
+ 			str.translate(IPlist->getIPstring());
+ 			index = GadgetComboBoxAddEntry(comboBoxOnlineIP, str, color);
+-			GadgetComboBoxSetItemData(comboBoxOnlineIP, index, (void *)(IPlist->getIP()));
++			GadgetComboBoxSetItemData(comboBoxOnlineIP, index, (void *)(uintptr_t)(IPlist->getIP()));
+ 			if (selectedIP == IPlist->getIP())
+ 			{
+ 				selectedIndex = index;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
+index 561cb07..90e3f82 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Collide/CrateCollide/SabotageInternetCenterCrateCollide.cpp
+@@ -179,7 +179,7 @@ Bool SabotageInternetCenterCrateCollide::executeCrateBehavior( Object *other )
+ 	//doesn't need to change.
+ 	// This loop goes before the Disabled_Hacked one since that will use the normal disabled code with its cool timers.
+ 	// This loop is for the other centers, but it hits the main one too.
+-	other->getControllingPlayer()->iterateObjects( disableInternetCenterSpyVision, (void*)frame );
++	other->getControllingPlayer()->iterateObjects( disableInternetCenterSpyVision, (void*)(uintptr_t)frame );
+ 
+ 	//Disable the internet center. Note this is purely fluff... because the spy vision update will still run even
+ 	//though we are disabling it. We have to disable the spyvision updates manually because other centers need to
+@@ -188,7 +188,7 @@ Bool SabotageInternetCenterCrateCollide::executeCrateBehavior( Object *other )
+ 
+ 	//Disable all the hackers inside.
+ 	ContainModuleInterface *contain = other->getContain();
+-	contain->iterateContained( disableHacker, (void*)frame, FALSE );
++	contain->iterateContained( disableHacker, (void*)(uintptr_t)frame, FALSE );
+ 
+ 	return TRUE;
+ }
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index a928466..970ae6a 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -214,9 +214,14 @@ void setFPMode()
+ 	UnsignedInt newVal = curVal;
+ 	newVal = (newVal & ~_MCW_RC) | (_RC_NEAR & _MCW_RC);
+ 	//newVal = (newVal & ~_MCW_RC) | (_RC_CHOP & _MCW_RC);
++#if defined(_WIN64)
++	// x64 floats are computed by SSE, which has no precision control (the 24-bit mode only exists for the x87 unit).
++	_controlfp(newVal, _MCW_RC);
++#else
+ 	newVal = (newVal & ~_MCW_PC) | (_PC_24   & _MCW_PC);
+ 
+ 	_controlfp(newVal, _MCW_PC | _MCW_RC);
++#endif
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
+index 87c0a8c..8c109f4 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp
+@@ -1371,7 +1371,7 @@ RenderObjClass * W3DAssetManager::Create_Render_Obj(const char * name,float scal
+ 		char filename [MAX_PATH];
+ 		char *mesh_name = ::strchr (name, '.');
+ 		if (mesh_name != nullptr) {
+-			::lstrcpyn (filename, name, ((int)mesh_name) - ((int)name) + 1);
++			::lstrcpyn (filename, name, (int)(mesh_name - name) + 1);
+ 			if (isGranny)
+ 				::lstrcat (filename, ".gr2");
+ 			else
+diff --git a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+index e41534f..ca465b8 100644
+--- a/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
++++ b/GeneralsMD/Code/Libraries/Source/WWVegas/WW3D2/ddsfile.h
+@@ -163,6 +163,8 @@ struct LegacyDDSURFACEDESC2 {
+ 	unsigned TextureStage;
+ };
+ 
++static_assert(sizeof(LegacyDDSURFACEDESC2) == 124, "DDS file header layout must match the on-disk size");
++
+ 
+ enum DDSType
+ {
+diff --git a/GeneralsMD/Code/Main/CMakeLists.txt b/GeneralsMD/Code/Main/CMakeLists.txt
+index a58d310..00207ef 100644
+--- a/GeneralsMD/Code/Main/CMakeLists.txt
++++ b/GeneralsMD/Code/Main/CMakeLists.txt
+@@ -12,7 +12,7 @@ target_link_libraries(z_generals PRIVATE
+     core_debug
+     core_profile_legacy
+     d3d8
+-    d3dx8
++    $<IF:$<BOOL:${RTS_USE_D3DX8_COMPAT}>,deps_d3dx8compat,d3dx8>
+     dinput8
+     dxguid
+     milesstub
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index b0f2533..5b59d2c 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -1026,6 +1026,13 @@ Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
+ 	TheDmaCriticalSection = nullptr;
+ 	TheMemoryPoolCriticalSection = nullptr;
+ 
++#ifdef _WIN64
++	// The game has shut everything down by now, including the memory manager. The C runtime would still run the static
++	// destructors of the pool allocators (AutoPoolClass<...>::Allocator), which walk memory that no longer exists and crash
++	// on x64. The process is ending anyway, so leave without running them.
++	ExitProcess((UINT)exitcode);
++#endif
++
+ 	return exitcode;
+ 
+ }
+diff --git a/cmake/FindFFMPEG.cmake b/cmake/FindFFMPEG.cmake
+index 2862936..588af92 100644
+--- a/cmake/FindFFMPEG.cmake
++++ b/cmake/FindFFMPEG.cmake
+@@ -15,6 +15,34 @@
+ # files (`brew install ffmpeg`) — they cover both header and library
+ # search paths and Just Work for `find_package(FFMPEG REQUIRED)`.
+ 
++if(WIN32)
++    # Windows (vcpkg, `ffmpeg` in vcpkg.json): the libraries are found by name in the vcpkg prefix, no pkg-config.
++    # The DLLs next to them are copied beside the executable by vcpkg's application-local deployment.
++    set(FFMPEG_INCLUDE_DIRS)
++    set(FFMPEG_LIBRARY_DIRS)
++    set(FFMPEG_LIBRARIES)
++    find_path(_ffmpeg_inc libavcodec/avcodec.h)
++    set(_ffmpeg_missing)
++    foreach(_mod avformat avcodec swscale swresample avutil)
++        find_library(_ffmpeg_lib_${_mod} NAMES ${_mod})
++        if(_ffmpeg_lib_${_mod})
++            list(APPEND FFMPEG_LIBRARIES ${_ffmpeg_lib_${_mod}})
++        else()
++            list(APPEND _ffmpeg_missing ${_mod})
++        endif()
++    endforeach()
++    if(NOT _ffmpeg_inc OR _ffmpeg_missing)
++        set(FFMPEG_FOUND FALSE)
++        if(FFMPEG_FIND_REQUIRED)
++            message(FATAL_ERROR "FindFFMPEG: FFmpeg not found (missing: ${_ffmpeg_missing}). Install it with vcpkg.")
++        endif()
++        return()
++    endif()
++    set(FFMPEG_INCLUDE_DIRS ${_ffmpeg_inc})
++    set(FFMPEG_FOUND TRUE)
++    return()
++endif()
++
+ find_package(PkgConfig QUIET)
+ 
+ if(NOT PKG_CONFIG_FOUND)
+diff --git a/cmake/bink.cmake b/cmake/bink.cmake
+index a851f6c..510b8c4 100644
+--- a/cmake/bink.cmake
++++ b/cmake/bink.cmake
+@@ -1,7 +1,23 @@
+-FetchContent_Declare(
+-    bink
+-    GIT_REPOSITORY https://github.com/TheSuperHackers/bink-sdk-stub.git
+-    GIT_TAG        180fc4620ed72fd700347ab837a5271fd0259901
+-)
++if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++    # binkw32.dll is 32-bit only. The engine plays movies through FFmpeg on 64-bit builds; the Bink stub
++    # (every function returns a neutral value) is only linked so that the Bink video player still builds.
++    FetchContent_Declare(
++        bink
++        GIT_REPOSITORY https://github.com/TheSuperHackers/bink-sdk-stub.git
++        GIT_TAG        180fc4620ed72fd700347ab837a5271fd0259901
++        SOURCE_SUBDIR  headers-only-do-not-add
++    )
++    FetchContent_MakeAvailable(bink)
+ 
+-FetchContent_MakeAvailable(bink)
++    add_library(binkstub STATIC ${bink_SOURCE_DIR}/bink.c)
++    target_include_directories(binkstub PUBLIC ${bink_SOURCE_DIR})
++    target_compile_definitions(binkstub PUBLIC BINKDLL)
++else()
++    FetchContent_Declare(
++        bink
++        GIT_REPOSITORY https://github.com/TheSuperHackers/bink-sdk-stub.git
++        GIT_TAG        180fc4620ed72fd700347ab837a5271fd0259901
++    )
++
++    FetchContent_MakeAvailable(bink)
++endif()
+diff --git a/cmake/dx8.cmake b/cmake/dx8.cmake
+index 223adf1..10b1445 100644
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
+@@ -1,10 +1,54 @@
+-FetchContent_Declare(
+-    dx8
+-    GIT_REPOSITORY https://github.com/TheSuperHackers/min-dx8-sdk.git
+-    GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
+-)
++if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++    # 64-bit Windows. Only the headers of min-dx8-sdk are used here; its static libs are x86-only and
++    # include d3dx8.lib.
++    #  - d3d8.lib is generated as an import library for Direct3DCreate8. At run time d3d8.dll is DXVK's
++    #    (Direct3D 8 -> Vulkan) next to the exe: 64-bit Windows has no system d3d8.dll.
++    #  - dinput8.lib / dxguid.lib come from the Windows SDK.
++    #  - Dependencies/D3DX8Compat provides the subset of d3dx8 the game needs.
++    set(RTS_USE_D3DX8_COMPAT TRUE)
+ 
+-FetchContent_MakeAvailable(dx8)
++    FetchContent_Declare(
++        dx8
++        GIT_REPOSITORY https://github.com/TheSuperHackers/min-dx8-sdk.git
++        GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
++        SOURCE_SUBDIR  headers-only-do-not-add
++    )
++    FetchContent_MakeAvailable(dx8)
++
++    set(_d3d8_libdir "${CMAKE_BINARY_DIR}/d3d8_x64")
++    file(MAKE_DIRECTORY "${_d3d8_libdir}")
++    file(WRITE "${_d3d8_libdir}/d3d8.def" "LIBRARY d3d8
++EXPORTS
++    Direct3DCreate8
++")
++    if(NOT EXISTS "${_d3d8_libdir}/d3d8.lib")
++        execute_process(
++            COMMAND "${CMAKE_AR}" /nologo /machine:x64 "/def:${_d3d8_libdir}/d3d8.def" "/out:${_d3d8_libdir}/d3d8.lib"
++            RESULT_VARIABLE _lib_result
++        )
++        if(NOT _lib_result EQUAL 0)
++            message(FATAL_ERROR "Could not generate the x64 d3d8 import library")
++        endif()
++    endif()
++
++    add_subdirectory(Dependencies/D3DX8Compat)
++
++    add_library(d3d8lib INTERFACE)
++    target_include_directories(d3d8lib INTERFACE ${dx8_SOURCE_DIR})
++    target_compile_definitions(d3d8lib INTERFACE BUILD_WITH_D3D8)
++    target_link_directories(d3d8lib BEFORE INTERFACE ${_d3d8_libdir})
++    target_link_libraries(d3d8lib INTERFACE d3d8 dinput8 dxguid deps_d3dx8compat legacy_stdio_definitions)
++else()
++    set(RTS_USE_D3DX8_COMPAT FALSE)
++
++    FetchContent_Declare(
++        dx8
++        GIT_REPOSITORY https://github.com/TheSuperHackers/min-dx8-sdk.git
++        GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
++    )
++
++    FetchContent_MakeAvailable(dx8)
++endif()
+ 
+ if(APPLE)
+     # The min-dx8-sdk defines an INTERFACE target `d3d8lib` that links the bare
+diff --git a/cmake/miles.cmake b/cmake/miles.cmake
+index d0e5485..ba3f284 100644
+--- a/cmake/miles.cmake
++++ b/cmake/miles.cmake
+@@ -4,6 +4,9 @@ if(APPLE)
+     # `milesstub` / `mss32` target so downstream linkage is unchanged.
+     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/miles_apple
+                      ${CMAKE_BINARY_DIR}/miles_apple-build)
++elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++    # mss32.dll is a 32-bit library: implement the Miles API the engine uses on top of miniaudio.
++    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../Dependencies/Miles ${CMAKE_BINARY_DIR}/miles_x64-build)
+ else()
+     FetchContent_Declare(
+         miles
+diff --git a/vcpkg.json b/vcpkg.json
+index adcb2cd..5e7344c 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -3,7 +3,11 @@
+     "builtin-baseline": "b02e341c927f16d991edbd915d8ea43eac52096c",
+     "dependencies": [
+       "zlib",
+-      "ffmpeg",
++      {
++        "name": "ffmpeg",
++        "default-features": false,
++        "features": ["avcodec", "avformat", "swresample", "swscale"]
++      },
+       {
+         "name": "sdl2",
+         "platform": "osx | linux"

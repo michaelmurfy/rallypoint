@@ -105,11 +105,17 @@ fn check_game_dir(path: String) -> GameCheck {
 }
 
 /// Checks behind "You have encountered a serious error": game files, base game, last crash report.
+/// The engine to run: the override, then the one chosen in Settings (64-bit unless the player picked 32-bit).
+fn find_engine(app: &tauri::AppHandle, data: &Path) -> Option<PathBuf> {
+    let x86 = config_path(app).map(|p| Config::load(&p).engine_arch == "x86").unwrap_or(false);
+    engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), data, x86)
+}
+
 #[tauri::command]
 fn diagnose(app: tauri::AppHandle, game_dir: String) -> Result<diagnose::Report, String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
-    let engine = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data);
+    let engine = find_engine(&app, &data);
     let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base));
     let docs = app.path().document_dir().map_err(|e| e.to_string())?;
     Ok(diagnose::run(Path::new(game_dir.trim()), base_game.as_deref(), engine.as_deref(), &docs, Some(&engine_log(&app)?)))
@@ -190,6 +196,9 @@ struct ConfigView {
     check_updates: bool,
     sync_logs: bool,
     camera_height: u32,
+    /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
+    engine_arch: String,
+    engines_bundled: bool,
     /// The lobby name the player chose (empty: none), and the one used then (this computer's name).
     player_name: String,
     default_player_name: String,
@@ -210,6 +219,8 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         check_updates: !c.skip_update_check,
         sync_logs: c.sync_logs,
         camera_height,
+        engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
+        engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
         player_name: c.player_name,
         default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
@@ -291,7 +302,7 @@ async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>
         include_replay,
         // their user name is in every path; it is removed from the text files
         home: std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from),
-        engine_dir: engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &app.path().data_dir().map_err(|e| e.to_string())?).and_then(|e| e.parent().map(PathBuf::from)),
+        engine_dir: find_engine(&app, &app.path().data_dir().map_err(|e| e.to_string())?).and_then(|e| e.parent().map(PathBuf::from)),
     };
     let out_dir = mods::downloads_dir().filter(|d| d.is_dir()).unwrap_or_else(|| src.base.clone());
     let zip = tauri::async_runtime::spawn_blocking(move || bundle::create(&src, &out_dir)).await.map_err(|e| e.to_string())??;
@@ -315,6 +326,15 @@ async fn make_debug_bundle(app: tauri::AppHandle, relay: tauri::State<'_, Relay>
 async fn sync_compare(app: tauri::AppHandle, other: String) -> Result<syncdiff::Outcome, String> {
     let (mine, work) = (sync_logs_dir(&app)?, base(&app)?.join("tmp").join("sync-compare"));
     tauri::async_runtime::spawn_blocking(move || syncdiff::compare(&mine, Path::new(other.trim()), &work)).await.map_err(|e| e.to_string())?
+}
+
+/// Choose the 32-bit or 64-bit Windows engine; it applies the next time the game starts.
+#[tauri::command]
+fn set_engine_arch(app: tauri::AppHandle, arch: String) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.engine_arch = if arch == "x86" { "x86".into() } else { String::new() };
+    c.save(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -839,7 +859,7 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
 fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
-    let exe = engine::find(std::env::var("RALLYPOINT_ENGINE").ok().as_deref(), app.path().resource_dir().ok().as_deref(), &data)
+    let exe = find_engine(&app, &data)
         .ok_or("This build has no game engine for your platform yet")?;
     if !game_dir.join("INIZH.big").is_file() {
         return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
@@ -957,7 +977,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,

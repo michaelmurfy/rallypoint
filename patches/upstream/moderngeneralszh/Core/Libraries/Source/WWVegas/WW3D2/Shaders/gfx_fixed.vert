@@ -1,0 +1,158 @@
+#version 450
+// Native Vulkan backend: vertex stage that stands in for the Direct3D 8 fixed-function vertex pipeline.
+// Two modes, chosen by flags.x: pre-transformed vertices (XYZRHW, screen space, used by the 2D interface) and transformed
+// vertices (world*view*projection supplied by the engine, used by the 3D scene).
+
+layout(location = 0) in vec4 inPos;
+layout(location = 1) in vec4 inNormal;
+layout(location = 2) in vec4 inDiffuse;
+layout(location = 3) in vec4 inSpecular;
+layout(location = 4) in vec4 inUv0;
+layout(location = 5) in vec4 inUv1;
+layout(location = 6) in vec4 inUv2;
+layout(location = 7) in vec4 inUv3;
+
+layout(std140, set = 0, binding = 0) uniform Draw
+{
+	mat4 wvp;              // D3D row-major matrix, read as is: GLSL's M * v equals D3D's v * M
+	vec4 viewport;         // x, y, width, height of the viewport in pixels
+	vec4 textureFactor;
+	uvec4 flags;           // x: 1 = pre-transformed vertices, y: unused, z: alpha test function, w: alpha test enable
+	vec4 alphaRef;         // x: reference value 0..1
+	uvec4 stage[8];        // per stage i: [2*i] = colorop, colorarg1, colorarg2, alphaop   [2*i+1] = alphaarg1, alphaarg2, texcoord index, 1 if a texture is bound
+	mat4 world;            // for lighting: world space position and normal
+	vec4 matDiffuse;
+	vec4 matAmbient;
+	vec4 matEmissive;
+	vec4 sceneAmbient;
+	uvec4 lightFlags;      // x: 1 = fixed-function lighting, y/z/w: diffuse / ambient / emissive material source (0 material, 1 vertex color)
+	uvec4 lightInfo;       // x: number of lights in use
+	vec4 lightDiffuse[4];
+	vec4 lightAmbient[4];
+	vec4 lightPosType[4];  // xyz: position, w: type (1 point, 2 spot, 3 directional)
+	vec4 lightDirRange[4]; // xyz: direction, w: range
+	vec4 lightAtten[4];    // attenuation 0, 1, 2
+	mat4 worldView;        // camera space position and normal for texture coordinate generation
+	mat4 texMatrix[8];     // texture transform of each stage (D3D row-major, read like wvp)
+	uvec4 texGen[8];       // per stage: x = source (0 vertex set, 1 camera normal, 2 camera position, 3 reflection), y = vertex set, z = transform count (0 off), w = 1 projected
+	vec4 pointParams;      // size, min size, max size, 1 when point sprites are on
+	vec4 pointScale;       // attenuation A, B, C, 1 when scaling is on
+	vec4 softA;
+	vec4 softB;
+	vec4 camPos;           // xyz: camera in world space, w: strength of the per pixel highlight (0 = lighting stays per vertex)
+	vec4 relief;           // scorch marks: x strength of the relief lighting (0 = off), y crater depth as a part of the radius, zw: texel size of the height map
+	vec4 reliefSun;        // xyz: direction towards the sun, w: ambient part of the light
+} draw;
+
+layout(location = 0) out vec4 vDiffuse;
+layout(location = 1) out vec4 vUv[8];
+layout(location = 9) out vec4 vWorldPos;		// xyz world position, w = 1 when the pixel shader does the lighting
+layout(location = 10) out vec3 vWorldNormal;
+layout(location = 11) out vec4 vRawDiffuse;		// vertex colour as it came in (material source for the per pixel lighting)
+
+vec4 vertexUvSet(uint k)
+{
+	if (k == 1u) return inUv1;
+	if (k == 2u) return inUv2;
+	if (k == 3u) return inUv3;
+	return inUv0;
+}
+
+// Direct3D 8 texture coordinate generation, texture transform and projection for stage i
+vec4 stageCoordinates(uint i)
+{
+	uvec4 g = draw.texGen[i];
+	vec4 src;
+	vec3 viewPos = (draw.worldView * vec4(inPos.xyz, 1.0)).xyz;
+	vec3 viewNrm = mat3(draw.worldView) * inNormal.xyz;
+	if (g.x == 1u) src = vec4(normalize(viewNrm), 1.0);
+	else if (g.x == 2u) src = vec4(viewPos, 1.0);
+	else if (g.x == 3u) src = vec4(reflect(normalize(viewPos), normalize(viewNrm)), 1.0);
+	else src = vertexUvSet(g.y);
+	if (g.z != 0u)
+	{
+		src = draw.texMatrix[i] * vec4(src.xyz, (g.x == 0u && g.z >= 4u) ? src.w : 1.0);
+		if (g.w != 0u)
+		{
+			float q = g.z == 2u ? src.y : (g.z == 3u ? src.z : src.w);
+			if (q != 0.0) src.xy /= q;
+		}
+	}
+	if (g.w != 0u)
+		return vec4(src.xy, 0.0, 1.0);
+	return src;
+}
+
+// Direct3D 8 fixed-function vertex lighting (diffuse and ambient, no specular)
+vec4 lit(vec3 worldPos, vec3 worldNormal)
+{
+	vec4 diffuse = draw.lightFlags.y != 0u ? inDiffuse : draw.matDiffuse;
+	vec4 ambient = draw.lightFlags.z != 0u ? inDiffuse : draw.matAmbient;
+	vec4 emissive = draw.lightFlags.w != 0u ? inDiffuse : draw.matEmissive;
+	vec3 n = normalize(worldNormal);
+	vec3 sum = draw.sceneAmbient.rgb * ambient.rgb;
+	for (uint i = 0u; i < draw.lightInfo.x && i < 4u; ++i)
+	{
+		vec3 l;
+		float att = 1.0;
+		if (draw.lightPosType[i].w > 2.5)
+			l = -normalize(draw.lightDirRange[i].xyz);
+		else
+		{
+			vec3 d = draw.lightPosType[i].xyz - worldPos;
+			float dist = length(d);
+			l = d / max(dist, 1e-5);
+			float a = draw.lightAtten[i].x + draw.lightAtten[i].y * dist + draw.lightAtten[i].z * dist * dist;
+			att = (dist <= draw.lightDirRange[i].w || draw.lightDirRange[i].w <= 0.0) ? 1.0 / max(a, 1e-5) : 0.0;
+		}
+		float ndl = max(dot(n, l), 0.0);
+		sum += (draw.lightAmbient[i].rgb * ambient.rgb + draw.lightDiffuse[i].rgb * diffuse.rgb * ndl) * att;
+	}
+	return vec4(clamp(emissive.rgb + sum, 0.0, 1.0), diffuse.a);
+}
+
+void main()
+{
+	vDiffuse = inDiffuse;
+	vWorldPos = vec4(0.0);
+	vWorldNormal = vec3(0.0, 0.0, 1.0);
+	vRawDiffuse = inDiffuse;
+	for (uint i = 0u; i < 8u; ++i)
+		vUv[i] = stageCoordinates(i);
+
+	if (draw.flags.x != 0u)
+	{
+		// XYZRHW: x and y are pixels relative to the viewport, z is the depth, w holds 1/w
+		float w = (inPos.w != 0.0) ? 1.0 / inPos.w : 1.0;
+		vec2 ndc = vec2((inPos.x - draw.viewport.x) * 2.0 / draw.viewport.z - 1.0,
+		                (inPos.y - draw.viewport.y) * 2.0 / draw.viewport.w - 1.0);
+		ndc += vec2(1.0 / draw.viewport.z, 1.0 / draw.viewport.w);		// Direct3D pixel centres lie on whole numbers, Vulkan's at +0.5
+		gl_Position = vec4(ndc * w, inPos.z * w, w);
+		gl_PointSize = 1.0;
+	}
+	else
+	{
+		vec4 p = draw.wvp * vec4(inPos.xyz, 1.0);
+		p.y = -p.y;     // Direct3D clip space has y up, Vulkan's points down
+		p.xy += vec2(1.0 / draw.viewport.z, 1.0 / draw.viewport.w) * p.w;
+		gl_Position = p;
+		float size = draw.pointParams.x;
+		if (draw.pointScale.w != 0.0)
+		{
+			float d = length((draw.worldView * vec4(inPos.xyz, 1.0)).xyz);
+			size = 0.35 * draw.alphaRef.y * size * inversesqrt(max(draw.pointScale.x + draw.pointScale.y * d + draw.pointScale.z * d * d, 1e-6));
+		}
+		gl_PointSize = clamp(size, max(draw.pointParams.y, 1.0), min(max(draw.pointParams.z, 1.0), max(0.011 * draw.alphaRef.y, 8.0)));		// never bigger than about 1.1% of the view height
+		if (draw.lightFlags.x != 0u)
+		{
+			vec3 wp = (draw.world * vec4(inPos.xyz, 1.0)).xyz;
+			vec3 wn = mat3(draw.world) * inNormal.xyz;
+			vDiffuse = lit(wp, wn);
+			if (draw.camPos.w > 0.0)
+			{
+				vWorldPos = vec4(wp, 1.0);
+				vWorldNormal = wn;
+			}
+		}
+	}
+}
