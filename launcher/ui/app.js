@@ -867,7 +867,7 @@ function mapOrganiser() {
     chips,
     empty,
     h("div", { class: "listbox" },
-      h("div", { class: "listhead" }, h("div", { class: "row" }, result, clear), sortSel),
+      h("div", { class: "modhead" }, h("div", { class: "row" }, result, clear), sortSel),
       list,
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
@@ -985,53 +985,64 @@ function modRole(m) {
   return { pill: "Plays on its own", how: adds.length ? `Play it by itself, or add ${adds.join(" and ")} on top.` : "Play it by itself.", base: null };
 }
 
+/** Two letters to stand for a mod where a picture would be: "C&C: Shockwave Chaos" -> "SC". */
+function modInitials(name) {
+  const words = name.replace(/^C&C:?\s*/i, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return ((words[0] || "?")[0] + (words[1] ? words[1][0] : (words[0] || "").slice(1, 2))).toUpperCase();
+}
+const modTile = (name, kind) => h("span", { class: "modtile " + (kind || ""), "aria-hidden": "true" }, modInitials(name));
+/** A Remove button that asks for a second click. */
+function removeButton(folder, name) {
+  let armed = false;
+  const rm = h("button", { class: "btn small danger", onclick: async () => {
+    if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
+    try { await invoke("mods_remove", { folder }); say(name + " removed"); } catch (e) { say(errText(e), "bad"); }
+    loadMods();
+  } }, "Remove");
+  return rm;
+}
+
 function modCard(m, compact) {
   const waiting = store.watch && store.watch.id === m.id;
   const busy = store.installing && store.installing.id === m.id;
   const role = modRole(m);
-  const actions = h("div", { class: "row" });
+  const page = (cmd) => () => invoke(cmd, { id: m.id }).catch((e) => say(errText(e), "bad"));
+  const actions = h("div", { class: "row end" });
   if (busy) {
     actions.append(h("span", { class: "live busy", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…"));
   } else if (m.installed) {
     actions.append(pill("Installed", "ok"));
-    if (!compact) {
-      let armed = false;
-      const rm = h("button", { class: "btn small danger", onclick: async () => {
-        if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-        try { await invoke("mods_remove", { folder: m.path }); say(m.name + " removed"); } catch (e) { say(errText(e), "bad"); }
-        loadMods();
-      } }, "Remove");
-      actions.append(rm);
-    }
+    if (!compact) actions.append(removeButton(m.path, m.name));
   } else if (waiting) {
     actions.append(pill("Waiting for download", "warn"));
   } else if (m.pick) {
-    // The player brings the files: nothing to wait for in the launcher.
+    // The player brings the files: first get them from the mod's own page, then hand them over.
     actions.append(
-      h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"),
-      h("button", { class: "btn ghost", onclick: () => choose(m.id, true) }, "Choose folder…"));
+      h("button", { class: "btn", onclick: page("open_download_page") }, "Download page"),
+      h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"));
   } else {
     actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
   }
   const missingBase = role.base && !role.base.installed && !m.installed;
-  return h("div", { class: "card" + (role.base ? " addon" : "") },
+  return h("div", { class: "card modcard" + (role.base ? " addon" : "") },
     h("div", { class: "mod" },
+      modTile(m.name, m.installed ? "on" : ""),
       h("div", { class: "stack tight" },
         h("div", { class: "row" }, h("h3", {}, m.name), role.base ? pill(role.pill) : null),
         h("p", { class: "muted" }, m.description),
         missingBase ? h("p", { class: "small warn-text" }, role.how) : null,
-        !compact && m.notes && !m.installed ? h("details", { class: "help-inline" }, h("summary", {}, "How to install"), h("p", { class: "muted small" }, m.notes)) : null),
+        !compact && m.notes && !m.installed ? h("details", { class: "help-inline" }, h("summary", {}, "How to install"), h("p", { class: "muted small" }, m.notes)) : null,
+        h("div", { class: "mod-links" },
+          m.pick && !m.installed && !busy && !waiting ? h("button", { class: "linkbtn", onclick: () => choose(m.id, true) }, "Choose a folder instead") : null,
+          h("button", { class: "linkbtn", onclick: page("open_homepage") }, "Mod page"))),
       actions),
-    h("div", { class: "mod-links" },
-      m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
-      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")),
     watchBanner(m.id),
     busy ? h("div", { class: "jobline", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, "Unpacking and installing. A large mod takes a minute or two.")) : null);
 }
 
-/** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
-function modGroups() {
-  const all = store.mods.catalog;
+/** The catalog mods that are (or are not) installed, each followed by its add-ons in the same state, so how they relate is plain. */
+function modGroups(installed) {
+  const all = store.mods.catalog.filter((m) => !!m.installed === installed);
   const ids = new Set(all.map((m) => m.id));
   return all.filter((m) => !m.addon_for || !ids.has(m.addon_for)).flatMap((m) => [
     modCard(m, false),
@@ -1213,54 +1224,54 @@ function playPage() {
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       extrasField,
       custom,
-      h("div", { class: "optlist" },
-        h("div", { class: "opt" }, h("label", { class: "switch" }, fs, "Fullscreen"), h("span", { class: "muted small" }, "Fill the screen instead of a window.")),
-        h("div", { class: "opt" }, h("label", { class: "switch" }, cam, "Higher camera"), h("span", { class: "muted small" }, "See further out. Leave it off for a normal online view."))),
+      h("div", { class: "settings" },
+        setting("Fullscreen", "Fill the screen instead of a window.", h("label", { class: "switch" }, fs)),
+        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam))),
       ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
 function modsPage() {
   const body = h("div", { class: "stack" });
-  const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
+  const count = h("p", { class: "muted small" });
+  const path = h("input", { type: "text", placeholder: "/path/to/mod.zip", "aria-label": "Path to mod" });
   const dropBusy = h("span", { class: "live busy", hidden: true, role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…");
   const drop = h("div", { class: "drop", id: "dropzone" },
-    h("b", {}, "Add another mod from a file"), dropBusy,
-    h("span", { class: "small" }, "Drop it here, or choose it: .zip, .7z, .rar, a folder, or an installer .exe"),
-    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn", onclick: () => choose(null, true) }, "Choose folder…")),
-    h("div", { class: "row" }, path, h("button", { class: "btn small", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install path")));
-  const help = h("details", { class: "card help" },
-    h("summary", {}, "A mod came as an .exe installer?"),
-    h("p", { class: "muted" }, "Rallypoint unpacks the game archives and does not run a mod's own Windows launcher. Shockwave is one of these: drop the installer (or the .zip it came in) here and the archives load with Rallypoint's engine, on macOS and Windows."),
-    h("ol", {},
-      h("li", {}, "For Inno Setup installers, a tool helps: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows. Shockwave does not need one."),
-      h("li", {}, "Drop the .exe above. Rallypoint keeps the game files (.big and .gib) and skips the launcher program."),
-      h("li", {}, "Many mods also offer a plain .zip or \"no installer\" download. Choose that when you can.")));
+    h("div", { class: "drop-main" },
+      h("div", { class: "stack tight" },
+        h("b", {}, "Have a mod that is not listed?"),
+        h("span", { class: "small" }, "Drop it anywhere on this window, or choose it. A .zip, .7z or .rar, a folder, or an installer .exe."), dropBusy),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn ghost", onclick: () => choose(null, true) }, "Choose folder…"))),
+    h("details", { class: "help-inline" }, h("summary", {}, "Paste a path instead"),
+      h("div", { class: "row pathrow" }, path, h("button", { class: "btn", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install"))),
+    h("details", { class: "help-inline" }, h("summary", {}, "It came as an .exe installer"),
+      h("p", { class: "muted small" }, "Rallypoint unpacks the game archives (.big and .gib) and never runs a mod's own Windows launcher, so this works on macOS too. Shockwave is one of these."),
+      h("p", { class: "muted small" }, "Inno Setup installers need a tool: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows. Shockwave does not need one. If the mod also offers a plain .zip, take that.")));
 
   function render() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
+    const have = modGroups(true), other = store.mods.other, more = modGroups(false);
+    const installed = store.mods.catalog.filter((m) => m.installed).length + other.length;
+    count.textContent = installed ? `${installed} installed. Pick what to play on the Play page.` : "Nothing installed yet. Zero Hour plays fine without any.";
     fill(body,
-      modGroups(),
-      store.mods.other.length ? h("h2", {}, "Your other mods") : null,
-      store.mods.other.map((o) => {
-        let armed = false;
-        const rm = h("button", { class: "btn small danger", onclick: async () => {
-          if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-          try { await invoke("mods_remove", { folder: o.folder }); say(o.folder + " removed"); } catch (e) { say(errText(e), "bad"); }
-          loadMods();
-        } }, "Remove");
+      have.length || other.length ? h("h2", { class: "modhead" }, "Installed") : null,
+      have,
+      other.map((o) => {
         const bundled = o.folder === ICON_FOLDER;
-        return h("div", { class: "card" }, h("div", { class: "mod" },
+        return h("div", { class: "card modcard" }, h("div", { class: "mod" },
+          modTile(o.folder, "on"),
           h("div", { class: "stack tight" },
-            h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Bundled", "ok") : null),
-            h("p", { class: "muted small" }, bundled ? "Sharp command-bar icons. Installed by Rallypoint and loaded with every game." : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
-          bundled ? null : rm));
-      }));
+            h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Comes with Rallypoint") : null),
+            h("p", { class: "muted small" }, bundled ? "Sharp command-bar icons, loaded with every game." : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
+          h("div", { class: "row end" }, bundled ? null : removeButton(o.folder, o.folder))));
+      }),
+      more.length ? h("h2", { class: "modhead" }, have.length || other.length ? "More to install" : "Mods you can install") : null,
+      more);
   }
   refreshers.add(render); render();
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
-    body, drop, help);
+    h("div", { class: "page-head" }, h("div", { class: "stack tight" }, h("h1", {}, "Mods"), count), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
+    body, drop);
   return { el, dispose: () => { refreshers.delete(render); } };
 }
 
@@ -1602,51 +1613,84 @@ const EFFECT_TEXT = {
 };
 const EFFECT_PRESETS = [["performance", "Performance"], ["balanced", "Balanced (default)"], ["cinematic", "Cinematic"]];
 const betaTag = () => h("span", { class: "pill warn beta" }, "Beta");
+/** How the effects are laid out: what they change, not the order the engine lists them in. */
+const EFFECT_GROUPS = [
+  ["Picture", ["PostProcessing", "AntiAliasingFXAA", "Sharpen", "ColorLook", "Vignette"]],
+  ["Light and glow", ["Bloom", "BloomStrength", "DynamicLights", "PixelLighting", "AmbientOcclusion", "AmbientOcclusionQuality"]],
+  ["Shadows and sky", ["SoftShadows", "ShadowQuality", "CloudShadows", "Clouds"]],
+  ["Smoke and explosions", ["SoftParticles", "SmokeShading", "Shockwaves", "ScorchRelief"]],
+  ["Water and ground", ["UpdatedWater", "WaterReflections", "AnisotropicFiltering"]],
+];
+/** An effect that does nothing while another one is off (so its row is dimmed until that one is on). */
+const EFFECT_NEEDS = {
+  Bloom: "PostProcessing", AmbientOcclusion: "PostProcessing", AntiAliasingFXAA: "PostProcessing", Sharpen: "PostProcessing", ColorLook: "PostProcessing",
+  Vignette: "PostProcessing", DynamicLights: "PostProcessing", BloomStrength: "Bloom", AmbientOcclusionQuality: "AmbientOcclusion",
+  ShadowQuality: "SoftShadows", WaterReflections: "UpdatedWater", SmokeShading: "SoftParticles",
+};
+/** The Enhanced renderer's effects: a preset, then every effect by what it changes. Saved one by one; they apply at the next start. */
 function effectsPanel(fb) {
-  const rows = h("div", { class: "stack" });
-  const preset = h("select", { "aria-label": "Effects preset", onchange: async () => {
-    try {
-      store.cfg.effects = await invoke("set_effect_preset", { name: preset.value });
-      store.cfg.effect_preset = preset.value;
-      draw();
-      fb.ok("Saved. It applies the next time you start the game.");
-    } catch (e) { fb.bad(errText(e)); }
-  } });
-  const save = async (key, value) => {
-    try {
-      store.cfg.effect_preset = await invoke("set_effect", { key, value });
-      const row = (store.cfg.effects || []).find((e) => e[0] === key);
-      if (row) row[1] = value;
-      drawPreset();
-      fb.ok("Saved. It applies the next time you start the game.");
-    } catch (e) { fb.bad(errText(e)); }
-  };
+  const groups = h("div", { class: "fxgroups" });
+  const value = (key) => ((store.cfg.effects || []).find((e) => e[0] === key) || [])[1];
+  const isOn = (key) => { for (let k = key; k; k = EFFECT_NEEDS[k]) if (k !== key && value(k) === "no") return false; return true; };
+  const saved = () => fb.ok("Saved. It applies the next time you start the game.");
+  const presetHost = h("div", {});
   const drawPreset = () => {
     const cur = store.cfg.effect_preset || "balanced";
-    const list = cur === "custom" ? [...EFFECT_PRESETS, ["custom", "Custom"]] : EFFECT_PRESETS;
-    fill(preset, ...list.map(([v, label]) => h("option", { value: v, selected: v === cur, disabled: v === "custom" }, label)));
+    const seg = segmented("Effects preset", cur === "custom" ? [...EFFECT_PRESETS, ["custom", "Custom"]] : EFFECT_PRESETS, cur, async (name) => {
+      if (name === "custom") return;
+      try {
+        store.cfg.effects = await invoke("set_effect_preset", { name });
+        store.cfg.effect_preset = name;
+        draw();
+        saved();
+      } catch (e) { fb.bad(errText(e)); }
+    });
+    fill(presetHost, seg.el);
+  };
+  const save = async (key, v) => {
+    try {
+      store.cfg.effect_preset = await invoke("set_effect", { key, value: v });
+      const row = (store.cfg.effects || []).find((e) => e[0] === key);
+      if (row) row[1] = v;
+      draw();
+      saved();
+    } catch (e) { fb.bad(errText(e)); }
+  };
+  const row = (key) => {
+    const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
+    const v = value(key), live = isOn(key);
+    let ctl;
+    if (!choices) {
+      const box = h("input", { type: "checkbox", "aria-label": title, checked: v === "yes", disabled: !live, onchange: () => save(key, box.checked ? "yes" : "no") });
+      ctl = h("label", { class: "switch" }, box);
+    } else {
+      const sel = h("select", { "aria-label": title, disabled: !live, onchange: () => save(key, sel.value) },
+        Object.entries(choices).map(([val, label]) => h("option", { value: val, selected: val === v }, label)));
+      ctl = sel;
+    }
+    const el = setting(title, live ? desc : `Needs ${(EFFECT_TEXT[EFFECT_NEEDS[key]] || [EFFECT_NEEDS[key]])[0].toLowerCase()}.`, ctl);
+    if (!live) el.classList.add("off");
+    return el;
   };
   const draw = () => {
     drawPreset();
-    fill(rows, ...(store.cfg.effects || []).map(([key, value]) => {
-      const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
-      if (!choices) {
-        const box = h("input", { type: "checkbox", "aria-label": title, checked: value === "yes", onchange: () => save(key, box.checked ? "yes" : "no") });
-        return setting(title, desc, h("label", { class: "switch" }, box));
-      }
-      const sel = h("select", { "aria-label": title, onchange: () => save(key, sel.value) },
-        Object.entries(choices).map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
-      return setting(title, desc, sel);
+    const have = (store.cfg.effects || []).map((e) => e[0]);
+    const grouped = new Set(EFFECT_GROUPS.flatMap((g) => g[1]));
+    const rest = have.filter((k) => !grouped.has(k));
+    fill(groups, [...EFFECT_GROUPS, ...(rest.length ? [["More", rest]] : [])].map(([name, keys]) => {
+      const mine = keys.filter((k) => have.includes(k));
+      return mine.length ? h("section", { class: "fxgroup" }, h("h3", {}, name), h("div", { class: "settings" }, mine.map(row))) : null;
     }));
   };
   draw();
-  return h("details", { class: "effects" }, h("summary", {}, "Enhanced effects ", betaTag()),
-    setting("Preset", "Performance drops the costly effects. Cinematic adds a stronger glow, the cinematic colours, sharpening and a vignette. Changing anything below makes it Custom.", preset),
-    rows);
+  return h("div", { class: "card" },
+    h("div", { class: "row between" }, h("h2", {}, "Enhanced effects ", betaTag()), presetHost),
+    h("p", { class: "muted small" }, "Performance drops the costly effects. Cinematic adds a stronger glow, cool shadows, sharpening and a vignette."),
+    groups);
 }
 
 /** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
-function graphicsCard() {
+function graphicsCards() {
   const fb = liveStatus();
   const choices = [[300, "Standard (original game)"], [510, "Far (recommended)"], [1000, "Very far"]];
   const cur = store.cfg.camera_height || 510;
@@ -1670,25 +1714,41 @@ function graphicsCard() {
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["x64", "64-bit (default)"], ["x86", "32-bit (the older build)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.engine_arch || "x64") }, label)));
-  const renderer = h("select", { "aria-label": "Renderer", onchange: async () => {
+
+  // Renderer: two tiles to choose between, each saying what you get.
+  const mac = store.cfg.os === "macos";
+  const effectsFb = liveStatus();
+  const effects = effectsPanel(effectsFb);
+  effects.append(effectsFb.el);
+  const tiles = [
+    ["classic", "Classic", null, "The game as it has always looked. The safe choice."],
+    ["enhanced", "Enhanced", betaTag(), mac
+      ? "Bloom, ambient occlusion, light from explosions, shockwaves, shaded smoke and scorch craters."
+      : "Vulkan, with real shadows, new water, bloom, shockwaves and shaded smoke. Needs the 64-bit engine and a Vulkan 1.3 driver, else Classic is used."],
+  ].map(([value, name, tag, desc]) => h("button", { class: "choice", type: "button", role: "radio", "aria-checked": String(value === (store.cfg.renderer || "classic")), onclick: async () => {
     try {
-      await invoke("set_renderer", { renderer: renderer.value });
-      store.cfg.renderer = renderer.value;
-      effects.hidden = renderer.value !== "enhanced";
+      await invoke("set_renderer", { renderer: value });
+      store.cfg.renderer = value;
+      tiles.forEach((t, i) => t.setAttribute("aria-checked", String(["classic", "enhanced"][i] === value)));
+      effects.hidden = value !== "enhanced";
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
-  } }, [["classic", "Classic (default)"], ["enhanced", store.cfg.os === "macos" ? "Enhanced (beta)" : "Enhanced (Vulkan, beta)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
-  const effects = effectsPanel(fb);
+  } }, h("span", { class: "choice-name" }, name, tag), h("span", { class: "muted small" }, desc)));
   effects.hidden = (store.cfg.renderer || "classic") !== "enhanced";
-  return h("div", { class: "card" }, h("h2", {}, "Graphics"),
-    store.cfg.renderer_available ? setting(h("span", {}, "Renderer ", betaTag()), store.cfg.os === "macos"
-      ? "Enhanced adds bloom, ambient occlusion, light from explosions, explosion shockwaves, shaded smoke and scorch craters on top of the Metal renderer. It only changes the picture, so you can play online with anyone. Classic is one click back."
-      : "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and shaded smoke. It only changes the picture, so you can play online with anyone. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
+  const renderer = store.cfg.renderer_available ? h("div", { class: "card" },
+    h("h2", {}, "Renderer"),
+    h("div", { class: "choices", role: "radiogroup", "aria-label": "Renderer" }, tiles),
+    h("p", { class: "muted small" }, "Either way only the picture changes, so you can play online with anyone.")) : null;
+  return [
+    renderer,
     store.cfg.renderer_available ? effects : null,
-    store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
-    setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
-    setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
-    fb.el);
+    h("div", { class: "card" }, h("h2", {}, "Camera and quality"),
+      h("div", { class: "settings" },
+        setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
+        setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
+        store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null),
+      fb.el),
+  ];
 }
 
 /** Says what goes into the debug zip before it is made; the replay (it can hold chat) is only added if ticked. */
@@ -1760,20 +1820,40 @@ function forgetSteamRow() {
   return setting("Saved Steam sign-in", h("span", {}, "Rallypoint clears it when a download ends. This removes one an earlier version left. ", fb.el), btn);
 }
 
+/** Tabs for a page with more than one screenful: one section shows at a time. `sections` is [id, label, build()]. */
+function tabbed(label, sections, current, onPick) {
+  const body = h("div", { class: "tabbody" });
+  const show = (id) => {
+    tabs.forEach((t, i) => { const on = sections[i][0] === id; t.setAttribute("aria-selected", String(on)); t.tabIndex = on ? 0 : -1; });
+    fill(body, (sections.find((x) => x[0] === id) || sections[0])[2]());
+    onPick && onPick(id);
+  };
+  const tabs = sections.map(([id, text], i) => h("button", { class: "tab", type: "button", role: "tab", onclick: () => show(id), onkeydown: (e) => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    const next = (i + step + sections.length) % sections.length;
+    show(sections[next][0]); tabs[next].focus();
+  } }, text));
+  const bar = h("div", { class: "tabs", role: "tablist", "aria-label": label }, tabs);
+  show(sections.some((x) => x[0] === current) ? current : sections[0][0]);
+  return { bar, body };
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
+  const t = tabbed("Settings", [
+    ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
+    ["graphics", "Graphics", () => graphicsCards()],
+    ["multiplayer", "Multiplayer", () => [syncCard()]],
+    ["rallypoint", "Rallypoint", () => [
+      updatesCard(),
+      h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
+        setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
+      h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)]],
+  ], store.settingsTab || "game", (id) => { store.settingsTab = id; });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
-    h("h3", { class: "section-title" }, "Game"),
-    h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()),
-    graphicsCard(),
-    h("h3", { class: "section-title" }, "Multiplayer"),
-    syncCard(),
-    h("h3", { class: "section-title" }, "Rallypoint"),
-    updatesCard(),
-    h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
-      setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
-    h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`));
+    t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 
