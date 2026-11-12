@@ -58,6 +58,12 @@ pub struct Config {
     /// Which Windows engine to run: empty or "x64" is the 64-bit one, "x86" the 32-bit one. Ignored where only one is bundled.
     #[serde(default)]
     pub engine_arch: String,
+    /// "enhanced" for the native Vulkan renderer and its effects (64-bit Windows engine only); empty is Classic.
+    #[serde(default)]
+    pub renderer: String,
+    /// Effect settings of the Enhanced renderer the player changed (`graphics::EFFECTS` keys); the rest keep the defaults.
+    #[serde(default)]
+    pub effects: std::collections::BTreeMap<String, String>,
     /// The name other players see in the game's LAN lobby. Empty means this computer's name.
     #[serde(default)]
     pub player_name: String,

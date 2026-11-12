@@ -74,9 +74,119 @@ pub fn camera_env(height: u32) -> (String, String) {
     ("GEN_MAX_CAMERA_HEIGHT".into(), height.clamp(STANDARD_CAMERA, MAX_CAMERA).to_string())
 }
 
+/// The engine's renderer: "enhanced" runs the Enhanced renderer with the added effects. On Windows that is the native Vulkan
+/// renderer of the 64-bit engine (`GENERALS_GFX=vulkan`; the 32-bit engine has none), on macOS the Metal backend's Enhanced
+/// mode (`GENERALS_GFX=metal`). Anything else keeps the classic path.
+pub fn renderer_env(renderer: &str, engine: &std::path::Path, os: &str) -> Option<(String, String)> {
+    if renderer != "enhanced" {
+        return None;
+    }
+    match os {
+        "macos" => Some(("GENERALS_GFX".into(), "metal".into())),
+        "windows" if engine.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "x64") => Some(("GENERALS_GFX".into(), "vulkan".into())),
+        _ => None,
+    }
+}
+
+/// Whether this platform has an Enhanced renderer at all (the Settings switch is shown only then).
+pub fn renderer_available(os: &str, both_windows_engines: bool) -> bool {
+    os == "macos" || (os == "windows" && both_windows_engines)
+}
+
+/// The Enhanced renderer's effect settings the launcher offers: (Options.ini key, allowed values, default, also on macOS).
+/// These are the engine's own defaults, so an unset key changes nothing. The macOS Enhanced mode (the Metal backend) has
+/// a subset: post processing, bloom, ambient occlusion, FXAA, dynamic lights, the water's depth colour, shockwaves, craters.
+pub const EFFECTS: &[(&str, &[&str], &str, bool)] = &[
+    ("PostProcessing", &["yes", "no"], "yes", true),
+    ("Bloom", &["yes", "no"], "yes", true),
+    ("AmbientOcclusion", &["yes", "no"], "yes", true),
+    ("AmbientOcclusionQuality", &["half", "full"], "half", false),
+    ("AntiAliasingFXAA", &["yes", "no"], "yes", true),
+    ("SoftShadows", &["yes", "no"], "yes", false),
+    ("ShadowQuality", &["low", "medium", "high"], "medium", false),
+    ("DynamicLights", &["yes", "no"], "yes", true),
+    ("PixelLighting", &["yes", "no"], "yes", false),
+    ("AnisotropicFiltering", &["0", "4", "8", "16"], "16", false),
+    ("CloudShadows", &["yes", "no"], "yes", false),
+    ("Clouds", &["yes", "no"], "no", false),
+    ("UpdatedWater", &["yes", "no"], "yes", true),
+    ("WaterReflections", &["yes", "no"], "yes", false),
+    ("Shockwaves", &["yes", "no"], "yes", true),
+    ("ScorchRelief", &["yes", "no"], "yes", true),
+];
+
+/// Checks one effect setting; `Err` names what is wrong.
+pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
+    match EFFECTS.iter().find(|(k, _, _, _)| *k == key) {
+        Some((_, allowed, _, _)) if allowed.contains(&value) => Ok(()),
+        Some(_) => Err(format!("{value} is not a value for {key}")),
+        None => Err(format!("unknown effect setting {key}")),
+    }
+}
+
+/// `GEN_GFX` for the engine: every known setting the player changed, as `Key=value;Key=value` (they win over Options.ini).
+/// Unknown keys or values in the config are skipped, so nothing else reaches the engine's environment.
+pub fn effects_env(settings: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
+    let v: Vec<String> = EFFECTS
+        .iter()
+        .filter_map(|(k, _, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={v}")))
+        .collect();
+    (!v.is_empty()).then(|| ("GEN_GFX".into(), v.join(";")))
+}
+
+/// `GEN_ASSETS` for the Enhanced renderer: the engine bundle's `assets` folder (the generated scorch atlas and its height map),
+/// unless the player turned the scorch craters off or the folder is not there.
+pub fn assets_env(engine: &std::path::Path, effects: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
+    let dir = engine.parent()?.join("assets");
+    let off = effects.get("ScorchRelief").is_some_and(|v| v == "no");
+    (!off && dir.is_dir()).then(|| ("GEN_ASSETS".into(), dir.to_string_lossy().into_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assets_only_with_the_folder_and_craters_on() {
+        let t = std::env::temp_dir().join(format!("gen-assets-{}", std::process::id()));
+        let exe = t.join("x64").join("generalszh.exe");
+        let mut fx = std::collections::BTreeMap::new();
+        assert_eq!(assets_env(&exe, &fx), None);
+        std::fs::create_dir_all(t.join("x64/assets")).unwrap();
+        assert_eq!(assets_env(&exe, &fx).map(|e| e.0), Some("GEN_ASSETS".to_string()));
+        fx.insert("ScorchRelief".to_string(), "no".to_string());
+        assert_eq!(assets_env(&exe, &fx), None);
+        std::fs::remove_dir_all(t).unwrap();
+    }
+
+    #[test]
+    fn effect_settings_are_checked_and_joined() {
+        assert!(check_effect("Bloom", "no").is_ok());
+        assert!(check_effect("ShadowQuality", "ultra").is_err());
+        assert!(check_effect("Bloom;X", "no").is_err());
+        let mut m = std::collections::BTreeMap::new();
+        assert_eq!(effects_env(&m), None);
+        m.insert("Bloom".to_string(), "no".to_string());
+        m.insert("ShadowQuality".to_string(), "high".to_string());
+        m.insert("Evil".to_string(), "x;y=z".to_string());
+        m.insert("Shockwaves".to_string(), "maybe".to_string());
+        assert_eq!(effects_env(&m), Some(("GEN_GFX".into(), "Bloom=no;ShadowQuality=high".into())));
+    }
+
+    #[test]
+    fn enhanced_renderer_is_vulkan_on_64_bit_windows_and_metal_on_macos() {
+        let x64 = std::path::Path::new("/app/engine/x64/generalszh.exe");
+        let x86 = std::path::Path::new("/app/engine/generalszh.exe");
+        assert_eq!(renderer_env("enhanced", x64, "windows"), Some(("GENERALS_GFX".into(), "vulkan".into())));
+        assert_eq!(renderer_env("enhanced", x86, "windows"), None);
+        assert_eq!(renderer_env("", x64, "windows"), None);
+        assert_eq!(renderer_env("classic", x64, "windows"), None);
+        let mac = std::path::Path::new("/Applications/Rallypoint.app/Contents/Resources/engine/generalszh");
+        assert_eq!(renderer_env("enhanced", mac, "macos"), Some(("GENERALS_GFX".into(), "metal".into())));
+        assert_eq!(renderer_env("classic", mac, "macos"), None);
+        assert_eq!(renderer_env("enhanced", mac, "linux"), None);
+        assert!(renderer_available("macos", false) && renderer_available("windows", true) && !renderer_available("windows", false));
+    }
 
     #[test]
     fn merge_changes_in_place_adds_missing_and_keeps_the_rest() {
