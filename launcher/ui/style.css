@@ -137,6 +137,7 @@ input[type=number] { width: 7em; }
 .btn.small { height: 28px; padding: 0 11px; font-size: 12px; }
 .btn svg { width: 18px; height: 18px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 650; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.pill.beta { padding: 1px 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; vertical-align: 1px; }
 .pill.ok { color: var(--ok-ink); } .pill.warn { color: var(--warn-ink); } .pill.bad { color: var(--bad-ink); }
 .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
 .bundledialog .switch { display: flex; align-items: flex-start; font-weight: 400; font-size: 13px; line-height: 1.4; }
@@ -478,3 +479,50 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .playrow .playbtn { flex: 1; width: auto; margin-top: 0; }
 .skrow .segs { justify-self: start; }
 
+
+/* ---- tabs: a page with more than one screenful shows one section at a time ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: -4px; }
+.tab { position: relative; border: 0; background: none; color: var(--muted); font: inherit; font-weight: 650; padding: 9px 14px 11px; cursor: pointer; border-radius: var(--r-field) var(--r-field) 0 0; transition: color .12s var(--ease), background .12s var(--ease); }
+.tab:hover { color: var(--text); background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+.tab[aria-selected="true"] { color: var(--text); }
+.tab[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+.tabbody { display: grid; gap: 16px; }
+.tabbody > * { animation: rise .18s var(--ease) both; }
+
+/* ---- settings rows inside a wrapper, so the first one never carries a rule above it ---- */
+.settings { display: grid; }
+.settings > .setting:first-child { border-top: 0; padding-top: 0; }
+.settings > .setting:last-child { padding-bottom: 0; }
+.setting.off .setting-title, .setting.off .setting-text .small { opacity: .55; }
+
+/* ---- a choice between two or three things that deserve a sentence each ---- */
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.choice { display: grid; gap: 4px; align-content: start; text-align: left; padding: 14px 16px 14px 44px; position: relative; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--bg); color: var(--text); font: inherit; cursor: pointer; transition: border-color .12s var(--ease), background .12s var(--ease); }
+.choice::before { content: ""; position: absolute; left: 16px; top: 17px; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
+.choice:hover { border-color: color-mix(in srgb, var(--text) 24%, transparent); }
+.choice[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.choice[aria-checked="true"]::before { border: 4.5px solid var(--accent); }
+.choice-name { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+
+/* ---- enhanced effects: groups side by side, rows a little tighter than a full-width setting ---- */
+.fxgroups { columns: 2 340px; column-gap: 36px; }
+.fxgroup { break-inside: avoid; padding-bottom: 22px; }
+.fxgroup h3 { color: var(--rose); font-size: 13px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.fxgroup .setting { padding: 9px 0; gap: 12px; border-top: 0; }
+.fxgroup .setting-ctl select { width: 150px; }
+.card:has(> .fxgroups) > .live { margin-top: -22px; }
+
+/* ---- mods ---- */
+.modcard .mod { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 16px; }
+.modtile { width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center; font-weight: 750; font-size: 15px; letter-spacing: .02em; background: var(--surface-2); color: var(--muted); }
+.modtile.on { background: color-mix(in srgb, var(--accent) 22%, var(--surface)); color: var(--text); }
+.modcard .mod-links { margin-top: 4px; }
+.modhead { margin-top: 10px; color: var(--muted); font-size: 13px; font-weight: 700; }
+.modhead:first-child { margin-top: 0; }
+.drop { gap: 12px; justify-items: stretch; }
+.drop-main { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.drop b { color: var(--text); }
+.pathrow { margin-top: 8px; flex-wrap: nowrap; }
+.pathrow input { flex: 1; min-width: 0; }
+.page-head .stack.tight { gap: 6px; }
+@media (max-width: 760px) { .modcard .mod { grid-template-columns: auto minmax(0, 1fr); } .modcard .mod > .row.end { grid-column: 1 / -1; justify-content: flex-start; } }

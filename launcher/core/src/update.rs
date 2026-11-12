@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const REPO: &str = "michaelmurfy/rallypoint";
-const API: &str = "https://api.github.com/repos/michaelmurfy/rallypoint/releases?per_page=15";
+const API: &str = "https://api.github.com/repos/michaelmurfy/rallypoint/releases?per_page=50";
 const DOWNLOAD_PREFIX: &str = "https://github.com/michaelmurfy/rallypoint/releases/download/";
 /// The public half of the release signing key (hex). The private half is a GitHub Actions secret and a backup held by
 /// the maintainer; `cargo run -p generals-core --example release_sign -- keygen` makes a pair.
@@ -57,6 +57,18 @@ pub fn parse_version(s: &str) -> Option<Version> {
         .map(|p| p.split('.').map(|i| i.parse().map(Ident::Num).unwrap_or_else(|_| Ident::Alpha(i.to_string()))).collect())
         .unwrap_or_default();
     Some(Version { core: nums, pre })
+}
+
+impl Version {
+    /// `0.7.0-beta.2` is a prerelease (alpha, beta, rc); `0.7.0` is not.
+    pub fn is_prerelease(&self) -> bool {
+        !self.pre.is_empty()
+    }
+}
+
+/// Whether a version string names a prerelease. Anything that is not a version (a CI dry run) does not.
+pub fn is_prerelease(version: &str) -> bool {
+    parse_version(version).is_some_and(|v| v.is_prerelease())
 }
 
 impl Ord for Version {
@@ -106,6 +118,9 @@ pub struct Release {
     pub body: Option<String>,
     #[serde(default)]
     pub draft: bool,
+    /// GitHub's own "pre-release" tick box; a prerelease version in the tag counts as well.
+    #[serde(default)]
+    pub prerelease: bool,
     #[serde(default)]
     pub assets: Vec<Asset>,
 }
@@ -127,6 +142,10 @@ pub struct UpdateInfo {
     pub size_mb: u64,
     /// There is an installer for this computer, so it can be downloaded from inside the app.
     pub installer: bool,
+    /// The offered release is a beta (or another prerelease).
+    pub beta: bool,
+    /// The player chose "Skip this version" for it: Settings still shows it, the start-up banner does not.
+    pub skipped: bool,
 }
 
 /// The installer file for an OS/architecture, by the names our release workflow produces.
@@ -141,14 +160,26 @@ pub fn installer_for(os: &str, arch: &str, assets: &[Asset]) -> Option<Asset> {
     }
 }
 
-/// Newer than `current`? Drafts are ignored; prereleases count. An unparseable running version counts as 0.0.0.
-pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str) -> Option<UpdateInfo> {
+/// The update to offer someone running `current`, or `None`.
+///
+/// - Drafts never count. Betas (a prerelease version in the tag, or GitHub's pre-release box) count only with `beta`:
+///   they are opt-in. Someone running a beta with the option off is offered the next full release and nothing before it.
+/// - Of the releases newer than `current`, the newest one that can be installed here (installer, `SHA256SUMS` and its
+///   signature all uploaded) wins. A release that is still being uploaded, or has no installer for this computer, is only
+///   offered (as a page to open) when nothing installable is newer than `current`.
+/// - An unparseable running version (a CI dry run) counts as 0.0.0.
+pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str, beta: bool) -> Option<UpdateInfo> {
     let cur = parse_version(current).unwrap_or(Version { core: [0, 0, 0], pre: vec![] });
-    let best = releases.iter().filter(|r| !r.draft).filter_map(|r| Some((parse_version(&r.tag_name)?, r))).max_by(|a, b| a.0.cmp(&b.0))?;
-    if best.0 <= cur {
-        return None;
-    }
-    let r = best.1;
+    let mut newer: Vec<(Version, &Release)> = releases
+        .iter()
+        .filter(|r| !r.draft)
+        .filter_map(|r| Some((parse_version(&r.tag_name)?, r)))
+        .filter(|(v, r)| *v > cur && (beta || !(v.is_prerelease() || r.prerelease)))
+        .collect();
+    newer.sort_by(|a, b| b.0.cmp(&a.0));
+    let has = |r: &Release, name: &str| r.assets.iter().any(|a| a.name == name);
+    let installable = |r: &Release| installer_for(os, arch, &r.assets).is_some() && has(r, "SHA256SUMS") && has(r, "SHA256SUMS.sig");
+    let (version, r) = newer.iter().find(|(_, r)| installable(r)).or(newer.first())?;
     let asset = installer_for(os, arch, &r.assets);
     Some(UpdateInfo {
         current: current.trim_start_matches('v').to_string(),
@@ -160,6 +191,8 @@ pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str) -> Optio
         size_mb: asset.as_ref().map(|a| a.size / 1_048_576).unwrap_or(0),
         installer: asset.is_some(),
         asset,
+        beta: version.is_prerelease() || r.prerelease,
+        skipped: false,
     })
 }
 
@@ -177,10 +210,14 @@ pub fn parse_releases(json: &[u8]) -> Result<Vec<Release>, String> {
     serde_json::from_slice(json).map_err(|e| format!("unexpected answer from GitHub: {e}"))
 }
 
-/// Ask GitHub whether a newer release exists.
-pub fn check(current: &str) -> Result<Option<UpdateInfo>, String> {
+/// Ask GitHub whether a newer release exists. `beta`: the player opted in to beta releases. `skipped`: the version they
+/// chose to skip, which is still returned (Settings shows it) but marked.
+pub fn check(current: &str, beta: bool, skipped: &str) -> Result<Option<UpdateInfo>, String> {
     let rel = parse_releases(&curl(API, "=https", None)?)?;
-    Ok(newer(current, &rel, std::env::consts::OS, std::env::consts::ARCH))
+    Ok(newer(current, &rel, std::env::consts::OS, std::env::consts::ARCH, beta).map(|mut u| {
+        u.skipped = !skipped.is_empty() && u.latest == skipped.trim_start_matches('v');
+        u
+    }))
 }
 
 /// `<hex>  <file>` lines (sha256sum output); the hash for `name`.
@@ -380,20 +417,60 @@ mod tests {
     }
 
     fn release(tag: &str, draft: bool) -> Release {
-        Release { tag_name: tag.into(), html_url: format!("https://github.com/{REPO}/releases/tag/{tag}"), body: Some("notes".into()), draft, assets: assets() }
+        Release { tag_name: tag.into(), html_url: format!("https://github.com/{REPO}/releases/tag/{tag}"), body: Some("notes".into()), draft, prerelease: false, assets: assets() }
     }
 
     #[test]
-    fn finds_a_newer_release_including_prereleases_and_skips_drafts() {
+    fn with_betas_on_finds_the_newest_release_and_skips_drafts() {
         let rels = vec![release("v0.1.0-alpha.2", false), release("v0.1.0-alpha.4", false), release("v0.1.0-alpha.9", true), release("v0.1.0-alpha.3", false)];
-        let u = newer("0.1.0-alpha.2", &rels, "macos", "aarch64").unwrap();
+        let u = newer("0.1.0-alpha.2", &rels, "macos", "aarch64", true).unwrap();
         assert_eq!((u.latest.as_str(), u.current.as_str()), ("0.1.0-alpha.4", "0.1.0-alpha.2"));
-        assert!(u.asset.is_some() && u.sums.is_some() && u.size_mb == 8);
-        assert!(newer("0.1.0-alpha.4", &rels, "macos", "aarch64").is_none(), "already current");
-        assert!(newer("0.2.0", &rels, "macos", "aarch64").is_none(), "ahead of every release");
-        assert!(newer("0.1.0-alpha.2", &[], "macos", "aarch64").is_none());
+        assert!(u.asset.is_some() && u.sums.is_some() && u.size_mb == 8 && u.beta && !u.skipped);
+        assert!(newer("0.1.0-alpha.4", &rels, "macos", "aarch64", true).is_none(), "already current");
+        assert!(newer("0.2.0", &rels, "macos", "aarch64", true).is_none(), "ahead of every release");
+        assert!(newer("0.1.0-alpha.2", &[], "macos", "aarch64", true).is_none());
         // a build whose version isn't a version (a CI dry run) is offered the newest release
-        assert!(newer("main", &rels, "windows", "x86_64").is_some());
+        assert!(newer("main", &rels, "windows", "x86_64", true).is_some());
+    }
+
+    #[test]
+    fn betas_are_only_offered_to_those_who_asked() {
+        let rels = vec![release("v0.7.0-beta.2", false), release("v0.7.0-beta.1", false), release("v0.6.1", false), release("v0.6.0", false)];
+        // on a full release, betas off: the beta is not an update
+        assert!(newer("0.6.1", &rels, "windows", "x86_64", false).is_none());
+        let stable = newer("0.6.0", &rels, "windows", "x86_64", false).unwrap();
+        assert_eq!((stable.latest.as_str(), stable.beta), ("0.6.1", false));
+        // opted in: the newest beta
+        let beta = newer("0.6.1", &rels, "windows", "x86_64", true).unwrap();
+        assert_eq!((beta.latest.as_str(), beta.beta), ("0.7.0-beta.2", true));
+        // running a beta with the option off: no further betas, but the full release when it comes
+        assert!(newer("0.7.0-beta.1", &rels, "windows", "x86_64", false).is_none());
+        let mut later = rels.clone();
+        later.insert(0, release("v0.7.0", false));
+        assert_eq!(newer("0.7.0-beta.1", &later, "windows", "x86_64", false).unwrap().latest, "0.7.0");
+        // GitHub's pre-release box counts as a beta even when the tag looks like a full release
+        let mut ticked = release("v0.8.0", false);
+        ticked.prerelease = true;
+        assert!(newer("0.6.1", &[ticked.clone()], "windows", "x86_64", false).is_none());
+        assert!(newer("0.6.1", &[ticked], "windows", "x86_64", true).unwrap().beta);
+        assert!(is_prerelease("v0.7.0-beta.2") && !is_prerelease("0.7.0") && !is_prerelease("main"));
+    }
+
+    #[test]
+    fn a_release_still_being_uploaded_does_not_hide_the_one_before_it() {
+        // 0.6.2 was published a minute ago: the installers and the signature are not up yet
+        let mut uploading = release("v0.6.2", false);
+        uploading.assets.clear();
+        let rels = vec![uploading.clone(), release("v0.6.1", false)];
+        let u = newer("0.6.0", &rels, "macos", "aarch64", false).unwrap();
+        assert_eq!((u.latest.as_str(), u.installer), ("0.6.1", true));
+        // nothing installable is newer: the page of the new one is still worth showing
+        let u = newer("0.6.1", &rels, "macos", "aarch64", false).unwrap();
+        assert_eq!((u.latest.as_str(), u.installer), ("0.6.2", false));
+        // unsigned counts as not installable too
+        let mut unsigned = release("v0.6.2", false);
+        unsigned.assets.retain(|a| a.name != "SHA256SUMS.sig");
+        assert_eq!(newer("0.6.0", &[unsigned, release("v0.6.1", false)], "macos", "aarch64", false).unwrap().latest, "0.6.1");
     }
 
     #[test]
@@ -401,7 +478,7 @@ mod tests {
         let mut r = release("v0.2.0", false);
         let body = "word ".repeat(400);
         r.body = Some(body.clone());
-        let u = newer("0.1.0", &[r], "windows", "x86_64").unwrap();
+        let u = newer("0.1.0", &[r], "windows", "x86_64", false).unwrap();
         assert_eq!(u.notes, body);
     }
 
@@ -424,13 +501,13 @@ mod tests {
 
     #[test]
     fn refuses_downloads_from_outside_the_repository() {
-        let mut info = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64").unwrap();
+        let mut info = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64", false).unwrap();
         info.asset.as_mut().unwrap().browser_download_url = "https://evil.example/x-setup.exe".into();
         assert!(download(&info, Path::new(".")).unwrap_err().contains("outside this repository"));
-        let mut no_sums = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64").unwrap();
+        let mut no_sums = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64", false).unwrap();
         no_sums.sums = None;
         assert!(download(&no_sums, Path::new(".")).unwrap_err().contains("no checksums"));
-        let mut unsigned = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64").unwrap();
+        let mut unsigned = newer("0.0.1", &[release("v0.1.0", false)], "windows", "x86_64", false).unwrap();
         unsigned.sig = None;
         assert!(download(&unsigned, Path::new(".")).unwrap_err().contains("isn't signed"));
     }
@@ -500,7 +577,7 @@ mod tests {
         std::fs::write(t.join("SHA256SUMS"), &sums).unwrap();
         std::fs::write(t.join("SHA256SUMS.sig"), sign(&key, sums.as_bytes())).unwrap();
         let at = |n: &str| Asset { name: n.into(), size: 15, browser_download_url: format!("file://{}", t.join(n).display()) };
-        let info = UpdateInfo { current: "0.0.1".into(), latest: "9".into(), page: String::new(), notes: String::new(), asset: Some(at(name)), sums: Some(at("SHA256SUMS")), sig: Some(at("SHA256SUMS.sig")), size_mb: 0, installer: true };
+        let info = UpdateInfo { current: "0.0.1".into(), latest: "9".into(), page: String::new(), notes: String::new(), asset: Some(at(name)), sums: Some(at("SHA256SUMS")), sig: Some(at("SHA256SUMS.sig")), size_mb: 0, installer: true, beta: false, skipped: false };
         let got = download_with(&info, &t.join("private"), &public, "=file", false).unwrap();
         got.unchanged().unwrap();
         // the folder is private, and a file replaced after the check is not run

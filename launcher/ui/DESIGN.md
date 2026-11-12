@@ -36,7 +36,12 @@ State colors stay off the red scale on purpose, so "installed", "waiting" and "f
 - **Lists**: map packs and similar rows are separated by hairlines, not boxed in cards.
 - **Copy**: sentence case, no arrow glyphs, no filler adjectives.
 - **Motion**: 120-240ms ease-out, no overshoot, nothing under `prefers-reduced-motion: reduce`. Pages rise in once with a 30ms stagger, wizard steps slide in, toasts fade out, the waiting dot pulses. Only elements built once per visit animate: anything that re-renders while you watch it (the mod list, sidebar status) must not, or it replays on every refresh.
-- **Mods**: one primary action per mod; the relation to another mod is a pill only for add-ons, and a warning line only when the base is missing; the two secondary pages are quiet text links under the card, not buttons.
+- **Tabs** (`tabbed()`): a page longer than about two screens shows one section at a time (Settings: Game, Graphics, Multiplayer, Rallypoint). The live tab has a 2px accent rule; arrow keys move between tabs. The last tab is remembered while the launcher is open.
+- **Setting rows** (`setting()` inside a `.settings` wrapper): the name and one sentence on the left, one control on the right, hairlines between. Every on/off or pick-one option uses this, on any page. A row whose effect depends on another one that is off is dimmed and says what it needs.
+- **Choice tiles** (`.choice`, a radio group): for a choice between two or three things that each deserve a sentence, such as the renderer. Not for plain lists of values, which stay a `select` or a segmented control.
+- **Grouped options**: more than about eight related options are grouped by what they change (Picture, Light and glow, ...), in two columns, with a preset as a segmented control above them.
+- **Mod tile** (`.modtile`): two letters where a picture would be, tinted once the mod is installed. The Mods page lists what is installed first, then what can be installed.
+- **Mods**: the two steps are in order on the right (Download page, then the primary Choose file); choosing a folder is a quiet link; the relation to another mod is a pill only for add-ons, and a warning line only when the base is missing; the two secondary pages are quiet text links under the card, not buttons.
 
 ## Rules for new pages
 
