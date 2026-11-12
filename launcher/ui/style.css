@@ -137,6 +137,7 @@ input[type=number] { width: 7em; }
 .btn.small { height: 28px; padding: 0 11px; font-size: 12px; }
 .btn svg { width: 18px; height: 18px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 650; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.pill.beta { padding: 1px 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; vertical-align: 1px; }
 .pill.ok { color: var(--ok-ink); } .pill.warn { color: var(--warn-ink); } .pill.bad { color: var(--bad-ink); }
 .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; }
 .bundledialog .switch { display: flex; align-items: flex-start; font-weight: 400; font-size: 13px; line-height: 1.4; }

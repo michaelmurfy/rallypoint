@@ -113,7 +113,73 @@ pub const EFFECTS: &[(&str, &[&str], &str, bool)] = &[
     ("WaterReflections", &["yes", "no"], "yes", false),
     ("Shockwaves", &["yes", "no"], "yes", true),
     ("ScorchRelief", &["yes", "no"], "yes", true),
+    // engine patch 0081, both renderers
+    ("BloomStrength", &["subtle", "normal", "strong"], "normal", true),
+    ("ColorLook", &["standard", "vivid", "cinematic"], "standard", true),
+    ("Sharpen", &["off", "low", "high"], "off", true),
+    ("Vignette", &["yes", "no"], "no", true),
+    ("SoftParticles", &["yes", "no"], "yes", true),
+    ("SmokeShading", &["yes", "no"], "yes", true),
 ];
+
+/// Every effect setting this platform shows, with the player's value or the default (what the Settings page lists).
+pub fn effects_view(settings: &std::collections::BTreeMap<String, String>, mac_only: bool) -> Vec<(String, String)> {
+    EFFECTS
+        .iter()
+        .filter(|e| !mac_only || e.3)
+        .map(|(k, _, d, _)| (k.to_string(), settings.get(*k).filter(|v| check_effect(k, v).is_ok()).cloned().unwrap_or_else(|| d.to_string())))
+        .collect()
+}
+
+/// Effect presets: (name, the settings that differ from the defaults). "balanced" is every default.
+pub const PRESETS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "performance",
+        &[
+            ("BloomStrength", "subtle"),
+            ("AmbientOcclusion", "no"),
+            ("SoftShadows", "no"),
+            ("ShadowQuality", "low"),
+            ("DynamicLights", "no"),
+            ("PixelLighting", "no"),
+            ("AnisotropicFiltering", "4"),
+            ("CloudShadows", "no"),
+            ("WaterReflections", "no"),
+            ("SmokeShading", "no"),
+        ],
+    ),
+    ("balanced", &[]),
+    (
+        "cinematic",
+        &[
+            ("BloomStrength", "strong"),
+            ("ColorLook", "cinematic"),
+            ("Sharpen", "low"),
+            ("Vignette", "yes"),
+            ("ShadowQuality", "high"),
+            ("AmbientOcclusionQuality", "full"),
+        ],
+    ),
+];
+
+/// The settings to store for a preset (only what differs from the defaults); `None` for an unknown name.
+pub fn preset(name: &str) -> Option<std::collections::BTreeMap<String, String>> {
+    let (_, set) = PRESETS.iter().find(|(n, _)| *n == name)?;
+    Some(set.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+}
+
+/// Which preset the stored settings amount to, or "custom". A stored value equal to the default counts as unset,
+/// and settings this platform does not show (`mac_only`: the macOS subset) are left out of the comparison.
+pub fn current_preset(settings: &std::collections::BTreeMap<String, String>, mac_only: bool) -> &'static str {
+    let value = |set: &dyn Fn(&str) -> Option<String>| -> Vec<String> {
+        EFFECTS.iter().filter(|e| !mac_only || e.3).map(|(k, _, d, _)| set(k).unwrap_or_else(|| d.to_string())).collect()
+    };
+    let mine = value(&|k| settings.get(k).filter(|v| check_effect(k, v).is_ok()).cloned());
+    PRESETS
+        .iter()
+        .find(|(_, set)| value(&|k| set.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())) == mine)
+        .map_or("custom", |(n, _)| *n)
+}
 
 /// Checks one effect setting; `Err` names what is wrong.
 pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
@@ -157,6 +223,37 @@ mod tests {
         fx.insert("ScorchRelief".to_string(), "no".to_string());
         assert_eq!(assets_env(&exe, &fx), None);
         std::fs::remove_dir_all(t).unwrap();
+    }
+
+    #[test]
+    fn presets_use_known_settings_and_are_recognised() {
+        for (name, set) in PRESETS {
+            for (k, v) in *set {
+                check_effect(k, v).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let default = EFFECTS.iter().find(|e| e.0 == *k).unwrap().2;
+                assert_ne!(*v, default, "{name}: {k} is the default, leave it out");
+            }
+            let stored = preset(name).unwrap();
+            assert_eq!(current_preset(&stored, false), *name);
+            assert_eq!(current_preset(&stored, true), *name, "{name} must differ from the others on macOS too");
+        }
+        assert!(preset("ultra").is_none());
+        let shown = effects_view(&preset("cinematic").unwrap(), true);
+        assert!(shown.contains(&("ColorLook".into(), "cinematic".into())) && shown.iter().all(|(k, _)| k != "ShadowQuality"));
+        assert_eq!(effects_view(&preset("cinematic").unwrap(), false).len(), EFFECTS.len());
+        let mut m = std::collections::BTreeMap::new();
+        assert_eq!(current_preset(&m, false), "balanced");
+        m.insert("Bloom".to_string(), "yes".to_string());
+        assert_eq!(current_preset(&m, false), "balanced", "a stored default is still the default");
+        m.insert("Vignette".to_string(), "yes".to_string());
+        assert_eq!(current_preset(&m, false), "custom");
+    }
+
+    #[test]
+    fn new_look_settings_reach_the_engine() {
+        let e = effects_env(&preset("cinematic").unwrap()).unwrap().1;
+        assert_eq!(e, "AmbientOcclusionQuality=full;ShadowQuality=high;BloomStrength=strong;ColorLook=cinematic;Sharpen=low;Vignette=yes");
+        assert!(check_effect("Sharpen", "max").is_err() && check_effect("SmokeShading", "no").is_ok());
     }
 
     #[test]

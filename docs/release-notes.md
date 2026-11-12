@@ -1,16 +1,21 @@
+## Rallypoint 0.7.0-beta.2
+
+**The game can look a good deal newer now, on Windows and macOS, and it is a beta.** Turn it on in **Settings > Graphics > Renderer > Enhanced**. Classic stays the default and is one click back.
+
+- **It only changes the picture.** The simulation is untouched, so Enhanced and Classic players share a lobby, and so do Mac and Windows.
+- **Enhanced renderer.** Bloom, ambient occlusion, light from explosions, shockwave ripples, scorch craters and FXAA. Windows (64-bit engine, Vulkan 1.3 driver) also gets real shadow maps, new water and cloud shadows.
+- **Better smoke.** Smoke and dust are darker near the ground and lighter on top, so a column has some depth. Dark smoke no longer cuts a hard line into the ground.
+- **Glow you can tune.** Subtle, Normal or Strong. On macOS a small bright light keeps a steady glow instead of flickering.
+- **Colour looks.** Standard, Vivid, or Cinematic (cool shadows, warm highlights).
+- **Sharpening and vignette.** Both off until you ask. The vignette leaves menus and the control bar alone.
+- **Presets.** Performance, Balanced and Cinematic set everything in one go. Every effect still has its own switch under **Enhanced effects**.
+- **Honest status.** It builds on both systems and the Windows shaders are checked by the compiler. Nobody has played a full game with it yet, least of all on a Mac, so please say what you see. If the screen looks wrong, switch back to Classic and send the debug logs.
+- **Credit.** The Vulkan renderer and its effects come from the ModernGeneralsZH fork by JaChriCaeTob.
+
 ## Rallypoint 0.7.0-beta.1
 
-**Windows now runs a 64-bit game engine, and it is new, so this is a beta.** It starts the same way: pick Play and go. If anything misbehaves, **Settings > Graphics > Game engine** switches back to the 32-bit one, and the next game uses it.
-
-- **64-bit engine.** Audio, movies and Direct3D 8 are replaced with 64-bit parts (miniaudio, FFmpeg, DXVK). Not played in a real game before this release, so please say how it goes.
-- **Mixed games.** The simulation is meant to match macOS and the 32-bit engine bit for bit. If a lobby refuses you, or a game drifts apart, send the debug logs from Settings > Multiplayer.
-- **Two engines in one install.** The Windows installer carries both, so it is a bigger download.
-- **Credit.** The 64-bit work comes from the ModernGeneralsZH fork by JaChriCaeTob. A pinned copy of its Vulkan sources sits in the repo for the renderer work to come.
+Windows got a 64-bit game engine (miniaudio, FFmpeg and DXVK in place of the old 32-bit parts), shipped beside the 32-bit one, with a switch in Settings > Graphics > Game engine.
 
 ## Rallypoint 0.6.1
 
-The map picture that follows the mouse only shows over a map's title now, not over the Skirmish button or the rest of the row.
-
-## Rallypoint 0.6.0
-
-Maps with square brackets in the name work on macOS, a skirmish never has more players than the map, starting money, tick boxes for the pack filter, a map picture on hover, and server setup as a regular user.
+The map picture that follows the mouse only shows over a map's title, not the rest of the row.

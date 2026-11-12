@@ -1560,22 +1560,56 @@ const EFFECT_TEXT = {
   WaterReflections: ["Water reflections", "The scene mirrored in the water."],
   Shockwaves: ["Explosion shockwaves", "A heat ripple rings out from big explosions."],
   ScorchRelief: ["Scorch craters", "Scorch marks are lit as shallow craters."],
+  BloomStrength: ["Glow strength", "How much bright lights and explosions glow. Needs Bloom.", { subtle: "Subtle", normal: "Normal", strong: "Strong" }],
+  ColorLook: ["Colour look", "Vivid has more colour and contrast. Cinematic has cool shadows and warm highlights.", { standard: "Standard", vivid: "Vivid", cinematic: "Cinematic" }],
+  Sharpen: ["Sharpening", "A crisper picture after the anti-aliasing.", { off: "Off", low: "Low", high: "High" }],
+  Vignette: ["Vignette", "The corners of the battlefield darken a little. Menus and the control bar stay as they are."],
+  SoftParticles: ["Soft particles", "Smoke, dust and fire fade where they meet the ground instead of cutting a hard line."],
+  SmokeShading: ["Smoke shading", "Smoke and dust are darker near the ground and lighter on top, so a column looks like it has depth."],
 };
+const EFFECT_PRESETS = [["performance", "Performance"], ["balanced", "Balanced (default)"], ["cinematic", "Cinematic"]];
+const betaTag = () => h("span", { class: "pill warn beta" }, "Beta");
 function effectsPanel(fb) {
+  const rows = h("div", { class: "stack" });
+  const preset = h("select", { "aria-label": "Effects preset", onchange: async () => {
+    try {
+      store.cfg.effects = await invoke("set_effect_preset", { name: preset.value });
+      store.cfg.effect_preset = preset.value;
+      draw();
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
+  } });
   const save = async (key, value) => {
-    try { await invoke("set_effect", { key, value }); fb.ok("Saved. It applies the next time you start the game."); } catch (e) { fb.bad(errText(e)); }
+    try {
+      store.cfg.effect_preset = await invoke("set_effect", { key, value });
+      const row = (store.cfg.effects || []).find((e) => e[0] === key);
+      if (row) row[1] = value;
+      drawPreset();
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
   };
-  const rows = (store.cfg.effects || []).map(([key, value]) => {
-    const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
-    if (!choices) {
-      const box = h("input", { type: "checkbox", "aria-label": title, checked: value === "yes", onchange: () => save(key, box.checked ? "yes" : "no") });
-      return setting(title, desc, h("label", { class: "switch" }, box));
-    }
-    const sel = h("select", { "aria-label": title, onchange: () => save(key, sel.value) },
-      Object.entries(choices).map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
-    return setting(title, desc, sel);
-  });
-  return h("details", { class: "effects" }, h("summary", {}, "Enhanced effects"), ...rows);
+  const drawPreset = () => {
+    const cur = store.cfg.effect_preset || "balanced";
+    const list = cur === "custom" ? [...EFFECT_PRESETS, ["custom", "Custom"]] : EFFECT_PRESETS;
+    fill(preset, ...list.map(([v, label]) => h("option", { value: v, selected: v === cur, disabled: v === "custom" }, label)));
+  };
+  const draw = () => {
+    drawPreset();
+    fill(rows, ...(store.cfg.effects || []).map(([key, value]) => {
+      const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
+      if (!choices) {
+        const box = h("input", { type: "checkbox", "aria-label": title, checked: value === "yes", onchange: () => save(key, box.checked ? "yes" : "no") });
+        return setting(title, desc, h("label", { class: "switch" }, box));
+      }
+      const sel = h("select", { "aria-label": title, onchange: () => save(key, sel.value) },
+        Object.entries(choices).map(([v, label]) => h("option", { value: v, selected: v === value }, label)));
+      return setting(title, desc, sel);
+    }));
+  };
+  draw();
+  return h("details", { class: "effects" }, h("summary", {}, "Enhanced effects ", betaTag()),
+    setting("Preset", "Performance drops the costly effects. Cinematic adds a stronger glow, the cinematic colours, sharpening and a vignette. Changing anything below makes it Custom.", preset),
+    rows);
 }
 
 /** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
@@ -1610,13 +1644,13 @@ function graphicsCard() {
       effects.hidden = renderer.value !== "enhanced";
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
-  } }, [["classic", "Classic (default)"], ["enhanced", store.cfg.os === "macos" ? "Enhanced (new)" : "Enhanced (Vulkan, new)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
+  } }, [["classic", "Classic (default)"], ["enhanced", store.cfg.os === "macos" ? "Enhanced (beta)" : "Enhanced (Vulkan, beta)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.renderer || "classic") }, label)));
   const effects = effectsPanel(fb);
   effects.hidden = (store.cfg.renderer || "classic") !== "enhanced";
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
-    store.cfg.renderer_available ? setting("Renderer", store.cfg.os === "macos"
-      ? "Enhanced adds bloom, ambient occlusion, light from explosions, explosion shockwaves, soft particles and scorch craters on top of the Metal renderer."
-      : "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and soft particles. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
+    store.cfg.renderer_available ? setting(h("span", {}, "Renderer ", betaTag()), store.cfg.os === "macos"
+      ? "Enhanced adds bloom, ambient occlusion, light from explosions, explosion shockwaves, shaded smoke and scorch craters on top of the Metal renderer. It only changes the picture, so you can play online with anyone. Classic is one click back."
+      : "Enhanced draws through Vulkan with new water, explosion shockwaves, real shadows, bloom and shaded smoke. It only changes the picture, so you can play online with anyone. It needs the 64-bit engine and a Vulkan 1.3 graphics driver; without one the game uses Classic.", renderer) : null,
     store.cfg.renderer_available ? effects : null,
     store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
     setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),

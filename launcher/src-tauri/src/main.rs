@@ -205,6 +205,8 @@ struct ConfigView {
     renderer: String,
     /// The Enhanced renderer's effect settings: every one, with the player's value or the default.
     effects: Vec<(String, String)>,
+    /// "performance", "balanced", "cinematic", or "custom" when the settings match none of them.
+    effect_preset: &'static str,
     /// The lobby name the player chose (empty: none), and the one used then (this computer's name).
     player_name: String,
     default_player_name: String,
@@ -229,7 +231,8 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
         renderer_available: graphics::renderer_available(std::env::consts::OS, engine::both_bundled(app.path().resource_dir().ok().as_deref())),
         renderer: if c.renderer == "enhanced" { "enhanced".into() } else { "classic".into() },
-        effects: graphics::EFFECTS.iter().filter(|e| !cfg!(target_os = "macos") || e.3).map(|(k, _, d, _)| (k.to_string(), c.effects.get(*k).cloned().unwrap_or_else(|| d.to_string()))).collect(),
+        effects: graphics::effects_view(&c.effects, cfg!(target_os = "macos")),
+        effect_preset: graphics::current_preset(&c.effects, cfg!(target_os = "macos")),
         player_name: c.player_name,
         default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
@@ -357,12 +360,23 @@ fn set_renderer(app: tauri::AppHandle, renderer: String) -> Result<(), String> {
 
 /// One effect setting of the Enhanced renderer (key and value checked against `graphics::EFFECTS`).
 #[tauri::command]
-fn set_effect(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+fn set_effect(app: tauri::AppHandle, key: String, value: String) -> Result<&'static str, String> {
     graphics::check_effect(&key, &value)?;
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     c.effects.insert(key, value);
-    c.save(&path).map_err(|e| e.to_string())
+    c.save(&path).map_err(|e| e.to_string())?;
+    Ok(graphics::current_preset(&c.effects, cfg!(target_os = "macos")))
+}
+
+/// Replaces the effect settings with a preset (`graphics::PRESETS`) and returns the list the page shows.
+#[tauri::command]
+fn set_effect_preset(app: tauri::AppHandle, name: String) -> Result<Vec<(String, String)>, String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.effects = graphics::preset(&name).ok_or_else(|| format!("unknown preset {name}"))?;
+    c.save(&path).map_err(|e| e.to_string())?;
+    Ok(graphics::effects_view(&c.effects, cfg!(target_os = "macos")))
 }
 
 #[tauri::command]
@@ -1013,7 +1027,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
