@@ -9,6 +9,9 @@
 - **Colour looks.** Standard, Vivid, or Cinematic (cool shadows, warm highlights).
 - **Sharpening and vignette.** Both off until you ask. The vignette leaves menus and the control bar alone.
 - **Presets.** Performance, Balanced and Cinematic set everything in one go. Every effect still has its own switch under **Enhanced effects**.
+- **Betas are now opt-in.** From this version on you only get full releases unless you turn on **Settings > Updates > Get beta releases**. If you are on a beta with it off, you stay there until the next full release.
+- **A calmer updater.** What's new opens inside Rallypoint, **Skip this version** puts the banner away until something newer exists, and a launcher left open looks again every six hours.
+- **No more half-published updates.** A release whose installer is still uploading is not offered until it is ready.
 - **Honest status.** It builds on both systems and the Windows shaders are checked by the compiler. Nobody has played a full game with it yet, least of all on a Mac, so please say what you see. If the screen looks wrong, switch back to Classic and send the debug logs.
 - **Credit.** The Vulkan renderer and its effects come from the ModernGeneralsZH fork by JaChriCaeTob.
 

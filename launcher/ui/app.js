@@ -213,11 +213,19 @@ async function runUpdate() {
   finally { clearInterval(timer); el.remove(); }
 }
 
+/** "0.7.0-beta.2 (beta)" for a beta, the plain version otherwise. */
+const updateName = (u) => `Rallypoint ${u.latest}${u.beta ? " (beta)" : ""}`;
+/** What the offered release changes: its notes in a dialog, or its page when it has none. */
+function showUpdateNotes(u, bad) {
+  if (u.notes && u.notes.trim()) showChangelog(u.notes, `What's new in ${u.latest}`);
+  else invoke("open_release_page").catch((e) => bad(errText(e)));
+}
+
 function renderUpdate() {
   const host = document.getElementById("updatehost");
   if (!host) return;
   const u = store.update;
-  if (!u || store.updateDismissed) return fill(host);
+  if (!u || u.skipped || store.updateDismissed) return fill(host);
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
     try { store.updateNote = await runUpdate(); } catch (e) { store.updateNote = errText(e); }
@@ -225,16 +233,22 @@ function renderUpdate() {
     renderUpdate();
   } }, "Update and restart");
   fill(host, h("div", { class: "banner stack updatebar" },
-    h("div", {}, h("b", {}, `Rallypoint ${u.latest} is available`),
+    h("div", {}, h("b", {}, `${updateName(u)} is available`),
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
     h("div", { class: "row" },
       u.installer ? install : null,
-      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => say(errText(e), "bad")) }, "What's new"),
-      h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"))));
+      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
+      h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"),
+      h("button", { class: "btn ghost", onclick: async () => {
+        try { await invoke("update_skip"); u.skipped = true; renderUpdate(); } catch (e) { say(errText(e), "bad"); }
+      } }, "Skip this version"))));
 }
-/** Ask GitHub for a newer release. Returns an error message, or null. The startup check stays quiet unless there is an update. */
-async function checkUpdate() {
+/** Ask GitHub for a newer release. Returns an error message, or null. The startup check stays quiet unless there is an update.
+ *  `quiet` (the six-hourly look) leaves a banner the player already put away alone unless the release changed. */
+async function checkUpdate(quiet) {
+  const before = store.update && store.update.latest;
   try { store.update = await invoke("update_check"); } catch (e) { return "Couldn't check for updates: " + errText(e); }
+  if (quiet && store.update && store.update.latest === before) return null;
   store.updateDismissed = false;
   store.updateNote = "";
   renderUpdate();
@@ -258,26 +272,45 @@ function updatesCard() {
     try { fb.ok(await runUpdate()); } catch (e) { fb.bad(errText(e)); }
     install.disabled = false;
   } }, "Update and restart");
-  const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
+  const notes = h("button", { class: "btn", onclick: () => store.update && showUpdateNotes(store.update, fb.bad) }, "What's new");
   const changelog = h("button", { class: "btn", onclick: () => invoke("changelog").then((t) => showChangelog(t)).catch((e) => fb.bad(errText(e))) }, "Changelog");
-  const check = h("button", { class: "btn", onclick: async () => {
+  const runCheck = async () => {
     check.disabled = true;
     fill(actions);
     fb.busy("Checking…");
     const err = await checkUpdate();
     check.disabled = false;
     if (err) fb.bad(err); else report();
-  } }, "Check now");
+  };
+  const check = h("button", { class: "btn", onclick: runCheck }, "Check now");
+  const betaNote = h("div", { class: "muted small" });
+  const drawBetaNote = () => {
+    betaNote.textContent = store.cfg.beta_updates
+      ? "You get new features early, and the rough edges with them."
+      : store.cfg.version_is_beta
+        ? "You are on a beta now. With this off you stay on it until the next full release."
+        : "Off: only full releases. On: new features early, less tested.";
+  };
+  const beta = h("input", { type: "checkbox", "aria-label": "Get beta releases", checked: !!store.cfg.beta_updates, onchange: async () => {
+    try {
+      await invoke("set_beta_updates", { on: beta.checked });
+      store.cfg.beta_updates = beta.checked;
+      drawBetaNote();
+      await runCheck();
+    } catch (e) { beta.checked = !!store.cfg.beta_updates; fb.bad(errText(e)); }
+  } });
   function report() {
     const u = store.update;
-    fb.set(u ? `Rallypoint ${u.latest} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}` : "You have the latest version", "ok");
+    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
     fill(actions, u && u.installer ? install : null, u ? notes : null);
   }
   if (store.update) report();
+  drawBetaNote();
   return h("div", { class: "card" }, h("h2", {}, "Updates"),
     setting(`Rallypoint ${store.cfg.version}`, fb.el, changelog, check),
     actions,
-    setting("Check when Rallypoint starts", null, h("label", { class: "switch" }, auto)));
+    setting("Check when Rallypoint starts", "And every six hours while it is open.", h("label", { class: "switch" }, auto)),
+    setting("Get beta releases", betaNote, h("label", { class: "switch" }, beta)));
 }
 
 // ---------------------------------------------------------------- mod downloads
@@ -1934,11 +1967,11 @@ function showWhatsNew(w) {
 }
 
 /** The release notes shipped with this version (the last three releases), opened from Settings > Updates. */
-function showChangelog(notes) {
+function showChangelog(notes, title = "Changelog") {
   const close = () => overlay.remove();
-  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Changelog" },
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": title },
     h("div", { class: "wizard whatsnew" },
-      h("div", { class: "wiz-head" }, h("h2", {}, "Changelog")),
+      h("div", { class: "wiz-head" }, h("h2", {}, title)),
       h("div", { class: "wiz-body" }, renderNotes(notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Close"))));
   document.getElementById("root").append(overlay);
@@ -1962,6 +1995,8 @@ async function start() {
   }, 1000);
   if (!store.cfg.setup_done) openWizard();
   if (store.cfg.check_updates !== false) checkUpdate();
+  // A launcher left open still hears about a release: look again every six hours.
+  setInterval(() => { if (store.cfg.check_updates !== false) checkUpdate(true); }, 6 * 3600 * 1000);
   invoke("whats_new_take").then((w) => { if (w) showWhatsNew(w); }).catch(() => {});
 
   // Dropping a file or folder on the window installs it as a mod.

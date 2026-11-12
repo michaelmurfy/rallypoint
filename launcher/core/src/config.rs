@@ -49,6 +49,12 @@ pub struct Config {
     /// Don't ask GitHub for a newer release when the launcher starts.
     #[serde(default)]
     pub skip_update_check: bool,
+    /// Also offer beta releases. Off unless the player asks: a beta is never installed on someone who did not opt in.
+    #[serde(default)]
+    pub beta_updates: bool,
+    /// The release the player chose "Skip this version" for; the start-up banner stays away until a newer one exists.
+    #[serde(default)]
+    pub skipped_update: String,
     /// Record the engine's per-frame sync logs, for finding out why a multiplayer game went out of sync.
     #[serde(default)]
     pub sync_logs: bool,

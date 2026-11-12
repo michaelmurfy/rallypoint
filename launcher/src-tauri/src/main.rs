@@ -194,6 +194,9 @@ struct ConfigView {
     steam_user: String,
     setup_done: bool,
     check_updates: bool,
+    /// The player opted in to beta releases, and whether the running build is itself a beta.
+    beta_updates: bool,
+    version_is_beta: bool,
     sync_logs: bool,
     camera_height: u32,
     /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
@@ -225,6 +228,8 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         steam_user: c.steam_user,
         setup_done: c.setup_done,
         check_updates: !c.skip_update_check,
+        beta_updates: c.beta_updates,
+        version_is_beta: update::is_prerelease(update::current_version()),
         sync_logs: c.sync_logs,
         camera_height,
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
@@ -274,6 +279,28 @@ fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let mut c = Config::load(&path);
     c.skip_update_check = !on;
     c.save(&path).map_err(|e| e.to_string())
+}
+
+/// Opt in to (or out of) beta releases. The next check uses it.
+#[tauri::command]
+fn set_beta_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.beta_updates = on;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// "Skip this version": the start-up banner stays away for the release the last check found.
+#[tauri::command]
+fn update_skip(app: tauri::AppHandle, updates: tauri::State<Updates>) -> Result<(), String> {
+    let mut found = updates.0.lock().unwrap();
+    let info = found.as_mut().ok_or("no release to skip")?;
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.skipped_update = info.latest.clone();
+    c.save(&path).map_err(|e| e.to_string())?;
+    info.skipped = true;
+    Ok(())
 }
 
 /// Where the engine writes its per-frame sync logs while recording is on.
@@ -792,8 +819,9 @@ fn maps_open_pack_page(id: String) -> Result<(), String> {
 
 /// Ask GitHub for a newer release. `None` means up to date. Errors are for the Settings button; the startup check ignores them.
 #[tauri::command]
-async fn update_check(updates: tauri::State<'_, Updates>) -> Result<Option<update::UpdateInfo>, String> {
-    let found = tauri::async_runtime::spawn_blocking(|| update::check(update::current_version())).await.map_err(|e| e.to_string())??;
+async fn update_check(app: tauri::AppHandle, updates: tauri::State<'_, Updates>) -> Result<Option<update::UpdateInfo>, String> {
+    let c = Config::load(&config_path(&app)?);
+    let found = tauri::async_runtime::spawn_blocking(move || update::check(update::current_version(), c.beta_updates, &c.skipped_update)).await.map_err(|e| e.to_string())??;
     *updates.0.lock().unwrap() = found.clone();
     Ok(found)
 }
@@ -1027,7 +1055,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
