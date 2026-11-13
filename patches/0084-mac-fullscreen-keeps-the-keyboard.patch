@@ -1,0 +1,119 @@
+macOS: the keyboard still went dead in fullscreen games (0.7.0-beta.3, 3440x1440). Fullscreen now hides the Dock and the menu bar, which appeared under an RTS's edge scroll and took the activation on a click; every key event of the app reaches the game whatever window AppKit aimed it at (none, or the fullscreen title bar), with Command shortcuts offered to the app menu first and modal alerts left alone; and engine.log names the key window when the game window lost key status, says when it could not be made key again, and names any other app that became active. GEN_FULLSCREEN_MENUBAR=1 keeps the Dock and menu bar.
+
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+index 420702f..5b77a1f 100644
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -1204,22 +1204,54 @@ static void CaptureInputEvent(NSEvent* event)
+ // window), unlike the mouse, which DrainEvents reads from the application. Going to another Space (the fullscreen window has
+ // its own) and back left the window without key status or the view without first responder, so the keyboard, Escape
+ // and the hotkeys stayed dead until the game was restarted. Called every frame and on every activation.
++// Names a window for the [mtl-focus] lines: its class and title.
++static NSString* FocusWindowName(NSWindow* w)
++{
++    if (!w) return @"no window";
++    return [NSString stringWithFormat:@"%@ '%@'", NSStringFromClass([w class]), w.title ? w.title : @""];
++}
++
++static bool FocusLog()
++{
++    static int s_logged = 0;
++    return s_logged++ < 60;
++}
++
+ static void ReclaimKeyboardFocus()
+ {
++    @autoreleasepool {
+     NSView* v = g_inputView;
+     NSWindow* w = v ? v.window : nil;
+     if (!w) return;
+-    static int s_logged = 0;
+-    if ([NSApp isActive] && !w.isKeyWindow && w.isVisible && !w.isMiniaturized) {
+-        if (s_logged++ < 20) fprintf(stderr, "[mtl-focus] window was not key; making it key\n");
++    if ([NSApp isActive] && !w.isKeyWindow && w.isVisible && !w.isMiniaturized && ![NSApp modalWindow]) {
++        if (FocusLog()) fprintf(stderr, "[mtl-focus] window was not key (key window: %s); making it key\n",
++                                FocusWindowName([NSApp keyWindow]).UTF8String);
+         [w makeKeyAndOrderFront:nil];
++        if (!w.isKeyWindow && FocusLog()) fprintf(stderr, "[mtl-focus] the window did not become key\n");
+     }
+     if (w.isKeyWindow && w.firstResponder != v) {
+-        if (s_logged++ < 20) fprintf(stderr, "[mtl-focus] view was not first responder (%s); taking it back\n", w.firstResponder ? [NSStringFromClass([w.firstResponder class]) UTF8String] : "none");
++        if (FocusLog()) fprintf(stderr, "[mtl-focus] view was not first responder (%s); taking it back\n", w.firstResponder ? [NSStringFromClass([w.firstResponder class]) UTF8String] : "none");
+         [w makeFirstResponder:v];
+     }
++    }
+ }
+ 
++// Native fullscreen shows the Dock when the pointer rests on the bottom edge and the menu bar on the top edge, which is
++// exactly where an RTS scrolls the map; a click there goes to the Dock or the menu bar, the game stops being the
++// active app, and the keyboard goes with it. Hide both while the game is fullscreen. GEN_FULLSCREEN_MENUBAR=1 keeps them.
++@interface GameWindowDelegate : NSObject <NSWindowDelegate>
++@end
++@implementation GameWindowDelegate
++- (NSApplicationPresentationOptions)window:(NSWindow*)window
++      willUseFullScreenPresentationOptions:(NSApplicationPresentationOptions)proposed
++{
++    (void)window;
++    const char* keep = getenv("GEN_FULLSCREEN_MENUBAR");
++    if (keep && keep[0] == '1') return proposed;
++    return NSApplicationPresentationFullScreen | NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
++}
++@end
++
+ static void InstallFocusObservers()
+ {
+     static bool installed = false;
+@@ -1231,16 +1263,37 @@ static void InstallFocusObservers()
+                                        NSWindowDidBecomeMainNotification, NSWindowDidExitFullScreenNotification,
+                                        NSWindowDidEnterFullScreenNotification])
+         [nc addObserverForName:name object:nil queue:nil usingBlock:reclaim];
+-    [[[NSWorkspace sharedWorkspace] notificationCenter] addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
+-                                                                    object:nil queue:nil usingBlock:reclaim];
+-    // Whatever the first responder is, a key event aimed at the game window belongs to the game: hand it to the view
+-    // ourselves (and eat it) when the view is not the one AppKit would deliver it to, instead of losing it.
++    NSNotificationCenter* wc = [[NSWorkspace sharedWorkspace] notificationCenter];
++    [wc addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification object:nil queue:nil usingBlock:reclaim];
++    // While another app is active the keys go to that app and nothing here can see them: say which app it was, so a
++    // report of a dead keyboard shows whether the game lost the activation (and to whom) or kept it.
++    [wc addObserverForName:NSWorkspaceDidActivateApplicationNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
++        NSRunningApplication* app = n.userInfo[NSWorkspaceApplicationKey];
++        if (!app || app.processIdentifier == getpid()) return;
++        if (FocusLog()) fprintf(stderr, "[mtl-focus] another app became active: %s\n",
++                                app.localizedName ? app.localizedName.UTF8String : "unknown");
++    }];
++    // Every key event of this app belongs to the game (it has no other window that takes text): hand it to the view
++    // ourselves (and eat it) whenever AppKit would not, whether the view is not first responder or the event is aimed
++    // at another window or none, such as the fullscreen title bar. Command shortcuts go to the app menu first (Cmd+Q),
++    // and a modal alert keeps its keys.
+     [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged)
+                                           handler:^NSEvent*(NSEvent* e) {
+         NSView* v = g_inputView;
+-        if (!v || !v.window || e.window != v.window || v.window.firstResponder == v) return e;
+-        static int s_n = 0;
+-        if (s_n++ < 20) fprintf(stderr, "[mtl-focus] key event reached the window while the view was not first responder; delivered anyway\n");
++        NSWindow* gw = v ? v.window : nil;
++        if (!gw || [NSApp modalWindow]) return e;
++        if (e.window == gw && gw.firstResponder == v) return e;
++        if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand) &&
++            [[NSApp mainMenu] performKeyEquivalent:e])
++            return nil;
++        if (FocusLog()) {
++            @autoreleasepool {
++                if (e.window != gw)
++                    fprintf(stderr, "[mtl-focus] key event aimed at %s; delivered to the game\n", FocusWindowName(e.window).UTF8String);
++                else
++                    fprintf(stderr, "[mtl-focus] key event reached the window while the view was not first responder; delivered anyway\n");
++            }
++        }
+         if (e.type == NSEventTypeKeyDown)      [v keyDown:e];
+         else if (e.type == NSEventTypeKeyUp)   [v keyUp:e];
+         else                                   [v flagsChanged:e];
+@@ -2086,6 +2139,8 @@ static inline void DiagTexFree(void* tp) {
+         } else {
+             [window setContentView:view];
+         }
++        static GameWindowDelegate* s_windowDelegate = [[GameWindowDelegate alloc] init];  // window.delegate is weak
++        window.delegate = s_windowDelegate;
+         [window makeFirstResponder:view];
+         [window setAcceptsMouseMovedEvents:YES];
+         [window makeKeyAndOrderFront:nil];
