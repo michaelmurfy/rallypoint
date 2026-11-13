@@ -253,6 +253,19 @@ jobs:
       # RALLYPOINT_VERSION (set above) is also compiled into the app, so the updater can tell 0.1.0-beta.1 from 0.1.0-beta.2
       - run: cargo tauri build ${{ matrix.bundles }} --config tauri.version.json
         working-directory: launcher/src-tauri
+      # A glob such as "engine/*" skips subfolders, which left the 64-bit engine and the effect assets out of every
+      # installer. tauri-build copies the same resource list next to the built app, so look there.
+      - name: The whole engine folder is bundled
+        shell: bash
+        run: |
+          res=target/release/engine
+          ls -R "$res" | head -60
+          if [ "${{ matrix.engine64 }}" != "" ]; then
+            [ -f "$res/x64/generalszh.exe" ] || { echo "::error::the 64-bit engine (engine/x64) is not among the bundled resources"; exit 1; }
+            [ -f "$res/generalszh.exe" ] || { echo "::error::the 32-bit engine is not among the bundled resources"; exit 1; }
+            res="$res/x64"
+          fi
+          [ -f "$res/assets/Art/Textures/exscorch01.dds" ] || { echo "::error::the Enhanced renderer's assets folder is not among the bundled resources"; exit 1; }
       - name: Collect installers
         shell: bash
         run: |

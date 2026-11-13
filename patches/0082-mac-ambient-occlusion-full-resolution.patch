@@ -1,0 +1,36 @@
+macOS Enhanced renderer: AmbientOcclusionQuality = full is honoured (the ambient occlusion targets are made at full size; the setting was read and ignored). No shader change.
+
+diff --git a/cmake/dx8_stub/metal_fx.inl b/cmake/dx8_stub/metal_fx.inl
+index aafc9ad..4a2f77a 100644
+--- a/cmake/dx8_stub/metal_fx.inl
++++ b/cmake/dx8_stub/metal_fx.inl
+@@ -312,6 +312,7 @@ struct MetalFxState {
+     id<MTLTexture> scene = nil, ldr = nil, depthCopy = nil, aoA = nil, aoB = nil;
+     id<MTLTexture> bloomTex[kFxBloomLevels] = { nil, nil, nil, nil, nil };
+     int texW = 0, texH = 0;
++    bool texAoHalf = true;           // the size the ambient occlusion targets were made at
+     bool failed = false;
+ };
+ 
+@@ -431,15 +432,18 @@ void FxReleaseTargets()
+ bool FxEnsureTargets(MetalContext* ctx)
+ {
+     if (!FxBuildShaders(ctx)) return false;
+-    if (g_fx.scene && g_fx.texW == ctx->width && g_fx.texH == ctx->height) return true;
++    if (g_fx.scene && g_fx.texW == ctx->width && g_fx.texH == ctx->height && g_fx.texAoHalf == g_fx.aoHalf) return true;
+     FxReleaseTargets();
+     const int w = ctx->width, h = ctx->height;
+     const MTLTextureUsage rt = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+     g_fx.scene = FxTexture(ctx, MTLPixelFormatBGRA8Unorm, w, h, rt);
+     g_fx.ldr = FxTexture(ctx, MTLPixelFormatBGRA8Unorm, w, h, rt);
+     g_fx.depthCopy = FxTexture(ctx, MTLPixelFormatDepth32Float_Stencil8, w, h, MTLTextureUsageShaderRead);
+-    g_fx.aoA = FxTexture(ctx, MTLPixelFormatR16Float, w / 2, h / 2, rt);
+-    g_fx.aoB = FxTexture(ctx, MTLPixelFormatR16Float, w / 2, h / 2, rt);
++    // ambient occlusion at half resolution, or at full resolution when asked for (AmbientOcclusionQuality = full): sharper, about four times the work
++    const int aoDiv = g_fx.aoHalf ? 2 : 1;
++    g_fx.aoA = FxTexture(ctx, MTLPixelFormatR16Float, w / aoDiv, h / aoDiv, rt);
++    g_fx.aoB = FxTexture(ctx, MTLPixelFormatR16Float, w / aoDiv, h / aoDiv, rt);
++    g_fx.texAoHalf = g_fx.aoHalf;
+     int bw = w / 2, bh = h / 2;
+     for (int i = 0; i < kFxBloomLevels; ++i, bw /= 2, bh /= 2)
+         g_fx.bloomTex[i] = FxTexture(ctx, MTLPixelFormatRGBA16Float, bw > 1 ? bw : 1, bh > 1 ? bh : 1, rt);

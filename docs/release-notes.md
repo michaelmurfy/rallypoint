@@ -1,25 +1,17 @@
+## Rallypoint 0.7.0-beta.3
+
+**Windows finally gets the 64-bit engine and the Enhanced renderer.** The last two betas left both out of the Windows installer by mistake, which is why the graphics options never showed up there.
+
+- **Windows: the options are there now.** Settings > Graphics shows **Renderer** (Classic or Enhanced) and **Game engine** (64-bit or 32-bit).
+- **Windows: this is the 64-bit engine's first real outing.** Earlier betas said they ran it and did not. If a game misbehaves, switch **Game engine** to 32-bit and send the debug logs.
+- **Enhanced on Windows is untested by anyone.** It needs a Vulkan 1.3 graphics driver. Classic stays the default.
+- **macOS: scorch craters.** The crater textures were missing from the app for the same reason, so that effect did nothing. It works now.
+- **macOS: sharper ambient occlusion.** Ambient occlusion quality has a Full resolution choice.
+
 ## Rallypoint 0.7.0-beta.2
 
-**The game can look a good deal newer now, on Windows and macOS, and it is a beta.** Turn it on in **Settings > Graphics > Renderer > Enhanced**. Classic stays the default and is one click back.
-
-- **It only changes the picture.** The simulation is untouched, so Enhanced and Classic players share a lobby, and so do Mac and Windows.
-- **Enhanced renderer.** Bloom, ambient occlusion, light from explosions, shockwave ripples, scorch craters and FXAA. Windows (64-bit engine, Vulkan 1.3 driver) also gets real shadow maps, new water and cloud shadows.
-- **Better smoke.** Smoke and dust are darker near the ground and lighter on top, so a column has some depth. Dark smoke no longer cuts a hard line into the ground.
-- **Glow you can tune.** Subtle, Normal or Strong. On macOS a small bright light keeps a steady glow instead of flickering.
-- **Colour looks.** Standard, Vivid, or Cinematic (cool shadows, warm highlights).
-- **Sharpening and vignette.** Both off until you ask. The vignette leaves menus and the control bar alone.
-- **Presets.** Performance, Balanced and Cinematic set everything in one go. Every effect still has its own switch under **Enhanced effects**.
-- **Betas are now opt-in.** From this version on you only get full releases unless you turn on **Settings > Updates > Get beta releases**. If you are on a beta with it off, you stay there until the next full release.
-- **A calmer updater.** What's new opens inside Rallypoint, **Skip this version** puts the banner away until something newer exists, and a launcher left open looks again every six hours.
-- **No more half-published updates.** A release whose installer is still uploading is not offered until it is ready.
-- **A tidier launcher.** Settings is four tabs instead of one long scroll, and the Enhanced effects are grouped by what they change. Mods shows what you have first, and each mod's buttons are in the order you use them: download, then choose the file.
-- **Honest status.** It builds on both systems and the Windows shaders are checked by the compiler. Nobody has played a full game with it yet, least of all on a Mac, so please say what you see. If the screen looks wrong, switch back to Classic and send the debug logs.
-- **Credit.** The Vulkan renderer and its effects come from the ModernGeneralsZH fork by JaChriCaeTob.
+The Enhanced renderer with tunable glow, colour looks, sharpening and shaded smoke, beta updates as an opt-in, and a tidier launcher with tabbed Settings.
 
 ## Rallypoint 0.7.0-beta.1
 
-Windows got a 64-bit game engine (miniaudio, FFmpeg and DXVK in place of the old 32-bit parts), shipped beside the 32-bit one, with a switch in Settings > Graphics > Game engine.
-
-## Rallypoint 0.6.1
-
-The map picture that follows the mouse only shows over a map's title, not the rest of the row.
+A 64-bit Windows game engine, built beside the 32-bit one.

@@ -100,7 +100,7 @@ pub const EFFECTS: &[(&str, &[&str], &str, bool)] = &[
     ("PostProcessing", &["yes", "no"], "yes", true),
     ("Bloom", &["yes", "no"], "yes", true),
     ("AmbientOcclusion", &["yes", "no"], "yes", true),
-    ("AmbientOcclusionQuality", &["half", "full"], "half", false),
+    ("AmbientOcclusionQuality", &["half", "full"], "half", true),
     ("AntiAliasingFXAA", &["yes", "no"], "yes", true),
     ("SoftShadows", &["yes", "no"], "yes", false),
     ("ShadowQuality", &["low", "medium", "high"], "medium", false),
