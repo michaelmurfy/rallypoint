@@ -235,6 +235,9 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     let mut c = Command::new(engine);
     quiet(&mut c).current_dir(game_dir).args(args(o)); // no stray console if the engine is a console-subsystem build
     c.envs(o.env.iter().map(|(k, v)| (k, v)));
+    // The engine fork's external-control API (an unauthenticated HTTP/WebSocket server on 127.0.0.1 that can pause the
+    // game and issue commands) is not compiled in (patch 0086). Set after `o.env` so nothing can switch it back on.
+    c.env("GEN_API_OFF", "1");
     // The macOS engine only accepts resolutions it advertises; naming the chosen one makes any size (4K, ultrawide,
     // a custom value) valid. Other platforms ignore it.
     if o.width >= 640 && o.height >= 480 {
@@ -360,6 +363,14 @@ mod tests {
         let o = LaunchOptions { env: vec![("GEN_AUTO_SKIRMISH".into(), "1".into())], ..Default::default() };
         let c = command(Path::new("e"), Path::new("."), &o);
         assert!(c.get_envs().any(|(k, v)| k == "GEN_AUTO_SKIRMISH" && v == Some("1".as_ref())));
+    }
+
+    #[test]
+    fn external_control_api_is_always_off() {
+        let o = LaunchOptions { env: vec![("GEN_API_OFF".into(), "".into())], ..Default::default() };
+        let c = command(Path::new("e"), Path::new("."), &o);
+        let v: Vec<_> = c.get_envs().filter(|(k, _)| *k == "GEN_API_OFF").collect();
+        assert_eq!(v, [("GEN_API_OFF".as_ref(), Some("1".as_ref()))]);
     }
 
     #[test]
