@@ -5,6 +5,7 @@
 - **Windows: the options are there now.** Settings > Graphics shows **Renderer** (Classic or Enhanced) and **Game engine** (64-bit or 32-bit).
 - **Windows: this is the 64-bit engine's first real outing.** Earlier betas said they ran it and did not. If a game misbehaves, switch **Game engine** to 32-bit and send the debug logs.
 - **Enhanced on Windows is untested by anyone.** It needs a Vulkan 1.3 graphics driver. Classic stays the default.
+- **No more black beside the control bar.** On a wide screen the ground now carries on down either side of the bar, where there used to be a black strip with text floating on it.
 - **macOS: scorch craters.** The crater textures were missing from the app for the same reason, so that effect did nothing. It works now.
 - **macOS: sharper ambient occlusion.** Ambient occlusion quality has a Full resolution choice.
 

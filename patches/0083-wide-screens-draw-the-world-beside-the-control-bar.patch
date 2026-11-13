@@ -1,0 +1,29 @@
+On a display wider than 4:3 the tactical view keeps its full height, so the strips beside the centred control bar show the world instead of plain black with world text drawn over it. View only: nothing in the simulation changes. GEN_STRETCH=1 keeps the retail view.
+
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
+index 7a7cf9e..7e082c1 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBar.cpp
+@@ -65,6 +65,7 @@
+ #include "GameClient/ControlBarScheme.h"
+ #include "GameClient/Drawable.h"
+ #include "GameClient/Display.h"
++#include "Common/WideScreen.h"
+ #include "GameClient/DisplayStringManager.h"
+ #include "GameClient/GameClient.h"
+ #include "GameClient/GameWindowManager.h"
+@@ -3869,5 +3870,14 @@ void ControlBar::setFullViewportHeight()
+ 
+ void ControlBar::setScaledViewportHeight()
+ {
++	// Rallypoint: on a display wider than 4:3 the control bar sits in a centred 4:3 region (patch 0001), so the strips beside it
++	// hold no interface. With the shortened view they were plain black, with world text ("Building: 42%") drawn over them.
++	// The world is drawn there instead: the full-height view that -fullviewport and Control Bar Pro already use. The camera scale
++	// does not change (WideScreen::viewPlane goes by the view height), there is only more ground at the bottom. GEN_STRETCH=1 keeps retail.
++	if (WideScreen::enabled() && TheDisplay->getWidth() * 3 > TheDisplay->getHeight() * 4)
++	{
++		setFullViewportHeight();
++		return;
++	}
+ 	TheTacticalView->setHeight(TheDisplay->getHeight() * TheGlobalData->m_viewportHeightScale);
+ }
