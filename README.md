@@ -213,7 +213,7 @@ It manages mods, maps and relay rooms, but has no engine to start.
 ## Build from source
 
 ```bash
-git clone --recurse-submodules --depth 1 https://github.com/michaelmurfy/rallypoint
+git clone --depth 1 https://github.com/michaelmurfy/rallypoint
 cd rallypoint
 make test                                   # everything, including the engine-patch maths checks
 cargo install tauri-cli --version "^2" --locked
@@ -227,7 +227,8 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 | `launcher/` | Tauri 2 app: `core/` (logic, tested), `src-tauri/` (thin shell), `ui/` (plain HTML) |
 | `server/`, `shared/` | Relay server and the wire protocol |
 | `deploy/` | Ansible playbook and the `rallypoint` command for setting up a server |
-| `engine/` | Submodule: the macOS/Windows engine port |
+| `engine/` | The macOS/Windows engine port (trimmed copy; our changes are `patches/`) |
+| `third-party/` | Code the engine build needs, kept in-tree so nothing is fetched (see its README) |
 | `patches/` | Our engine changes, applied with `patches/apply.sh` |
 | `mods/` | Mod and map-pack lists |
 
@@ -242,4 +243,4 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 
 ## Credits and legal
 
-Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the macOS port by **dvcdsys** ([original](https://github.com/dvcdsys/GeneralsGameCode-macOS)), which our engine is forked from ([fork](https://github.com/michaelmurfy/GeneralsGameCode-macOS)). The engine and our patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md` and [`patches/LICENSE.md`](patches/LICENSE.md)). The launcher, relay server and scripts are MIT licensed ([`LICENSE`](LICENSE)); the launcher runs the engine as a separate program. Not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The Windows 64-bit engine build (audio on miniaudio, a Direct3D 8 replacement for d3dx8, 64-bit pointer fixes) and the Enhanced (Vulkan) renderer with its effects are taken from the [ModernGeneralsZH](https://github.com/JaChriCaeTob/ModernGeneralsZH) fork by JaChriCaeTob, also GPL-3.0 with EA's terms; it ships [DXVK](https://github.com/doitsujin/dxvk) (zlib licence) for Direct3D 8 on Vulkan, [miniaudio](https://github.com/mackron/miniaudio) (public domain), the Khronos [Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0 or MIT) and FFmpeg (LGPL, from vcpkg). Steam downloads use the open-source (GPL-2.0) [DepotDownloader](https://github.com/SteamRE/DepotDownloader), fetched at runtime and not bundled. Releases bundle the engine; its complete source is `engine/` at the tagged commit plus `patches/`.
+Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the macOS port by **dvcdsys** ([original](https://github.com/dvcdsys/GeneralsGameCode-macOS)), which our engine is forked from ([fork](https://github.com/michaelmurfy/GeneralsGameCode-macOS)). The engine and our patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md` and [`patches/LICENSE.md`](patches/LICENSE.md)). The launcher, relay server and scripts are MIT licensed ([`LICENSE`](LICENSE)); the launcher runs the engine as a separate program. Not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The Windows 64-bit engine build (audio on miniaudio, a Direct3D 8 replacement for d3dx8, 64-bit pointer fixes) and the Enhanced (Vulkan) renderer with its effects are taken from the [ModernGeneralsZH](https://github.com/JaChriCaeTob/ModernGeneralsZH) fork by JaChriCaeTob, also GPL-3.0 with EA's terms; it ships [DXVK](https://github.com/doitsujin/dxvk) (zlib licence) for Direct3D 8 on Vulkan, [miniaudio](https://github.com/mackron/miniaudio) (public domain), the Khronos [Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0 or MIT) and FFmpeg (LGPL, from vcpkg). Steam downloads use the open-source (GPL-2.0) [DepotDownloader](https://github.com/SteamRE/DepotDownloader), fetched at runtime and not bundled. Releases bundle the engine; its complete source is `engine/`, `third-party/` and `patches/` at the tagged commit (`third-party/README.md` lists each piece and its licence).
