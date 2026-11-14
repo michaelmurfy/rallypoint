@@ -1,0 +1,82 @@
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
+@@ -1083,7 +1083,27 @@
+ 	{
+ 		offset.x += m_xOffset;
+ 		m_currentScheme->drawBackground( m_multiplier, offset );
++	}
++}
++
++// A mod can add generals that the loaded control bar has no scheme for: Shockwave's Armor, Special Weapons and Salvage
++// generals with Control Bar Pro, whose ControlBarScheme.ini replaces the mod's. They get their faction's scheme
++// (PlayerTemplate BaseSide; "USA" there is "America" in the scheme names) instead of the Default one.
++static ControlBarScheme *schemeForBaseSide(const std::list<ControlBarScheme*> &schemes, const AsciiString &baseSide)
++{
++	AsciiString base = baseSide;
++	if (base.compareNoCase("USA") == 0)
++		base.set("America");
++	ControlBarScheme *best = nullptr;
++	if (base.isEmpty())
++		return best;
++	for (std::list<ControlBarScheme*>::const_iterator it = schemes.begin(); it != schemes.end(); ++it)
++	{
++		ControlBarScheme *scheme = *it;
++		if (scheme && scheme->m_side.compareNoCase(base) == 0 && (!best || best->m_ScreenCreationRes.x < scheme->m_ScreenCreationRes.x))
++			best = scheme;
+ 	}
++	return best;
+ }
+ 
+ //-----------------------------------------------------------------------------
+@@ -1129,6 +1149,9 @@
+ 		}
+ 		it ++;
+ 	}
++
++	if(!tempScheme)
++		tempScheme = schemeForBaseSide(m_schemeList, pt->getBaseSide());
+ 
+ 	if(tempScheme)
+ 	{
+@@ -1144,6 +1167,15 @@
+ 		// well, we couldn't find
+ 		m_currentScheme = findControlBarScheme("Default");
+ 		DEBUG_LOG(("There's no ControlBarScheme with a side of %s", side.str()));
++		// The Default scheme needs its own scale too: it was drawn with whatever the last scheme left (1 at start,
++		// so an 800x600 frame sat small in the top left corner of a large display).
++		if (m_currentScheme)
++		{
++			const WideScreen::UiScale ui = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), m_currentScheme->m_ScreenCreationRes.x, m_currentScheme->m_ScreenCreationRes.y);
++			m_multiplier.x = ui.x;
++			m_multiplier.y = ui.y;
++			m_xOffset = ui.xOffset;
++		}
+ //		m_currentScheme = nullptr;
+ 	}
+ 	if(m_currentScheme)
+@@ -1200,6 +1232,9 @@
+ 		it ++;
+ 	}
+ 
++	if(!tempScheme)
++		tempScheme = schemeForBaseSide(m_schemeList, p->getBaseSide());
++
+ 	if(tempScheme)
+ 	{
+ 		// setup the multiplier value
+@@ -1214,6 +1249,15 @@
+ 		// well, we couldn't find
+ 		m_currentScheme = findControlBarScheme("Default");
+ 		DEBUG_LOG(("There's no ControlBarScheme with a side of %s", side.str()));
++		// The Default scheme needs its own scale too: it was drawn with whatever the last scheme left (1 at start,
++		// so an 800x600 frame sat small in the top left corner of a large display).
++		if (m_currentScheme)
++		{
++			const WideScreen::UiScale ui = WideScreen::schemeScale(TheDisplay->getWidth(), TheDisplay->getHeight(), m_currentScheme->m_ScreenCreationRes.x, m_currentScheme->m_ScreenCreationRes.y);
++			m_multiplier.x = ui.x;
++			m_multiplier.y = ui.y;
++			m_xOffset = ui.xOffset;
++		}
+ //		m_currentScheme = nullptr;
+ 	}
+ 	if(m_currentScheme)
