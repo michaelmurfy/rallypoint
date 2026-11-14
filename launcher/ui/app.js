@@ -1253,8 +1253,29 @@ function playPage() {
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
+/** The command bar choice: sharp icons, or Control Bar Pro on top of them (downloaded for the Play page's resolution when
+ *  chosen). Shared by the Mods page, where people look for it, and Settings. `fb` says how it went. */
+function commandBarSelect(fb) {
+  const bar = h("select", { "aria-label": "Command bar", onchange: async () => {
+    bar.disabled = true;
+    const nat = nativeRes(), r = (prefs.get().res || "native").split("x").map(Number);
+    const [w, hh] = r.length === 2 && r[0] > 0 ? r : [nat.w, nat.h];
+    fb.busy(bar.value === "pro" ? "Downloading Control Bar Pro…" : "Saving…");
+    try {
+      await invoke("set_control_bar", { choice: bar.value, width: w, height: hh });
+      store.cfg.control_bar = bar.value;
+      await loadMods();
+      fb.ok("Saved. It applies the next time you start the game.");
+      notifyMods();
+    } catch (e) { bar.value = store.cfg.control_bar || "hd"; fb.bad(errText(e)); }
+    bar.disabled = false;
+  } }, [["hd", "Sharp icons (default)"], ["pro", "Control Bar Pro"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.control_bar || "hd") }, label)));
+  return bar;
+}
+
 function modsPage() {
   const body = h("div", { class: "stack" });
+  const barFb = liveStatus();
   const count = h("p", { class: "muted small" });
   const path = h("input", { type: "text", placeholder: "/path/to/mod.zip", "aria-label": "Path to mod" });
   const dropBusy = h("span", { class: "live busy", hidden: true, role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…");
@@ -1273,19 +1294,21 @@ function modsPage() {
   function render() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
     const have = modGroups(true), other = store.mods.other, more = modGroups(false);
-    const installed = store.mods.catalog.filter((m) => m.installed).length + other.length;
+    const installed = store.mods.catalog.filter((m) => m.installed).length + other.filter((o) => o.folder !== PRO_FOLDER).length;
     count.textContent = installed ? `${installed} installed. Pick what to play on the Play page.` : "Nothing installed yet. Zero Hour plays fine without any.";
     fill(body,
       have.length || other.length ? h("h2", { class: "modhead" }, "Installed") : null,
       have,
       other.map((o) => {
+        if (o.folder === PRO_FOLDER) return null; // chosen on the Control Bar HD card below, not a separate mod
         const bundled = isBundled(o.folder);
         return h("div", { class: "card modcard" }, h("div", { class: "mod" },
           modTile(o.folder, "on"),
           h("div", { class: "stack tight" },
             h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Comes with Rallypoint") : null),
-            h("p", { class: "muted small" }, bundled ? (o.folder === PRO_FOLDER ? "Control Bar Pro, chosen in Settings > Graphics." : "Sharp command-bar icons, loaded with every game.") : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
-          h("div", { class: "row end" }, bundled ? null : removeButton(o.folder, o.folder))));
+            h("p", { class: "muted small" }, bundled ? "Sharp command-bar icons, loaded with every game. Control Bar Pro redraws the bar and menus for big screens. It is drawn for the Play page's resolution, so pick it again after changing that." : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`),
+            bundled ? barFb.el : null),
+          h("div", { class: "row end" }, bundled ? h("label", { class: "inline" }, h("span", { class: "muted small" }, "Command bar"), commandBarSelect(barFb)) : removeButton(o.folder, o.folder))));
       }),
       more.length ? h("h2", { class: "modhead" }, have.length || other.length ? "More to install" : "Mods you can install") : null,
       more);
@@ -1736,19 +1759,7 @@ function graphicsCards() {
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["x64", "64-bit (default)"], ["x86", "32-bit (the older build)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.engine_arch || "x64") }, label)));
-  const bar = h("select", { "aria-label": "Command bar", onchange: async () => {
-    bar.disabled = true;
-    const nat = nativeRes(), r = (prefs.get().res || "native").split("x").map(Number);
-    const [w, hh] = r.length === 2 && r[0] > 0 ? r : [nat.w, nat.h];
-    fb.busy(bar.value === "pro" ? "Downloading Control Bar Pro…" : "Saving…");
-    try {
-      await invoke("set_control_bar", { choice: bar.value, width: w, height: hh });
-      store.cfg.control_bar = bar.value;
-      await loadMods();
-      fb.ok("Saved. It applies the next time you start the game.");
-    } catch (e) { bar.value = store.cfg.control_bar || "hd"; fb.bad(errText(e)); }
-    bar.disabled = false;
-  } }, [["hd", "Sharp icons (default)"], ["pro", "Control Bar Pro"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.control_bar || "hd") }, label)));
+  const bar = commandBarSelect(fb);
 
   // Renderer: two tiles to choose between, each saying what you get.
   const mac = store.cfg.os === "macos";
