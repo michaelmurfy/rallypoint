@@ -1090,14 +1090,15 @@ function speedSelect() {
 }
 const skirmishSpeed = () => (SPEEDS.some(([v]) => v === prefs.get().skSpeed) ? prefs.get().skSpeed : 100);
 
-/** Starting money for a skirmish, remembered. 0 keeps the game's own setting and sends nothing. */
-const CASHES = [[0, "Default money"], [5000, "$5,000"], [10000, "$10,000"], [20000, "$20,000"], [50000, "$50,000"], [100000, "$100,000"], [250000, "$250,000"], [500000, "$500,000"], [750000, "$750,000"]];
+/** Starting money for a skirmish, remembered. $10,000 unless the player chose another amount. */
+const DEFAULT_CASH = 10000;
+const CASHES = [[5000, "$5,000"], [10000, "$10,000"], [20000, "$20,000"], [50000, "$50,000"], [100000, "$100,000"], [250000, "$250,000"], [500000, "$500,000"], [750000, "$750,000"]];
 function cashSelect() {
   const sel = h("select", { class: "speedsel", "aria-label": "Starting money", title: "Starting money for this skirmish" },
     ...CASHES.map(([v, t]) => h("option", { value: String(v) }, t)));
   sel.value = String(skirmishCash());
   const wrap = h("div", { class: "speedpick" }, icon("cash"), sel);
-  const mark = () => wrap.classList.toggle("changed", sel.value !== "0"); // money other than the default is lit up
+  const mark = () => wrap.classList.toggle("changed", sel.value !== String(DEFAULT_CASH)); // money other than the default is lit up
   mark();
   sel.addEventListener("change", () => { prefs.set({ skCash: +sel.value }); mark(); });
   return wrap;
@@ -1118,7 +1119,7 @@ function resolutionSelect() {
   return wrap;
 }
 
-const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : 0);
+const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : DEFAULT_CASH);
 
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
  *  goes straight into a skirmish. Returns whether the game was started. */
