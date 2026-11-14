@@ -190,6 +190,10 @@ code { font: 12px ui-monospace, Menlo, Consolas, monospace; background: var(--bg
 /* ---- maps ---- */
 .mappack { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .mappack:first-child { border-top: 0; padding-top: 2px; }
+.mappack.ownmaps { border-top: 1px solid var(--line); padding-top: 12px; }
+.mappack.ownmaps > div:empty { display: none; }
+.mappack.ownmaps > div:last-child { grid-column: 1 / -1; }
+.packhave { margin-left: 8px; vertical-align: 1px; font-size: 11px; padding: 1px 8px; }
 
 /* ---- wizard ---- */
 .overlay { position: fixed; inset: 0; background: rgba(2, 10, 13, .72); display: grid; place-items: center; padding: 24px; z-index: 10; }
@@ -259,7 +263,12 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--muted); } }
 .diag { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; font-size: 14px; }
 .diag dt { color: var(--muted); }
-.diag dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.diag dd { margin: 0; font-variant-numeric: tabular-nums; }
+.nextstep { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 12px 14px; border-radius: var(--r-btn); background: color-mix(in srgb, var(--ok-ink) 10%, var(--surface-2)); }
+.nextstep[hidden] { display: none; }
+.nextstep > .stack { flex: 1 1 260px; }
+.nextstep .btn svg { width: 14px; height: 14px; fill: currentColor; }
+input:disabled { opacity: .55; cursor: not-allowed; }
 .diag dd.ok { color: var(--ok-ink); } .diag dd.warn { color: var(--warn-ink); } .diag dd.bad { color: var(--bad-ink); }
 .addons { margin-left: 22px; }
 .warn-text { color: var(--warn-ink); }
@@ -299,7 +308,17 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 
 /* ---- map organiser ---- */
 .organiser-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.organiser-bar input[type=text] { flex: 1 1 200px; width: auto; }
+.searchbox { position: relative; flex: 1 1 220px; min-width: 0; }
+.searchbox::before { content: ""; position: absolute; left: 12px; top: 50%; width: 11px; height: 11px; margin-top: -8px; border: 1.5px solid var(--muted); border-radius: 50%; pointer-events: none; }
+.searchbox::after { content: ""; position: absolute; left: 23px; top: 50%; width: 6px; height: 1.5px; margin-top: 4px; background: var(--muted); transform: rotate(45deg); transform-origin: left center; pointer-events: none; }
+.searchbox input[type=text] { padding-left: 36px; padding-right: 34px; }
+.searchclear { position: absolute; right: 5px; top: 50%; width: 26px; height: 26px; margin-top: -13px; border: 0; border-radius: 50%; background: none; color: var(--muted); font: inherit; font-size: 17px; line-height: 1; cursor: pointer; }
+.searchclear:hover { background: var(--surface-2); color: var(--text); }
+.searchclear:focus-visible { outline: 2px solid var(--accent); }
+.sortpick { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.listempty { display: grid; justify-items: center; gap: 6px; padding: 36px 16px; text-align: center; }
+.listempty[hidden], .maplist[hidden] { display: none; }
+.listempty .btn { margin-top: 6px; }
 .organiser-bar select { width: auto; max-width: 240px; }
 .packpick { position: relative; }
 .packbtn { height: 36px; max-width: 240px; padding: 0 36px 0 11px; border-radius: var(--r-field); background-color: var(--bg); font-weight: 400; text-align: left;
@@ -414,8 +433,10 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 /* ---- maps: one bordered list with its own header (count, sort) and footer (bulk actions) ---- */
 .organiser { display: grid; gap: 14px; }
 .organiser h2 { font-size: 18px; }
-.chipcount { margin-left: 6px; font-weight: 500; opacity: .7; }
-.chip[aria-pressed="true"] .chipcount { opacity: .85; }
+.chip { display: inline-flex; align-items: center; gap: 7px; }
+.chip:has(.chipcount) { padding-right: 4px; }
+.chipcount { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--surface-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: center; }
+.chip[aria-pressed="true"] .chipcount { background: color-mix(in srgb, var(--accent-ink) 22%, transparent); }
 .listbox { border: 1px solid var(--line); border-radius: var(--r-btn); background: var(--bg); overflow: hidden; display: grid; }
 .listhead, .listfoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 12px; background: var(--surface); }
 .listhead { border-bottom: 1px solid var(--line); }

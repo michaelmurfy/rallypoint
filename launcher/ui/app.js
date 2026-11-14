@@ -401,7 +401,7 @@ async function pickMaps(directory, packId) {
 }
 const notifyMaps = () => refreshers.forEach((f) => f.name === "reloadOrganiser" && f());
 /** Map packs to install with one button, plus adding your own. Used on the Mods page and in the wizard. */
-function mapsCard() {
+function mapsCard(installed) { // installed(pack name) -> how many of its maps are in the library, when the page knows
   let timer = null, active = null, last = null; // active: the pack being installed (null for a file or folder you chose)
   const info = h("p", { class: "muted small" });
   const list = h("div", { class: "stack" });
@@ -427,18 +427,19 @@ function mapsCard() {
     text.textContent = s && s.phase !== "Idle" ? (busy ? `${s.message}${s.percent ? ` ${Math.round(s.percent)}%` : ""}` : s.message) : "";
     list.querySelectorAll("button").forEach((b) => { if (!job.contains(b)) b.disabled = busy; });
   }
+  const have = (p) => (installed ? installed(p.name) : 0);
   function render() {
     const m = store.maps;
     if (!m) return;
     info.textContent = m.count ? `${m.count} map${m.count === 1 ? "" : "s"} installed in ${m.dir}` : "No extra maps installed yet.";
     fill(list, m.packs.map((p) => {
       const row = h("div", { class: "mappack" },
-        h("div", {}, h("h3", {}, p.name), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
+        h("div", {}, h("h3", {}, p.name, have(p) ? h("span", { class: "pill ok packhave" }, `${have(p)} in your maps`) : null), h("p", { class: "muted small" }, `${p.description} About ${p.size_mb} MB.`)),
         p.manual
           ? h("div", { class: "row" },
             h("button", { class: "btn small", onclick: () => invoke("maps_open_pack_page", { id: p.id }).catch((e) => say(errText(e), "bad")) }, "Open download page"),
             h("button", { class: "btn small", onclick: () => { active = p.id; render(); pickMaps(false, p.id); } }, "Choose the file…"))
-          : h("button", { class: "btn small", onclick: () => start(p) }, "Install"));
+          : h("button", { class: "btn small", onclick: () => start(p) }, have(p) ? "Install again" : "Install"));
       if (active === p.id) row.append(job);
       return row;
     }));
@@ -460,11 +461,14 @@ function mapsCard() {
   }
   refreshers.add(render);
   render();
-  const el = h("div", { class: "stack" }, info, list, strip,
-    h("div", { class: "row" },
-      h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(false); } }, "Add maps from a file…"),
-      h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(true); } }, "Add a folder of maps…")));
-  return { el, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
+  const el = h("div", { class: "stack" }, info, list,
+    h("div", { class: "mappack ownmaps" },
+      h("div", {}, h("h3", {}, "Your own maps"), h("p", { class: "muted small" }, "Maps you downloaded yourself: an archive (zip, 7z, rar) or a folder that holds map folders.")),
+      h("div", { class: "row" },
+        h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(false); } }, "Choose a file…"),
+        h("button", { class: "btn small", onclick: () => { active = null; render(); pickMaps(true); } }, "Choose a folder…")),
+      strip));
+  return { el, render, dispose: () => { clearInterval(timer); refreshers.delete(render); mapsNotice = null; } };
 }
 
 /** The map picture's side in the preview window, in pixels (also in style.css: .mapview-canvas). */
@@ -684,12 +688,14 @@ function openMapViewer(entries, start, onChange) {
 }
 
 /** Every map, on or off: pick the ones the game should show. Switching a map off moves it aside; nothing is deleted. */
-function mapOrganiser() {
+function mapOrganiser(onLoad) {
   const LIMIT = 150;
   let own = [], official = [], all = [], q = "", packs = new Set(), view = "all", shown = LIMIT, confirmDelete = false;
   let counts = null, pf = "", sortBy = "name"; // counts: map name -> players, once read (null while counting)
   const summary = h("span", { class: "pill" });
-  const search = h("input", { type: "text", placeholder: "Search maps", "aria-label": "Search maps", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
+  const search = h("input", { type: "text", placeholder: "Search maps by name", "aria-label": "Search maps by name", oninput: () => { q = search.value.trim().toLowerCase(); shown = LIMIT; draw(); } });
+  const searchClear = h("button", { class: "searchclear", "aria-label": "Clear the search", hidden: true, onclick: () => { q = ""; search.value = ""; shown = LIMIT; draw(); search.focus(); } }, "\u00d7");
+  const searchBox = h("div", { class: "searchbox" }, search, searchClear);
   // The pack filter is a menu of tick boxes: show the maps of the ticked packs (none ticked is every pack). It only filters the list.
   const packName = h("span", { class: "packbtn-name" });
   const packBtn = h("button", { class: "btn packbtn", "aria-haspopup": "true", "aria-expanded": "false", "aria-label": "Show maps from", onclick: () => setPackMenu(packMenu.hidden) }, packName);
@@ -703,7 +709,7 @@ function mapOrganiser() {
   const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
   const segs = h("div", { class: "segs", role: "group", "aria-label": "Show" }, seg("all", "All"), seg("on", "On"), seg("off", "Off"));
   const sortSel = h("select", { "aria-label": "Sort maps", onchange: () => { sortBy = sortSel.value; shown = LIMIT; draw(); } },
-    new Option("Sort: name", "name"), new Option("Sort: fewest players", "players"), new Option("Sort: most players", "players-desc"), new Option("Sort: largest file", "size"));
+    new Option("Name", "name"), new Option("Fewest players", "players"), new Option("Most players", "players-desc"), new Option("Largest file", "size"));
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Number of players" });
   const result = h("p", { class: "muted small mapresult", role: "status" });
   const clear = h("button", { class: "btn small ghost", hidden: true, onclick: () => { q = ""; packs.clear(); view = "all"; pf = ""; search.value = ""; shown = LIMIT; draw(); } }, "Clear filters");
@@ -712,7 +718,7 @@ function mapOrganiser() {
   const on = h("button", { class: "btn small", onclick: () => bulk(true) }, "Switch on shown");
   const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off shown");
   const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete shown…");
-  const empty = h("div", { class: "notice", hidden: true });
+  const empty = h("div", { class: "listempty", role: "status", hidden: true });
   // A small picture of the map under the mouse, following it. Pictures are fetched once, a moment after the mouse settles on a row.
   const TIP = 190;
   const tipCanvas = h("canvas", { width: TIP, height: TIP });
@@ -778,7 +784,12 @@ function mapOrganiser() {
     fill(chips,
       h("span", { class: "muted small chiplabel" }, "Players"),
       chip("", "Any"),
-      ...[...have.keys()].sort((a, b) => a - b).map((n) => chip(String(n), h("span", {}, n === 0 ? "Solo" : String(n), h("span", { class: "chipcount" }, String(have.get(n)))))),
+      ...[...have.keys()].sort((a, b) => a - b).map((n) => {
+        const c = chip(String(n), [n === 0 ? "Solo" : String(n), h("span", { class: "chipcount", "aria-hidden": "true" }, String(have.get(n)))]);
+        const what = `${have.get(n)} ${n === 0 ? "solo" : n + "-player"} map${have.get(n) === 1 ? "" : "s"}`;
+        c.title = what; c.setAttribute("aria-label", what);
+        return c;
+      }),
       counts ? null : h("span", { class: "muted small" }, "counting…"));
   }
   function drawPacks(names) {
@@ -792,7 +803,7 @@ function mapOrganiser() {
   }
   function drawSummary() {
     const mine = all.filter((m) => !m.official), n = mine.filter((m) => m.enabled).length;
-    summary.textContent = mine.length ? `${n} of ${mine.length} switched on` : "";
+    summary.textContent = mine.length ? `${n} of ${mine.length} added maps switched on` : "";
     summary.className = "pill" + (n ? " ok" : "");
   }
   function draw() {
@@ -805,8 +816,12 @@ function mapOrganiser() {
     drawChips();
     result.textContent = all.length ? (v.length === all.length ? `${all.length} maps` : `${v.length} of ${all.length} maps`) : "";
     clear.hidden = !(q || packs.size || view !== "all" || pf !== "");
+    searchClear.hidden = !q;
     empty.hidden = !!v.length;
-    fill(empty, all.length ? "No maps match." : h("span", {}, "No maps yet. Install a pack above, or add your own maps from a file or folder."));
+    list.hidden = !v.length;
+    fill(empty, all.length
+      ? [h("strong", {}, "No maps match"), h("span", { class: "muted small" }, q ? `Nothing is called \u201c${search.value.trim()}\u201d with these filters.` : "No map fits these filters."), h("button", { class: "btn small", onclick: () => clear.click() }, "Clear filters")]
+      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install a pack below, or add your own maps from a file or folder.")]);
     fill(list, v.slice(0, shown).map((m) => {
       const box = h("input", { type: "checkbox", checked: m.enabled, "aria-label": `Use ${m.name}`, onchange: async () => {
         try { await invoke("maps_set_enabled", { names: [m.name], enabled: box.checked }); m.enabled = box.checked; row.classList.toggle("on", m.enabled); drawSummary(); }
@@ -859,6 +874,7 @@ function mapOrganiser() {
     try { own = await invoke("maps_organiser"); } catch (e) { say(errText(e), "bad"); own = []; }
     merge();
     draw();
+    if (onLoad) onLoad();
     loadOfficial();
     // reading each map's start positions takes a moment the first time; the list is usable meanwhile
     invoke("maps_players").then((c) => { counts = c; draw(); }).catch(() => { counts = {}; draw(); });
@@ -867,27 +883,29 @@ function mapOrganiser() {
   reloadOrganiser();
   document.body.append(tip); // on the body: a page that is mid-animation has a transform, which would move a fixed child
   const el = h("div", { class: "organiser" },
-    h("div", { class: "row between" }, h("h2", {}, "Maps"), summary),
-    h("div", { class: "organiser-bar" }, search, packPick, segs),
+    h("div", { class: "row between" }, h("h2", {}, "Your maps"), summary),
+    h("div", { class: "organiser-bar" }, searchBox, packPick, segs),
     chips,
-    empty,
     h("div", { class: "listbox" },
-      h("div", { class: "modhead" }, h("div", { class: "row" }, result, clear), sortSel),
+      h("div", { class: "listhead" }, h("div", { class: "row" }, result, clear), h("label", { class: "sortpick" }, h("span", { class: "muted small" }, "Sort by"), sortSel)),
       list,
+      empty,
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
     h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
-  return { el, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
+  return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
 function mapsPage() {
-  const packs = mapsCard();
-  const org = mapOrganiser();
+  // the packs list says which packs are already in the library, so it follows the organiser
+  let packs = null;
+  const org = mapOrganiser(() => packs && packs.render());
+  packs = mapsCard((name) => org.packCount(name));
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps")),
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
-    h("details", { class: "card help", open: true }, h("summary", {}, "Get more maps"), packs.el));
+    h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));
   return { el, dispose: () => { packs.dispose(); org.dispose(); } };
 }
 
@@ -1558,12 +1576,21 @@ function onlinePage() {
     } catch (e) { lastError = errText(e); say(lastError, "bad"); }
     refresh();
   } }, "Connect");
+  const nextText = h("span", {});
+  const next = h("div", { class: "nextstep", role: "status", hidden: true }, h("div", { class: "stack tight" }, h("strong", {}, "You are connected"), h("span", { class: "muted small" }, nextText)),
+    h("button", { class: "btn primary", onclick: () => startGame() }, icon("play"), "Start the game"));
   async function refresh() {
     const s = store.relay;
     const connected = s.startsWith("Connected as");
     const on = s === "Connecting..." || connected;
     btn.textContent = on ? "Disconnect" : "Connect";
     btn.dataset.mode = on ? "disconnect" : "connect";
+    // Connected, the next thing to do is start the game: that becomes the one primary action and the form is locked,
+    // because typing in it changes nothing until you disconnect.
+    btn.className = on ? "btn" : "btn primary";
+    for (const f of [server, port, room, pw, remember]) f.disabled = on;
+    next.hidden = !connected;
+    if (connected) nextText.textContent = `${store.cfg.room ? `You are in room ${store.cfg.room}` : "You are in the server's open room"}${store.cfg.server ? ` on ${store.cfg.server}` : ""}. Start the game and choose Multiplayer: everyone in this room is in the lobby.`;
     state.replaceChildren(pill(s === "Connecting..." ? "Connecting…" : s, connected ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
     // Why it is not working, in the words of what to check.
     let c = null;
@@ -1601,12 +1628,13 @@ function onlinePage() {
       h("div", { class: "hostport" }, h("label", { class: "field" }, h("span", {}, "Server"), server), h("label", { class: "field" }, h("span", {}, "Port"), port)),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Room"), room), h("label", { class: "field" }, h("span", {}, "Room password"), pw)),
       h("div", { class: "row between" }, h("label", { class: "switch" }, remember, "Remember the password"), h("div", { class: "row" }, save, btn)),
+      next,
       problem,
       h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
         h("p", { class: "muted small" }, "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
-    h("div", { class: "card" }, h("h2", {}, "Your name"), setting("Name in the lobby", nameNote, nameBox)),
+    saved$,
     conn.el,
-    saved$);
+    h("div", { class: "card" }, h("h2", {}, "Your name"), h("div", { class: "settings" }, setting("Name in the lobby", nameNote, nameBox))));
   return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
 }
 
