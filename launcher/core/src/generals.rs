@@ -2,6 +2,7 @@
 //!
 //! The data lives in `.big` archives (EA's simple archive format): `Data\INI\PlayerTemplate.ini` lists the factions, and
 //! `Data\English\generals.csf` holds their names. A mod's archives take priority over the base game's, as in the game.
+//! Mods often ship their text as `Data\Generals.str` instead (Shockwave, Chaos): the game prefers that file, so we do too.
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -214,10 +215,51 @@ fn plain_name(id: &str) -> String {
     out
 }
 
+/// Labels of a `Generals.str` text table: a label on its own line, the text in quotes on the next, then `END`.
+/// `//` starts a comment. Only the first string of a label is kept, as in `parse_csf`.
+pub fn parse_str(text: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut label: Option<&str> = None;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        match label {
+            None => label = Some(line),
+            Some(_) if line.eq_ignore_ascii_case("END") => label = None,
+            Some(l) => {
+                if let Some(rest) = line.strip_prefix('"') {
+                    let value = rest.rfind('"').map_or(rest, |end| &rest[..end]);
+                    out.entry(l.to_string()).or_insert_with(|| value.replace("\\n", " "));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The game's on-screen text with the mod folders laid over it: the string table, then a mod's `Generals.str` on top.
+fn strings(base: &Path, layers: &[PathBuf]) -> std::collections::HashMap<String, String> {
+    let mut strings = find("data\\english\\generals.csf", base, layers, MAX_CSF).map(|b| parse_csf(&b)).unwrap_or_default();
+    if let Some(b) = find("data\\generals.str", base, layers, MAX_CSF) {
+        // the file is in the Windows code page; Latin-1 keeps every byte and is right for the names we show
+        strings.extend(parse_str(&b.iter().map(|&c| c as char).collect::<String>()));
+    }
+    strings
+}
+
+/// What the game calls its three computer levels (easy, medium, hard), which a mod may rename: Chaos has "Noob Army",
+/// "Normie" and "Turbo Death Army".
+pub fn ai_names(base: &Path, layers: &[PathBuf]) -> [String; 3] {
+    let strings = strings(base, layers);
+    [("GUI:EasyAI", "Easy Army"), ("GUI:MediumAI", "Medium Army"), ("GUI:HardAI", "Hard Army")]
+        .map(|(label, plain)| strings.get(label).map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s.chars().count() <= 40).unwrap_or_else(|| plain.to_string()))
+}
+
 /// The generals of the game in `base` with the mod folders `layers` laid over it (later folders win).
 pub fn generals(base: &Path, layers: &[PathBuf]) -> Vec<General> {
     let Some(ini) = find("data\\ini\\playertemplate.ini", base, layers, MAX_INI) else { return vec![] };
-    let strings = find("data\\english\\generals.csf", base, layers, MAX_CSF).map(|b| parse_csf(&b)).unwrap_or_default();
+    let strings = strings(base, layers);
     parse_templates(&String::from_utf8_lossy(&ini))
         .into_iter()
         .map(|(id, label)| {
@@ -291,6 +333,26 @@ mod tests {
         let g = generals(&base, std::slice::from_ref(&modd));
         assert_eq!(g.iter().map(|g| (g.id.as_str(), g.name.as_str())).collect::<Vec<_>>(), [("FactionAmerica", "USA"), ("FactionBlueTeam", "Blue Team")]);
         let _ = std::fs::remove_dir_all(t);
+    }
+
+    #[test]
+    fn a_mods_text_file_renames_generals_and_computer_levels() {
+        let dir = std::env::temp_dir().join(format!("gen-str-{}", std::process::id()));
+        let (base, chaos) = (dir.join("game"), dir.join("Chaos"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&chaos).unwrap();
+        std::fs::write(base.join("INIZH.big"), big(&[("Data\\INI\\PlayerTemplate.ini", b"PlayerTemplate FactionGLAToxinGeneral\n  PlayableSide = Yes\n  DisplayName = INI:FactionGLAToxinGeneral\nEnd\n")])).unwrap();
+        std::fs::write(base.join("EnglishZH.big"), big(&[("Data\\English\\generals.csf", &csf(&[("INI:FactionGLAToxinGeneral", "GLA Toxin General"), ("GUI:EasyAI", "Easy Army"), ("GUI:HardAI", "Hard Army")]))])).unwrap();
+        // the game alone: its own names, and the plain name for a level the table lacks
+        assert_eq!(generals(&base, &[])[0].name, "GLA Toxin General");
+        assert_eq!(ai_names(&base, &[]), ["Easy Army", "Medium Army", "Hard Army"].map(String::from));
+        let text = "// Chaos\r\nINI:FactionGLAToxinGeneral\r\n\"Dr. Thrax\"\r\nEND\r\n\r\nGUI:EasyAI\r\n  \"Noob Army\"\r\nEND\r\nGUI:HardAI\r\n\"Turbo Death Army\"\r\nEnd\r\n";
+        std::fs::write(chaos.join("!Shw_ini.gib"), big(&[("Data\\Generals.str", text.as_bytes())])).unwrap();
+        assert_eq!(generals(&base, &[chaos.clone()])[0].name, "Dr. Thrax");
+        assert_eq!(ai_names(&base, &[chaos]), ["Noob Army", "Medium Army", "Turbo Death Army"].map(String::from));
+        assert!(parse_str("no end\n\"x").get("no end").is_some_and(|v| v == "x"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -103,6 +103,10 @@ pub struct Diagnostics {
     pub identity_saved: bool,
     /// The relay's last verdict that the players' simulations differed (see `Packet::Desync`).
     pub desync: Option<DesyncView>,
+    /// Whether this player is the room's master (the first one in it), and the "Stronger AI" level the room plays with.
+    /// `None` until the relay has said.
+    pub room_master: Option<bool>,
+    pub ai_level: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -133,6 +137,7 @@ struct Health {
     down_kbps: u32,
     server: Option<ServerView>,
     desync: Option<DesyncView>,
+    room: Option<(bool, u8)>,
 }
 
 impl Health {
@@ -175,6 +180,8 @@ impl Health {
             server_identity: None,
             identity_saved: false,
             desync: self.desync.clone(),
+            room_master: self.room.map(|r| r.0),
+            ai_level: self.room.map(|r| r.1),
         }
     }
 }
@@ -403,6 +410,7 @@ impl Agent {
                                 let session = crypto.lock().unwrap().clone();
                                 match session.and_then(|c| c.open(&data)) {
                                     Some(Packet::Ping) => health.lock().unwrap().pong(Instant::now()),
+                                    Some(Packet::Room { master, ai }) => health.lock().unwrap().room = Some((master, ai)),
                                     Some(Packet::Stats(s)) => {
                                         health.lock().unwrap().server = Some(ServerView {
                                             version: s.version,
@@ -561,6 +569,16 @@ impl Agent {
 
     pub fn status(&self) -> Status {
         *self.status.lock().unwrap()
+    }
+
+    /// The room master asks for a "Stronger AI" level (0 to 3) for everyone; the relay ignores anyone else.
+    pub fn set_ai(&self, level: u8) {
+        send_sealed(&self.relay, &self.crypto, &Packet::SetAi { level: level.min(generals_proto::MAX_AI_LEVEL) });
+    }
+
+    /// The level the room plays with, once the relay has said (a second or two after joining).
+    pub fn room_ai(&self) -> Option<u8> {
+        self.health.lock().unwrap().room.map(|r| r.1)
     }
 
     /// Latency, loss, traffic and the relay's own numbers; `None` unless connected.

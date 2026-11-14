@@ -1,18 +1,22 @@
+## Rallypoint 0.8.0
+
+Computer players that put up more of a fight, in skirmish and online, plus a batch of fixes from a week of real games.
+
+- **Stronger AI.** Computer players can build, field teams and gather faster: Sharper, Strong or Relentless. It changes their pace, not their tactics, and it works in every mod. Set it in the skirmish setup, beside money and speed, or under Play > Options.
+- **Mods keep their own names.** The skirmish setup now shows a mod's names for its generals and its computer levels. Shockwave Chaos gets Dr. Thrax, the USA Rave General and a Turbo Death Army instead of Zero Hour's names.
+- **Stronger AI online.** The first player into a room is its **room master** and picks the level for everyone, on the Online page. Games that start with different levels are refused at the lobby instead of going out of sync, so set it before anyone starts the game.
+- **Server owners: update your server.** Room masters need the new server. With an older one the option stays hidden and games start as before.
+- **Not compatible with 0.7 in multiplayer.** Eight fixes to the computer player and pathfinding from the community project change how a game plays out, so everyone in a room needs 0.8.0.
+- **Shockwave with Control Bar Pro.** The command bar no longer falls apart when your general is Armor, Special Weapons or Salvage. Those three had no artwork of their own in Control Bar Pro and now use their faction's bar.
+- **Fewer sound clicks on macOS.** A far-away sound could start at full volume for a moment. It now starts at the volume its distance calls for.
+- **Control Bar Pro is not downloaded twice.** Switching back to it reuses what is already installed.
+- **Maps page.** The packs menu keeps its arrow when you point at it, and closes when you click anywhere else.
+- **Quicker releases.** A release that only changes the launcher no longer rebuilds the game engine.
+
 ## Rallypoint 0.7.3
 
-A tidy-up of the Maps and Online pages: the odd bar over the map list is gone, and connecting now tells you what to do next.
-
-- **Map list sorted out.** The sort menu had stretched across the whole list and looked like a second search box. It is now a small **Sort by** menu beside the result count.
-- **Search you can clear.** The search box has an icon and a clear button, and a search with no results says so inside the list, with a way back.
-- **Player filters you can read.** The number of maps behind each player count is a small badge, so "8" with one map no longer reads as 81.
-- **Packs know what you have.** Get more maps shows how many maps of a pack are already in your library, and adding your own maps has a proper row instead of two small buttons at the bottom.
-- **Connected, then what.** The Online page now says which room you are in and has a **Start the game** button. The form locks while you are connected, since changing it did nothing until you disconnected.
-- **Saved servers first.** They sit right under the join form instead of below the connection graphs.
+A tidy-up of the Maps and Online pages: a compact sort menu, a search box you can clear, readable player filters, packs that show what you already have, and a **Start the game** button once you are connected.
 
 ## Rallypoint 0.7.2
 
-Four fixes from a long Mac against Windows game: 64-bit Windows no longer crashes mid-game from the sound system, Control Bar Pro icons line up, cloud shadows in the Enhanced renderer are no longer nearly black, and crash dumps in the debug bundle arrive intact. Releases also build much faster.
-
-## Rallypoint 0.7.1
-
-A small release: the **Command bar** choice (sharp icons or Control Bar Pro) moved onto the Control Bar HD card on the Mods page, where people look for it. It is still in Settings > Graphics too.
+Four fixes from a long Mac against Windows game: 64-bit Windows no longer crashes mid-game from the sound system, Control Bar Pro icons line up, cloud shadows in the Enhanced renderer are no longer nearly black, and crash dumps in the debug bundle arrive intact.

@@ -29,6 +29,7 @@ const ICONS = {
   online: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-3a15.7 15.7 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8zM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4zM4.3 14a8.200 8.200 0 0 1 0-4h3.400a16.500 16.500 0 0 0 0 4H4.300zm.8 2h3a15.700 15.700 0 0 0 1.400 3.600A8 8 0 0 1 5.100 16zm3-8h-3a8 8 0 0 1 4.400-3.600A15.700 15.700 0 0 0 8.100 8zM12 20c-.8-1.200-1.500-2.500-1.900-4h3.800c-.4 1.500-1.100 2.800-1.900 4zm2.300-6H9.700a14.700 14.700 0 0 1 0-4h4.600a14.700 14.700 0 0 1 0 4zm.2 5.600c.6-1.100 1.100-2.300 1.400-3.600h3a8 8 0 0 1-4.400 3.600zm1.800-5.600a16.500 16.500 0 0 0 0-4h3.400a8.200 8.200 0 0 1 0 4h-3.400z",
   maps: "M20.5 3l-.2.1L15 5.2 9 3 3.400 4.900a.5.5 0 0 0-.4.5v15.100a.5.5 0 0 0 .5.5l.2-.1L9 18.800l6 2.100 5.600-1.900a.5.5 0 0 0 .4-.5V3.500a.5.5 0 0 0-.5-.5zM15 19l-6-2.100V5l6 2.100V19z",
   settings: "M19.400 13a7.500 7.500 0 0 0 0-2l2.100-1.600-2-3.400-2.500 1a7.600 7.600 0 0 0-1.700-1L15 3.300h-4L10.700 6a7.600 7.600 0 0 0-1.700 1l-2.500-1-2 3.400L6.600 11a7.500 7.500 0 0 0 0 2l-2.100 1.600 2 3.400 2.500-1c.5.400 1.100.7 1.700 1l.3 2.700h4l.3-2.700c.6-.3 1.200-.6 1.700-1l2.500 1 2-3.400L19.400 13zM13 15.500a3.500 3.500 0 1 1 0-7 3.500 3.500 0 0 1 0 7z",
+  ai: "M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z",
   check: "M9 16.200 4.800 12l-1.400 1.400L9 19 21 7l-1.400-1.400z",
   plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
   prev: "M15.400 7.400 14 6l-6 6 6 6 1.400-1.400L10.800 12z",
@@ -510,6 +511,11 @@ function openMapViewer(entries, start, onChange) {
   }
   async function loadGenerals() {
     try { generalsList = await invoke("skirmish_generals", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }); } catch { generalsList = []; }
+    // the computer levels as this game names them (a mod may rename them: Chaos has "Noob Army" and "Turbo Death Army")
+    try {
+      const names = await invoke("skirmish_ai_names", { gameDir: store.cfg.game_dir, modFolders: launchFolders() });
+      diffs = DIFF_IDS.map((id, k) => [id, names[k] || DIFF_PLAIN[k]]);
+    } catch { diffs = DIFF_IDS.map((id, k) => [id, DIFF_PLAIN[k]]); }
     // a general the new game does not have goes back to random
     for (const r of rows) if (r.faction && !generalsList.some((g) => g.id === r.faction)) r.faction = null;
   }
@@ -517,7 +523,8 @@ function openMapViewer(entries, start, onChange) {
   // The table: you first, then one row per other place on the map.
   const table = h("div", { class: "skgrid", role: "group", "aria-label": "Skirmish players" });
   const summary = h("span", { class: "muted small" });
-  const diffs = [["easy", "Easy AI"], ["medium", "Medium AI"], ["brutal", "Brutal AI"]];
+  const DIFF_IDS = ["easy", "medium", "brutal"], DIFF_PLAIN = ["Easy Army", "Medium Army", "Hard Army"];
+  let diffs = DIFF_IDS.map((id, k) => [id, DIFF_PLAIN[k]]);
   const sel = (label, options, value, onchange) => {
     const el = h("select", { "aria-label": label, onchange: () => onchange(el.value) }, ...options.map(([v, t]) => new Option(t, v)));
     el.value = value;
@@ -588,7 +595,7 @@ function openMapViewer(entries, start, onChange) {
       h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, title, factline), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Play with"), gameSel)),
       h("div", { class: "wiz-body mapbody" },
         h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
-        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, resPick, play))),
+        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, aiSelect(), resPick, play))),
       h("div", { class: "wiz-foot" }, listedRow, close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -1143,6 +1150,19 @@ function resolutionSelect() {
   return wrap;
 }
 
+const AI_BOOSTS = [[0, "Off"], [1, "Sharper"], [2, "Strong"], [3, "Relentless"]];
+const aiBoost = () => (AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0);
+/** The Stronger AI level beside the other skirmish options (money, speed, screen): the same saved choice as on the Play page. */
+function aiSelect() {
+  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI", title: "How fast the computer players build, field teams and gather" },
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, v ? `${t} AI` : "Normal AI")));
+  sel.value = String(aiBoost());
+  const wrap = h("div", { class: "speedpick" }, icon("ai"), sel);
+  const mark = () => wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
+  mark();
+  sel.addEventListener("change", () => { prefs.set({ aiBoost: +sel.value }); mark(); });
+  return wrap;
+}
 const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : DEFAULT_CASH);
 
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
@@ -1154,7 +1174,7 @@ async function startGame({ skirmish = false, map = null, ai = null, difficulty =
   const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
   let started = false;
   try {
-    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, skirmishSlots: slots });
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, aiBoost: aiBoost(), skirmishSlots: slots });
     started = true;
   } catch (e) { say(errText(e), "bad"); }
   // The game's own window takes a few seconds to appear; keep the notice up until then.
@@ -1176,6 +1196,9 @@ function playPage() {
   const custom = h("div", { class: "row", hidden: true }, cw, "×", ch);
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
+  const aiSel = h("select", { "aria-label": "Stronger AI", onchange: () => prefs.set({ aiBoost: +aiSel.value }) },
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  aiSel.value = String(aiBoost());
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
   // The chosen game's own picture, read from the player's files, fading in from the right edge of the card. Two layers:
@@ -1269,7 +1292,8 @@ function playPage() {
       custom,
       h("div", { class: "settings" },
         setting("Fullscreen", "Fill the screen instead of a window.", h("label", { class: "switch" }, fs)),
-        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam))),
+        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam)),
+        setting("Stronger AI", "Skirmish computer players build, field teams and gather faster, in any mod. It changes their pace, not their tactics. Multiplayer games ignore it.", aiSel)),
       ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
@@ -1502,8 +1526,39 @@ function connectionCard() {
   return { el: card, dispose: () => { window.removeEventListener("net", draw); window.removeEventListener("resize", draw); } };
 }
 
+/** The room's settings. The first player into a room is its master and picks the "Stronger AI" level every player's game
+ *  starts with (for computer players in a multiplayer game); everyone else sees it and cannot change it. */
+function roomCard() {
+  let held = 0, asked = null; // the relay answers on the next ping: keep the choice on screen until it has
+  const badge = h("span", {}), note = h("span", {}), fb = liveStatus();
+  const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: async () => {
+    try { held = Date.now(); asked = +sel.value; fb.busy("Telling the room…"); await invoke("relay_set_ai", { level: asked }); } catch (e) { asked = null; fb.bad(errText(e)); }
+  } }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
+    h("div", { class: "settings" }, setting("Stronger AI", h("span", {}, note, " ", fb.el), sel)));
+  function draw() {
+    const d = net.last;
+    card.hidden = !d || d.room_master == null;
+    if (card.hidden) return;
+    const master = !!d.room_master;
+    fill(badge, pill(master ? "You are the room master" : "Room master: another player", master ? "ok" : ""));
+    // the relay has confirmed the level we asked for, or five seconds passed without it
+    if (asked != null && (d.ai_level ?? 0) === asked) { asked = null; held = 0; fb.ok("Set for everyone in the room."); }
+    else if (asked != null && Date.now() - held > 5000) { asked = null; fb.bad("The server did not confirm it. Try again."); }
+    if (Date.now() - held > 5000) sel.value = String(d.ai_level ?? 0);
+    sel.disabled = !master;
+    note.textContent = master
+      ? "You were first in this room, so you choose. Computer players in a multiplayer game build, field teams and gather faster, for everyone. Set it before anyone starts the game."
+      : "The room master chooses this. It applies to everyone when the game starts.";
+  }
+  window.addEventListener("net", draw);
+  draw();
+  return { el: card, dispose: () => window.removeEventListener("net", draw) };
+}
+
 function onlinePage() {
   const conn = connectionCard();
+  const roomSettings = roomCard();
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
@@ -1635,10 +1690,11 @@ function onlinePage() {
       problem,
       h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
         h("p", { class: "muted small" }, "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
+    roomSettings.el,
     saved$,
     conn.el,
     h("div", { class: "card" }, h("h2", {}, "Your name"), h("div", { class: "settings" }, setting("Name in the lobby", nameNote, nameBox))));
-  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
+  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); roomSettings.dispose(); } };
 }
 
 function diagnosePanel() {

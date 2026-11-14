@@ -489,6 +489,15 @@ fn relay_disconnect(relay: tauri::State<Relay>) {
     *relay.0.lock().unwrap() = None;
 }
 
+/// The room master chooses the "Stronger AI" level (0 to 3) every player's game starts with. The relay ignores anyone else.
+#[tauri::command]
+fn relay_set_ai(relay: tauri::State<Relay>, level: u8) -> Result<(), String> {
+    let guard = relay.0.lock().unwrap();
+    let agent = guard.as_ref().ok_or("You are not connected to a server")?;
+    agent.set_ai(level);
+    Ok(())
+}
+
 /// Latency, packet loss and the relay's own load figures; `None` unless connected.
 #[tauri::command]
 fn relay_diagnostics(relay: tauri::State<Relay>) -> Option<generals_core::agent::Diagnostics> {
@@ -752,6 +761,15 @@ async fn skirmish_generals(app: tauri::AppHandle, game_dir: PathBuf, mod_folders
     tauri::async_runtime::spawn_blocking(move || generals::generals(&game_dir, &layers)).await.map_err(|e| e.to_string())
 }
 
+/// What the game with these mods calls its three computer levels (easy, medium, hard).
+#[tauri::command]
+async fn skirmish_ai_names(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<[String; 3], String> {
+    let cat = catalog()?;
+    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    let layers: Vec<PathBuf> = ordered.iter().map(|f| mods_dir(&app).map(|d| d.join(f))).collect::<Result<_, _>>()?;
+    tauri::async_runtime::spawn_blocking(move || generals::ai_names(&game_dir, &layers)).await.map_err(|e| e.to_string())
+}
+
 /// Where the game's own maps live, lowest priority first: the original Generals (Zero Hour reads its maps too), the game folder, then the mods.
 fn official_dirs(app: &tauri::AppHandle, game_dir: &Path, mod_folders: Option<Vec<String>>) -> Result<Vec<PathBuf>, String> {
     let cat = catalog()?;
@@ -944,7 +962,7 @@ async fn set_control_bar(app: tauri::AppHandle, choice: String, width: u32, heig
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, ai_boost: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = find_engine(&app, &data)
@@ -967,6 +985,8 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
+    // In a game through the relay every player starts with the level its room master chose.
+    let room_ai = relay.0.lock().unwrap().as_ref().and_then(|a| a.room_ai());
     // No more places than the map has start positions (more than that crashes the game at start).
     if let (Some(slots), Some(map)) = (skirmish_slots.as_mut(), skirmish_map.as_deref().filter(|m| maporg::is_safe_name(m))) {
         launch::fit_table(slots, maps_dir(&app).ok().and_then(|d| mapview::player_count(&d.join(map))));
@@ -1000,10 +1020,14 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             if skirmish {
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
                 env.extend(skirmish_env.iter().cloned());
+                env.extend(launch::ai_boost_env(ai_boost.unwrap_or(0)));
                 if let Some((table, diff)) = &skirmish_table {
                     env.push(("GEN_AUTO_SLOTS".to_string(), table.clone()));
                     env.push(("GEN_AUTO_DIFF".to_string(), diff.clone().unwrap_or_else(|| "easy".to_string())));
                 }
+            }
+            if !skirmish && relay_cfg_on {
+                env.extend(launch::ai_boost_env(room_ai.unwrap_or(0).into()));
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             {
@@ -1075,8 +1099,8 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
-            relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game
         ])

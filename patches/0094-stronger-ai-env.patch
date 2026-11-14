@@ -1,0 +1,109 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+@@ -254,6 +254,10 @@
+ 	virtual void update() override;					///< do one frame of AI computation
+ 
+ 	Pathfinder *pathfinder() { return m_pathfinder; }	///< public access to the pathfind system
++
++	/// Rallypoint "Stronger AI" (GEN_AI_BOOST=1..3): speed factor for the AI's build timers and extra supply gatherers. 1.0 and 0 when off.
++	static Real boostSpeed();
++	static Int boostGatherers();
+ 	enum
+ 	{
+ 		CAN_SEE														=	1 << 0,
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+@@ -299,6 +299,31 @@
+ /**
+  * Constructor for the AI system
+  */
++static Int aiBoostLevel()
++{
++	static Int level = -1;
++	if (level < 0)
++	{
++		const char *v = getenv("GEN_AI_BOOST");
++		level = v ? atoi(v) : 0;
++		if (level < 0) level = 0;
++		if (level > 3) level = 3;
++	}
++	return level;
++}
++
++Real AI::boostSpeed()
++{
++	static const Real speeds[4] = { 1.0f, 1.35f, 1.7f, 2.0f };
++	return speeds[aiBoostLevel()];
++}
++
++Int AI::boostGatherers()
++{
++	static const Int extra[4] = { 0, 1, 1, 2 };
++	return extra[aiBoostLevel()];
++}
++
+ AI::AI()
+ {
+ 	m_aiData = NEW TAiData;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+@@ -213,7 +213,7 @@
+ 		}
+ 		info->setSupplyBuilding(true);
+ 		info->setCurrentGatherers(-1);
+-		info->setDesiredGatherers(desiredGatherers+1); // get a freebie with the supply depots.
++		info->setDesiredGatherers(desiredGatherers+1+AI::boostGatherers()); // get a freebie with the supply depots.
+ 	}
+ }
+ 
+@@ -801,7 +801,7 @@
+ 						info->decrementNumRebuilds();
+ 
+ 						m_readyToBuildStructure = false;
+-						m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND;
++						m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed();
+ 						if (m_player->getMoney()->countMoney() < TheAI->getAiData()->m_resourcesPoor) {
+ 							m_structureTimer = m_structureTimer/TheAI->getAiData()->m_structuresPoorMod;
+ 						}	else if (m_player->getMoney()->countMoney() > TheAI->getAiData()->m_resourcesWealthy) {
+@@ -837,7 +837,7 @@
+ 								info->decrementNumRebuilds();
+ 
+ 								m_readyToBuildStructure = false;
+-								m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND;
++								m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed();
+ 								if (m_player->getMoney()->countMoney() < TheAI->getAiData()->m_resourcesPoor) {
+ 									m_structureTimer = m_structureTimer/TheAI->getAiData()->m_structuresPoorMod;
+ 								}	else if (m_player->getMoney()->countMoney() > TheAI->getAiData()->m_resourcesWealthy) {
+@@ -1739,7 +1739,7 @@
+ 		// Build it at low priority, as we have selected it automagically.
+ 		buildSpecificAITeam(teamProto, false);
+ 		m_readyToBuildTeam = false;
+-		m_teamTimer = m_teamSeconds*LOGICFRAMES_PER_SECOND;
++		m_teamTimer = m_teamSeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed();
+ 		if (m_player->getMoney()->countMoney() < TheAI->getAiData()->m_resourcesPoor) {
+ 			m_teamTimer = m_teamTimer/TheAI->getAiData()->m_teamPoorMod;
+ 		}	else if (m_player->getMoney()->countMoney() > TheAI->getAiData()->m_resourcesWealthy) {
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
+@@ -258,7 +258,7 @@
+ 				bldgInfo->decrementNumRebuilds();
+ 
+ 				m_readyToBuildStructure = false;
+-				m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND;
++				m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed();
+ 				if (m_player->getMoney()->countMoney() < TheAI->getAiData()->m_resourcesPoor) {
+ 					m_structureTimer = m_structureTimer/TheAI->getAiData()->m_structuresPoorMod;
+ 				}	else if (m_player->getMoney()->countMoney() > TheAI->getAiData()->m_resourcesWealthy) {
+@@ -293,7 +293,7 @@
+ 						bldgInfo->decrementNumRebuilds();
+ 
+ 						m_readyToBuildStructure = false;
+-						m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND;
++						m_structureTimer = TheAI->getAiData()->m_structureSeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed();
+ 						if (m_player->getMoney()->countMoney() < TheAI->getAiData()->m_resourcesPoor) {
+ 							m_structureTimer = m_structureTimer/TheAI->getAiData()->m_structuresPoorMod;
+ 						}	else if (m_player->getMoney()->countMoney() > TheAI->getAiData()->m_resourcesWealthy) {
