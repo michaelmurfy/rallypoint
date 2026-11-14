@@ -511,6 +511,11 @@ function openMapViewer(entries, start, onChange) {
   }
   async function loadGenerals() {
     try { generalsList = await invoke("skirmish_generals", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }); } catch { generalsList = []; }
+    // the computer levels as this game names them (a mod may rename them: Chaos has "Noob Army" and "Turbo Death Army")
+    try {
+      const names = await invoke("skirmish_ai_names", { gameDir: store.cfg.game_dir, modFolders: launchFolders() });
+      diffs = DIFF_IDS.map((id, k) => [id, names[k] || DIFF_PLAIN[k]]);
+    } catch { diffs = DIFF_IDS.map((id, k) => [id, DIFF_PLAIN[k]]); }
     // a general the new game does not have goes back to random
     for (const r of rows) if (r.faction && !generalsList.some((g) => g.id === r.faction)) r.faction = null;
   }
@@ -518,7 +523,8 @@ function openMapViewer(entries, start, onChange) {
   // The table: you first, then one row per other place on the map.
   const table = h("div", { class: "skgrid", role: "group", "aria-label": "Skirmish players" });
   const summary = h("span", { class: "muted small" });
-  const diffs = [["easy", "Easy AI"], ["medium", "Medium AI"], ["brutal", "Brutal AI"]];
+  const DIFF_IDS = ["easy", "medium", "brutal"], DIFF_PLAIN = ["Easy Army", "Medium Army", "Hard Army"];
+  let diffs = DIFF_IDS.map((id, k) => [id, DIFF_PLAIN[k]]);
   const sel = (label, options, value, onchange) => {
     const el = h("select", { "aria-label": label, onchange: () => onchange(el.value) }, ...options.map(([v, t]) => new Option(t, v)));
     el.value = value;

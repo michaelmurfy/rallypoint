@@ -761,6 +761,15 @@ async fn skirmish_generals(app: tauri::AppHandle, game_dir: PathBuf, mod_folders
     tauri::async_runtime::spawn_blocking(move || generals::generals(&game_dir, &layers)).await.map_err(|e| e.to_string())
 }
 
+/// What the game with these mods calls its three computer levels (easy, medium, hard).
+#[tauri::command]
+async fn skirmish_ai_names(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<[String; 3], String> {
+    let cat = catalog()?;
+    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    let layers: Vec<PathBuf> = ordered.iter().map(|f| mods_dir(&app).map(|d| d.join(f))).collect::<Result<_, _>>()?;
+    tauri::async_runtime::spawn_blocking(move || generals::ai_names(&game_dir, &layers)).await.map_err(|e| e.to_string())
+}
+
 /// Where the game's own maps live, lowest priority first: the original Generals (Zero Hour reads its maps too), the game folder, then the mods.
 fn official_dirs(app: &tauri::AppHandle, game_dir: &Path, mod_folders: Option<Vec<String>>) -> Result<Vec<PathBuf>, String> {
     let cat = catalog()?;
@@ -1090,7 +1099,7 @@ fn main() {
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
-            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game

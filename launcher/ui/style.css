@@ -400,7 +400,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 
 /* one soft strip per place, in that place's colour */
 .skgrid { display: grid; gap: 6px; }
-.skrowhead, .skrow2 { display: grid; grid-template-columns: 14px minmax(104px, .9fr) minmax(140px, 1.5fr) minmax(92px, .8fr) minmax(88px, .8fr); gap: 8px; align-items: center; }
+.skrowhead, .skrow2 { display: grid; grid-template-columns: 14px minmax(120px, 1.15fr) minmax(140px, 1.6fr) minmax(86px, .75fr) minmax(80px, .7fr); gap: 8px; align-items: center; }
 .skrowhead { padding: 0 12px; font-size: 11.5px; }
 .skrow2 { padding: 7px 12px; border-radius: 12px; background: var(--bg); box-shadow: inset 0 0 0 1px transparent; cursor: pointer; transition: box-shadow .15s var(--ease), background .15s var(--ease); }
 .skrow2:hover { box-shadow: inset 0 0 0 1px var(--line); }
@@ -409,7 +409,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--pc); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 28%, transparent); }
 .skrow2.closed .swatch { background: var(--muted); box-shadow: none; }
 .skwho { font-weight: 650; padding-left: 9px; }
-.skrow2 select { height: 30px; font-size: 13px; min-width: 0; background-color: transparent; border-color: transparent; padding-left: 8px; padding-right: 26px; background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; }
+.skrow2 select { height: 30px; font-size: 13px; min-width: 0; text-overflow: ellipsis; background-color: transparent; border-color: transparent; padding-left: 8px; padding-right: 26px; background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; }
 .skrow2 select:hover, .skrow2 select:focus-visible { border-color: var(--line); background-color: var(--surface); }
 .pc0 { --pc: #4d8dff; } .pc1 { --pc: #e5484d; } .pc2 { --pc: #46a758; } .pc3 { --pc: #f5c542; }
 .pc4 { --pc: #f08c3c; } .pc5 { --pc: #9a6bdc; } .pc6 { --pc: #3dc7c0; } .pc7 { --pc: #e5509b; }

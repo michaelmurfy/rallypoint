@@ -39,6 +39,7 @@ const handlers = {
   maps_official: () => [["Alpine Assault", 2, 333], ["Armored Fury", 6, 237], ["Bear Town Beatdown", 4, 331], ["Death Valley", 8, 398], ["Defcon6", 6, 287], ["Golden Oasis", 4, 632], ["Tournament Desert", 2, 205], ["Tournament City", 6, 441], ["Twilight Flame", 8, 455], ["Winter Wolf", 2, 257]].map(([name, players, size_kb]) => ({ name, players, size_kb, games: ["zh"] }))
     .concat([["Shockwave Crossroads", 4], ["Frozen Pass", 2]].map(([name, players]) => ({ name, players, size_kb: 300, games: ["shockwave"] })), [{ name: "Chaos Arena", players: 6, size_kb: 410, games: ["shockwave-chaos"] }, { name: "Cold Front", players: 4, size_kb: 380, games: ["cold-war-crisis"] }]),
   official_map_view: (a) => handlers.map_view(a),
+  skirmish_ai_names: async ({ modFolders }) => ((modFolders || []).includes("ShockwaveChaos") ? ["Noob Army", "Normie", "Turbo Death Army"] : ["Easy Army", "Medium Army", "Hard Army"]),
   skirmish_generals: async ({ modFolders }) => {
     const base = [["FactionAmerica", "USA"], ["FactionChina", "China"], ["FactionGLA", "GLA"], ["FactionAmericaLaserGeneral", "USA Laser General"], ["FactionChinaTankGeneral", "China Tank General"], ["FactionGLAToxinGeneral", "GLA Toxin General"]];
     const shock = [["FactionAmerica", "USA"], ["FactionChina", "China"], ["FactionGLA", "GLA"], ["FactionShockHero", "Shockwave Hero"], ["FactionShockElite", "Shockwave Elite"]];

@@ -3,6 +3,7 @@
 Computer players that put up more of a fight, in skirmish and online, plus a batch of fixes from a week of real games.
 
 - **Stronger AI.** Computer players can build, field teams and gather faster: Sharper, Strong or Relentless. It changes their pace, not their tactics, and it works in every mod. Set it in the skirmish setup, beside money and speed, or under Play > Options.
+- **Mods keep their own names.** The skirmish setup now shows a mod's names for its generals and its computer levels. Shockwave Chaos gets Dr. Thrax, the USA Rave General and a Turbo Death Army instead of Zero Hour's names.
 - **Stronger AI online.** The first player into a room is its **room master** and picks the level for everyone, on the Online page. Games that start with different levels are refused at the lobby instead of going out of sync, so set it before anyone starts the game.
 - **Server owners: update your server.** Room masters need the new server. With an older one the option stays hidden and games start as before.
 - **Not compatible with 0.7 in multiplayer.** Eight fixes to the computer player and pathfinding from the community project change how a game plays out, so everyone in a room needs 0.8.0.
