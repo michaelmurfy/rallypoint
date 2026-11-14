@@ -1535,7 +1535,7 @@ function roomCard() {
     try { held = Date.now(); asked = +sel.value; fb.busy("Telling the room…"); await invoke("relay_set_ai", { level: asked }); } catch (e) { asked = null; fb.bad(errText(e)); }
   } }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
   const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
-    h("div", { class: "settings" }, setting("Stronger AI", h("span", {}, note, " ", fb.el), sel)));
+    h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-stack" }, sel, fb.el))));
   function draw() {
     const d = net.last;
     card.hidden = !d || d.room_master == null;
