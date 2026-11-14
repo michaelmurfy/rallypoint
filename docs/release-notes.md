@@ -1,15 +1,18 @@
+## Rallypoint 0.7.0
+
+**The first full 0.7 release: a 64-bit game engine on Windows, an Enhanced renderer, and two new choices for how the game looks and starts.** If you were on a beta, this is the one to stay on.
+
+- **Control Bar Pro.** **Settings > Graphics > Command bar** can switch the command bar to GenTool's Control Bar Pro, a redrawn bar and menus made for big screens. It is drawn for one resolution, picked from the one on the Play page, so choose it again after changing that. If it looks wrong with a mod, switch back to the sharp icons.
+- **Resolution in the skirmish setup.** The dialog where you pick players now has the screen resolution beside money and game speed, so you no longer leave it to change the size.
+- **More starting money.** Skirmish money now starts at $10,000 instead of whatever was saved, and goes up to $500,000 and $750,000.
+- **64-bit engine on Windows.** It starts the same way, and **Settings > Graphics > Game engine** switches back to the 32-bit one if a game misbehaves. Worth knowing: games between Mac and Windows are meant to match bit for bit, so send the debug logs from Settings > Multiplayer if a lobby refuses you or a game drifts apart.
+- **Enhanced renderer (beta).** Tunable glow, colour looks, sharpening and shaded smoke, with scorch craters on macOS. **Settings > Graphics > Renderer** turns it on, and Classic stays the safe choice.
+- **Safer by default.** The engine no longer opens a remote control on your computer, and beta updates are now opt-in.
+
 ## Rallypoint 0.7.0-beta.4
 
-**A security fix, plus two bugs from beta.3: slow unit voices on 64-bit Windows and a dead keyboard in macOS fullscreen.** Worth updating.
-
-- **Security: the game no longer opens a remote control on your machine.** The engine we build on included a control server on your computer, switched on, with no password. It could pause the game and give orders. Any program on your computer, or a web page you had open, could reach it, even in a multiplayer game. It is now left out of the game entirely, and the launcher tells the game to keep it off as well.
-- **Windows 64-bit: unit voices sound right again.** A selected unit could answer slow and muffled, at the speed of whatever sound played before it. Voices now play at their own speed.
-- **macOS: the keyboard keeps working in fullscreen.** The Dock and menu bar no longer slide in when the pointer reaches a screen edge to scroll the map. Clicking them handed the keyboard to another app. If keys still die, `engine.log` now says why. Send the debug logs.
+A security fix (the game no longer opens a remote control on your machine), voices that play at their own speed again on 64-bit Windows, and a keyboard that keeps working in macOS fullscreen.
 
 ## Rallypoint 0.7.0-beta.3
 
-The 64-bit engine and Enhanced renderer finally made it into the Windows installer, the ground now fills the space beside the control bar on wide screens, and macOS got scorch craters and full resolution ambient occlusion.
-
-## Rallypoint 0.7.0-beta.2
-
-The Enhanced renderer with tunable glow, colour looks, sharpening and shaded smoke, beta updates as an opt-in, and a tidier launcher with tabbed Settings.
+The 64-bit engine and Enhanced renderer made it into the Windows installer, the ground fills the space beside the control bar on wide screens, and macOS got scorch craters and full resolution ambient occlusion.
