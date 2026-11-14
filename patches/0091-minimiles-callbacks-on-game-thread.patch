@@ -1,0 +1,140 @@
+diff --git a/Dependencies/Miles/MiniMiles.cpp b/Dependencies/Miles/MiniMiles.cpp
+index f456c1c..a50a89f 100644
+--- a/Dependencies/Miles/MiniMiles.cpp
++++ b/Dependencies/Miles/MiniMiles.cpp
+@@ -307,6 +307,7 @@ struct Voice
+ 	bool started;                    // between start and stop
+ 	volatile LONG ended;             // set by the audio thread when the sound reached its end
+ 	bool endNotified;
++	bool endPending;                 // reached its end, callback not yet run (runs on the game thread, see fireEnded)
+ 	AIL_sample_callback eosSample;
+ 	AIL_3dsample_callback eos3D;
+ 	AIL_stream_callback eosStream;
+@@ -375,6 +376,7 @@ static Voice* newVoice(VoiceKind kind)
+ 	v->started = false;
+ 	v->ended = 0;
+ 	v->endNotified = false;
++	v->endPending = false;
+ 	v->eosSample = nullptr;
+ 	v->eos3D = nullptr;
+ 	v->eosStream = nullptr;
+@@ -411,6 +413,7 @@ static void teardownPlayback(Voice* v)
+ 	v->started = false;
+ 	InterlockedExchange(&v->ended, 0);
+ 	v->endNotified = false;
++	v->endPending = false;
+ }
+ 
+ static void destroyVoice(Voice* v)
+@@ -528,6 +531,7 @@ static void startVoice(Voice* v)
+ 	v->source.loopsDone = 0;
+ 	InterlockedExchange(&v->ended, 0);
+ 	v->endNotified = false;
++	v->endPending = false;
+ 	applyGain(v);
+ 	ma_sound_start(&v->sound);
+ 	v->started = true;
+@@ -549,12 +553,15 @@ static void resumeVoice(Voice* v)
+ 	}
+ }
+ 
++// The audio thread only notes that a voice reached its end. The engine's end-of-sample callbacks
++// (MilesAudioManager::notifyOfAudioCompletion) walk and change its playing lists and audio events,
++// which the game thread uses without a lock, so running them here crashed the 64-bit engine
++// (0.7.1: strcmp on a freed AudioEventRTS inside playSample3D, called from this thread).
++// fireEnded() runs them on the game thread instead, like the macOS Miles does.
+ static DWORD WINAPI workerMain(LPVOID)
+ {
+ 	while (g_threadRun)
+ 	{
+-		struct Pending { Voice* v; };
+-		std::vector<Pending> fire;
+ 		{
+ 			Lock l;
+ 			for (std::list<Voice*>::iterator it = g_voices.begin(); it != g_voices.end(); ++it)
+@@ -568,24 +575,56 @@ static DWORD WINAPI workerMain(LPVOID)
+ 				{
+ 					v->endNotified = true;
+ 					v->started = false;
+-					fire.push_back({ v });
++					v->endPending = true;
+ 				}
+ 			}
+ 		}
+-		for (size_t i = 0; i < fire.size(); ++i)
++		Sleep(10);
++	}
++	return 0;
++}
++
++// Run the end-of-sample callbacks of voices that finished. Game thread only, from a point where the
++// engine is not walking its own lists (the listener update at the top of MilesAudioManager::update).
++// One voice at a time, looked up again after every callback, because a callback can release voices.
++static void fireEnded()
++{
++	static bool firing = false;
++	if (firing || !g_lockInit)
++		return;
++	firing = true;
++	for (;;)
++	{
++		Voice* v = nullptr;
++		VoiceKind kind = VK_SAMPLE;
++		AIL_sample_callback eosSample = nullptr;
++		AIL_3dsample_callback eos3D = nullptr;
++		AIL_stream_callback eosStream = nullptr;
+ 		{
+-			Voice* v = fire[i].v;
+-			switch (v->kind)
++			Lock l;
++			for (std::list<Voice*>::iterator it = g_voices.begin(); it != g_voices.end(); ++it)
+ 			{
+-				case VK_SAMPLE: if (v->eosSample) v->eosSample((HSAMPLE)v); break;
+-				case VK_SAMPLE3D: if (v->eos3D) v->eos3D((H3DPOBJECT)v); break;
+-				case VK_STREAM: if (v->eosStream) v->eosStream((HSTREAM)v); break;
+-				default: break;
++				if ((*it)->endPending && (*it)->allocated)
++				{
++					v = *it;
++					v->endPending = false;
++					kind = v->kind;
++					eosSample = v->eosSample; eos3D = v->eos3D; eosStream = v->eosStream;
++					break;
++				}
+ 			}
+ 		}
+-		Sleep(10);
++		if (!v)
++			break;
++		switch (kind)
++		{
++			case VK_SAMPLE: if (eosSample) eosSample((HSAMPLE)v); break;
++			case VK_SAMPLE3D: if (eos3D) eos3D((H3DPOBJECT)v); break;
++			case VK_STREAM: if (eosStream) eosStream((HSTREAM)v); break;
++			default: break;
++		}
+ 	}
+-	return 0;
++	firing = false;
+ }
+ 
+ static bool readWholeFile(const char* name, std::vector<unsigned char>& out)
+@@ -996,9 +1035,15 @@ void __stdcall AIL_set_3D_position(H3DPOBJECT obj, F32 x, F32 y, F32 z)
+ void __stdcall AIL_set_3D_orientation(H3DPOBJECT obj, F32 xf, F32 yf, F32 zf, F32 xu, F32 yu, F32 zu)
+ {
+ 	Voice* v = (Voice*)obj; if (!v) return;
+-	Lock l;
+-	v->face[0] = xf; v->face[1] = yf; v->face[2] = zf;
+-	v->up[0] = xu; v->up[1] = yu; v->up[2] = zu;
++	{
++		Lock l;
++		v->face[0] = xf; v->face[1] = yf; v->face[2] = zf;
++		v->up[0] = xu; v->up[1] = yu; v->up[2] = zu;
++	}
++	// The engine sets the listener's orientation first thing in every audio update, before it walks its
++	// playing lists: the one safe point on the game thread to tell it which sounds finished.
++	if (v == g_listener)
++		fireEnded();
+ }
+ 
+ void __stdcall AIL_set_3D_velocity_vector(H3DPOBJECT, F32, F32, F32) {}

@@ -1,0 +1,41 @@
+diff --git a/Core/GameEngine/Include/Common/WideScreen.h b/Core/GameEngine/Include/Common/WideScreen.h
+index baf018b..d29a43d 100644
+--- a/Core/GameEngine/Include/Common/WideScreen.h
++++ b/Core/GameEngine/Include/Common/WideScreen.h
+@@ -50,8 +50,10 @@ inline UiScale uiScale(int dispW, int dispH, int createW, int createH, bool cove
+ // the windows on a wide display. Returns the x and y multipliers and the left offset, in display pixels.
+ inline UiScale schemeScale(int dispW, int dispH, int createW, int createH)
+ {
+-	const UiScale w = uiScale(dispW, dispH, 800, 600, false); // the region the windows use (800x600 is the UI base size)
+-	return { w.x * 800.0f / (float)createW, w.y * 600.0f / (float)createH, w.xOffset };
++	// The scheme's own aspect, like ControlBar.wnd gets from its CREATIONRESOLUTION: a 4:3 scheme (retail, 800x600)
++	// lands in the centred 4:3 region, a 16:9 one (Control Bar Pro, 3840x2160) in a centred 16:9 region. Assuming 4:3
++	// squeezed a 16:9 scheme's art towards the middle while its buttons spread out, so the icons missed their frames.
++	return uiScale(dispW, dispH, createW, createH, false);
+ }
+ 
+ }
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
+index 597188f..03b51cc 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/ControlBar/ControlBarScheme.cpp
+@@ -1071,15 +1071,19 @@ void ControlBarSchemeManager::update()
+ void ControlBarSchemeManager::drawForeground( ICoord2D offset )
+ {
+ 	if(m_currentScheme)
++	{
+ 		offset.x += m_xOffset;
+ 		m_currentScheme->drawForeground( m_multiplier, offset);
++	}
+ }
+ //-----------------------------------------------------------------------------
+ void ControlBarSchemeManager::drawBackground( ICoord2D offset )
+ {
+ 	if(m_currentScheme)
++	{
+ 		offset.x += m_xOffset;
+ 		m_currentScheme->drawBackground( m_multiplier, offset );
++	}
+ }
+ 
+ //-----------------------------------------------------------------------------
