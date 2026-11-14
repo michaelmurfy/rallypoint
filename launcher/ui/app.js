@@ -704,7 +704,10 @@ function mapOrganiser(onLoad) {
   function setPackMenu(open) { packMenu.hidden = !open; packBtn.setAttribute("aria-expanded", String(open)); }
   const closeOutside = (e) => { if (!packMenu.hidden && !packPick.contains(e.target)) setPackMenu(false); };
   const closeOnEscape = (e) => { if (e.key === "Escape" && !packMenu.hidden) { setPackMenu(false); packBtn.focus(); } };
-  document.addEventListener("click", closeOutside);
+  // On press and in the capture phase, not on click: a drop-down opens on the press and never sends a click, and the
+  // Skirmish buttons stop theirs from reaching the document. Moving the keyboard focus out closes it too.
+  document.addEventListener("pointerdown", closeOutside, true);
+  document.addEventListener("focusin", closeOutside);
   document.addEventListener("keydown", closeOnEscape);
   const seg = (id, label) => h("button", { class: "seg", "data-view": id, onclick: () => { view = id; shown = LIMIT; draw(); } }, label);
   const segs = h("div", { class: "segs", role: "group", "aria-label": "Show" }, seg("all", "All"), seg("on", "On"), seg("off", "Off"));
@@ -893,7 +896,7 @@ function mapOrganiser(onLoad) {
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
     h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
-  return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("click", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
+  return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("focusin", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
 function mapsPage() {
