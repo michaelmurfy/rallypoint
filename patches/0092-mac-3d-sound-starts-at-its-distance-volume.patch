@@ -1,0 +1,27 @@
+--- a/cmake/miles_apple/miles_apple.mm
++++ b/cmake/miles_apple/miles_apple.mm
+@@ -700,9 +700,11 @@
+ // `owner` is the registered handle pointer (AppleSample* / AppleStream* /
+ // Apple3DSample*) tagged onto the queued callback for liveness check; pass
+ // the exact pointer that markAlive/markDead see at alloc/release time.
+-static void scheduleAndPlay(ApplePlayerBase *p, void *owner, dispatch_block_t onCompleted) {
++// `setVolume` is false for a 3D voice: its node already has the distance volume, and writing the undistanced one here
++// let the audio thread play the first few milliseconds of a far-away sound at full volume: a click.
++static void scheduleAndPlay(ApplePlayerBase *p, void *owner, dispatch_block_t onCompleted, bool setVolume = true) {
+     if (!p || !p->node || !p->buffer) return;
+-    p->node.volume = g_muted ? 0.0f : p->volume;
++    if (setVolume) p->node.volume = g_muted ? 0.0f : p->volume;
+     int gen = p->generation.load();
+     @try {
+         [p->node scheduleBuffer:p->buffer
+@@ -1304,9 +1306,7 @@
+         if (captured->player.generation.load() != gen) return;
+         captured->player.playing.store(false);
+         if (captured->eosCallback) captured->eosCallback((H3DSAMPLE)captured);
+-    });
+-    // scheduleAndPlay resets the node to the undistanced volume.
+-    apply3DPanAndVolumeForSource(s);
++    }, false);
+ }
+ void AIL_stop_3D_sample(H3DSAMPLE sample) {
+     if (sample) stopAndDetach(&((Apple3DSample *)sample)->player);
