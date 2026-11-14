@@ -135,7 +135,6 @@ if [ $GIT = 1 ]; then
   mirror https://github.com/TheSuperHackers/GeneralsGameCode GeneralsGameCode
   mirror https://github.com/TheSuperHackers/GeneralsControlBar GeneralsControlBar
   mirror https://github.com/electronicarts/CnC_Generals_Zero_Hour CnC_Generals_Zero_Hour
-  mirror https://github.com/olcayseygan/CnCGeneralsZH-Reforged CnCGeneralsZH-Reforged
   mirror https://github.com/trailblazingfive/cnc-generals-graphics-fix cnc-generals-graphics-fix
   mirror https://github.com/SteamRE/DepotDownloader DepotDownloader
 fi
