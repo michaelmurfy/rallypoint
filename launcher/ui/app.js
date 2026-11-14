@@ -1281,7 +1281,7 @@ function commandBarSelect(fb) {
     bar.disabled = true;
     const nat = nativeRes(), r = (prefs.get().res || "native").split("x").map(Number);
     const [w, hh] = r.length === 2 && r[0] > 0 ? r : [nat.w, nat.h];
-    fb.busy(bar.value === "pro" ? "Downloading Control Bar Pro…" : "Saving…");
+    fb.busy(bar.value === "pro" ? "Getting Control Bar Pro ready…" : "Saving…");
     try {
       await invoke("set_control_bar", { choice: bar.value, width: w, height: hh });
       store.cfg.control_bar = bar.value;
