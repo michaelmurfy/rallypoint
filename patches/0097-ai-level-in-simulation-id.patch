@@ -1,0 +1,39 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+@@ -256,6 +256,7 @@
+ 	Pathfinder *pathfinder() { return m_pathfinder; }	///< public access to the pathfind system
+ 
+ 	/// Rallypoint "Stronger AI" (GEN_AI_BOOST=1..3): speed factor for the AI's build timers and extra supply gatherers. 1.0 and 0 when off.
++	static Int boostLevel();
+ 	static Real boostSpeed();
+ 	static Int boostGatherers();
+ 	enum
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp	2026-11-15 02:16:35
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp	2026-11-15 02:16:53
+@@ -1361,7 +1361,8 @@
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+ 		static const UnsignedInt kRallypointSimulationId = 8;
+-		const UnsignedInt idBlock[3] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint() };
++		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
++		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+ 		DEBUG_LOG(("Simulation CRC (platform independent) is 0x%8.8X", exeCRC.get()));
+ 	}
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+@@ -312,6 +312,11 @@
+ 	return level;
+ }
+ 
++Int AI::boostLevel()
++{
++	return aiBoostLevel();
++}
++
+ Real AI::boostSpeed()
+ {
+ 	static const Real speeds[4] = { 1.0f, 1.35f, 1.7f, 2.0f };

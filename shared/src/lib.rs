@@ -79,7 +79,15 @@ pub enum Packet {
     Crc { frame: u32, crc: u32, host: bool },
     /// Server -> agent -> engine: the checksums of a frame did not all agree.
     Desync(SyncVerdict),
+    /// Client -> server: set the room's "Stronger AI" level (0 to 3). Only the room's master (the first player in it) is heard.
+    SetAi { level: u8 },
+    /// Server -> client, with every ping answer: this room's settings. `master` says whether the receiver is the room's master;
+    /// `ai` is the level every player's game must start with.
+    Room { master: bool, ai: u8 },
 }
+
+/// The highest "Stronger AI" level.
+pub const MAX_AI_LEVEL: u8 = 3;
 
 /// The relay's judgement of one game frame whose players' checksums differed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +175,8 @@ impl Packet {
                 }
                 b
             }
+            Packet::SetAi { level } => vec![18, *level],
+            Packet::Room { master, ai } => vec![19, *master as u8, *ai],
             Packet::Stats(s) => [
                 &[14][..],
                 &s.uptime_secs.to_be_bytes(),
@@ -241,6 +251,8 @@ impl Packet {
                     .collect();
                 Packet::Desync(SyncVerdict { frame: u32::from_be_bytes(rest[..4].try_into().ok()?), certain: rest[4] != 0, host: (host != [0; 4]).then_some(host), players })
             }
+            18 if rest.len() == 1 && rest[0] <= MAX_AI_LEVEL => Packet::SetAi { level: rest[0] },
+            19 if rest.len() == 2 && rest[1] <= MAX_AI_LEVEL => Packet::Room { master: rest[0] != 0, ai: rest[1] },
             14 if rest.len() >= 23 => {
                 let u32_at = |i: usize| u32::from_be_bytes(rest[i..i + 4].try_into().unwrap());
                 let u16_at = |i: usize| u16::from_be_bytes(rest[i..i + 2].try_into().unwrap());
@@ -398,6 +410,8 @@ mod tests {
             Packet::Ping,
             Packet::Leave,
             Packet::StatsRequest,
+            Packet::SetAi { level: 3 },
+            Packet::Room { master: true, ai: 2 },
             Packet::Crc { frame: 100, crc: 0xDEADBEEF, host: true },
             Packet::Desync(SyncVerdict { frame: 100, certain: true, host: Some([10, 77, 0, 1]), players: vec![SyncEntry { vip: [10, 77, 0, 1], crc: 1, odd: false }, SyncEntry { vip: [10, 77, 0, 2], crc: 2, odd: true }] }),
             Packet::Stats(ServerStats { uptime_secs: 86_400, rooms: 3, players: 9, max_rooms: 256, max_players: 2048, room_players: 4, load_pct: 12, pps: 1500, kbps: 800, version: "0.1.0-beta.4".into() }),

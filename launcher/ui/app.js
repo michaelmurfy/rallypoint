@@ -1505,8 +1505,36 @@ function connectionCard() {
   return { el: card, dispose: () => { window.removeEventListener("net", draw); window.removeEventListener("resize", draw); } };
 }
 
+/** The room's settings. The first player into a room is its master and picks the "Stronger AI" level every player's game
+ *  starts with (for computer players in a multiplayer game); everyone else sees it and cannot change it. */
+function roomCard() {
+  let held = 0; // the relay answers on the next ping: keep the choice on screen until it has
+  const badge = h("span", {}), note = h("p", { class: "muted small" });
+  const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: async () => {
+    try { held = Date.now(); await invoke("relay_set_ai", { level: +sel.value }); } catch (e) { say(errText(e), "bad"); }
+  } }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
+    h("div", { class: "settings" }, setting("Stronger AI", note, sel)));
+  function draw() {
+    const d = net.last;
+    card.hidden = !d || d.room_master == null;
+    if (card.hidden) return;
+    const master = !!d.room_master;
+    fill(badge, pill(master ? "You are the room master" : "Room master: another player", master ? "ok" : ""));
+    if (Date.now() - held > 5000) sel.value = String(d.ai_level ?? 0);
+    sel.disabled = !master;
+    note.textContent = master
+      ? "You were first in this room, so you choose. Computer players in a multiplayer game build, field teams and gather faster, for everyone. Set it before anyone starts the game."
+      : "The room master chooses this. It applies to everyone when the game starts.";
+  }
+  window.addEventListener("net", draw);
+  draw();
+  return { el: card, dispose: () => window.removeEventListener("net", draw) };
+}
+
 function onlinePage() {
   const conn = connectionCard();
+  const roomSettings = roomCard();
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
@@ -1640,8 +1668,9 @@ function onlinePage() {
         h("p", { class: "muted small" }, "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
     saved$,
     conn.el,
+    roomSettings.el,
     h("div", { class: "card" }, h("h2", {}, "Your name"), h("div", { class: "settings" }, setting("Name in the lobby", nameNote, nameBox))));
-  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); } };
+  return { el, dispose: () => { refreshers.delete(refresh); conn.dispose(); roomSettings.dispose(); } };
 }
 
 function diagnosePanel() {

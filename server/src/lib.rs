@@ -76,6 +76,8 @@ struct Session {
     window: u64,
     pkts: u32,
     bytes: u32,
+    /// Order of joining (the room's master is its lowest).
+    joined: u64,
 }
 
 /// Datagrams to send, already encrypted.
@@ -121,6 +123,9 @@ pub struct Server {
     bad_passwords: HashMap<IpAddr, (u64, u32)>,
     new_serials: Vec<String>,
     sync: HashMap<String, RoomSync>,
+    /// The "Stronger AI" level each room plays with, set by its master.
+    room_ai: HashMap<String, u8>,
+    join_seq: u64,
     /// serial -> virtual address last used in each room, kept while the room lives.
     room_vips: HashMap<String, HashMap<String, u8>>,
     all_signups: Vec<u64>,
@@ -190,6 +195,8 @@ impl Server {
             new_serials: vec![],
             sync: HashMap::new(),
             room_vips: HashMap::new(),
+            room_ai: HashMap::new(),
+            join_seq: 0,
             all_signups: vec![],
             bad_serials: HashMap::new(),
             version: String::new(),
@@ -327,6 +334,12 @@ impl Server {
     }
 
     /// A room exists only while it has members.
+    /// The master of a room is the player who has been in it longest.
+    fn is_master(&self, room: &str, addr: SocketAddr) -> bool {
+        let mine = self.sessions.get(&addr).map(|s| s.joined);
+        mine.is_some() && self.sessions.values().filter(|s| s.room == room).map(|s| s.joined).min() == mine
+    }
+
     fn gc_rooms(&mut self) {
         let used: HashSet<&String> = self.sessions.values().map(|s| &s.room).collect();
         let gone: Vec<String> = self.rooms.keys().filter(|n| !used.contains(*n)).cloned().collect();
@@ -338,6 +351,7 @@ impl Server {
         self.rooms.retain(|name, _| used.contains(name));
         self.sync.retain(|name, _| used.contains(name));
         self.room_vips.retain(|name, _| used.contains(name));
+        self.room_ai.retain(|name, _| used.contains(name));
         for l in lines {
             self.note(l);
         }
@@ -410,8 +424,10 @@ impl Server {
         };
         let Ok((reply, crypto)) = pending.reply(&answer) else { return vec![] };
         if let Some(j) = join {
+            let mut joined = self.join_seq;
             if let Some(old) = j.replaces {
                 if let Some(o) = self.sessions.remove(&old) {
+                    joined = o.joined; // a player who rejoins keeps their place, so being master survives a network change
                     self.hs_cache.remove(&old);
                     self.note(format!("takeover: {} rejoined room '{}' from {} (was {})", fmt_vip(o.vip), o.room, from, old));
                 }
@@ -421,7 +437,8 @@ impl Server {
             let n = self.sessions.values().filter(|s| s.room == j.room).count() + 1;
             let tail = &j.serial[j.serial.len().saturating_sub(4)..];
             self.note(format!("join: {} (serial ...{tail}, {}) {} room '{}', {n} in it", fmt_vip(j.vip), from, if new_room { "opened" } else { "entered" }, j.room));
-            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0 });
+            self.join_seq += 1;
+            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0, joined });
         }
         let reply = Wire::Hs2 { msg: reply }.encode();
         if self.hs_cache.len() < HANDSHAKE_CACHE_MAX {
@@ -454,7 +471,18 @@ impl Server {
         // The tunnel is for the game only: its two UDP ports, and datagrams the engine itself made.
         let game_ok = |src: u16, dst: u16, payload: &[u8], ports: &[u16]| GAME_PORTS.contains(&src) && ports.contains(&dst) && is_game_packet(payload);
         let replies: Vec<(SocketAddr, Packet)> = match pkt {
-            Packet::Ping => vec![(from, Packet::Ping)],
+            Packet::Ping => {
+                // The room's settings ride along with every ping answer, so a change reaches everyone within one ping.
+                let master = self.is_master(&room, from);
+                vec![(from, Packet::Ping), (from, Packet::Room { master, ai: self.room_ai.get(&room).copied().unwrap_or(0) })]
+            }
+            Packet::SetAi { level } => {
+                if self.is_master(&room, from) && level <= generals_proto::MAX_AI_LEVEL && self.room_ai.get(&room).copied().unwrap_or(0) != level {
+                    self.note(format!("room '{room}': master {} set Stronger AI to {level}", fmt_vip(my_vip)));
+                    self.room_ai.insert(room.clone(), level);
+                }
+                vec![]
+            }
             Packet::StatsRequest => vec![(from, Packet::Stats(self.stats(now, &room)))],
             Packet::Crc { frame, crc, host } => self.record_crc(&room, my_vip, frame, crc, host),
             Packet::Leave => {
@@ -1112,6 +1140,25 @@ mod tests {
         assert_eq!(issued, REGISTRATIONS_PER_HOUR_TOTAL);
         // the hour passes
         assert!(matches!(w.handshake(addr_from("198.51.100.1", 4000), &Packet::Register, 3700).unwrap().0, Packet::Issued { .. }));
+    }
+
+    #[test]
+    fn the_first_player_in_a_room_is_its_master_and_sets_the_ai_level() {
+        let mut w = World::standard();
+        let (a, b) = (addr(1), addr(2));
+        w.quick(a, "AAA", "r", 0);
+        w.quick(b, "BBB", "r", 0);
+        let room = |w: &mut World, who| w.send(who, Packet::Ping, 1).into_iter().find_map(|(_, p)| if let Packet::Room { master, ai } = p { Some((master, ai)) } else { None }).unwrap();
+        assert_eq!(room(&mut w, a), (true, 0));
+        assert_eq!(room(&mut w, b), (false, 0));
+        w.send(b, Packet::SetAi { level: 3 }, 1); // not the master: ignored
+        assert_eq!(room(&mut w, b), (false, 0));
+        w.send(a, Packet::SetAi { level: 2 }, 1);
+        assert_eq!(room(&mut w, a), (true, 2));
+        assert_eq!(room(&mut w, b), (false, 2), "everyone is told");
+        // the master leaves: the next player is master and the level stays
+        w.send(a, Packet::Leave, 2);
+        assert_eq!(room(&mut w, b), (true, 2));
     }
 
     #[test]

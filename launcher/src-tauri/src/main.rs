@@ -489,6 +489,15 @@ fn relay_disconnect(relay: tauri::State<Relay>) {
     *relay.0.lock().unwrap() = None;
 }
 
+/// The room master chooses the "Stronger AI" level (0 to 3) every player's game starts with. The relay ignores anyone else.
+#[tauri::command]
+fn relay_set_ai(relay: tauri::State<Relay>, level: u8) -> Result<(), String> {
+    let guard = relay.0.lock().unwrap();
+    let agent = guard.as_ref().ok_or("You are not connected to a server")?;
+    agent.set_ai(level);
+    Ok(())
+}
+
 /// Latency, packet loss and the relay's own load figures; `None` unless connected.
 #[tauri::command]
 fn relay_diagnostics(relay: tauri::State<Relay>) -> Option<generals_core::agent::Diagnostics> {
@@ -967,6 +976,8 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
+    // In a game through the relay every player starts with the level its room master chose.
+    let room_ai = relay.0.lock().unwrap().as_ref().and_then(|a| a.room_ai());
     // No more places than the map has start positions (more than that crashes the game at start).
     if let (Some(slots), Some(map)) = (skirmish_slots.as_mut(), skirmish_map.as_deref().filter(|m| maporg::is_safe_name(m))) {
         launch::fit_table(slots, maps_dir(&app).ok().and_then(|d| mapview::player_count(&d.join(map))));
@@ -1005,6 +1016,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
                     env.push(("GEN_AUTO_SLOTS".to_string(), table.clone()));
                     env.push(("GEN_AUTO_DIFF".to_string(), diff.clone().unwrap_or_else(|| "easy".to_string())));
                 }
+            }
+            if !skirmish && relay_cfg_on {
+                env.extend(launch::ai_boost_env(room_ai.unwrap_or(0).into()));
             }
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             {
@@ -1077,7 +1091,7 @@ fn main() {
             get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
-            relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
+            relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game
         ])
