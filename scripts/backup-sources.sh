@@ -131,7 +131,6 @@ if [ $GIT = 1 ]; then
     fi
   }
   mirror https://github.com/michaelmurfy/rallypoint rallypoint
-  mirror https://github.com/michaelmurfy/GeneralsGameCode-macOS GeneralsGameCode-macOS
   mirror https://github.com/dvcdsys/GeneralsGameCode-macOS dvcdsys-GeneralsGameCode-macOS
   mirror https://github.com/TheSuperHackers/GeneralsGameCode GeneralsGameCode
   mirror https://github.com/TheSuperHackers/GeneralsControlBar GeneralsControlBar
