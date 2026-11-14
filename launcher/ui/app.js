@@ -23,6 +23,7 @@ function h(tag, props, ...kids) {
 const ICONS = {
   play: "M8 5v14l11-7z",
   cash: "M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z",
+  screen: "M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H3V4h18v12z",
   speed: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z",
   mods: "M12 2 2 7l10 5 10-5-10-5zm0 11.5L4.6 9.8 2 11l10 5 10-5-2.6-1.2L12 13.5zm0 4-7.4-3.7L2 15l10 5 10-5-2.6-1.2L12 17.5z",
   online: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-3a15.7 15.7 0 0 0-1.4-3.6A8 8 0 0 1 18.9 8zM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4zM4.3 14a8.200 8.200 0 0 1 0-4h3.400a16.500 16.500 0 0 0 0 4H4.300zm.8 2h3a15.700 15.700 0 0 0 1.400 3.600A8 8 0 0 1 5.100 16zm3-8h-3a8 8 0 0 1 4.400-3.600A15.700 15.700 0 0 0 8.100 8zM12 20c-.8-1.200-1.500-2.500-1.900-4h3.800c-.4 1.500-1.100 2.800-1.900 4zm2.300-6H9.700a14.700 14.700 0 0 1 0-4h4.600a14.700 14.700 0 0 1 0 4zm.2 5.600c.6-1.100 1.100-2.300 1.400-3.600h3a8 8 0 0 1-4.400 3.600zm1.800-5.600a16.500 16.500 0 0 0 0-4h3.400a8.200 8.200 0 0 1 0 4h-3.400z",
@@ -568,6 +569,7 @@ function openMapViewer(entries, start, onChange) {
   } }, icon("play"), "Play skirmish");
   const speedPick = speedSelect();
   const cashPick = cashSelect();
+  const resPick = resolutionSelect();
   function updatePlay() {
     const ai = rows.filter((r) => r.kind === "ai").length;
     play.disabled = !ai;
@@ -579,7 +581,7 @@ function openMapViewer(entries, start, onChange) {
       h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, title, factline), h("label", { class: "inline" }, h("span", { class: "muted small" }, "Play with"), gameSel)),
       h("div", { class: "wiz-body mapbody" },
         h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
-        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, play))),
+        h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, resPick, play))),
       h("div", { class: "wiz-foot" }, listedRow, close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
@@ -1089,7 +1091,7 @@ function speedSelect() {
 const skirmishSpeed = () => (SPEEDS.some(([v]) => v === prefs.get().skSpeed) ? prefs.get().skSpeed : 100);
 
 /** Starting money for a skirmish, remembered. 0 keeps the game's own setting and sends nothing. */
-const CASHES = [[0, "Default money"], [5000, "$5,000"], [10000, "$10,000"], [20000, "$20,000"], [50000, "$50,000"], [100000, "$100,000"], [250000, "$250,000"]];
+const CASHES = [[0, "Default money"], [5000, "$5,000"], [10000, "$10,000"], [20000, "$20,000"], [50000, "$50,000"], [100000, "$100,000"], [250000, "$250,000"], [500000, "$500,000"], [750000, "$750,000"]];
 function cashSelect() {
   const sel = h("select", { class: "speedsel", "aria-label": "Starting money", title: "Starting money for this skirmish" },
     ...CASHES.map(([v, t]) => h("option", { value: String(v) }, t)));
@@ -1100,6 +1102,22 @@ function cashSelect() {
   sel.addEventListener("change", () => { prefs.set({ skCash: +sel.value }); mark(); });
   return wrap;
 }
+/** Screen resolution, remembered with the Play page's choice (the same setting). Compact, beside money and speed.
+ *  A custom size set on the Play page is shown as it is; it is edited there. */
+function resolutionSelect() {
+  const nat = nativeRes(), p = prefs.get();
+  const presets = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720]].filter(([w]) => w < nat.w);
+  const sel = h("select", { class: "speedsel", "aria-label": "Screen resolution", title: `Screen resolution for this game (your screen is ${nat.w} × ${nat.h})` },
+    new Option("Native", "native"), ...presets.map(([w, hh]) => new Option(`${w} × ${hh}`, `${w}x${hh}`)),
+    ...(p.res === "custom" ? [new Option(`${p.cw || nat.w} × ${p.ch || nat.h}`, "custom")] : []));
+  sel.value = [...sel.options].some((o) => o.value === p.res) ? p.res : "native";
+  const wrap = h("div", { class: "speedpick" }, icon("screen"), sel);
+  const mark = () => wrap.classList.toggle("changed", sel.value !== "native"); // anything but native is lit up
+  mark();
+  sel.addEventListener("change", () => { prefs.set({ res: sel.value }); mark(); });
+  return wrap;
+}
+
 const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : 0);
 
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
