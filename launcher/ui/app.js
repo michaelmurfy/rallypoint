@@ -216,11 +216,19 @@ async function runUpdate() {
   finally { clearInterval(timer); el.remove(); }
 }
 
+/** "0.7.0-beta.2 (beta)" for a beta, the plain version otherwise. */
+const updateName = (u) => `Rallypoint ${u.latest}${u.beta ? " (beta)" : ""}`;
+/** What the offered release changes: its notes in a dialog, or its page when it has none. */
+function showUpdateNotes(u, bad) {
+  if (u.notes && u.notes.trim()) showChangelog(u.notes, `What's new in ${u.latest}`);
+  else invoke("open_release_page").catch((e) => bad(errText(e)));
+}
+
 function renderUpdate() {
   const host = document.getElementById("updatehost");
   if (!host) return;
   const u = store.update;
-  if (!u || store.updateDismissed) return fill(host);
+  if (!u || u.skipped || store.updateDismissed) return fill(host);
   const install = h("button", { class: "btn primary", onclick: async () => {
     install.disabled = true;
     try { store.updateNote = await runUpdate(); } catch (e) { store.updateNote = errText(e); }
@@ -228,16 +236,22 @@ function renderUpdate() {
     renderUpdate();
   } }, "Update and restart");
   fill(host, h("div", { class: "banner stack updatebar" },
-    h("div", {}, h("b", {}, `Rallypoint ${u.latest} is available`),
+    h("div", {}, h("b", {}, `${updateName(u)} is available`),
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
     h("div", { class: "row" },
       u.installer ? install : null,
-      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => say(errText(e), "bad")) }, "What's new"),
-      h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"))));
+      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
+      h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"),
+      h("button", { class: "btn ghost", onclick: async () => {
+        try { await invoke("update_skip"); u.skipped = true; renderUpdate(); } catch (e) { say(errText(e), "bad"); }
+      } }, "Skip this version"))));
 }
-/** Ask GitHub for a newer release. Returns an error message, or null. The startup check stays quiet unless there is an update. */
-async function checkUpdate() {
+/** Ask GitHub for a newer release. Returns an error message, or null. The startup check stays quiet unless there is an update.
+ *  `quiet` (the six-hourly look) leaves a banner the player already put away alone unless the release changed. */
+async function checkUpdate(quiet) {
+  const before = store.update && store.update.latest;
   try { store.update = await invoke("update_check"); } catch (e) { return "Couldn't check for updates: " + errText(e); }
+  if (quiet && store.update && store.update.latest === before) return null;
   store.updateDismissed = false;
   store.updateNote = "";
   renderUpdate();
@@ -261,26 +275,45 @@ function updatesCard() {
     try { fb.ok(await runUpdate()); } catch (e) { fb.bad(errText(e)); }
     install.disabled = false;
   } }, "Update and restart");
-  const notes = h("button", { class: "btn", onclick: () => invoke("open_release_page").catch((e) => fb.bad(errText(e))) }, "What's new");
+  const notes = h("button", { class: "btn", onclick: () => store.update && showUpdateNotes(store.update, fb.bad) }, "What's new");
   const changelog = h("button", { class: "btn", onclick: () => invoke("changelog").then((t) => showChangelog(t)).catch((e) => fb.bad(errText(e))) }, "Changelog");
-  const check = h("button", { class: "btn", onclick: async () => {
+  const runCheck = async () => {
     check.disabled = true;
     fill(actions);
     fb.busy("Checking…");
     const err = await checkUpdate();
     check.disabled = false;
     if (err) fb.bad(err); else report();
-  } }, "Check now");
+  };
+  const check = h("button", { class: "btn", onclick: runCheck }, "Check now");
+  const betaNote = h("div", { class: "muted small" });
+  const drawBetaNote = () => {
+    betaNote.textContent = store.cfg.beta_updates
+      ? "You get new features early, and the rough edges with them."
+      : store.cfg.version_is_beta
+        ? "You are on a beta now. With this off you stay on it until the next full release."
+        : "Off: only full releases. On: new features early, less tested.";
+  };
+  const beta = h("input", { type: "checkbox", "aria-label": "Get beta releases", checked: !!store.cfg.beta_updates, onchange: async () => {
+    try {
+      await invoke("set_beta_updates", { on: beta.checked });
+      store.cfg.beta_updates = beta.checked;
+      drawBetaNote();
+      await runCheck();
+    } catch (e) { beta.checked = !!store.cfg.beta_updates; fb.bad(errText(e)); }
+  } });
   function report() {
     const u = store.update;
-    fb.set(u ? `Rallypoint ${u.latest} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}` : "You have the latest version", "ok");
+    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
     fill(actions, u && u.installer ? install : null, u ? notes : null);
   }
   if (store.update) report();
+  drawBetaNote();
   return h("div", { class: "card" }, h("h2", {}, "Updates"),
     setting(`Rallypoint ${store.cfg.version}`, fb.el, changelog, check),
     actions,
-    setting("Check when Rallypoint starts", null, h("label", { class: "switch" }, auto)));
+    setting("Check when Rallypoint starts", "And every six hours while it is open.", h("label", { class: "switch" }, auto)),
+    setting("Get beta releases", betaNote, h("label", { class: "switch" }, beta)));
 }
 
 // ---------------------------------------------------------------- mod downloads
@@ -837,7 +870,7 @@ function mapOrganiser() {
     chips,
     empty,
     h("div", { class: "listbox" },
-      h("div", { class: "listhead" }, h("div", { class: "row" }, result, clear), sortSel),
+      h("div", { class: "modhead" }, h("div", { class: "row" }, result, clear), sortSel),
       list,
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
@@ -955,53 +988,64 @@ function modRole(m) {
   return { pill: "Plays on its own", how: adds.length ? `Play it by itself, or add ${adds.join(" and ")} on top.` : "Play it by itself.", base: null };
 }
 
+/** Two letters to stand for a mod where a picture would be: "C&C: Shockwave Chaos" -> "SC". */
+function modInitials(name) {
+  const words = name.replace(/^C&C:?\s*/i, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return ((words[0] || "?")[0] + (words[1] ? words[1][0] : (words[0] || "").slice(1, 2))).toUpperCase();
+}
+const modTile = (name, kind) => h("span", { class: "modtile " + (kind || ""), "aria-hidden": "true" }, modInitials(name));
+/** A Remove button that asks for a second click. */
+function removeButton(folder, name) {
+  let armed = false;
+  const rm = h("button", { class: "btn small danger", onclick: async () => {
+    if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
+    try { await invoke("mods_remove", { folder }); say(name + " removed"); } catch (e) { say(errText(e), "bad"); }
+    loadMods();
+  } }, "Remove");
+  return rm;
+}
+
 function modCard(m, compact) {
   const waiting = store.watch && store.watch.id === m.id;
   const busy = store.installing && store.installing.id === m.id;
   const role = modRole(m);
-  const actions = h("div", { class: "row" });
+  const page = (cmd) => () => invoke(cmd, { id: m.id }).catch((e) => say(errText(e), "bad"));
+  const actions = h("div", { class: "row end" });
   if (busy) {
     actions.append(h("span", { class: "live busy", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…"));
   } else if (m.installed) {
     actions.append(pill("Installed", "ok"));
-    if (!compact) {
-      let armed = false;
-      const rm = h("button", { class: "btn small danger", onclick: async () => {
-        if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-        try { await invoke("mods_remove", { folder: m.path }); say(m.name + " removed"); } catch (e) { say(errText(e), "bad"); }
-        loadMods();
-      } }, "Remove");
-      actions.append(rm);
-    }
+    if (!compact) actions.append(removeButton(m.path, m.name));
   } else if (waiting) {
     actions.append(pill("Waiting for download", "warn"));
   } else if (m.pick) {
-    // The player brings the files: nothing to wait for in the launcher.
+    // The player brings the files: first get them from the mod's own page, then hand them over.
     actions.append(
-      h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"),
-      h("button", { class: "btn ghost", onclick: () => choose(m.id, true) }, "Choose folder…"));
+      h("button", { class: "btn", onclick: page("open_download_page") }, "Download page"),
+      h("button", { class: "btn primary", onclick: () => choose(m.id, false) }, "Choose file…"));
   } else {
     actions.append(h("button", { class: "btn primary", onclick: () => startWatch(m) }, "Get"));
   }
   const missingBase = role.base && !role.base.installed && !m.installed;
-  return h("div", { class: "card" + (role.base ? " addon" : "") },
+  return h("div", { class: "card modcard" + (role.base ? " addon" : "") },
     h("div", { class: "mod" },
+      modTile(m.name, m.installed ? "on" : ""),
       h("div", { class: "stack tight" },
         h("div", { class: "row" }, h("h3", {}, m.name), role.base ? pill(role.pill) : null),
         h("p", { class: "muted" }, m.description),
         missingBase ? h("p", { class: "small warn-text" }, role.how) : null,
-        !compact && m.notes && !m.installed ? h("details", { class: "help-inline" }, h("summary", {}, "How to install"), h("p", { class: "muted small" }, m.notes)) : null),
+        !compact && m.notes && !m.installed ? h("details", { class: "help-inline" }, h("summary", {}, "How to install"), h("p", { class: "muted small" }, m.notes)) : null,
+        h("div", { class: "mod-links" },
+          m.pick && !m.installed && !busy && !waiting ? h("button", { class: "linkbtn", onclick: () => choose(m.id, true) }, "Choose a folder instead") : null,
+          h("button", { class: "linkbtn", onclick: page("open_homepage") }, "Mod page"))),
       actions),
-    h("div", { class: "mod-links" },
-      m.pick && !m.installed && !busy ? h("button", { class: "linkbtn", onclick: () => invoke("open_download_page", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Download page") : null,
-      h("button", { class: "linkbtn", onclick: () => invoke("open_homepage", { id: m.id }).catch((e) => say(errText(e), "bad")) }, "Mod page")),
     watchBanner(m.id),
     busy ? h("div", { class: "jobline", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), h("span", {}, "Unpacking and installing. A large mod takes a minute or two.")) : null);
 }
 
-/** Mods first, each followed by the add-ons that need it, so how they relate is plain. */
-function modGroups() {
-  const all = store.mods.catalog;
+/** The catalog mods that are (or are not) installed, each followed by its add-ons in the same state, so how they relate is plain. */
+function modGroups(installed) {
+  const all = store.mods.catalog.filter((m) => !!m.installed === installed);
   const ids = new Set(all.map((m) => m.id));
   return all.filter((m) => !m.addon_for || !ids.has(m.addon_for)).flatMap((m) => [
     modCard(m, false),
@@ -1183,54 +1227,54 @@ function playPage() {
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel)),
       extrasField,
       custom,
-      h("div", { class: "optlist" },
-        h("div", { class: "opt" }, h("label", { class: "switch" }, fs, "Fullscreen"), h("span", { class: "muted small" }, "Fill the screen instead of a window.")),
-        h("div", { class: "opt" }, h("label", { class: "switch" }, cam, "Higher camera"), h("span", { class: "muted small" }, "See further out. Leave it off for a normal online view."))),
+      h("div", { class: "settings" },
+        setting("Fullscreen", "Fill the screen instead of a window.", h("label", { class: "switch" }, fs)),
+        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam))),
       ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
 
 function modsPage() {
   const body = h("div", { class: "stack" });
-  const path = h("input", { type: "text", placeholder: "…or paste a path", "aria-label": "Path to mod" });
+  const count = h("p", { class: "muted small" });
+  const path = h("input", { type: "text", placeholder: "/path/to/mod.zip", "aria-label": "Path to mod" });
   const dropBusy = h("span", { class: "live busy", hidden: true, role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Installing…");
   const drop = h("div", { class: "drop", id: "dropzone" },
-    h("b", {}, "Add another mod from a file"), dropBusy,
-    h("span", { class: "small" }, "Drop it here, or choose it: .zip, .7z, .rar, a folder, or an installer .exe"),
-    h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn", onclick: () => choose(null, true) }, "Choose folder…")),
-    h("div", { class: "row" }, path, h("button", { class: "btn small", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install path")));
-  const help = h("details", { class: "card help" },
-    h("summary", {}, "A mod came as an .exe installer?"),
-    h("p", { class: "muted" }, "Rallypoint unpacks the game archives and does not run a mod's own Windows launcher. Shockwave is one of these: drop the installer (or the .zip it came in) here and the archives load with Rallypoint's engine, on macOS and Windows."),
-    h("ol", {},
-      h("li", {}, "For Inno Setup installers, a tool helps: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows. Shockwave does not need one."),
-      h("li", {}, "Drop the .exe above. Rallypoint keeps the game files (.big and .gib) and skips the launcher program."),
-      h("li", {}, "Many mods also offer a plain .zip or \"no installer\" download. Choose that when you can.")));
+    h("div", { class: "drop-main" },
+      h("div", { class: "stack tight" },
+        h("b", {}, "Have a mod that is not listed?"),
+        h("span", { class: "small" }, "Drop it anywhere on this window, or choose it. A .zip, .7z or .rar, a folder, or an installer .exe."), dropBusy),
+      h("div", { class: "row" }, h("button", { class: "btn", onclick: () => choose(null, false) }, "Choose file…"), h("button", { class: "btn ghost", onclick: () => choose(null, true) }, "Choose folder…"))),
+    h("details", { class: "help-inline" }, h("summary", {}, "Paste a path instead"),
+      h("div", { class: "row pathrow" }, path, h("button", { class: "btn", onclick: () => { if (path.value.trim()) { installPath(path.value.trim()); path.value = ""; } } }, "Install"))),
+    h("details", { class: "help-inline" }, h("summary", {}, "It came as an .exe installer"),
+      h("p", { class: "muted small" }, "Rallypoint unpacks the game archives (.big and .gib) and never runs a mod's own Windows launcher, so this works on macOS too. Shockwave is one of these."),
+      h("p", { class: "muted small" }, "Inno Setup installers need a tool: ", h("code", {}, "brew install innoextract sevenzip"), " on macOS, ", h("code", {}, "sudo apt install innoextract p7zip-full"), " on Linux, or 7-Zip on Windows. Shockwave does not need one. If the mod also offers a plain .zip, take that.")));
 
   function render() {
     dropBusy.hidden = !(store.installing && store.installing.id === "*");
+    const have = modGroups(true), other = store.mods.other, more = modGroups(false);
+    const installed = store.mods.catalog.filter((m) => m.installed).length + other.length;
+    count.textContent = installed ? `${installed} installed. Pick what to play on the Play page.` : "Nothing installed yet. Zero Hour plays fine without any.";
     fill(body,
-      modGroups(),
-      store.mods.other.length ? h("h2", {}, "Your other mods") : null,
-      store.mods.other.map((o) => {
-        let armed = false;
-        const rm = h("button", { class: "btn small danger", onclick: async () => {
-          if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove"; }, 3000); return; }
-          try { await invoke("mods_remove", { folder: o.folder }); say(o.folder + " removed"); } catch (e) { say(errText(e), "bad"); }
-          loadMods();
-        } }, "Remove");
+      have.length || other.length ? h("h2", { class: "modhead" }, "Installed") : null,
+      have,
+      other.map((o) => {
         const bundled = isBundled(o.folder);
-        return h("div", { class: "card" }, h("div", { class: "mod" },
+        return h("div", { class: "card modcard" }, h("div", { class: "mod" },
+          modTile(o.folder, "on"),
           h("div", { class: "stack tight" },
-            h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Bundled", "ok") : null),
-            h("p", { class: "muted small" }, bundled ? (o.folder === PRO_FOLDER ? "Control Bar Pro, chosen in Settings > Graphics. Installed by Rallypoint." : "Sharp command-bar icons. Installed by Rallypoint and loaded with every game.") : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
-          bundled ? null : rm));
-      }));
+            h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Comes with Rallypoint") : null),
+            h("p", { class: "muted small" }, bundled ? (o.folder === PRO_FOLDER ? "Control Bar Pro, chosen in Settings > Graphics." : "Sharp command-bar icons, loaded with every game.") : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
+          h("div", { class: "row end" }, bundled ? null : removeButton(o.folder, o.folder))));
+      }),
+      more.length ? h("h2", { class: "modhead" }, have.length || other.length ? "More to install" : "Mods you can install") : null,
+      more);
   }
   refreshers.add(render); render();
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Mods"), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
-    body, drop, help);
+    h("div", { class: "page-head" }, h("div", { class: "stack tight" }, h("h1", {}, "Mods"), count), h("button", { class: "btn small", onclick: () => invoke("open_mods_folder").catch((e) => say(errText(e), "bad")) }, "Open mods folder")),
+    body, drop);
   return { el, dispose: () => { refreshers.delete(render); } };
 }
 
@@ -1545,8 +1589,111 @@ function diagnosePanel() {
   return h("div", { class: "stack" }, setting("Check my install", h("span", {}, "If the game stops with \u201cYou have encountered a serious error\u201d, this looks for missing game files and a missing original Generals. ", fb.el), run), out);
 }
 
+/** The Enhanced renderer's effects: a switch for each on/off one, a menu for the rest. Saved one by one; they apply at the next start. */
+const EFFECT_TEXT = {
+  PostProcessing: ["Post processing", "Bloom, ambient occlusion and anti-aliasing. Off turns all three off."],
+  Bloom: ["Bloom", "Bright lights and explosions glow."],
+  AmbientOcclusion: ["Ambient occlusion", "Soft shade where things meet the ground."],
+  AmbientOcclusionQuality: ["Ambient occlusion quality", "Full resolution is sharper and slower.", { half: "Half resolution", full: "Full resolution" }],
+  AntiAliasingFXAA: ["Anti-aliasing (FXAA)", "Smooths jagged edges."],
+  SoftShadows: ["Soft shadows", "Shadow edges soften with distance."],
+  ShadowQuality: ["Shadow quality", "Sharper shadows cost more graphics memory.", { low: "Low", medium: "Medium", high: "High" }],
+  DynamicLights: ["Dynamic lights", "Explosions and muzzle flashes light up what is around them."],
+  PixelLighting: ["Per-pixel lighting", "Units and buildings get a soft sun highlight."],
+  AnisotropicFiltering: ["Texture filtering", "Ground textures stay sharp at a low angle.", { 0: "Off", 4: "4x", 8: "8x", 16: "16x" }],
+  CloudShadows: ["Cloud shadows", "Moving cloud shadows on the ground."],
+  Clouds: ["Clouds", "Visible clouds when you zoom far out."],
+  UpdatedWater: ["Updated water", "Waves, depth colour and foam."],
+  WaterReflections: ["Water reflections", "The scene mirrored in the water."],
+  Shockwaves: ["Explosion shockwaves", "A heat ripple rings out from big explosions."],
+  ScorchRelief: ["Scorch craters", "Scorch marks are lit as shallow craters."],
+  BloomStrength: ["Glow strength", "How much bright lights and explosions glow. Needs Bloom.", { subtle: "Subtle", normal: "Normal", strong: "Strong" }],
+  ColorLook: ["Colour look", "Vivid has more colour and contrast. Cinematic has cool shadows and warm highlights.", { standard: "Standard", vivid: "Vivid", cinematic: "Cinematic" }],
+  Sharpen: ["Sharpening", "A crisper picture after the anti-aliasing.", { off: "Off", low: "Low", high: "High" }],
+  Vignette: ["Vignette", "The corners of the battlefield darken a little. Menus and the control bar stay as they are."],
+  SoftParticles: ["Soft particles", "Smoke, dust and fire fade where they meet the ground instead of cutting a hard line."],
+  SmokeShading: ["Smoke shading", "Smoke and dust are darker near the ground and lighter on top, so a column looks like it has depth."],
+};
+const EFFECT_PRESETS = [["performance", "Performance"], ["balanced", "Balanced (default)"], ["cinematic", "Cinematic"]];
+const betaTag = () => h("span", { class: "pill warn beta" }, "Beta");
+/** How the effects are laid out: what they change, not the order the engine lists them in. */
+const EFFECT_GROUPS = [
+  ["Picture", ["PostProcessing", "AntiAliasingFXAA", "Sharpen", "ColorLook", "Vignette"]],
+  ["Light and glow", ["Bloom", "BloomStrength", "DynamicLights", "PixelLighting", "AmbientOcclusion", "AmbientOcclusionQuality"]],
+  ["Shadows and sky", ["SoftShadows", "ShadowQuality", "CloudShadows", "Clouds"]],
+  ["Smoke and explosions", ["SoftParticles", "SmokeShading", "Shockwaves", "ScorchRelief"]],
+  ["Water and ground", ["UpdatedWater", "WaterReflections", "AnisotropicFiltering"]],
+];
+/** An effect that does nothing while another one is off (so its row is dimmed until that one is on). */
+const EFFECT_NEEDS = {
+  Bloom: "PostProcessing", AmbientOcclusion: "PostProcessing", AntiAliasingFXAA: "PostProcessing", Sharpen: "PostProcessing", ColorLook: "PostProcessing",
+  Vignette: "PostProcessing", DynamicLights: "PostProcessing", BloomStrength: "Bloom", AmbientOcclusionQuality: "AmbientOcclusion",
+  ShadowQuality: "SoftShadows", WaterReflections: "UpdatedWater", SmokeShading: "SoftParticles",
+};
+/** The Enhanced renderer's effects: a preset, then every effect by what it changes. Saved one by one; they apply at the next start. */
+function effectsPanel(fb) {
+  const groups = h("div", { class: "fxgroups" });
+  const value = (key) => ((store.cfg.effects || []).find((e) => e[0] === key) || [])[1];
+  const isOn = (key) => { for (let k = key; k; k = EFFECT_NEEDS[k]) if (k !== key && value(k) === "no") return false; return true; };
+  const saved = () => fb.ok("Saved. It applies the next time you start the game.");
+  const presetHost = h("div", {});
+  const drawPreset = () => {
+    const cur = store.cfg.effect_preset || "balanced";
+    const seg = segmented("Effects preset", cur === "custom" ? [...EFFECT_PRESETS, ["custom", "Custom"]] : EFFECT_PRESETS, cur, async (name) => {
+      if (name === "custom") return;
+      try {
+        store.cfg.effects = await invoke("set_effect_preset", { name });
+        store.cfg.effect_preset = name;
+        draw();
+        saved();
+      } catch (e) { fb.bad(errText(e)); }
+    });
+    fill(presetHost, seg.el);
+  };
+  const save = async (key, v) => {
+    try {
+      store.cfg.effect_preset = await invoke("set_effect", { key, value: v });
+      const row = (store.cfg.effects || []).find((e) => e[0] === key);
+      if (row) row[1] = v;
+      draw();
+      saved();
+    } catch (e) { fb.bad(errText(e)); }
+  };
+  const row = (key) => {
+    const [title, desc, choices] = EFFECT_TEXT[key] || [key, null];
+    const v = value(key), live = isOn(key);
+    let ctl;
+    if (!choices) {
+      const box = h("input", { type: "checkbox", "aria-label": title, checked: v === "yes", disabled: !live, onchange: () => save(key, box.checked ? "yes" : "no") });
+      ctl = h("label", { class: "switch" }, box);
+    } else {
+      const sel = h("select", { "aria-label": title, disabled: !live, onchange: () => save(key, sel.value) },
+        Object.entries(choices).map(([val, label]) => h("option", { value: val, selected: val === v }, label)));
+      ctl = sel;
+    }
+    const el = setting(title, live ? desc : `Needs ${(EFFECT_TEXT[EFFECT_NEEDS[key]] || [EFFECT_NEEDS[key]])[0].toLowerCase()}.`, ctl);
+    if (!live) el.classList.add("off");
+    return el;
+  };
+  const draw = () => {
+    drawPreset();
+    const have = (store.cfg.effects || []).map((e) => e[0]);
+    const grouped = new Set(EFFECT_GROUPS.flatMap((g) => g[1]));
+    const rest = have.filter((k) => !grouped.has(k));
+    fill(groups, [...EFFECT_GROUPS, ...(rest.length ? [["More", rest]] : [])].map(([name, keys]) => {
+      const mine = keys.filter((k) => have.includes(k));
+      return mine.length ? h("section", { class: "fxgroup" }, h("h3", {}, name), h("div", { class: "settings" }, mine.map(row))) : null;
+    }));
+  };
+  draw();
+  return h("div", { class: "card" },
+    h("div", { class: "row between" }, h("h2", {}, "Enhanced effects ", betaTag()), presetHost),
+    h("p", { class: "muted small" }, "Performance drops the costly effects. Cinematic adds a stronger glow, cool shadows, sharpening and a vignette."),
+    groups);
+}
+
 /** Settings card for the graphics fix: how far the camera zooms out, and the high-quality options. */
-function graphicsCard() {
+function graphicsCards() {
   const fb = liveStatus();
   const choices = [[300, "Standard (original game)"], [510, "Far (recommended)"], [1000, "Very far"]];
   const cur = store.cfg.camera_height || 510;
@@ -1583,12 +1730,42 @@ function graphicsCard() {
     } catch (e) { bar.value = store.cfg.control_bar || "hd"; fb.bad(errText(e)); }
     bar.disabled = false;
   } }, [["hd", "Sharp icons (default)"], ["pro", "Control Bar Pro"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.control_bar || "hd") }, label)));
-  return h("div", { class: "card" }, h("h2", {}, "Graphics"),
-    setting("Command bar", "Control Bar Pro redraws the bar and its menus for big screens. It is drawn for one resolution, picked from the one set on the Play page: choose it again after changing that. If it looks wrong with a mod, switch back.", bar),
-    store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
-    setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
-    setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
-    fb.el);
+
+  // Renderer: two tiles to choose between, each saying what you get.
+  const mac = store.cfg.os === "macos";
+  const effectsFb = liveStatus();
+  const effects = effectsPanel(effectsFb);
+  effects.append(effectsFb.el);
+  const tiles = [
+    ["classic", "Classic", null, "The game as it has always looked. The safe choice."],
+    ["enhanced", "Enhanced", betaTag(), mac
+      ? "Bloom, ambient occlusion, light from explosions, shockwaves, shaded smoke and scorch craters."
+      : "Vulkan, with real shadows, new water, bloom, shockwaves and shaded smoke. Needs the 64-bit engine and a Vulkan 1.3 driver, else Classic is used."],
+  ].map(([value, name, tag, desc]) => h("button", { class: "choice", type: "button", role: "radio", "aria-checked": String(value === (store.cfg.renderer || "classic")), onclick: async () => {
+    try {
+      await invoke("set_renderer", { renderer: value });
+      store.cfg.renderer = value;
+      tiles.forEach((t, i) => t.setAttribute("aria-checked", String(["classic", "enhanced"][i] === value)));
+      effects.hidden = value !== "enhanced";
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { fb.bad(errText(e)); }
+  } }, h("span", { class: "choice-name" }, name, tag), h("span", { class: "muted small" }, desc)));
+  effects.hidden = (store.cfg.renderer || "classic") !== "enhanced";
+  const renderer = store.cfg.renderer_available ? h("div", { class: "card" },
+    h("h2", {}, "Renderer"),
+    h("div", { class: "choices", role: "radiogroup", "aria-label": "Renderer" }, tiles),
+    h("p", { class: "muted small" }, "Either way only the picture changes, so you can play online with anyone.")) : null;
+  return [
+    renderer,
+    store.cfg.renderer_available ? effects : null,
+    h("div", { class: "card" }, h("h2", {}, "Camera and quality"),
+      h("div", { class: "settings" },
+        setting("Command bar", "Control Bar Pro redraws the bar and its menus for big screens. It is drawn for one resolution, picked from the one set on the Play page: choose it again after changing that. If it looks wrong with a mod, switch back.", bar),
+        setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
+        setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
+        store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null),
+      fb.el),
+  ];
 }
 
 /** Says what goes into the debug zip before it is made; the replay (it can hold chat) is only added if ticked. */
@@ -1660,20 +1837,40 @@ function forgetSteamRow() {
   return setting("Saved Steam sign-in", h("span", {}, "Rallypoint clears it when a download ends. This removes one an earlier version left. ", fb.el), btn);
 }
 
+/** Tabs for a page with more than one screenful: one section shows at a time. `sections` is [id, label, build()]. */
+function tabbed(label, sections, current, onPick) {
+  const body = h("div", { class: "tabbody" });
+  const show = (id) => {
+    tabs.forEach((t, i) => { const on = sections[i][0] === id; t.setAttribute("aria-selected", String(on)); t.tabIndex = on ? 0 : -1; });
+    fill(body, (sections.find((x) => x[0] === id) || sections[0])[2]());
+    onPick && onPick(id);
+  };
+  const tabs = sections.map(([id, text], i) => h("button", { class: "tab", type: "button", role: "tab", onclick: () => show(id), onkeydown: (e) => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    const next = (i + step + sections.length) % sections.length;
+    show(sections[next][0]); tabs[next].focus();
+  } }, text));
+  const bar = h("div", { class: "tabs", role: "tablist", "aria-label": label }, tabs);
+  show(sections.some((x) => x[0] === current) ? current : sections[0][0]);
+  return { bar, body };
+}
+
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
+  const t = tabbed("Settings", [
+    ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
+    ["graphics", "Graphics", () => graphicsCards()],
+    ["multiplayer", "Multiplayer", () => [syncCard()]],
+    ["rallypoint", "Rallypoint", () => [
+      updatesCard(),
+      h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
+        setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
+      h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)]],
+  ], store.settingsTab || "game", (id) => { store.settingsTab = id; });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
-    h("h3", { class: "section-title" }, "Game"),
-    h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()),
-    graphicsCard(),
-    h("h3", { class: "section-title" }, "Multiplayer"),
-    syncCard(),
-    h("h3", { class: "section-title" }, "Rallypoint"),
-    updatesCard(),
-    h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
-      setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
-    h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`));
+    t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 
@@ -1867,11 +2064,11 @@ function showWhatsNew(w) {
 }
 
 /** The release notes shipped with this version (the last three releases), opened from Settings > Updates. */
-function showChangelog(notes) {
+function showChangelog(notes, title = "Changelog") {
   const close = () => overlay.remove();
-  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Changelog" },
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": title },
     h("div", { class: "wizard whatsnew" },
-      h("div", { class: "wiz-head" }, h("h2", {}, "Changelog")),
+      h("div", { class: "wiz-head" }, h("h2", {}, title)),
       h("div", { class: "wiz-body" }, renderNotes(notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Close"))));
   document.getElementById("root").append(overlay);
@@ -1895,6 +2092,8 @@ async function start() {
   }, 1000);
   if (!store.cfg.setup_done) openWizard();
   if (store.cfg.check_updates !== false) checkUpdate();
+  // A launcher left open still hears about a release: look again every six hours.
+  setInterval(() => { if (store.cfg.check_updates !== false) checkUpdate(true); }, 6 * 3600 * 1000);
   invoke("whats_new_take").then((w) => { if (w) showWhatsNew(w); }).catch(() => {});
 
   // Dropping a file or folder on the window installs it as a mod.

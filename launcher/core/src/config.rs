@@ -49,6 +49,12 @@ pub struct Config {
     /// Don't ask GitHub for a newer release when the launcher starts.
     #[serde(default)]
     pub skip_update_check: bool,
+    /// Also offer beta releases. Off unless the player asks: a beta is never installed on someone who did not opt in.
+    #[serde(default)]
+    pub beta_updates: bool,
+    /// The release the player chose "Skip this version" for; the start-up banner stays away until a newer one exists.
+    #[serde(default)]
+    pub skipped_update: String,
     /// Record the engine's per-frame sync logs, for finding out why a multiplayer game went out of sync.
     #[serde(default)]
     pub sync_logs: bool,
@@ -61,6 +67,12 @@ pub struct Config {
     /// Which Windows engine to run: empty or "x64" is the 64-bit one, "x86" the 32-bit one. Ignored where only one is bundled.
     #[serde(default)]
     pub engine_arch: String,
+    /// "enhanced" for the native Vulkan renderer and its effects (64-bit Windows engine only); empty is Classic.
+    #[serde(default)]
+    pub renderer: String,
+    /// Effect settings of the Enhanced renderer the player changed (`graphics::EFFECTS` keys); the rest keep the defaults.
+    #[serde(default)]
+    pub effects: std::collections::BTreeMap<String, String>,
     /// The name other players see in the game's LAN lobby. Empty means this computer's name.
     #[serde(default)]
     pub player_name: String,

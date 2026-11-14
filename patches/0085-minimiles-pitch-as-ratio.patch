@@ -1,0 +1,79 @@
+Windows x64 (MiniMiles): unit voices played slow and muffled. For a 2D sample the engine reads the playback rate and sets rate x pitch shift before it loads the file, and MiniMiles kept that as an absolute rate, so the previous file's rate carried over (a 44.1 kHz voice in a handle that last held a 22 kHz sound ran at half speed). The pitch is now kept as a ratio of the file's own rate, and a 3D sample's pitch resets with each new file (3D handles have no init call, so every reuse multiplied the previous pitch in again).
+
+diff --git a/Dependencies/Miles/MiniMiles.cpp b/Dependencies/Miles/MiniMiles.cpp
+index 3d429c6..f456c1c 100644
+--- a/Dependencies/Miles/MiniMiles.cpp
++++ b/Dependencies/Miles/MiniMiles.cpp
+@@ -297,7 +297,10 @@ struct Voice
+ 
+ 	float volume, pan;
+ 	int sampleRate;                  // native rate of the decoded data
+-	int rateOverride;                // value set through *_playback_rate, 0 = native
++	// Pitch set through *_playback_rate, as a ratio of the native rate. The engine asks for the rate and sets rate x
++	// pitch shift BEFORE it loads the file of a 2D sample, so an absolute rate would carry the previous file's rate
++	// over: a 44.1 kHz voice in a handle that last played a 22 kHz sound ran at half speed (slow, muffled).
++	float pitch;
+ 	LONG loopCount;                  // as set by the engine, 0 = endless
+ 	void* userData[8];
+ 
+@@ -366,7 +369,7 @@ static Voice* newVoice(VoiceKind kind)
+ 	v->volume = 1.0f;
+ 	v->pan = 0.5f;
+ 	v->sampleRate = 22050;
+-	v->rateOverride = 0;
++	v->pitch = 1.0f;
+ 	v->loopCount = 1;
+ 	memset(v->userData, 0, sizeof(v->userData));
+ 	v->started = false;
+@@ -461,8 +464,8 @@ static bool prepare(Voice* v, const void* data, size_t size)
+ 	v->soundReady = true;
+ 	ma_sound_set_end_callback(&v->sound, soundEnded, v);
+ 	ma_sound_set_pan_mode(&v->sound, ma_pan_mode_balance);
+-	if (v->rateOverride > 0 && v->sampleRate > 0)
+-		ma_sound_set_pitch(&v->sound, (float)v->rateOverride / (float)v->sampleRate);
++	if (v->pitch != 1.0f)
++		ma_sound_set_pitch(&v->sound, v->pitch);
+ 	applyGain(v);
+ 	return true;
+ }
+@@ -819,7 +822,7 @@ void __stdcall AIL_init_sample(HSAMPLE sample)
+ 	v->image = nullptr;
+ 	v->volume = 1.0f;
+ 	v->pan = 0.5f;
+-	v->rateOverride = 0;
++	v->pitch = 1.0f;
+ 	v->loopCount = 1;
+ 	v->eosSample = nullptr;
+ }
+@@ -843,6 +846,9 @@ S32 __stdcall AIL_set_3D_sample_file(H3DSAMPLE sample, const void* file_image)
+ 		return 0;
+ 	Lock l;
+ 	v->image = file_image;
++	// A 3D handle has no init call between sounds: start each file at its own rate (the engine sets the pitch shift
++	// after loading it), or every reuse multiplied the previous sound's pitch in again.
++	v->pitch = 1.0f;
+ 	return prepare(v, file_image, w.imageSize) ? 1 : 0;
+ }
+ 
+@@ -900,15 +906,17 @@ void __stdcall AIL_set_sample_playback_rate(HSAMPLE s, S32 rate)
+ {
+ 	Voice* v = (Voice*)s; if (!v) return;
+ 	Lock l;
+-	v->rateOverride = rate;
+-	if (v->soundReady && v->sampleRate > 0 && rate > 0)
+-		ma_sound_set_pitch(&v->sound, (float)rate / (float)v->sampleRate);
++	if (v->sampleRate <= 0 || rate <= 0)
++		return;
++	v->pitch = (float)rate / (float)v->sampleRate;
++	if (v->soundReady)
++		ma_sound_set_pitch(&v->sound, v->pitch);
+ }
+ 
+ S32 __stdcall AIL_sample_playback_rate(HSAMPLE s)
+ {
+ 	Voice* v = (Voice*)s; if (!v) return 0;
+-	return v->rateOverride > 0 ? v->rateOverride : v->sampleRate;
++	return (S32)(v->sampleRate * v->pitch + 0.5f);
+ }
+ 
+ void __stdcall AIL_set_3D_sample_playback_rate(H3DSAMPLE s, S32 rate) { AIL_set_sample_playback_rate((HSAMPLE)s, rate); }

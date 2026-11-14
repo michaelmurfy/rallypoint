@@ -1,0 +1,15 @@
+diff --git a/cmake/config-build.cmake b/cmake/config-build.cmake
+index 1768084..73708d8 100644
+--- a/cmake/config-build.cmake
++++ b/cmake/config-build.cmake
+@@ -9,7 +9,9 @@ option(RTS_BUILD_OPTION_DEBUG "Build code with the \"Debug\" configuration." OFF
+ option(RTS_BUILD_OPTION_ASAN "Build code with Address Sanitizer." OFF)
+ option(RTS_BUILD_OPTION_VC6_FULL_DEBUG "Build VC6 with full debug info." OFF)
+ option(RTS_BUILD_OPTION_FFMPEG "Enable FFmpeg support" OFF)
+-option(RTS_BUILD_EXTERNAL_CONTROL "Build the external-control API server (HTTP/WebSocket)." ON)
++# Rallypoint: off. The server listens on 127.0.0.1:3459/3460 with no authentication and can pause
++# the game and issue commands, so any local process or web page could drive a player's game.
++option(RTS_BUILD_EXTERNAL_CONTROL "Build the external-control API server (HTTP/WebSocket)." OFF)
+ 
+ if(NOT RTS_BUILD_ZEROHOUR AND NOT RTS_BUILD_GENERALS)
+     set(RTS_BUILD_ZEROHOUR TRUE)

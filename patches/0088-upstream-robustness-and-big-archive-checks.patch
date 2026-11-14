@@ -1,0 +1,439 @@
+# Upstream robustness fixes from TheSuperHackers/GeneralsGameCode (newer than the engine base), plus a hand-written
+# hardening of the BIG archive reader (mods are downloaded files, so their archives are not trusted).
+#   d6c32650 #3546 LAN tooltip crash after the host left     c96b610f #3633 locomotor reset crash on map.ini
+#   02b5b56e #3489 rivers that overflow the index buffer     3d82630f #3529 weapon slot index sanity check
+#   9298f33b #3361 FieldParse null terminators               a30d0613 #3612 leave at once from the disconnect screen
+#   afc2a103 #3641 release held modifiers on focus reset     d1105e30 #3651 Matrix4x4 compare without UB
+#   6e4a328b #3346 firewall helper stack overflow
+# BIG reader (StdBIGFileSystem, Win32BIGFileSystem): the entry name must end inside the buffer and the file, the file
+# count must fit the file, each entry must lie inside the archive. Upstream's fuller rewrite is c7b7814e #3588.
+
+diff --git a/Core/GameEngine/Include/GameClient/Keyboard.h b/Core/GameEngine/Include/GameClient/Keyboard.h
+index 8c21aae..44401d6 100644
+--- a/Core/GameEngine/Include/GameClient/Keyboard.h
++++ b/Core/GameEngine/Include/GameClient/Keyboard.h
+@@ -124,7 +124,7 @@ public:
+ 	WideChar getPrintableKey( KeyDefType key, Int state );
+ 	enum { MAX_KEY_STATES = 3};
+ private:
+-	void refreshAltKeys() const;									///< refresh the state of the alt keys, necessary after alt tab
++	void emitModifierKeyUps() const;
+ protected:
+ 
+ 	/** get the key data for a single key, KEY_NONE should be returned when
+diff --git a/Core/GameEngine/Include/GameNetwork/FirewallHelper.h b/Core/GameEngine/Include/GameNetwork/FirewallHelper.h
+index 352b1a0..a1d4bad 100644
+--- a/Core/GameEngine/Include/GameNetwork/FirewallHelper.h
++++ b/Core/GameEngine/Include/GameNetwork/FirewallHelper.h
+@@ -190,7 +190,7 @@ class FirewallHelperClass {
+ 
+ 		void flagNeedToRefresh(Bool flag);
+ 
+-		static void getManglerName(Int manglerIndex, Char *nameBuf);
++		static AsciiString getManglerName(Int manglerIndex);
+ 		Bool sendToManglerFromPort(UnsignedInt address, UnsignedShort port, UnsignedShort packetID, Bool blitzme = FALSE);
+ 		UnsignedShort getManglerResponse(UnsignedShort packetID, Int time = 0);
+ 		Bool openSpareSocket(UnsignedShort port);
+diff --git a/Core/GameEngine/Source/Common/INI/INIAudioEventInfo.cpp b/Core/GameEngine/Source/Common/INI/INIAudioEventInfo.cpp
+index 2420542..d305876 100644
+--- a/Core/GameEngine/Source/Common/INI/INIAudioEventInfo.cpp
++++ b/Core/GameEngine/Source/Common/INI/INIAudioEventInfo.cpp
+@@ -149,6 +149,7 @@ const FieldParse AudioEventInfo::m_audioEventInfo[] =
+ 	{ "MinRange",							INI::parseReal,						nullptr,								offsetof( AudioEventInfo, m_minDistance) },
+ 	{ "MaxRange",							INI::parseReal,						nullptr,								offsetof( AudioEventInfo, m_maxDistance) },
+ 	{ "LowPassCutoff",				INI::parsePercentToReal,	nullptr,								offsetof( AudioEventInfo, m_lowPassFreq) },
++	{ nullptr, nullptr, nullptr, 0 }
+ };
+ 
+ //-------------------------------------------------------------------------------------------------
+diff --git a/Core/GameEngine/Source/GameClient/Input/Keyboard.cpp b/Core/GameEngine/Source/GameClient/Input/Keyboard.cpp
+index 426de66..0eda4f7 100644
+--- a/Core/GameEngine/Source/GameClient/Input/Keyboard.cpp
++++ b/Core/GameEngine/Source/GameClient/Input/Keyboard.cpp
+@@ -749,10 +749,9 @@ void Keyboard::update()
+ //-------------------------------------------------------------------------------------------------
+ void Keyboard::resetKeys()
+ {
+-
+ 	// TheSuperHackers @fix Caball009 13/12/2025 Fix bug where game remains in waypoint mode
+ 	// because the key up state for the alt key is not detected after alt tab.
+-	refreshAltKeys();
++	emitModifierKeyUps();
+ 
+ 	memset( m_keys, 0, sizeof( m_keys ) );
+ 	memset( m_keyStatus, 0, sizeof( m_keyStatus ) );
+@@ -765,24 +764,27 @@ void Keyboard::resetKeys()
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+-// Refresh the state of the alt keys, necessary after alt tab
+-//-------------------------------------------------------------------------------------------------
+-void Keyboard::refreshAltKeys() const
++static void emitRawKeyUpIfDown(const KeyboardIO *keyStatus, KeyDefType key)
+ {
+-	if (BitIsSet(m_keyStatus[KEY_LALT].state, KEY_STATE_DOWN))
+-	{
+-		GameMessage* msg = TheMessageStream->appendMessage(GameMessage::MSG_RAW_KEY_UP);
+-		msg->appendIntegerArgument(KEY_LALT);
+-		msg->appendIntegerArgument(KEY_STATE_UP);
+-	}
+-	if (BitIsSet(m_keyStatus[KEY_RALT].state, KEY_STATE_DOWN))
++	if (BitIsSet(keyStatus[key].state, KEY_STATE_DOWN))
+ 	{
+ 		GameMessage* msg = TheMessageStream->appendMessage(GameMessage::MSG_RAW_KEY_UP);
+-		msg->appendIntegerArgument(KEY_RALT);
++		msg->appendIntegerArgument(key);
+ 		msg->appendIntegerArgument(KEY_STATE_UP);
+ 	}
+ }
+ 
++//-------------------------------------------------------------------------------------------------
++void Keyboard::emitModifierKeyUps() const
++{
++	emitRawKeyUpIfDown(m_keyStatus, KEY_LCTRL);
++	emitRawKeyUpIfDown(m_keyStatus, KEY_RCTRL);
++	emitRawKeyUpIfDown(m_keyStatus, KEY_LSHIFT);
++	emitRawKeyUpIfDown(m_keyStatus, KEY_RSHIFT);
++	emitRawKeyUpIfDown(m_keyStatus, KEY_LALT);
++	emitRawKeyUpIfDown(m_keyStatus, KEY_RALT);
++}
++
+ //-------------------------------------------------------------------------------------------------
+ /** get the first key in our current state of the keyboard */
+ //-------------------------------------------------------------------------------------------------
+diff --git a/Core/GameEngine/Source/GameClient/Input/Mouse.cpp b/Core/GameEngine/Source/GameClient/Input/Mouse.cpp
+index a1c2cb9..fe7a540 100644
+--- a/Core/GameEngine/Source/GameClient/Input/Mouse.cpp
++++ b/Core/GameEngine/Source/GameClient/Input/Mouse.cpp
+@@ -85,6 +85,7 @@ static const FieldParse TheMouseCursorFieldParseTable[] =
+ 	{ "Frames",							INI::parseInt,	nullptr,	offsetof( CursorInfo, numFrames ) },
+ 	{ "FPS",							INI::parseReal, nullptr, offsetof( CursorInfo, fps)},
+ 	{ "Directions",							INI::parseInt,	nullptr,	offsetof( CursorInfo, numDirections ) },
++	{ nullptr, nullptr, nullptr, 0 }
+ };
+ 
+ static const FieldParse TheMouseFieldParseTable[] =
+@@ -110,7 +111,7 @@ static const FieldParse TheMouseFieldParseTable[] =
+ 	{ "DragTolerance",							INI::parseUnsignedInt,	nullptr,		offsetof( Mouse, m_dragTolerance) },
+ 	{ "DragTolerance3D",						INI::parseUnsignedInt,	nullptr,		offsetof( Mouse, m_dragTolerance3D) },
+ 	{ "DragToleranceMS",						INI::parseUnsignedInt,	nullptr,		offsetof( Mouse, m_dragToleranceMS) },
+-
++	{ nullptr, nullptr, nullptr, 0 }
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+index 23f7194..eeeecdb 100644
+--- a/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
++++ b/Core/GameEngine/Source/GameNetwork/ConnectionManager.cpp
+@@ -1977,6 +1977,9 @@ void ConnectionManager::disconnectLocalPlayer() {
+  * Takes all the commands that are ready to send and sends them right now.
+  */
+ void ConnectionManager::flushConnections() {
++	// TheSuperHackers @bugfix arcticdolphin 12/10/2026 Send now, the connections are deleted right after and must not wait for their frame grouping.
++	setFrameGrouping(0);
++
+ 	for (Int i = 0; i < MAX_SLOTS; ++i) {
+ 		if (m_connections[i] != nullptr) {
+ //			DEBUG_LOG(("ConnectionManager::flushConnections - flushing connection to player %d", i));
+diff --git a/Core/GameEngine/Source/GameNetwork/FirewallHelper.cpp b/Core/GameEngine/Source/GameNetwork/FirewallHelper.cpp
+index 946c042..e26e2db 100644
+--- a/Core/GameEngine/Source/GameNetwork/FirewallHelper.cpp
++++ b/Core/GameEngine/Source/GameNetwork/FirewallHelper.cpp
+@@ -597,12 +597,16 @@ Short FirewallHelperClass::getSourcePortAllocationDelta() {
+ 	return m_sourcePortAllocationDelta;
+ }
+ 
+-/* static */ void FirewallHelperClass::getManglerName(Int manglerIndex, Char *nameBuf)
++/* static */ AsciiString FirewallHelperClass::getManglerName(Int manglerIndex)
+ {
+ 	AsciiString host;
+ 	UnsignedShort port;
+-	TheGameSpyConfig->getManglerLocation(manglerIndex, host, port);
+-	strcpy(nameBuf, host.str());
++	if (TheGameSpyConfig->getManglerLocation(manglerIndex, host, port))
++	{
++		return host;
++	}
++
++	return AsciiString::TheEmptyString;
+ }
+ 
+ Bool FirewallHelperClass::detectionBeginUpdate() {
+diff --git a/Core/GameEngine/Source/GameNetwork/NAT.cpp b/Core/GameEngine/Source/GameNetwork/NAT.cpp
+index 159d853..0dfee7c 100644
+--- a/Core/GameEngine/Source/GameNetwork/NAT.cpp
++++ b/Core/GameEngine/Source/GameNetwork/NAT.cpp
+@@ -798,13 +798,15 @@ void NAT::sendMangledSourcePort() {
+ 	// next port allocation.
+ 
+ 	// get the address of the mangler we need to talk to.
+-	Char manglerName[256];
+-	FirewallHelperClass::getManglerName(1, manglerName);
+-	DEBUG_LOG(("NAT::sendMangledSourcePort - about to call gethostbyname for mangler at %s", manglerName));
+-	struct hostent *hostInfo = gethostbyname(manglerName);
++	AsciiString manglerName = FirewallHelperClass::getManglerName(1);
++	DEBUG_LOG(("NAT::sendMangledSourcePort - about to call gethostbyname for mangler at %s", manglerName.str()));
++	struct hostent* hostInfo = nullptr;
++	if (!manglerName.isEmpty()) {
++		hostInfo = gethostbyname(manglerName.str());
++	}
+ 
+ 	if (hostInfo == nullptr) {
+-		DEBUG_LOG(("NAT::sendMangledSourcePort - gethostbyname failed for mangler address %s", manglerName));
++		DEBUG_LOG(("NAT::sendMangledSourcePort - gethostbyname failed for mangler address %s", manglerName.str()));
+ 		// can't find the mangler, we're screwed so just send the source port.
+ 		sendMangledPortNumberToTarget(sourcePort, targetSlot);
+ 		m_sourcePorts[m_targetNodeNumber] = sourcePort;
+@@ -814,7 +816,7 @@ void NAT::sendMangledSourcePort() {
+ 
+ 	memcpy(&m_manglerAddress, &(hostInfo->h_addr_list[0][0]), 4);
+ 	m_manglerAddress = ntohl(m_manglerAddress);
+-	DEBUG_LOG(("NAT::sendMangledSourcePort - mangler %s address is %d.%d.%d.%d", manglerName,
++	DEBUG_LOG(("NAT::sendMangledSourcePort - mangler %s address is %d.%d.%d.%d", manglerName.str(),
+ 							PRINTF_IP_AS_4_INTS(m_manglerAddress)));
+ 
+ 	DEBUG_LOG(("NAT::sendMangledSourcePort - NAT behavior = 0x%08x", fwType));
+diff --git a/Core/GameEngineDevice/Source/StdDevice/Common/StdBIGFileSystem.cpp b/Core/GameEngineDevice/Source/StdDevice/Common/StdBIGFileSystem.cpp
+index ffd0150..2f889e8 100644
+--- a/Core/GameEngineDevice/Source/StdDevice/Common/StdBIGFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/StdDevice/Common/StdBIGFileSystem.cpp
+@@ -125,6 +125,15 @@ ArchiveFile * StdBIGFileSystem::openArchiveFile(const Char *filename) {
+ //		buffer[(4-i)-1] = t;
+ //	}
+ 
++	// Every directory entry takes at least 9 bytes, so a count that cannot fit in the file is a lie.
++	Int realFileSize = fp->size();
++	if (numLittleFiles < 0 || (Int64)numLittleFiles * 9 > (Int64)realFileSize) {
++		DEBUG_CRASH(("Malformed BIG file %s: bad file count", filename));
++		delete archiveFile;
++		fp->close();
++		return nullptr;
++	}
++
+ 	// seek to the beginning of the directory listing.
+ 	fp->seek(0x10, File::START);
+ 	// read in each directory listing.
+@@ -144,11 +153,26 @@ ArchiveFile * StdBIGFileSystem::openArchiveFile(const Char *filename) {
+ 		fileInfo->m_size = filesize;
+ 
+ 		// read in the path name of the file.
++		// Rallypoint: a mod's archive is not trusted. The name must end inside the buffer and the file, and the
++		// entry must lie inside the archive, or the archive is refused (it used to overrun the buffer or loop on a short file).
+ 		Int pathIndex = -1;
+ 		do {
+ 			++pathIndex;
+-			fp->read(buffer + pathIndex, 1);
++			if (pathIndex >= (Int)sizeof(buffer) || fp->read(buffer + pathIndex, 1) != 1) {
++				DEBUG_CRASH(("Malformed BIG file %s: bad entry name", filename));
++				delete fileInfo;
++				delete archiveFile;
++				fp->close();
++				return nullptr;
++			}
+ 		} while (buffer[pathIndex] != 0);
++		if (filesize < 0 || fileOffset < 0 || (Int64)fileOffset + (Int64)filesize > (Int64)realFileSize) {
++			DEBUG_CRASH(("Malformed BIG file %s: entry outside the archive", filename));
++			delete fileInfo;
++			delete archiveFile;
++			fp->close();
++			return nullptr;
++		}
+ 
+ 		Int filenameIndex = pathIndex;
+ 		while ((filenameIndex >= 0) && (buffer[filenameIndex] != '\\') && (buffer[filenameIndex] != '/')) {
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
+index f848083..3b989eb 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWater.cpp
+@@ -3201,10 +3201,17 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
+ 	static Bool doWobble = true;
+ 
+ 	if (m_disableRiver) return;
+-	m_drawingRiver = true;
+ 
+ 	//allocate 2 triangles per side with 3 indices per triangle
+-	DynamicIBAccessClass ib_access(BUFFER_TYPE_DYNAMIC_DX8,(rectangleCount+1)*2*3);
++	const Int indexCount = (rectangleCount+1)*2*3;
++	// TheSuperHackers @bugfix arcticdolphin 12/10/2026 Skip rivers that do not fit the 16 bit dynamic buffers.
++	DEBUG_ASSERTCRASH(indexCount <= DynamicIBAccessClass::MAX_INDEX_COUNT, ("River has too many points to draw"));
++	if (indexCount > DynamicIBAccessClass::MAX_INDEX_COUNT)
++		return;
++
++	m_drawingRiver = true;
++
++	DynamicIBAccessClass ib_access(BUFFER_TYPE_DYNAMIC_DX8,indexCount);
+ 	{
+ 		DynamicIBAccessClass::WriteLockClass lockib(&ib_access);
+  		UnsignedShort *curIb = lockib.Get_Index_Array();
+diff --git a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+index eaf8744..cb354d7 100644
+--- a/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/Common/Win32BIGFileSystem.cpp
+@@ -184,6 +184,14 @@ ArchiveFile * Win32BIGFileSystem::openArchiveFile(const Char *filename) {
+ //		buffer[(4-i)-1] = t;
+ //	}
+ 
++	// Every directory entry takes at least 9 bytes, so a count that cannot fit in the file is a lie.
++	Int realFileSize = fp->size();
++	if (numLittleFiles < 0 || (Int64)numLittleFiles * 9 > (Int64)realFileSize) {
++		DEBUG_CRASH(("Malformed BIG file %s: bad file count", filename));
++		fp->close();
++		return nullptr;
++	}
++
+ 	// seek to the beginning of the directory listing.
+ 	fp->seek(0x10, File::START);
+ 	// read in each directory listing.
+@@ -205,11 +213,26 @@ ArchiveFile * Win32BIGFileSystem::openArchiveFile(const Char *filename) {
+ 		fileInfo->m_size = filesize;
+ 
+ 		// read in the path name of the file.
++		// Rallypoint: a mod's archive is not trusted. The name must end inside the buffer and the file, and the
++		// entry must lie inside the archive, or the archive is refused (it used to overrun the buffer or loop on a short file).
+ 		Int pathIndex = -1;
+ 		do {
+ 			++pathIndex;
+-			fp->read(buffer + pathIndex, 1);
++			if (pathIndex >= (Int)sizeof(buffer) || fp->read(buffer + pathIndex, 1) != 1) {
++				DEBUG_CRASH(("Malformed BIG file %s: bad entry name", filename));
++				delete fileInfo;
++				delete archiveFile;
++				fp->close();
++				return nullptr;
++			}
+ 		} while (buffer[pathIndex] != 0);
++		if (filesize < 0 || fileOffset < 0 || (Int64)fileOffset + (Int64)filesize > (Int64)realFileSize) {
++			DEBUG_CRASH(("Malformed BIG file %s: entry outside the archive", filename));
++			delete fileInfo;
++			delete archiveFile;
++			fp->close();
++			return nullptr;
++		}
+ 
+ 		Int filenameIndex = pathIndex;
+ 		while ((filenameIndex >= 0) && (buffer[filenameIndex] != '\\') && (buffer[filenameIndex] != '/')) {
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/dx8indexbuffer.h b/Core/Libraries/Source/WWVegas/WW3D2/dx8indexbuffer.h
+index 52f6e07..2e32640 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/dx8indexbuffer.h
++++ b/Core/Libraries/Source/WWVegas/WW3D2/dx8indexbuffer.h
+@@ -119,6 +119,8 @@ class DynamicIBAccessClass
+ 	void Allocate_DX8_Dynamic_Buffer();
+ 
+ public:
++	enum { MAX_INDEX_COUNT = 0xffff }; ///< index_count is an unsigned short
++
+ 	DynamicIBAccessClass(unsigned short type, unsigned short index_count);
+ 	~DynamicIBAccessClass();
+ 
+diff --git a/Core/Libraries/Source/WWVegas/WWMath/matrix4.cpp b/Core/Libraries/Source/WWVegas/WWMath/matrix4.cpp
+index 0b489a4..318fefd 100644
+--- a/Core/Libraries/Source/WWVegas/WWMath/matrix4.cpp
++++ b/Core/Libraries/Source/WWVegas/WWMath/matrix4.cpp
+@@ -182,16 +182,7 @@ void Matrix4x4::Multiply(const Matrix4x4 & a,const Matrix3D & b,Matrix4x4 * res)
+ 
+ int operator == (const Matrix4x4 & a, const Matrix4x4 & b)
+ {
+-	unsigned* m1=(unsigned*)&a;
+-	unsigned* m2=(unsigned*)&b;
+-	unsigned res=0;
+-	for (int i=0;i<4;++i) {
+-		res|=*m1++^*m2++;
+-		res|=*m1++^*m2++;
+-		res|=*m1++^*m2++;
+-		res|=*m1++^*m2++;
+-	}
+-	return !res;
++	return ((a[0] == b[0]) && (a[1] == b[1]) && (a[2] == b[2]) && (a[3] == b[3]));
+ }
+ 
+ int operator != (const Matrix4x4 & a, const Matrix4x4 & b)
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameLOD.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameLOD.cpp
+index 82a13ee..74cacaa 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameLOD.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameLOD.cpp
+@@ -70,6 +70,7 @@ static const FieldParse TheStaticGameLODFieldParseTable[] =
+ 	{ "UseEmissiveNightMaterials",		INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useEmissiveNightMaterials ) },
+ 	{ "UseHeatEffects",					INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useHeatEffects ) },
+ 	{ "TextureReductionFactor",		INI::parseInt,					nullptr,	offsetof( StaticGameLODInfo, m_textureReduction ) },
++	{ nullptr, nullptr, nullptr, 0 }
+ };
+ 
+ static const char *const StaticGameLODNames[]=
+@@ -117,6 +118,7 @@ static const FieldParse TheDynamicGameLODFieldParseTable[] =
+ 	{ "SlowDeathScale",					INI::parseReal,					nullptr,	offsetof( DynamicGameLODInfo, m_slowDeathScale)},
+ 	{ "MinParticlePriority",			INI::parseIndexList, ParticlePriorityNames,	offsetof( DynamicGameLODInfo, m_minDynamicParticlePriority)},
+ 	{ "MinParticleSkipPriority",		INI::parseIndexList, ParticlePriorityNames,	offsetof( DynamicGameLODInfo, m_minDynamicParticleSkipPriority)},
++	{ nullptr, nullptr, nullptr, 0 }
+ };
+ 
+ static const char *const DynamicGameLODNames[]=
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
+index 0bde269..ea2e411 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/LanGameOptionsMenu.cpp
+@@ -203,14 +203,19 @@ static void playerTooltip(GameWindow *window,
+ 	if (idx == -1)
+ 		return;
+ 
+-	LANGameSlot *slot = TheLAN->GetMyGame()->getLANSlot(i);
++	// TheSuperHackers @bugfix Okladnoj 17/10/2026 Check that the game still exists as it is deleted while the setup screen fades out after the host left.
++	LANGameInfo *myGame = TheLAN->GetMyGame();
++	if (!myGame)
++		return;
++
++	LANGameSlot *slot = myGame->getLANSlot(i);
+ 	if (!slot)
+ 		return;
+ 
+ 	LANPlayer *player = slot->getUser();
+ 	if (!player)
+ 	{
+-		DEBUG_ASSERTCRASH(TheLAN->GetMyGame()->getIP(i) == 0, ("No player info in listbox!"));
++		DEBUG_ASSERTCRASH(myGame->getIP(i) == 0, ("No player info in listbox!"));
+ 		TheMouse->setCursorTooltip( UnicodeString::TheEmptyString );
+ 		return;
+ 	}
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Armor.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Armor.cpp
+index 7cdc1d5..2daecec 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Armor.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Armor.cpp
+@@ -146,7 +146,8 @@ const ArmorTemplate* ArmorStore::findArmorTemplate(const char* name) const
+ {
+ 	static const FieldParse myFieldParse[] =
+ 	{
+-		{ "Armor", ArmorTemplate::parseArmorCoefficients, nullptr, 0 }
++		{ "Armor", ArmorTemplate::parseArmorCoefficients, nullptr, 0 },
++		{ nullptr, nullptr, nullptr, 0 }
+ 	};
+ 
+ 	const char *c = ini->getNextToken();
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp
+index af23923..d5c3b79 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Locomotor.cpp
+@@ -570,7 +570,7 @@ void LocomotorStore::reset()
+ 		Overridable *locoTemp = it->second->deleteOverrides();
+ 		if (!locoTemp)
+ 		{
+-			m_locomotorTemplates.erase(it);
++			m_locomotorTemplates.erase(it++);
+ 		}
+ 		else
+ 		{
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/WeaponSet.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/WeaponSet.cpp
+index 546c554..2d5730d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/WeaponSet.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/WeaponSet.cpp
+@@ -1078,6 +1078,11 @@ Bool WeaponSet::setWeaponLock( WeaponSlotType weaponSlot, WeaponLockType lockTyp
+ 		return false;
+ 	}
+ 
++	if (static_cast<UnsignedInt>(weaponSlot) >= ARRAY_SIZE(m_weapons))
++	{
++		return false;
++	}
++
+ 	// Verify the asked for weapon exists , choose it, and then lock it as chosen until unlocked
+ 	// the old code was just plain wrong. (look at it in perforce and you'll see...)
+ 	if (m_weapons[weaponSlot] != nullptr)

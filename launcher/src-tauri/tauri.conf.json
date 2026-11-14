@@ -33,7 +33,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "engine/*"
+      "engine"
     ],
     "shortDescription": "Launcher for C&C Generals: Zero Hour",
     "macOS": {

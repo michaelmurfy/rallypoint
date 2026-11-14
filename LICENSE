@@ -23,7 +23,9 @@ SOFTWARE.
 ---
 This license covers the launcher, relay server, protocol crate, scripts and
 documentation in this repository. It does NOT cover:
-  - engine/   the game engine (a git submodule), GPL-3.0 with EA's additional terms
+  - engine/   the game engine, GPL-3.0 with EA's additional terms
+  - third-party/  code from other projects, each under its own licence
+              (see third-party/README.md)
   - patches/  changes to that engine, so also GPL-3.0 with EA's additional terms
               (see patches/LICENSE.md)
 The Rallypoint launcher runs the engine as a separate program and does not link
