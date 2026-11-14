@@ -104,6 +104,8 @@ const store = { cfg: null, games: [], mods: { catalog: [], other: [] }, relay: "
 const nativeRes = () => ({ w: Math.round(screen.width * devicePixelRatio), h: Math.round(screen.height * devicePixelRatio) });
 
 const ICON_FOLDER = "Control Bar HD";
+const PRO_FOLDER = "Control Bar Pro";
+const isBundled = (folder) => folder === ICON_FOLDER || folder === PRO_FOLDER;
 const prefs = {
   get() {
     const blank = { res: "native", fs: false, mods: [], camera: false };
@@ -148,7 +150,7 @@ function selectedGame() {
   return legacy || all[0];
 }
 /** Mods installed from a file or folder (not listed in the catalog) are the extras, ticked on top of the chosen game. */
-const extraMods = () => store.mods.other.filter((o) => o.folder !== ICON_FOLDER).map((o) => ({ folder: o.folder, name: o.folder, mb: o.mb }));
+const extraMods = () => store.mods.other.filter((o) => !isBundled(o.folder)).map((o) => ({ folder: o.folder, name: o.folder, mb: o.mb }));
 function selectedExtras() {
   const have = new Set(extraMods().map((m) => m.folder));
   return (prefs.get().mods || []).filter((f) => have.has(f));
@@ -161,7 +163,8 @@ function toggleExtra(folder, on) {
 /** What the engine loads, bottom layer first: the bundled icons, the chosen game, then the ticked extras. */
 function launchFolders() {
   const g = selectedGame();
-  return [...(store.mods.other.some((o) => o.folder === ICON_FOLDER) ? [ICON_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...selectedExtras()];
+  const has = (f) => store.mods.other.some((o) => o.folder === f);
+  return [...(has(ICON_FOLDER) ? [ICON_FOLDER] : []), ...(store.cfg && store.cfg.control_bar === "pro" && has(PRO_FOLDER) ? [PRO_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...selectedExtras()];
 }
 /** The names of the games an official map comes with (its tags). */
 const gameNames = (m) => (m.games || []).map((id) => (gameChoices().find((g) => g.id === id) || { name: id }).name.replace(/^C&C: /, ""));
@@ -1216,11 +1219,11 @@ function modsPage() {
           try { await invoke("mods_remove", { folder: o.folder }); say(o.folder + " removed"); } catch (e) { say(errText(e), "bad"); }
           loadMods();
         } }, "Remove");
-        const bundled = o.folder === ICON_FOLDER;
+        const bundled = isBundled(o.folder);
         return h("div", { class: "card" }, h("div", { class: "mod" },
           h("div", { class: "stack tight" },
             h("div", { class: "row" }, h("h3", {}, o.folder), bundled ? pill("Bundled", "ok") : null),
-            h("p", { class: "muted small" }, bundled ? "Sharp command-bar icons. Installed by Rallypoint and loaded with every game." : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
+            h("p", { class: "muted small" }, bundled ? (o.folder === PRO_FOLDER ? "Control Bar Pro, chosen in Settings > Graphics. Installed by Rallypoint." : "Sharp command-bar icons. Installed by Rallypoint and loaded with every game.") : `${o.bigs} game file${o.bigs === 1 ? "" : "s"}, ${o.mb} MB`)),
           bundled ? null : rm));
       }));
   }
@@ -1567,7 +1570,21 @@ function graphicsCard() {
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["x64", "64-bit (default)"], ["x86", "32-bit (the older build)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.engine_arch || "x64") }, label)));
+  const bar = h("select", { "aria-label": "Command bar", onchange: async () => {
+    bar.disabled = true;
+    const nat = nativeRes(), r = (prefs.get().res || "native").split("x").map(Number);
+    const [w, hh] = r.length === 2 && r[0] > 0 ? r : [nat.w, nat.h];
+    fb.busy(bar.value === "pro" ? "Downloading Control Bar Pro…" : "Saving…");
+    try {
+      await invoke("set_control_bar", { choice: bar.value, width: w, height: hh });
+      store.cfg.control_bar = bar.value;
+      await loadMods();
+      fb.ok("Saved. It applies the next time you start the game.");
+    } catch (e) { bar.value = store.cfg.control_bar || "hd"; fb.bad(errText(e)); }
+    bar.disabled = false;
+  } }, [["hd", "Sharp icons (default)"], ["pro", "Control Bar Pro"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.control_bar || "hd") }, label)));
   return h("div", { class: "card" }, h("h2", {}, "Graphics"),
+    setting("Command bar", "Control Bar Pro redraws the bar and its menus for big screens. It is drawn for one resolution, picked from the one set on the Play page: choose it again after changing that. If it looks wrong with a mod, switch back.", bar),
     store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null,
     setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
     setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),

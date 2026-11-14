@@ -196,6 +196,8 @@ struct ConfigView {
     check_updates: bool,
     sync_logs: bool,
     camera_height: u32,
+    /// "pro" or "hd".
+    control_bar: String,
     /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
     engine_arch: String,
     engines_bundled: bool,
@@ -219,6 +221,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         check_updates: !c.skip_update_check,
         sync_logs: c.sync_logs,
         camera_height,
+        control_bar: if c.control_bar == "pro" { "pro".into() } else { "hd".into() },
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
         player_name: c.player_name,
@@ -855,6 +858,21 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
     tauri::async_runtime::spawn_blocking(move || icons::install(&dir, &work)).await.map_err(|e| e.to_string())?
 }
 
+/// Choose the command bar: "hd" (sharp icons) or "pro" (Control Bar Pro for a window of this size, downloaded now).
+#[tauri::command]
+async fn set_control_bar(app: tauri::AppHandle, choice: String, width: u32, height: u32) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let pro = choice == "pro";
+    if pro {
+        let dir = mods_dir(&app)?;
+        let work = base(&app)?.join("tmp");
+        tauri::async_runtime::spawn_blocking(move || icons::install_pro(&dir, &work, width, height).map(|_| ())).await.map_err(|e| e.to_string())??;
+    }
+    let mut c = Config::load(&path);
+    c.control_bar = if pro { "pro".into() } else { String::new() };
+    c.save(&path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
@@ -981,7 +999,7 @@ fn main() {
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics,
-            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install,
+            mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game
         ])
         .run(tauri::generate_context!())
