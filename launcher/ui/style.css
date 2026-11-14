@@ -355,7 +355,6 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .wizard.mapviewer { width: min(1060px, 100%); animation: rise .22s var(--ease); }
 .mvhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 4px; }
 .mvtitle { min-width: 0; }
-.mvopts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 16px; flex: none; }
 .mvtitle h2 { font-size: 22px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
 .factline { display: flex; flex-wrap: wrap; gap: 2px 0; margin: 4px 0 0; min-height: 1.5em; color: var(--muted); font-size: 13px; }
 .factline span + span::before { content: ""; display: inline-block; width: 1px; height: .9em; background: var(--line); margin: 0 12px; vertical-align: -1px; }
@@ -477,7 +476,10 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 .speedpick.changed svg { fill: var(--rose); }
 .speedpick.changed .speedsel { border-color: color-mix(in srgb, var(--rose) 55%, transparent); color: var(--rose); }
 .playrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin-top: 4px; }
-.playrow .playbtn { flex: 1 1 170px; width: auto; margin-top: 0; } /* drops to its own row when the side is narrow */
+.playrow .speedpick { flex: 1 1 130px; }
+.playrow .speedsel { width: 100%; padding: 0 24px 0 34px; text-overflow: ellipsis; }
+.playrow .speedpick svg { left: 11px; }
+.playrow .playbtn { flex: 1 1 100%; width: auto; margin-top: 0; } /* the options sit above; Play gets a row of its own */
 .skrow .segs { justify-self: start; }
 
 
