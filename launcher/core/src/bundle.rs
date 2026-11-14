@@ -53,11 +53,12 @@ pub fn redact_home(text: &str, home: &Path) -> String {
     out
 }
 
-/// Replace the home folder in a text file that was just copied.
+/// Replace the home folder in a text file that was just copied. Anything that is not UTF-8 is left alone: rewriting a
+/// binary (the crash minidump) through a lossy conversion turned every byte above 0x7F into U+FFFD and ruined it.
 fn redact_file(path: &Path, home: &Path) {
     if let Ok(t) = std::fs::read(path) {
-        let text = String::from_utf8_lossy(&t);
-        let r = redact_home(&text, home);
+        let Ok(text) = std::str::from_utf8(&t) else { return };
+        let r = redact_home(text, home);
         if r != text {
             let _ = std::fs::write(path, r);
         }
@@ -180,7 +181,7 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
         }
         for dir in ["game", "crash-reports", "engine-debug"] {
             for e in std::fs::read_dir(stage.join(dir)).into_iter().flatten().flatten() {
-                if !matches!(e.path().extension(), Some(x) if x == "rep") {
+                if !matches!(e.path().extension(), Some(x) if x == "rep" || x == "dmp") {
                     redact_file(&e.path(), home);
                 }
             }
@@ -267,7 +268,9 @@ mod tests {
         std::fs::write(data.join("ReleaseCrashInfo.txt"), "crash").unwrap();
         std::fs::write(data.join("Replays/LastReplay.rep"), "rep").unwrap();
         std::fs::create_dir_all(data.join("CrashDumps")).unwrap();
-        std::fs::write(data.join("CrashDumps/CrashMZ-20261028-091437-x.dmp"), "mini").unwrap();
+        // a minidump is binary and holds the home folder: it must arrive byte for byte (redacting it as text destroyed it)
+        let mini: Vec<u8> = [b"MDMP\x93\xa7\x00\x00".as_slice(), b"/Users/ann smith/x", &[0xff, 0x80, 0xc3]].concat();
+        std::fs::write(data.join("CrashDumps/CrashMZ-20261028-091437-x.dmp"), &mini).unwrap();
         std::fs::write(data.join("CrashDumps/CrashFZ-20261028-091437-x.dmp"), "full").unwrap();
         std::fs::create_dir_all(t.join("engine")).unwrap();
         std::fs::write(t.join("engine/DebugLogFile.txt"), "path failed in /Users/ann smith/x").unwrap();
@@ -285,11 +288,11 @@ mod tests {
         assert!(!out.join("game/LastReplay.rep").exists() && !out.join("game/crash-dump.dmp").exists(), "the replay and crash dump are only added when asked for");
         let dbg = std::fs::read_to_string(out.join("engine-debug/DebugLogFile.txt")).unwrap();
         assert!(dbg.contains("<home>/x") && !dbg.contains("ann smith"), "{dbg}");
-        let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: None, engine_dir: None } };
+        let with = Sources { include_replay: true, ..Sources { base: base.clone(), game_data: s.game_data.clone(), game_dir: None, version: "9.9.9".into(), extra: vec![], include_replay: true, home: Some(PathBuf::from("/Users/ann smith")), engine_dir: None } };
         let out2 = t.join("stage2");
         stage(&with, &out2, 0).unwrap();
         assert!(out2.join("game/LastReplay.rep").is_file());
-        assert_eq!(std::fs::read_to_string(out2.join("game/crash-dump.dmp")).unwrap(), "mini", "the small dump, not the full one");
+        assert_eq!(std::fs::read(out2.join("game/crash-dump.dmp")).unwrap(), mini, "the small dump, not the full one, unchanged");
         // The zip itself needs the system's tar or zip, which a bare build machine may lack.
         if let Ok(z) = create(&s, &t.join("out")) {
             assert!(z.metadata().unwrap().len() > 100 && z.to_string_lossy().ends_with(".zip"));

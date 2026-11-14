@@ -1,0 +1,26 @@
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+index 78e0188..592d54b 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+@@ -1204,7 +1204,7 @@ uint32_t g_cnt[16] = {};
+ struct CloudCfg
+ {
+ 	bool clouds = false, shadows = true;
+-	float base = 350.0f, thickness = 120.0f, coverage = 0.20f, density = 0.85f, speed = 1.0f, shadowStrength = 0.85f;
++	float base = 350.0f, thickness = 120.0f, coverage = 0.20f, density = 0.85f, speed = 1.0f, shadowStrength = 0.45f;
+ } g_cloud;
+ 
+ struct PostCfg
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.h b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.h
+index 63aa5fd..bbf0c2d 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.h
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.h
+@@ -19,7 +19,7 @@ struct VkGfx_Settings
+ 	float cloudCoverage = 0.20f;		// 0 clear sky .. 1 overcast
+ 	float cloudDensity = 0.85f;		// opacity of the clouds
+ 	float cloudSpeed = 1.0f;			// drift speed
+-	float cloudShadowStrength = 0.85f;
++	float cloudShadowStrength = 0.45f;	// how much of the light a cloud takes away at its thickest: 0.85 left the centre of a shadow nearly black, since it darkens ambient light too
+ 	// Options.ini keys DynamicLights, DynamicLightStrength, AnisotropicFiltering, PixelLighting, SpecularStrength
+ 	int shadowQuality = 1;			// 2 high (4096 shadow map, full filtering), 1 medium (2048 map, the default), 0 low (2048 map, fewer filter taps)
+ 	bool aoHalfResolution = true;	// ambient occlusion at half resolution
