@@ -1,11 +1,23 @@
 # Builds the engine, launcher bundles, relay server and Docker image.
 #   push a tag vX.Y.Z or vX.Y.Z-alpha.N  -> build everything and publish a GitHub Release
 #   manual run (Actions > Release > Run)   -> build everything, publish nothing (artifacts only)
-# Plain pushes and PRs never run this; see ci.yml for the fast checks.
+#   push to main that changes the build, and once a week -> the same as a manual run. This is what fills the caches:
+#     a tag or a branch can only read a cache saved on main (or by itself), so without these runs every release
+#     started cold (FFmpeg alone took 17 of its 30 minutes).
+# PRs and other pushes never run this; see ci.yml for the fast checks.
 name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths: # ignored for tags
+      - 'Cargo.lock'
+      - 'engine/**'
+      - 'patches/**'
+      - 'third-party/**'
+      - '.github/workflows/release.yml'
+  schedule:
+    - cron: '17 3 * * 1' # caches unused for a week are deleted; this also notices a runner image that breaks the build
   workflow_dispatch:
 
 # Least privilege: jobs that need more ask for it themselves.
@@ -127,9 +139,10 @@ jobs:
             if ($_ -match '^([^=]+)=(.*)$') { Add-Content -Path $env:GITHUB_ENV -Value "$($Matches[1])=$($Matches[2])" -Encoding utf8 }
           }
           # vcpkg is preinstalled on the runner; the preset reads VCPKG_ROOT. Its binary cache keeps FFmpeg from being rebuilt every run.
+          # The cache folder is inside the workspace so that hashFiles() can name the cache by its content (see below).
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" -Encoding utf8
-          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_DEFAULT_BINARY_CACHE=$env:RUNNER_TEMP\vcpkg-cache" -Encoding utf8
-          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_DEFAULT_BINARY_CACHE=$env:GITHUB_WORKSPACE\.vcpkg-cache" -Encoding utf8
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\.vcpkg-cache" | Out-Null
       # The simulation maths (DetMath) must give the same bits as on macOS: the golden hashes in the test are the ones
       # every other platform checks. Compiled the way the engine is (MSVC, /fp:precise), cheap, so it runs first.
       - name: Maths test (MSVC x64)
@@ -139,10 +152,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "detmath_test did not compile" }
           ./detmath_x64.exe
           if ($LASTEXITCODE -ne 0) { throw "the simulation maths differs on x64" }
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # vcpkg names each package archive by everything that went into it (port, triplet, compiler, its own scripts), and
+      # the runner image changes some of those now and then. So the cache is named by the archives in it: the newest one
+      # for this manifest is restored, and a new one is saved only when vcpkg had to build something. (A key of the
+      # manifest alone can never be saved again, so after an image update FFmpeg would be rebuilt on every run.)
+      - id: vcpkg-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}\vcpkg-cache
-          key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}
+          path: .vcpkg-cache
+          key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-none
+          restore-keys: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-
       - name: Configure and build
         working-directory: engine
         shell: pwsh
@@ -150,8 +169,15 @@ jobs:
           # RTS.RC includes MFC's afxres.h; a forwarding header keeps the build independent of the MFC component.
           New-Item -ItemType Directory -Force -Path build/shim | Out-Null
           Set-Content build/shim/afxres.h "#include <winres.h>`n"
-          cmake --preset win64-vcpkg -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF -DRTS_BUILD_OPTION_FFMPEG=ON "-DCMAKE_RC_FLAGS=-DWIN32 /I$PWD/build/shim"
+          # x64-windows-release: the same libraries as x64-windows without the debug copies nobody uses (half of FFmpeg's build time).
+          cmake --preset win64-vcpkg -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF -DRTS_BUILD_OPTION_FFMPEG=ON -DVCPKG_TARGET_TRIPLET=x64-windows-release "-DCMAKE_RC_FLAGS=-DWIN32 /I$PWD/build/shim"
           cmake --build --preset win64-vcpkg
+      # Straight after the build, so a later step that fails does not throw 9 minutes of FFmpeg away.
+      - if: steps.vcpkg-restore.outputs.cache-matched-key != format('vcpkg-x64-{0}-{1}', hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json'), hashFiles('.vcpkg-cache/**'))
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .vcpkg-cache
+          key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-${{ hashFiles('.vcpkg-cache/**') }}
       - name: Collect
         shell: pwsh
         run: |
@@ -224,6 +250,9 @@ jobs:
           name: ${{ matrix.engine64 }}
           path: launcher/src-tauri/engine/x64
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Only main saves: nothing else can read a cache a tag saved, and each release was uploading about 1 GB of them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Pinned so the cache key means something; on a miss binstall fetches a prebuilt binary.
       - id: tauri-cli
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -285,6 +314,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Only main saves: nothing else can read a cache a tag saved, and each release was uploading about 1 GB of them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Work out the version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
@@ -343,6 +375,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Only main saves: nothing else can read a cache a tag saved, and each release was uploading about 1 GB of them.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         shell: bash
         run: |

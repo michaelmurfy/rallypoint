@@ -33,11 +33,47 @@ jobs:
       - if: runner.os != 'Linux'
         run: cargo test -p generals-core -p generals-proto -p generals-server
 
+  # macOS as well: it is the compiler the macOS engine is built with, and findfile_test only exists there.
   engine-math:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: sh tests/run.sh
+
+  # The simulation maths with the Windows compiler and the engine's own floating-point switches, for both engines we
+  # ship. A difference here is a multiplayer desync, and until now it was only looked for (x64 only) during a release.
+  engine-math-msvc:
+    name: engine-math (MSVC ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86, flags: '/arch:SSE2' }
+          - { arch: x64, flags: '' }
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh patches/apply.sh
+        shell: bash
+      - shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with the C++ tools was not found" }
+          $bat = Join-Path $vs 'VC\Auxiliary\Build\vcvarsall.bat'
+          cmd /c "`"$bat`" ${{ matrix.arch }} > nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+          }
+          cl /nologo /std:c++17 /EHsc /O2 /fp:precise ${{ matrix.flags }} /Iengine/Core/GameEngine/Include /Iengine/Core/Libraries/Source/WWVegas/WWLib tests/detmath_test.cpp /Fe:detmath_test.exe
+          if ($LASTEXITCODE -ne 0) { throw "detmath_test did not compile" }
+          ./detmath_test.exe
+          if ($LASTEXITCODE -ne 0) { throw "the simulation maths differs with MSVC ${{ matrix.arch }}" }
