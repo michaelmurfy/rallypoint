@@ -937,7 +937,7 @@ async fn icons_install(app: tauri::AppHandle) -> Result<mods::Installed, String>
     tauri::async_runtime::spawn_blocking(move || icons::install(&dir, &work)).await.map_err(|e| e.to_string())?
 }
 
-/// Choose the command bar: "hd" (sharp icons) or "pro" (Control Bar Pro for a window of this size, downloaded now).
+/// Choose the command bar: "hd" (sharp icons) or "pro" (Control Bar Pro for a window of this size, downloaded now unless it is already there).
 #[tauri::command]
 async fn set_control_bar(app: tauri::AppHandle, choice: String, width: u32, height: u32) -> Result<(), String> {
     let path = config_path(&app)?;
@@ -945,7 +945,7 @@ async fn set_control_bar(app: tauri::AppHandle, choice: String, width: u32, heig
     if pro {
         let dir = mods_dir(&app)?;
         let work = base(&app)?.join("tmp");
-        tauri::async_runtime::spawn_blocking(move || icons::install_pro(&dir, &work, width, height).map(|_| ())).await.map_err(|e| e.to_string())??;
+        tauri::async_runtime::spawn_blocking(move || icons::install_pro(&dir, &work, width, height)).await.map_err(|e| e.to_string())??;
     }
     let mut c = Config::load(&path);
     c.control_bar = if pro { "pro".into() } else { String::new() };

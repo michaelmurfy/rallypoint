@@ -46,10 +46,28 @@ pub fn install(mods_dir: &Path, work: &Path) -> Result<mods::Installed, String> 
     fetch_and_install(mods_dir, work, URL, SHA256, FOLDER)
 }
 
-/// Install Control Bar Pro for a window of this size, replacing any other size.
-pub fn install_pro(mods_dir: &Path, work: &Path, width: u32, height: u32) -> Result<mods::Installed, String> {
+/// A note inside the Pro folder saying which download it holds (the zip's SHA-256), so choosing Pro again after a spell
+/// on the sharp icons does not fetch 40 MB that are already there.
+const PRO_MARK: &str = "rallypoint-variant.txt";
+
+/// Whether the Pro folder already holds this size.
+pub fn pro_installed(mods_dir: &Path, v: &ProVariant) -> bool {
+    let dir = mods_dir.join(PRO_FOLDER);
+    let has_big = std::fs::read_dir(&dir).map(|d| d.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("big")))).unwrap_or(false);
+    has_big && std::fs::read_to_string(dir.join(PRO_MARK)).is_ok_and(|m| m.trim() == v.sha256)
+}
+
+/// Install Control Bar Pro for a window of this size, replacing any other size. Nothing is downloaded when that size is
+/// already installed.
+pub fn install_pro(mods_dir: &Path, work: &Path, width: u32, height: u32) -> Result<(), String> {
     let v = pro_variant(width, height);
-    fetch_and_install(mods_dir, work, v.url, v.sha256, PRO_FOLDER)
+    if pro_installed(mods_dir, v) {
+        return Ok(());
+    }
+    fetch_and_install(mods_dir, work, v.url, v.sha256, PRO_FOLDER)?;
+    // Without the note the next switch downloads again, which is only slower: not worth failing the install over.
+    let _ = std::fs::write(mods_dir.join(PRO_FOLDER).join(PRO_MARK), v.sha256);
+    Ok(())
 }
 
 fn fetch_and_install(mods_dir: &Path, work: &Path, url: &str, sha256: &str, folder: &str) -> Result<mods::Installed, String> {
@@ -96,5 +114,22 @@ mod tests {
             assert_eq!(v.sha256.len(), 64);
         }
         assert!(is_bundled(FOLDER) && is_bundled(PRO_FOLDER) && !is_bundled("Shockwave"));
+    }
+
+    #[test]
+    fn pro_is_only_downloaded_when_that_size_is_not_there() {
+        let mods = std::env::temp_dir().join(format!("rp-pro-{}", std::process::id()));
+        let dir = mods.join(PRO_FOLDER);
+        let _ = std::fs::remove_dir_all(&mods);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (small, big) = (pro_variant(1280, 720), pro_variant(3840, 2160));
+        assert!(!pro_installed(&mods, small)); // an empty folder
+        std::fs::write(dir.join("340_ControlBarProZH.big"), b"BIGF").unwrap();
+        assert!(!pro_installed(&mods, small)); // installed by an older version: no note, so it is fetched once more
+        std::fs::write(dir.join(PRO_MARK), format!("{}\n", small.sha256)).unwrap();
+        assert!(pro_installed(&mods, small) && !pro_installed(&mods, big)); // another size still downloads
+        std::fs::remove_file(dir.join("340_ControlBarProZH.big")).unwrap();
+        assert!(!pro_installed(&mods, small)); // the note alone is not an install
+        let _ = std::fs::remove_dir_all(&mods);
     }
 }

@@ -30,6 +30,10 @@ concurrency:
 
 jobs:
   # ---- game engine (our patches applied on top of engine/) -----------------------------
+  # Reuse: each job first looks for the engine it would build, saved under a key made of the git trees of engine/,
+  # patches/ and third-party/ plus this file. A release that only changes the launcher then ships the engine that main
+  # already built from the same sources, in seconds. Tags never save (nothing else could read it); the weekly run
+  # always builds, so a runner image that breaks the build is still noticed.
   engine-macos:
     name: Engine (macOS arm64)
     runs-on: macos-15
@@ -38,17 +42,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: brew install ninja
-      - run: sh patches/apply.sh
+      # A built engine is reused when nothing that goes into it has changed (see "reuse" at the top of the engine jobs).
+      - id: key
+        shell: bash
+        run: echo "key=engine-out-macos-$(git rev-parse HEAD:engine HEAD:patches HEAD:third-party HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: brew install ninja
+      - if: env.BUILD == '1'
+        run: sh patches/apply.sh
       - name: Configure and build
+        if: env.BUILD == '1'
         working-directory: engine
         run: |
           cmake --preset apple-arm64-release
           cmake --build build/apple-arm64-release --config Release --target z_generals
       - name: Package (relocatable, ad-hoc signed)
+        if: env.BUILD == '1'
         working-directory: engine
         run: bash scripts/package-macos-release.sh Release build/apple-arm64-release
       - name: Flatten payload
+        if: env.BUILD == '1'
         run: |
           mkdir -p out/engine
           cp -RL engine/dist/GeneralsZH-macOS-arm64/. out/engine/
@@ -56,6 +77,11 @@ jobs:
           cp -R patches/upstream/moderngeneralszh/assets out/engine/assets
           ls -la out/engine
           strings -a out/engine/generalszh | grep -q 'DebugFrame_' || { echo "sync log writer missing from the engine"; exit 1; }
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-macos
@@ -70,11 +96,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sh patches/apply.sh
+      # A built engine is reused when nothing that goes into it has changed (see "reuse" at the top of the engine jobs).
+      - id: key
+        shell: bash
+        run: echo "key=engine-out-windows-x86-$(git rev-parse HEAD:engine HEAD:patches HEAD:third-party HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: sh patches/apply.sh
         shell: bash
       # The 32-bit Visual Studio build environment, set up directly: the third-party action that did this still runs on
       # Node.js 20, which GitHub is retiring, and it is no longer updated.
       - name: Visual Studio x86 environment
+        if: env.BUILD == '1'
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -85,11 +125,13 @@ jobs:
             if ($_ -match '^([^=]+)=(.*)$') { Add-Content -Path $env:GITHUB_ENV -Value "$($Matches[1])=$($Matches[2])" -Encoding utf8 }
           }
       - name: Configure and build
+        if: env.BUILD == '1'
         working-directory: engine
         run: |
           cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF
           cmake --build --preset win32
       - name: Collect
+        if: env.BUILD == '1'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out/engine | Out-Null
@@ -101,6 +143,14 @@ jobs:
           if (-not (Get-ChildItem out/engine -Filter *.exe | Select-String -Pattern 'DebugFrame_' -Quiet)) { throw "sync log writer missing from the engine" }
           if (-not $crt) { throw "no x86 CRT under $env:VCToolsRedistDir" }
           'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
+          # The symbols are kept with the engine, so a reused engine still has the ones that match it.
+          New-Item -ItemType Directory -Force -Path out/symbols | Out-Null
+          Get-ChildItem engine/build/win32/GeneralsMD/Release -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.pdb', '.map' } | Copy-Item -Destination out/symbols -Verbose
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-windows
@@ -110,9 +160,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-windows-symbols
-          path: |
-            engine/build/win32/GeneralsMD/Release/*.pdb
-            engine/build/win32/GeneralsMD/Release/*.map
+          path: out/symbols
           if-no-files-found: ignore
           retention-days: 90
 
@@ -127,9 +175,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sh patches/apply.sh
+      # A built engine is reused when nothing that goes into it has changed (see "reuse" at the top of the engine jobs).
+      - id: key
+        shell: bash
+        run: echo "key=engine-out-windows-x64-$(git rev-parse HEAD:engine HEAD:patches HEAD:third-party HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: sh patches/apply.sh
         shell: bash
       - name: Visual Studio x64 environment
+        if: env.BUILD == '1'
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -146,6 +208,7 @@ jobs:
       # The simulation maths (DetMath) must give the same bits as on macOS: the golden hashes in the test are the ones
       # every other platform checks. Compiled the way the engine is (MSVC, /fp:precise), cheap, so it runs first.
       - name: Maths test (MSVC x64)
+        if: env.BUILD == '1'
         shell: pwsh
         run: |
           cl /nologo /std:c++17 /EHsc /O2 /fp:precise /Iengine/Core/GameEngine/Include /Iengine/Core/Libraries/Source/WWVegas/WWLib tests/detmath_test.cpp /Fe:detmath_x64.exe
@@ -157,12 +220,14 @@ jobs:
       # for this manifest is restored, and a new one is saved only when vcpkg had to build something. (A key of the
       # manifest alone can never be saved again, so after an image update FFmpeg would be rebuilt on every run.)
       - id: vcpkg-restore
+        if: env.BUILD == '1'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .vcpkg-cache
           key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-none
           restore-keys: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-
       - name: Configure and build
+        if: env.BUILD == '1'
         working-directory: engine
         shell: pwsh
         run: |
@@ -173,12 +238,13 @@ jobs:
           cmake --preset win64-vcpkg -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF -DRTS_BUILD_OPTION_FFMPEG=ON -DVCPKG_TARGET_TRIPLET=x64-windows-release "-DCMAKE_RC_FLAGS=-DWIN32 /I$PWD/build/shim"
           cmake --build --preset win64-vcpkg
       # Straight after the build, so a later step that fails does not throw 9 minutes of FFmpeg away.
-      - if: steps.vcpkg-restore.outputs.cache-matched-key != format('vcpkg-x64-{0}-{1}', hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json'), hashFiles('.vcpkg-cache/**'))
+      - if: env.BUILD == '1' && steps.vcpkg-restore.outputs.cache-matched-key != format('vcpkg-x64-{0}-{1}', hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json'), hashFiles('.vcpkg-cache/**'))
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .vcpkg-cache
           key: vcpkg-x64-${{ hashFiles('engine/vcpkg.json', 'engine/vcpkg-lock.json') }}-${{ hashFiles('.vcpkg-cache/**') }}
       - name: Collect
+        if: env.BUILD == '1'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out/engine | Out-Null
@@ -200,7 +266,14 @@ jobs:
           Copy-Item third-party/dxvk/x64/d3d9.dll out/engine -Verbose
           # Textures the Enhanced renderer uses (generated scorch atlas and height map, no game data), read through GEN_ASSETS.
           Copy-Item -Recurse patches/upstream/moderngeneralszh/assets out/engine/assets -Verbose
+          New-Item -ItemType Directory -Force -Path out/symbols | Out-Null
+          Get-ChildItem engine/build/win64-vcpkg/GeneralsMD/Release -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.pdb', '.map' } | Copy-Item -Destination out/symbols -Verbose
           Get-ChildItem out/engine | Format-Table Name, Length
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-windows-x64
@@ -209,9 +282,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-windows-x64-symbols
-          path: |
-            engine/build/win64-vcpkg/GeneralsMD/Release/*.pdb
-            engine/build/win64-vcpkg/GeneralsMD/Release/*.map
+          path: out/symbols
           if-no-files-found: ignore
           retention-days: 90
 
