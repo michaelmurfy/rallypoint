@@ -275,7 +275,14 @@ jobs:
           printf '{"version":"%s"}' "$VERSION" > launcher/src-tauri/tauri.version.json
           echo "building $VERSION"
       # RALLYPOINT_VERSION (set above) is also compiled into the app, so the updater can tell 0.1.0-beta.1 from 0.1.0-beta.2
-      - run: cargo tauri build ${{ matrix.bundles }} --config tauri.version.json
+      # macOS runners now and then fail to make the disk image ("hdiutil: create failed - Resource busy"). The second
+      # try only repeats the bundling: the app is already compiled.
+      - shell: bash
+        run: |
+          cargo tauri build ${{ matrix.bundles }} --config tauri.version.json || {
+            echo "::warning::cargo tauri build failed, trying once more"; sleep 20
+            cargo tauri build ${{ matrix.bundles }} --config tauri.version.json
+          }
         working-directory: launcher/src-tauri
       # A glob such as "engine/*" skips subfolders, which left the 64-bit engine and the effect assets out of every
       # installer. tauri-build copies the same resource list next to the built app, so look there.
