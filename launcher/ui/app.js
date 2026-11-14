@@ -1530,12 +1530,12 @@ function connectionCard() {
  *  starts with (for computer players in a multiplayer game); everyone else sees it and cannot change it. */
 function roomCard() {
   let held = 0, asked = null; // the relay answers on the next ping: keep the choice on screen until it has
-  const badge = h("span", {}), note = h("span", {}), fb = liveStatus();
+  const badge = h("span", {}), note = h("span", {}), fb = liveStatus(), level = h("span", { class: "pill" });
   const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: async () => {
-    try { held = Date.now(); asked = +sel.value; fb.busy("Telling the room…"); await invoke("relay_set_ai", { level: asked }); } catch (e) { asked = null; fb.bad(errText(e)); }
+    try { held = Date.now(); asked = +sel.value; fb.busy("Saving…"); await invoke("relay_set_ai", { level: asked }); } catch (e) { asked = null; fb.bad(errText(e)); }
   } }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
   const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
-    h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-stack" }, sel, fb.el))));
+    h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-inline" }, fb.el, sel, level))));
   function draw() {
     const d = net.last;
     card.hidden = !d || d.room_master == null;
@@ -1543,13 +1543,15 @@ function roomCard() {
     const master = !!d.room_master;
     fill(badge, pill(master ? "You are the room master" : "Room master: another player", master ? "ok" : ""));
     // the relay has confirmed the level we asked for, or five seconds passed without it
-    if (asked != null && (d.ai_level ?? 0) === asked) { asked = null; held = 0; fb.ok("Set for everyone in the room."); }
-    else if (asked != null && Date.now() - held > 5000) { asked = null; fb.bad("The server did not confirm it. Try again."); }
+    if (asked != null && (d.ai_level ?? 0) === asked) { asked = null; held = 0; fb.ok("Saved for the room"); }
+    else if (asked != null && Date.now() - held > 5000) { asked = null; fb.bad("Not confirmed, try again"); }
     if (Date.now() - held > 5000) sel.value = String(d.ai_level ?? 0);
-    sel.disabled = !master;
+    // only the master has a control; everyone else sees the level as a value, not a greyed-out menu
+    sel.hidden = !master; level.hidden = master;
+    level.textContent = (AI_BOOSTS.find(([v]) => v === (d.ai_level ?? 0)) || AI_BOOSTS[0])[1];
     note.textContent = master
-      ? "You were first in this room, so you choose. Computer players in a multiplayer game build, field teams and gather faster, for everyone. Set it before anyone starts the game."
-      : "The room master chooses this. It applies to everyone when the game starts.";
+      ? "Computer players build and gather faster in everyone's game. Set it before the game starts."
+      : "Chosen by the room master. It applies when the game starts.";
   }
   window.addEventListener("net", draw);
   draw();

@@ -424,10 +424,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .setting-text .small { margin-top: 1px; }
 .setting-ctl { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .setting-ctl select { width: 210px; }
-/* a control with its status line under it (right-aligned like the control), the line's height kept so nothing jumps */
-.ctl-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.ctl-stack .live { min-height: 18px; font-size: 12.5px; }
-@media (max-width: 640px) { .ctl-stack { align-items: flex-start; } }
+/* a control with its short status to the left of it on the same line, so the row never grows */
+.ctl-inline { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.ctl-inline .live { font-size: 12.5px; white-space: nowrap; }
+.ctl-inline .live:empty { display: none; }
 .card > .live:empty { display: none; }
 .card > .live { padding-top: 10px; border-top: 1px solid var(--line); }
 .about { padding: 4px 2px 0; max-width: 60ch; }
