@@ -503,7 +503,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .speedpick.changed svg { fill: var(--rose); }
 .speedpick.changed .speedsel { border-color: color-mix(in srgb, var(--rose) 55%, transparent); color: var(--rose); }
 .playrow { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin-top: 4px; }
-.playrow .speedpick { flex: 1 1 130px; }
+.playrow .speedpick { flex: 1 1 170px; } /* four options: two rows of two in the dialog, one row when it is wide */
 .playrow .speedsel { width: 100%; padding: 0 24px 0 34px; text-overflow: ellipsis; }
 .playrow .speedpick svg { left: 11px; }
 .playrow .playbtn { flex: 1 1 100%; width: auto; margin-top: 0; } /* the options sit above; Play gets a row of its own */
