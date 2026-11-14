@@ -98,6 +98,12 @@ pub fn game_art(game_dir: &Path, layers: &[std::path::PathBuf]) -> Option<Vec<u8
     bmp(&game_dir.join("Install_Final.bmp"))
 }
 
+/// "Stronger AI" (0 off, 1 to 3): the engine's computer players build and field teams faster and run more supply trucks.
+/// Only for a skirmish, where nobody else's game has to match; anything but 1 to 3 sets nothing.
+pub fn ai_boost_env(level: u32) -> Option<(String, String)> {
+    (1..=3).contains(&level).then(|| ("GEN_AI_BOOST".to_string(), level.to_string()))
+}
+
 /// Environment for a skirmish started from the map list: the map (a folder in the game's Maps folder, which `exists` checks),
 /// how many computer opponents (1 to 7), how hard they are, which start position (1 to 8) the player takes and the game speed (50 to 200 percent) and the starting money (1,000 to 1,000,000). Anything else is refused: these come from the page.
 pub fn skirmish_env(map: Option<&str>, ai: Option<u32>, difficulty: Option<&str>, start: Option<u32>, speed: Option<u32>, cash: Option<u32>, exists: impl Fn(&str) -> bool) -> Result<Vec<(String, String)>, String> {
@@ -293,6 +299,13 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stronger_ai_is_one_to_three() {
+        assert_eq!(ai_boost_env(0), None);
+        assert_eq!(ai_boost_env(4), None);
+        assert_eq!(ai_boost_env(2), Some(("GEN_AI_BOOST".to_string(), "2".to_string())));
+    }
+
     use super::*;
 
     #[test]

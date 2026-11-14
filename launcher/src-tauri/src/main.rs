@@ -944,7 +944,7 @@ async fn set_control_bar(app: tauri::AppHandle, choice: String, width: u32, heig
 }
 
 #[tauri::command]
-fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
+fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, width: u32, height: u32, fullscreen: bool, skirmish: bool, raised_camera: Option<bool>, skirmish_map: Option<String>, skirmish_ai: Option<u32>, skirmish_difficulty: Option<String>, skirmish_start: Option<u32>, skirmish_speed: Option<u32>, skirmish_cash: Option<u32>, ai_boost: Option<u32>, mut skirmish_slots: Option<Vec<launch::SlotSpec>>) -> Result<(), String> {
     let base = base(&app)?;
     let data = app.path().data_dir().map_err(|e| e.to_string())?;
     let exe = find_engine(&app, &data)
@@ -1000,6 +1000,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             if skirmish {
                 env.push(("GEN_AUTO_SKIRMISH".to_string(), "1".to_string()));
                 env.extend(skirmish_env.iter().cloned());
+                env.extend(launch::ai_boost_env(ai_boost.unwrap_or(0)));
                 if let Some((table, diff)) = &skirmish_table {
                     env.push(("GEN_AUTO_SLOTS".to_string(), table.clone()));
                     env.push(("GEN_AUTO_DIFF".to_string(), diff.clone().unwrap_or_else(|| "easy".to_string())));

@@ -1140,6 +1140,8 @@ function resolutionSelect() {
   return wrap;
 }
 
+const AI_BOOSTS = [[0, "Off"], [1, "Sharper"], [2, "Strong"], [3, "Relentless"]];
+const aiBoost = () => (AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0);
 const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : DEFAULT_CASH);
 
 /** Start the game with the saved display choices and mod selection. `skirmish` (with an optional map, opponents and difficulty)
@@ -1151,7 +1153,7 @@ async function startGame({ skirmish = false, map = null, ai = null, difficulty =
   const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
   let started = false;
   try {
-    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, skirmishSlots: slots });
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, aiBoost: aiBoost(), skirmishSlots: slots });
     started = true;
   } catch (e) { say(errText(e), "bad"); }
   // The game's own window takes a few seconds to appear; keep the notice up until then.
@@ -1173,6 +1175,9 @@ function playPage() {
   const custom = h("div", { class: "row", hidden: true }, cw, "×", ch);
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
+  const aiSel = h("select", { "aria-label": "Stronger AI", onchange: () => prefs.set({ aiBoost: +aiSel.value }) },
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  aiSel.value = String(aiBoost());
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
   // The chosen game's own picture, read from the player's files, fading in from the right edge of the card. Two layers:
@@ -1266,7 +1271,8 @@ function playPage() {
       custom,
       h("div", { class: "settings" },
         setting("Fullscreen", "Fill the screen instead of a window.", h("label", { class: "switch" }, fs)),
-        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam))),
+        setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam)),
+        setting("Stronger AI", "Skirmish computer players build, field teams and gather faster, in any mod. It changes their pace, not their tactics. Multiplayer games ignore it.", aiSel)),
       ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }

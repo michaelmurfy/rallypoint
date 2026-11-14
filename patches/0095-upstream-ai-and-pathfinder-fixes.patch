@@ -1,0 +1,297 @@
+Upstream TheSuperHackers/GeneralsGameCode 2119cc9b: bugfix(ai): Do not exit a temporary AI state that was already reset during its own update (#3438)
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+index a28625b7..dbfddab2 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+@@ -878,8 +878,14 @@ StateReturnType AIStateMachine::updateStateMachine()
+ 
+ 			return status;
+ 		}
+-		m_temporaryState->onExit(EXIT_NORMAL);
+-		m_temporaryState = nullptr;
++
++		// TheSuperHackers @bugfix Okladnoj 08/10/2026 Check that the temporary state still exists as it can be cleared from the state machine within the states update.
++		// This only happens without RETAIL_COMPATIBLE_CRC, where clear() resets the temporary state.
++		if (m_temporaryState)
++		{
++			m_temporaryState->onExit(EXIT_NORMAL);
++			m_temporaryState = nullptr;
++		}
+ 	}
+ 	StateReturnType retType = StateMachine::updateStateMachine();
+ 
+Upstream TheSuperHackers/GeneralsGameCode 1b1212f0: fix(aiplayer): Initialize uninitialized variables in Generals AIPlayer::getPlayerStructureBounds (#3426)
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+index cc4c7b77..4ea3e5cf 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+@@ -3827,19 +3827,24 @@ void WorkOrder::loadPostProcess()
+ /**
+  * Get the bounds for a player's structure.
+  */
+-void AIPlayer::getPlayerStructureBounds( Region2D *bounds, Int playerNdx, Bool conservative )
++void AIPlayer::getPlayerStructureBounds(Region2D *bounds, Int playerNdx, Bool conservative)
+ {
+-	Player::PlayerTeamList::const_iterator it;
+-	Bool firstObject = true;
+-	Bool firstStructure = true;
+-	bounds->hi.x = bounds->lo.x = bounds->hi.y = bounds->lo.y = 0;
+-	Region2D objBounds;
+-	objBounds.hi.x = objBounds.lo.x = objBounds.hi.y = objBounds.lo.y = 0;
++#if RTS_GENERALS && RETAIL_COMPATIBLE_CRC
++	// TheSuperHackers @info In the Generals code, lo.y used to be uninitialized for both Region2D variables in this function.
++#endif
++	bounds->zero();
+ 
+ 	Player* pPlayer = ThePlayerList->getNthPlayer(playerNdx);
+ 	if (pPlayer == nullptr)
+ 		return;
+-	for (it = pPlayer->getPlayerTeams()->begin(); it != pPlayer->getPlayerTeams()->end(); ++it)
++
++	Bool firstObject = true;
++	Bool firstStructure = true;
++	Region2D objBounds;
++	objBounds.zero();
++
++	const Player::PlayerTeamList& list = *pPlayer->getPlayerTeams();
++	for (Player::PlayerTeamList::const_iterator it = list.begin(); it != list.end(); ++it)
+ 	{
+ 		for (DLINK_ITERATOR<Team> iter = (*it)->iterate_TeamInstanceList(); !iter.done(); iter.advance())
+ 		{
+Upstream TheSuperHackers/GeneralsGameCode b0c29eba: bugfix(aiplayer): Improve initialization of uninitialized variable in AIPlayer::onUnitProduced (#3379)
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
+index e70d3f3f..15276811 100644
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/GameLogic.h
+@@ -473,6 +473,11 @@ private:
+ 	void xferObjectTOC( Xfer *xfer );												///< save/load object TOC for current state of map
+ 	void prepareLogicForObjectLoad();									///< prepare engine for object data from game file
+ 
++#if RTS_GENERALS && defined(_MSC_VER) && _MSC_VER < 1300
++public:
++	Bool m_onUnitProducedZeroInit;
++#endif
++
+ };
+ 
+ // INLINE /////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+index 6e10495b..0e98e434 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+@@ -1058,6 +1058,16 @@ void AIPlayer::onUnitProduced( Object *factory, Object *unit )
+ 	// To keep retail compatibility it needs to be set true in VS6 builds.
+ #if defined(_MSC_VER) && _MSC_VER < 1300
+ 	Bool supplyTruck = true;
++
++#if RTS_GENERALS
++	// A special initialization case for the call site in SpawnBehavior::createSpawn
++	// to mimic the initialization behavior in the retail Generals binary.
++	if (TheGameLogic->m_onUnitProducedZeroInit)
++	{
++		supplyTruck = false;
++	}
++#endif
++
+ #else
+ 	Bool supplyTruck = false;
+ #endif
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Behavior/SpawnBehavior.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Behavior/SpawnBehavior.cpp
+index 39d49bd2..54d235c7 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Behavior/SpawnBehavior.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Behavior/SpawnBehavior.cpp
+@@ -629,7 +629,14 @@ Bool SpawnBehavior::createSpawn()
+ 		newSpawn = TheThingFactory->newObject( m_spawnTemplate, parent->getTeam() ); // just a little worried about this...
+ 
+ 		// Count this unit towards our score.
++#if RTS_GENERALS && defined(_MSC_VER) && _MSC_VER < 1300
++		// TheSuperHackers @info Set m_onUnitProducedZeroInit to true so it can be used in AIPlayer::onUnitProduced.
++		TheGameLogic->m_onUnitProducedZeroInit = true;
+ 		newSpawn->getControllingPlayer()->onUnitCreated(parent, newSpawn);
++		TheGameLogic->m_onUnitProducedZeroInit = false;
++#else
++		newSpawn->getControllingPlayer()->onUnitCreated(parent, newSpawn);
++#endif
+ 
+ 		// Gee, this is new...
+ 		// Now, we can have a list of template names.
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 8e60d2b3..efba4c72 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -265,6 +265,10 @@ GameLogic::GameLogic()
+ 	m_loadingSave = FALSE;
+ 	m_clearingGameData = FALSE;
+ 	m_quitToDesktopAfterMatch = FALSE;
++
++#if RTS_GENERALS && defined(_MSC_VER) && _MSC_VER < 1300
++	m_onUnitProducedZeroInit = false;
++#endif
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
+Upstream TheSuperHackers/GeneralsGameCode ec0658a3: bugfix(ai): Attacking infantry no longer attempt to path to their targets when force-evacuated from a vehicle (#3098)
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+index f78e882c..93474df9 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+@@ -1021,6 +1021,13 @@ void AIStateMachine::clear()
+ 	m_goalWaypoint = nullptr;
+ 	m_goalSquad = nullptr;
+ 
++#if !RETAIL_COMPATIBLE_CRC
++	if (m_temporaryState)
++		m_temporaryState->onExit(EXIT_RESET);
++
++	m_temporaryState = nullptr;
++#endif
++
+ 	AIUpdateInterface* ai = getOwner()->getAI();
+ 	if (ai)
+ 		ai->friend_notifyStateMachineChanged();
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Contain/OpenContain.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Contain/OpenContain.cpp
+index 7ed6622e..baea90bf 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Contain/OpenContain.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Contain/OpenContain.cpp
+@@ -768,6 +768,9 @@ void OpenContain::scatterToNearbyPosition(Object* rider)
+ 		// set position of the object at center of building and move them toward pos
+ 		rider->setPosition( theContainer->getPosition() );
+ 		ai->ignoreObstacle(theContainer);
++#if !RETAIL_COMPATIBLE_CRC
++		ai->friend_setGoalObject(nullptr);
++#endif
+ 		ai->aiMoveToPosition( &pos, CMD_FROM_AI );
+ 
+ 	}
+Upstream TheSuperHackers/GeneralsGameCode 78edd877: bugfix(ai): Fix bugged unit behavior when attacked during guard mode (#2197)
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuard.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuard.cpp
+index 82f96191..4898b8a9 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuard.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuard.cpp
+@@ -179,8 +179,15 @@ AIGuardMachine::AIGuardMachine( Object *owner ) :
+ 	//Kris: Except that guard return is more like an attack move, and will acquire targets while moving there.
+ 	//This breaks deployAI units because they have to completely unpack before realizing that there is a target in range.
+ 	//So I'm making AI_GUARD_INNER the first state.
++#if RETAIL_COMPATIBLE_CRC
+ 	defineState( AI_GUARD_INNER,						newInstance(AIGuardInnerState)( this ), AI_GUARD_OUTER, AI_GUARD_OUTER, attackAggressors );
+ 	defineState( AI_GUARD_RETURN,						newInstance(AIGuardReturnState)( this ), AI_GUARD_IDLE, AI_GUARD_INNER, attackAggressors );
++#else
++	// TheSuperHackers @bugfix 09/04/2026 The attack aggressors conditions for AI_GUARD_INNER and AI_GUARD_RETURN
++	// were removed to fix the conflicting movement and fire behavior in guard mode when the unit is under attack.
++	defineState( AI_GUARD_INNER,						newInstance(AIGuardInnerState)( this ), AI_GUARD_OUTER, AI_GUARD_OUTER );
++	defineState( AI_GUARD_RETURN,						newInstance(AIGuardReturnState)( this ), AI_GUARD_IDLE, AI_GUARD_INNER );
++#endif
+ 	defineState( AI_GUARD_IDLE,							newInstance(AIGuardIdleState)( this ), AI_GUARD_INNER, AI_GUARD_RETURN, attackAggressors );
+ 	defineState( AI_GUARD_OUTER,						newInstance(AIGuardOuterState)( this ), AI_GUARD_GET_CRATE, AI_GUARD_GET_CRATE );
+ 	defineState( AI_GUARD_GET_CRATE,				newInstance(AIGuardPickUpCrateState)( this ), AI_GUARD_RETURN, AI_GUARD_RETURN );
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuardRetaliate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuardRetaliate.cpp
+index e120a58c..0c352c2e 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuardRetaliate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIGuardRetaliate.cpp
+@@ -184,7 +184,13 @@ AIGuardRetaliateMachine::AIGuardRetaliateMachine( Object *owner ) :
+ // srj sez: I made "return" the start state, so that if ordered to guard a position
+ // that isn't the unit's current position, it moves to that position first.
+ 	defineState( AI_GUARD_RETALIATE_ATTACK_AGGRESSOR, newInstance(AIGuardRetaliateAttackAggressorState)( this ), AI_GUARD_RETALIATE_RETURN, AI_GUARD_RETALIATE_RETURN );
++#if RETAIL_COMPATIBLE_CRC
+ 	defineState( AI_GUARD_RETALIATE_RETURN,						newInstance(AIGuardRetaliateReturnState)( this ), AI_GUARD_RETALIATE_IDLE, AI_GUARD_RETALIATE_INNER, attackAggressors );
++#else
++	// TheSuperHackers @bugfix 09/04/2026 The attack aggressors conditions for AI_GUARD_RETALIATE_RETURN
++	// were removed to fix the conflicting movement and fire behavior in guard mode when the unit is under attack.
++	defineState( AI_GUARD_RETALIATE_RETURN,						newInstance(AIGuardRetaliateReturnState)( this ), AI_GUARD_RETALIATE_IDLE, AI_GUARD_RETALIATE_INNER );
++#endif
+ 	defineState( AI_GUARD_RETALIATE_IDLE,							newInstance(AIGuardRetaliateIdleState)( this ), AI_GUARD_RETALIATE_INNER, EXIT_MACHINE_WITH_SUCCESS, attackAggressors );
+ 	defineState( AI_GUARD_RETALIATE_INNER,						newInstance(AIGuardRetaliateInnerState)( this ), AI_GUARD_RETALIATE_OUTER, AI_GUARD_RETALIATE_OUTER );
+ 	defineState( AI_GUARD_RETALIATE_OUTER,						newInstance(AIGuardRetaliateOuterState)( this ), AI_GUARD_RETALIATE_GET_CRATE, AI_GUARD_RETALIATE_GET_CRATE );
+Upstream TheSuperHackers/GeneralsGameCode dc540878: bugfix(pathfinder): Prevent a retail crash where a pathfindCell has a dangling linked list pointer (#3113)
+diff --git a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+index f80d3376..4377e6d2 100644
+--- a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
++++ b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+@@ -1125,9 +1125,11 @@ void PathfindCellInfo::forceCleanPathFindCellInfos()
+ 
+ void Pathfinder::forceCleanCells()
+ {
+-	UnicodeString pathfinderFailoverMessage = TheGameText->FETCH_OR_SUBSTITUTE("GUI:PathfindingCrashPrevented", L"A pathfinding crash was prevented, now switching to the crash fixed pathfinding.");
++	UnicodeString pathfinderFailoverMessage = TheGameText->FETCH_OR_SUBSTITUTE_FORMAT("GUI:PathfindingCrashPrevented", L"A pathfinding crash was prevented at frame %u, now switching to the crash fixed pathfinding.", TheGameLogic->getFrame());
+ 	TheInGameUI->message(pathfinderFailoverMessage);
+ 
++	printf("%ls\n", pathfinderFailoverMessage.str());
++
+ 	TheAudio->addAudioEvent(&TheAudio->getMiscAudio()->m_allCheerSound);
+ 
+ 	PathfindCellInfo::forceCleanPathFindCellInfos();
+@@ -1727,6 +1729,13 @@ void PathfindCell::forwardInsertionSortRetailCompatible(PathfindCellList& list)
+ 	UnsignedInt cellCount = 0;
+ 	while (currentCell && cellCount < PATHFIND_CELLS_PER_FRAME && currentCell->m_info->m_totalCost <= m_info->m_totalCost)
+ 	{
++		// Prevent a retail crash where a pathfindCell has an m_info with a dangling nextOpen pointer
++		if (currentCell->m_info->m_nextOpen && !currentCell->m_info->m_nextOpen->m_cell->m_info)
++		{
++			currentCell->m_info->m_nextOpen->m_cell = nullptr;
++			currentCell->m_info->m_nextOpen = nullptr;
++		}
++
+ 		cellCount++;
+ 		previousCell = currentCell;
+ 		currentCell = currentCell->getNextOpen();
+Upstream TheSuperHackers/GeneralsGameCode 55ccd620: bugfix(pathfinder): Prevent a retail crash where the head of the closed list has no associated m_info (#3113)
+diff --git a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+index 0614563b..f80d3376 100644
+--- a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
++++ b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+@@ -1976,7 +1976,19 @@ void PathfindCell::putOnClosedList( PathfindCellList &list )
+ 		m_info->m_prevOpen = nullptr;
+ 		m_info->m_nextOpen = list.m_head ? list.m_head->m_info : nullptr;
+ 		if (list.m_head)
++#if RETAIL_COMPATIBLE_PATHFINDING
++		// TheSuperHackers @info This is only here to catch a crash point in the retail compatible pathfinding
++		// This crash mode occurs due to the closed list head not having an m_info associated with it
++		// A node cannot be put onto the closed list without an m_info under normal conditions
++		{
++			if (list.m_head->m_info)
++			{
++				list.m_head->m_info->m_prevOpen = this->m_info;
++			}
++		}
++#else
+ 			list.m_head->m_info->m_prevOpen = this->m_info;
++#endif
+ 
+ 		list.m_head = this;
+ 	}
+Upstream TheSuperHackers/GeneralsGameCode 039bd17f:  bugfix(pathfinder): Prevent crash in Pathfinder::processHierarchicalCell (#3296)
+diff --git a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+index edd19601..e32fe84c 100644
+--- a/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
++++ b/Core/GameEngine/Source/GameLogic/AI/AIPathfind.cpp
+@@ -7502,24 +7502,16 @@ void Pathfinder::processHierarchicalCell( const ICoord2D &scanCell, const ICoord
+ 			return;
+ 		}
+ 
+-		newCell->allocateInfo(scanCell);
+-#if RETAIL_COMPATIBLE_PATHFINDING
+-		if (!s_useFixedPathfinding)
+-		{
+-			if (!newCell->getClosed() && !newCell->getOpen()) {
+-				newCell->putOnClosedList(m_closedList);
+-			}
+-		}
+-		else
++#if RTS_GENERALS && RETAIL_COMPATIBLE_PATHFINDING
++		// TheSuperHackers @bugfix Caball009 14/09/2026 Check newCell->m_info before accessing it to prevent a possible crash.
++		// The Zero Hour / non-retail compatible pathfinding code performs this check earlier in the function.
++		if (newCell->allocateInfo(scanCell) && !newCell->getOpen() && !newCell->getClosed())
+ #endif
+ 		{
+-			if (newCell->hasInfo() && !newCell->getClosed() && !newCell->getOpen()) {
+-				newCell->putOnClosedList(m_closedList);
+-			}
++			newCell->putOnClosedList(m_closedList);
+ 		}
+ 
+-		adjNewCell->allocateInfo(adjacentCell);
+-		if( adjNewCell->hasInfo() )
++		if (adjNewCell->allocateInfo(adjacentCell))
+ 		{
+ 
+ 			cellCount++;

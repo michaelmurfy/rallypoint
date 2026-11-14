@@ -19,6 +19,22 @@ git apply --check -p1 --directory=engine /tmp/c.diff   # after sh patches/apply.
 | 0039 | `a8464bcff` #3498 | The disconnect chat message is released after sending |
 | 0040 | `5a4187cea` #2708 | The type of incoming game messages is verified |
 
+### 2026-11-15 AI survey (same head)
+
+`patches/0095` takes the AI and pathfinder fixes that apply cleanly. They change how the AI plays, so `patches/0096` raises `kRallypointSimulationId` to 8.
+
+| Upstream | What |
+|---|---|
+| `2119cc9b` #3438 | AI no longer leaves a temporary state that reset itself during its own update |
+| `1b1212f0` #3426 | Uninitialised variables in `AIPlayer::getPlayerStructureBounds` |
+| `b0c29eba` #3379 | Uninitialised variable in `AIPlayer::onUnitProduced` |
+| `ec0658a3` #3098 | Infantry forced out of a vehicle no longer path to their target |
+| `78edd877` #2197 | Units attacked in guard mode behave correctly |
+| `dc540878`, `55ccd620` #3113 | Pathfinder crashes: dangling cell list pointer, closed list head without info |
+| `039bd17f` #3296 | Crash in `Pathfinder::processHierarchicalCell` |
+
+Not taken: `5430d9de` #3380 (supply attack detection), `1abf73d5` #3332 and `8207c684` #2296 (pathfinder movement) do not apply; they need the newer pathfinder files. `bfa3bbf4` only restores compatibility for a change we do not have.
+
 ### 2026-11-14 survey (upstream head `f5e823ba`, 2026-11-12)
 
 `patches/0088` takes the fixes below, all of which applied cleanly and leave the simulation alone (`kRallypointSimulationId` unchanged).
