@@ -1,0 +1,204 @@
+# Third-party code comes from third-party/ in this repository instead of being fetched at configure time.
+# (gamespy, lzhl, zlib, min-dx8-sdk, bink and miles stubs, miniaudio.)
+
+diff --git a/Dependencies/Miles/CMakeLists.txt b/Dependencies/Miles/CMakeLists.txt
+index e9e7b1f..4b83511 100644
+--- a/Dependencies/Miles/CMakeLists.txt
++++ b/Dependencies/Miles/CMakeLists.txt
+@@ -1,14 +1,11 @@
+ # 64-bit Windows: mss32.dll (Miles) has no 64-bit build and cannot be redistributed, so the part of the Miles
+ # API that the engine uses is implemented on top of miniaudio (MiniMiles.cpp). The target keeps the name of the
+ # 32-bit stub library so that the engine links it unchanged.
+-# miniaudio 0.11.25 (public domain / MIT-0), a single header. Not built on its own.
+-FetchContent_Declare(
+-    miniaudio
+-    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+-    GIT_TAG        9634bedb5b5a2ca38c1ee7108a9358a4e233f14d
+-    SOURCE_SUBDIR  headers-only-do-not-add
+-)
+-FetchContent_MakeAvailable(miniaudio)
++# miniaudio 0.11.25 (public domain / MIT-0), a single header kept in third-party/miniaudio. Not built on its own.
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
++set(miniaudio_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/miniaudio)
+ 
+ add_library(milesstub STATIC MiniMiles.cpp MilesLoader.h mss/mss.h)
+ 
+diff --git a/cmake/bink.cmake b/cmake/bink.cmake
+index 510b8c4..33f6d91 100644
+--- a/cmake/bink.cmake
++++ b/cmake/bink.cmake
+@@ -1,23 +1,16 @@
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
+ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+     # binkw32.dll is 32-bit only. The engine plays movies through FFmpeg on 64-bit builds; the Bink stub
+     # (every function returns a neutral value) is only linked so that the Bink video player still builds.
+-    FetchContent_Declare(
+-        bink
+-        GIT_REPOSITORY https://github.com/TheSuperHackers/bink-sdk-stub.git
+-        GIT_TAG        180fc4620ed72fd700347ab837a5271fd0259901
+-        SOURCE_SUBDIR  headers-only-do-not-add
+-    )
+-    FetchContent_MakeAvailable(bink)
++    # In-tree copy (third-party/bink).
++    set(bink_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/bink)
+ 
+     add_library(binkstub STATIC ${bink_SOURCE_DIR}/bink.c)
+     target_include_directories(binkstub PUBLIC ${bink_SOURCE_DIR})
+     target_compile_definitions(binkstub PUBLIC BINKDLL)
+ else()
+-    FetchContent_Declare(
+-        bink
+-        GIT_REPOSITORY https://github.com/TheSuperHackers/bink-sdk-stub.git
+-        GIT_TAG        180fc4620ed72fd700347ab837a5271fd0259901
+-    )
+-
+-    FetchContent_MakeAvailable(bink)
++    set(bink_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/bink)
++    add_subdirectory(${bink_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/bink-build)
+ endif()
+diff --git a/cmake/dx8.cmake b/cmake/dx8.cmake
+index 6bbb355..0357a45 100644
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
+@@ -1,3 +1,6 @@
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
+ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+     # 64-bit Windows. Only the headers of min-dx8-sdk are used here; its static libs are x86-only and
+     # include d3dx8.lib.
+@@ -7,13 +10,8 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+     #  - Dependencies/D3DX8Compat provides the subset of d3dx8 the game needs.
+     set(RTS_USE_D3DX8_COMPAT TRUE)
+ 
+-    FetchContent_Declare(
+-        dx8
+-        GIT_REPOSITORY https://github.com/TheSuperHackers/min-dx8-sdk.git
+-        GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
+-        SOURCE_SUBDIR  headers-only-do-not-add
+-    )
+-    FetchContent_MakeAvailable(dx8)
++    # In-tree copy (third-party/dx8): headers only here.
++    set(dx8_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/dx8)
+ 
+     set(_d3d8_libdir "${CMAKE_BINARY_DIR}/d3d8_x64")
+     file(MAKE_DIRECTORY "${_d3d8_libdir}")
+@@ -46,13 +44,9 @@ EXPORTS
+ else()
+     set(RTS_USE_D3DX8_COMPAT FALSE)
+ 
+-    FetchContent_Declare(
+-        dx8
+-        GIT_REPOSITORY https://github.com/TheSuperHackers/min-dx8-sdk.git
+-        GIT_TAG        7bddff8c01f5fb931c3cb73d4aa8e66d303d97bc
+-    )
+-
+-    FetchContent_MakeAvailable(dx8)
++    # In-tree copy (third-party/dx8).
++    set(dx8_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/dx8)
++    add_subdirectory(${dx8_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/dx8-build)
+ endif()
+ 
+ if(APPLE)
+diff --git a/cmake/gamespy.cmake b/cmake/gamespy.cmake
+index 5f740d3..a16ca36 100644
+--- a/cmake/gamespy.cmake
++++ b/cmake/gamespy.cmake
+@@ -1,13 +1,11 @@
+ set(GS_OPENSSL FALSE)
+ set(GAMESPY_SERVER_NAME "server.cnc-online.net")
+ 
+-FetchContent_Declare(
+-    gamespy
+-    GIT_REPOSITORY https://github.com/TheAssemblyArmada/GamespySDK.git
+-    GIT_TAG        07e3d15c500415abc281efb74322ab6d9c857eb8
+-)
+-
+-FetchContent_MakeAvailable(gamespy)
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
++# In-tree copy (third-party/gamespy), so the build fetches nothing.
++add_subdirectory(${RTS_THIRD_PARTY_DIR}/gamespy ${CMAKE_BINARY_DIR}/_deps/gamespy-build)
+ 
+ # GamespySDK auto-defines _LINUX in gscommon.h when __linux__ is set but has
+ # no equivalent for Apple, so every #elif defined(_MACOSX) branch is skipped
+diff --git a/cmake/lzhl.cmake b/cmake/lzhl.cmake
+index 0019f78..1939a93 100644
+--- a/cmake/lzhl.cmake
++++ b/cmake/lzhl.cmake
+@@ -1,10 +1,8 @@
+-set(LZHL_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/lzhl-src/CompLibHeader)
+-
+-FetchContent_Populate(lzhl DOWNLOAD_EXTRACT_TIMESTAMP
+-    GIT_REPOSITORY https://github.com/TheSuperHackers/lzhl-1.0
+-    GIT_TAG        dfd96e2ca64adaddb35dd4ebadd6add7d5586783
+-    SOURCE_DIR     ${LZHL_DIR}
+-)
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
++# In-tree copy (third-party/lzhl); sources are included as "CompLibHeader/lzhl.h".
++set(LZHL_DIR ${RTS_THIRD_PARTY_DIR}/lzhl/CompLibHeader)
+ 
+ add_library(liblzhl STATIC)
+ 
+diff --git a/cmake/miles.cmake b/cmake/miles.cmake
+index ba3f284..bf554f6 100644
+--- a/cmake/miles.cmake
++++ b/cmake/miles.cmake
+@@ -8,11 +8,10 @@ elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+     # mss32.dll is a 32-bit library: implement the Miles API the engine uses on top of miniaudio.
+     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../Dependencies/Miles ${CMAKE_BINARY_DIR}/miles_x64-build)
+ else()
+-    FetchContent_Declare(
+-        miles
+-        GIT_REPOSITORY https://github.com/TheSuperHackers/miles-sdk-stub.git
+-        GIT_TAG        6e32700d7ba4b4713a03bf1f5ffc3b0ac8d17264
+-    )
+-
+-    FetchContent_MakeAvailable(miles)
++    # In-tree copy (third-party/miles).
++    if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++        set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++    endif()
++    set(miles_SOURCE_DIR ${RTS_THIRD_PARTY_DIR}/miles)
++    add_subdirectory(${miles_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/miles-build)
+ endif()
+diff --git a/cmake/zlib.cmake b/cmake/zlib.cmake
+index f202f3f..c6c866b 100644
+--- a/cmake/zlib.cmake
++++ b/cmake/zlib.cmake
+@@ -1,10 +1,8 @@
+-set(ZLIB_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps/zlib-1.1.4-src/ZLib)
+-
+-FetchContent_Populate(zlib DOWNLOAD_EXTRACT_TIMESTAMP
+-    GIT_REPOSITORY https://github.com/TheSuperHackers/zlib-1.1.4
+-    GIT_TAG        ac753eee3990a2f592bd4807ff0b30ff572c2104
+-    SOURCE_DIR     ${ZLIB_DIR}
+-)
++if(NOT DEFINED RTS_THIRD_PARTY_DIR)
++    set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
++endif()
++# In-tree copy (third-party/zlib).
++set(ZLIB_DIR ${RTS_THIRD_PARTY_DIR}/zlib)
+     
+ add_library(libzlib STATIC)
+ 
+diff --git a/cmake/config-build.cmake b/cmake/config-build.cmake
+--- a/cmake/config-build.cmake
++++ b/cmake/config-build.cmake
+@@ -2,7 +2,8 @@
+ option(RTS_BUILD_CORE_TOOLS "Build core tools" ON)
+ option(RTS_BUILD_CORE_EXTRAS "Build core extra tools/tests" OFF)
+ option(RTS_BUILD_ZEROHOUR "Build Zero Hour code." ON)
+-option(RTS_BUILD_GENERALS "Build Generals code." ON)
++# Generals (the base game's code) is not part of this repository's trimmed engine copy.
++option(RTS_BUILD_GENERALS "Build Generals code." OFF)
+ option(RTS_BUILD_OPTION_PROFILE "Build code with the \"Profile\" configuration." OFF)
+ option(RTS_BUILD_OPTION_PROFILE_TRACY "Build code with Tracy profiling enabled." OFF)
+ option(RTS_BUILD_OPTION_DEBUG "Build code with the \"Debug\" configuration." OFF)

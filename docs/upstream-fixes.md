@@ -3,8 +3,8 @@
 The engine is based on [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) as it was around **2026-05-15** (through the macOS port in `engine/`). Upstream had 539 newer commits by 2026-10-25. Fixes are taken as patches (`patches/0034`-`0040`, each carrying the upstream commit and title in its first line), after checking with `git apply --check` against our tree. Test a candidate with:
 
 ```bash
-gh api -H "Accept: application/vnd.github.diff" repos/TheSuperHackers/GeneralsGameCode/commits/<sha> > /tmp/c.diff
-git -C engine apply --check /tmp/c.diff
+git clone --shallow-since=<date> https://github.com/TheSuperHackers/GeneralsGameCode up && git -C up show <sha> -- Core GeneralsMD > /tmp/c.diff
+git apply --check -p1 --directory=engine /tmp/c.diff   # after sh patches/apply.sh
 ```
 
 ## Taken
@@ -18,6 +18,28 @@ git -C engine apply --check /tmp/c.diff
 | 0038 | `12a9b944b` #3311 | A game slot's IP is cleared on reset |
 | 0039 | `a8464bcff` #3498 | The disconnect chat message is released after sending |
 | 0040 | `5a4187cea` #2708 | The type of incoming game messages is verified |
+
+### 2026-11-14 survey (upstream head `f5e823ba`, 2026-11-12)
+
+`patches/0088` takes the fixes below, all of which applied cleanly and leave the simulation alone (`kRallypointSimulationId` unchanged).
+
+| Upstream | What |
+|---|---|
+| `d6c32650` #3546 | LAN game tooltip crash after the host left |
+| `c96b610f` #3633 | Crash in `LocomotorStore::reset` when `map.ini` defines a locomotor |
+| `02b5b56e` #3489 | Rivers that overflow the dynamic index buffer are skipped |
+| `3d82630f` #3529 | Weapon slot index sanity check |
+| `9298f33b` #3361 | Missing null terminators in `FieldParse` arrays |
+| `a30d0613` #3612 | The leave is sent at once when quitting from the disconnect screen |
+| `afc2a103` #3641 | Held modifier keys are released when keyboard focus resets (relevant to the macOS dead-keyboard reports) |
+| `d1105e30` #3651 | `Matrix4x4` comparison without undefined behaviour |
+| `6e4a328b` #3346 | Stack overflow in the firewall helper |
+
+Written by hand: the BIG archive reader (`StdBIGFileSystem`, `Win32BIGFileSystem`) now refuses an entry name that does not end inside the buffer and the file, a file count that cannot fit the file, and entries outside the archive. Mods are downloaded files, so before this a bad `.big` overran a stack buffer. Upstream's own version is `c7b7814e` #3588; it needs the newer file layout.
+
+Left for later, because they change how the game plays (each needs `kRallypointSimulationId` raised and a real game): `ea40abbd` #3533 (hackers keep hacking on Stop), `c529745c` #3602 (Emergency Repair under an Ambulance aura), `d1bd190a` #3003 (2D diagonal movement speed), `f3730001` #3282 (Helix experience), `b7f0e31c` #3544 (wander destination), `1abf73d5` #3332 (path after allies move), `ba7a17a6` #3433 (group force attack), plus the save/load fixes (#3117, #3127, #3145, #3148, #3151, #3491, #3492, #3130), which matter only once multiplayer save/load exists.
+
+Do not apply yet (need commits we lack): `5d69c00a` #3486 (map sizes that overflow the cell arrays: our `MapReaderWriterInfo.h` is under `GeneralsMD/`), `88faea1a` #3090 (replay frame range), `c0031256` (repeat commands in a net packet), `fa16f49d` #3603 and `7c414328` #3566 (missing texture), `0c9f66b5` #3344 and `aee68d6e` #3436 (INI parsing, near our 0016), `e2a1216b` #3609 (8-byte pool alignment, matters on x64), `2bdb1bee` #3459 (x64 pointer truncations: overlaps 0079), `63c78982` #3530 (path case), and the UB clean-ups #3658, #3639, #3648. The network and replay ones are the most worth hand-porting next.
 
 `0041` raises `kRallypointSimulationId` to 4: 0035 and 0036 change when the logic random numbers are drawn, so builds from before must not join builds from after.
 

@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ---- game engine (our patches applied on top of the submodule) -----------------------------
+  # ---- game engine (our patches applied on top of engine/) -----------------------------
   engine-macos:
     name: Engine (macOS arm64)
     runs-on: macos-15
@@ -26,7 +26,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: true
       - run: brew install ninja
       - run: sh patches/apply.sh
       - name: Configure and build
@@ -59,7 +58,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: true
       - run: sh patches/apply.sh
         shell: bash
       # The 32-bit Visual Studio build environment, set up directly: the third-party action that did this still runs on
@@ -113,14 +111,10 @@ jobs:
     name: Engine (Windows x64)
     runs-on: windows-2022
     timeout-minutes: 90
-    env:
-      DXVK_VERSION: '3.1.1'
-      DXVK_SHA256: '40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608' # dxvk-3.1.1.tar.gz from github.com/doitsujin/dxvk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: true
       - run: sh patches/apply.sh
         shell: bash
       - name: Visual Studio x64 environment
@@ -169,14 +163,15 @@ jobs:
           $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
           if (-not $crt) { throw "no x64 CRT under $env:VCToolsRedistDir" }
           'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll', 'vcruntime140_1.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
-          # DXVK's Direct3D 8 (the d3d8.dll that 64-bit Windows does not have), pinned by version and checked against its hash.
-          $url = "https://github.com/doitsujin/dxvk/releases/download/v$env:DXVK_VERSION/dxvk-$env:DXVK_VERSION.tar.gz"
-          Invoke-WebRequest -Uri $url -OutFile dxvk.tar.gz
-          if ((Get-FileHash dxvk.tar.gz -Algorithm SHA256).Hash.ToLower() -ne $env:DXVK_SHA256) { throw "dxvk archive hash mismatch" }
-          New-Item -ItemType Directory -Force -Path dxvk | Out-Null
-          tar -xzf dxvk.tar.gz -C dxvk
-          Copy-Item "dxvk/dxvk-$env:DXVK_VERSION/x64/d3d8.dll" out/engine -Verbose
-          Copy-Item "dxvk/dxvk-$env:DXVK_VERSION/x64/d3d9.dll" out/engine -Verbose
+          # DXVK 3.1.1's Direct3D 8 (the d3d8.dll that 64-bit Windows does not have), kept in third-party/dxvk and checked against its listed hashes.
+          Push-Location third-party/dxvk/x64
+          foreach ($line in Get-Content ../SHA256SUMS) {
+            $hash, $name = $line -split '\s+', 2
+            if ((Get-FileHash $name -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw "$name does not match third-party/dxvk/SHA256SUMS" }
+          }
+          Pop-Location
+          Copy-Item third-party/dxvk/x64/d3d8.dll out/engine -Verbose
+          Copy-Item third-party/dxvk/x64/d3d9.dll out/engine -Verbose
           # Textures the Enhanced renderer uses (generated scorch atlas and height map, no game data), read through GEN_ASSETS.
           Copy-Item -Recurse patches/upstream/moderngeneralszh/assets out/engine/assets -Verbose
           Get-ChildItem out/engine | Format-Table Name, Length
