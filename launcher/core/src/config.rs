@@ -61,6 +61,9 @@ pub struct Config {
     /// How far out the camera may zoom (`graphics::FAR_CAMERA` unless the player changed it).
     #[serde(default = "default_camera")]
     pub camera_height: u32,
+    /// "pro" loads GenTool's Control Bar Pro on top of the HD icons; anything else is the HD icons alone.
+    #[serde(default)]
+    pub control_bar: String,
     /// Which Windows engine to run: empty or "x64" is the 64-bit one, "x86" the 32-bit one. Ignored where only one is bundled.
     #[serde(default)]
     pub engine_arch: String,
