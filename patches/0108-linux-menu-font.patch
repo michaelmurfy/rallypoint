@@ -1,0 +1,324 @@
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
+@@ -118,14 +118,16 @@
+     add_library(d3d8 STATIC
+         ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/dx8_stub.cpp
+         ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/linux_window.cpp
++        ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/gdi_text_linux.cpp
+     )
++    find_package(Freetype REQUIRED)
+     target_include_directories(d3d8 PRIVATE
+         ${dx8_SOURCE_DIR}
+         ${CMAKE_SOURCE_DIR}/Dependencies/Utility/osdep_compat
+         ${CMAKE_SOURCE_DIR}/Dependencies/Utility
+     )
+     target_compile_definitions(d3d8 PRIVATE _UNIX)
+-    target_link_libraries(d3d8 PUBLIC linux_sys deps_d3dx8compat)
++    target_link_libraries(d3d8 PUBLIC linux_sys deps_d3dx8compat Freetype::Freetype)
+     add_library(dinput8 INTERFACE)
+     target_link_libraries(dinput8 INTERFACE d3d8)
+     add_library(dxguid INTERFACE)
+--- a/Dependencies/Utility/osdep_compat/win32_api.h
++++ b/Dependencies/Utility/osdep_compat/win32_api.h
+@@ -1248,14 +1248,14 @@
+ 
+ // GDI device-context / object stubs.
+ //
+-// On macOS the font-rasterization subset (GetDC/CreateFont/CreateDIBSection/
++// On macOS and Linux the font-rasterization subset (GetDC/CreateFont/CreateDIBSection/
+ // SelectObject/ExtTextOutW/GetTextMetrics/GetTextExtentPoint32W/colors/delete)
+-// is implemented for real via Core Text + Core Graphics in
+-// cmake/dx8_stub/gdi_text.mm (linked through the `d3d8` target). So those are
++// is implemented for real (Core Text in cmake/dx8_stub/gdi_text.mm, FreeType in
++// cmake/dx8_stub/gdi_text_linux.cpp, linked through the `d3d8` target). So those are
+ // declared `extern` here, not defined inline. The remaining GDI calls (BitBlt,
+ // pixels, gamma, ANSI text, char-widths) have no consumers in the macOS build
+ // and stay as harmless inline stubs.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ extern HDC     GetDC(HWND);
+ extern int     ReleaseDC(HWND, HDC);
+ extern HDC     CreateCompatibleDC(HDC);
+--- a/cmake/dx8_stub/gdi_text_linux.cpp
++++ b/cmake/dx8_stub/gdi_text_linux.cpp
+@@ -0,0 +1,280 @@
++// Linux stand-in for the GDI slice FontCharsClass uses to build glyph atlases
++// (render2dsentence.cpp). macOS does this in gdi_text.mm. The engine draws each
++// glyph white-on-black into a 24bpp top-down DIB and reads the low byte of every
++// pixel as coverage. FreeType's grayscale bitmap is that coverage.
++
++#if defined(__linux__)
++
++#include <windows.h>
++
++#include <ft2build.h>
++#include FT_FREETYPE_H
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <unistd.h>
++
++namespace {
++
++enum {
++	GDI_KIND_DC     = 0x47444344,
++	GDI_KIND_FONT   = 0x4744464E,
++	GDI_KIND_BITMAP = 0x4744424D,
++};
++
++struct GdiFont {
++	uint32_t kind;
++	FT_Face  face;
++	int      ascent;
++	int      descent;
++	int      height;
++};
++
++struct GdiBitmap {
++	uint32_t kind;
++	int      width;
++	int      height;
++	int      stride;
++	uint8_t* bits;
++};
++
++struct GdiDC {
++	uint32_t   kind;
++	GdiBitmap* bmp;
++	GdiFont*   font;
++	uint32_t   bkColor;
++	uint32_t   textColor;
++};
++
++uint32_t kindOf(void* p) { return p ? *reinterpret_cast<uint32_t*>(p) : 0; }
++
++FT_Library library()
++{
++	static FT_Library lib = nullptr;
++	if (!lib && FT_Init_FreeType(&lib) != 0) {
++		std::fprintf(stderr, "[gdi] FreeType failed to start\n");
++		lib = nullptr;
++	}
++	return lib;
++}
++
++const char* fontFile(int weight)
++{
++	static const char* regular[] = {
++		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
++		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
++		"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
++		"/usr/share/fonts/TTF/DejaVuSans.ttf",
++		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
++		nullptr,
++	};
++	static const char* bold[] = {
++		"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
++		"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
++		"/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
++		"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
++		nullptr,
++	};
++	const char** list = weight >= 600 ? bold : regular;
++	for (int i = 0; list[i]; ++i)
++		if (access(list[i], R_OK) == 0) return list[i];
++	if (weight >= 600)
++		for (int i = 0; regular[i]; ++i)
++			if (access(regular[i], R_OK) == 0) return regular[i];
++	return nullptr;
++}
++
++} // namespace
++
++HDC GetDC(HWND)
++{
++	GdiDC* dc = (GdiDC*)std::calloc(1, sizeof(GdiDC));
++	dc->kind = GDI_KIND_DC;
++	dc->textColor = 0x00FFFFFF;
++	return (HDC)dc;
++}
++
++int ReleaseDC(HWND, HDC hdc)
++{
++	if (hdc && kindOf(hdc) == GDI_KIND_DC) std::free(hdc);
++	return 1;
++}
++
++HDC CreateCompatibleDC(HDC) { return GetDC(nullptr); }
++
++BOOL DeleteDC(HDC hdc) { return ReleaseDC(nullptr, hdc); }
++
++HFONT CreateFont(int height, int, int, int, int weight, DWORD, DWORD, DWORD,
++                 DWORD, DWORD, DWORD, DWORD, DWORD, const char*)
++{
++	int px = height < 0 ? -height : height;
++	if (px <= 0) px = 12;
++	GdiFont* f = (GdiFont*)std::calloc(1, sizeof(GdiFont));
++	f->kind = GDI_KIND_FONT;
++	f->height = px;
++	f->ascent = px * 4 / 5;
++	const char* path = fontFile(weight);
++	FT_Library lib = library();
++	if (path && lib && FT_New_Face(lib, path, 0, &f->face) == 0 &&
++	    FT_Set_Pixel_Sizes(f->face, 0, px) == 0) {
++		f->ascent  = (int)((f->face->size->metrics.ascender + 63) >> 6);
++		f->descent = (int)((-(f->face->size->metrics.descender) + 63) >> 6);
++		f->height  = f->ascent + f->descent;
++		static int logged = 0;
++		if (!logged++) std::fprintf(stderr, "[gdi] font %s at %d px\n", path, px);
++	} else if (path == nullptr) {
++		static int logged = 0;
++		if (!logged++) std::fprintf(stderr, "[gdi] no sans font found (install fonts-dejavu-core)\n");
++	}
++	return (HFONT)f;
++}
++
++HFONT CreateFontIndirect(const LOGFONT*) { return nullptr; }
++
++HBITMAP CreateDIBSection(HDC, const BITMAPINFO* bmi, UINT, void** bits, HANDLE, DWORD)
++{
++	if (bits) *bits = nullptr;
++	if (!bmi) return nullptr;
++	const BITMAPINFOHEADER& h = bmi->bmiHeader;
++	int width  = (int)h.biWidth;
++	int height = (int)(h.biHeight < 0 ? -h.biHeight : h.biHeight);
++	int bpp    = h.biBitCount ? h.biBitCount : 24;
++	if (width <= 0 || height <= 0) return nullptr;
++	int stride = (((width * (bpp / 8)) + 3) & ~3);
++	GdiBitmap* bm = (GdiBitmap*)std::calloc(1, sizeof(GdiBitmap));
++	bm->kind = GDI_KIND_BITMAP;
++	bm->width = width;
++	bm->height = height;
++	bm->stride = stride;
++	bm->bits = (uint8_t*)std::calloc((size_t)height * stride, 1);
++	if (bits) *bits = bm->bits;
++	return (HBITMAP)bm;
++}
++
++HGDIOBJ SelectObject(HDC hdc, HGDIOBJ obj)
++{
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC) return nullptr;
++	GdiDC* dc = (GdiDC*)hdc;
++	uint32_t k = kindOf(obj);
++	if (k == GDI_KIND_FONT) {
++		GdiFont* prev = dc->font;
++		dc->font = (GdiFont*)obj;
++		return (HGDIOBJ)prev;
++	}
++	if (k == GDI_KIND_BITMAP) {
++		GdiBitmap* prev = dc->bmp;
++		dc->bmp = (GdiBitmap*)obj;
++		return (HGDIOBJ)prev;
++	}
++	return nullptr;
++}
++
++BOOL DeleteObject(HGDIOBJ obj)
++{
++	uint32_t k = kindOf(obj);
++	if (k == GDI_KIND_FONT) {
++		GdiFont* f = (GdiFont*)obj;
++		if (f->face) FT_Done_Face(f->face);
++		std::free(f);
++		return TRUE;
++	}
++	if (k == GDI_KIND_BITMAP) {
++		GdiBitmap* bm = (GdiBitmap*)obj;
++		std::free(bm->bits);
++		std::free(bm);
++		return TRUE;
++	}
++	return TRUE;
++}
++
++COLORREF SetTextColor(HDC hdc, COLORREF c)
++{
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC) return 0;
++	GdiDC* dc = (GdiDC*)hdc;
++	COLORREF prev = dc->textColor;
++	dc->textColor = c;
++	return prev;
++}
++
++COLORREF SetBkColor(HDC hdc, COLORREF c)
++{
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC) return 0;
++	GdiDC* dc = (GdiDC*)hdc;
++	COLORREF prev = dc->bkColor;
++	dc->bkColor = c;
++	return prev;
++}
++
++int GetTextMetrics(HDC hdc, TEXTMETRIC* tm)
++{
++	if (!tm) return FALSE;
++	std::memset(tm, 0, sizeof(*tm));
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC) return FALSE;
++	GdiDC* dc = (GdiDC*)hdc;
++	if (dc->font) {
++		tm->tmAscent  = dc->font->ascent;
++		tm->tmDescent = dc->font->descent;
++		tm->tmHeight  = dc->font->height;
++	}
++	return TRUE;
++}
++
++DWORD GetTextExtentPoint32W(HDC hdc, const WCHAR* s, int n, SIZE* sz)
++{
++	if (sz) { sz->cx = 0; sz->cy = 0; }
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC || !s || n <= 0) return FALSE;
++	GdiDC* dc = (GdiDC*)hdc;
++	if (!dc->font) return FALSE;
++	if (sz) sz->cy = dc->font->height;
++	if (!dc->font->face) {
++		if (sz) sz->cx = dc->font->height * n / 2;
++		return TRUE;
++	}
++	int cx = 0;
++	for (int i = 0; i < n; ++i) {
++		if (FT_Load_Char(dc->font->face, (FT_ULong)s[i], FT_LOAD_DEFAULT) != 0) continue;
++		cx += (int)((dc->font->face->glyph->advance.x + 63) >> 6);
++	}
++	if (sz) sz->cx = cx;
++	return TRUE;
++}
++
++BOOL ExtTextOutW(HDC hdc, int x, int y, UINT, const RECT*, const WCHAR* s, UINT n, const int*)
++{
++	if (!hdc || kindOf(hdc) != GDI_KIND_DC) return FALSE;
++	GdiDC* dc = (GdiDC*)hdc;
++	GdiBitmap* bm = dc->bmp;
++	if (!bm || !bm->bits) return FALSE;
++	uint8_t bk = (uint8_t)(dc->bkColor & 0xFF);
++	for (int r = 0; r < bm->height; ++r) {
++		uint8_t* row = bm->bits + (size_t)r * bm->stride;
++		for (int c = 0; c < bm->width; ++c)
++			row[c * 3] = row[c * 3 + 1] = row[c * 3 + 2] = bk;
++	}
++	if (!dc->font || !dc->font->face || !s || n == 0) return TRUE;
++	int pen = x;
++	for (UINT i = 0; i < n; ++i) {
++		if (FT_Load_Char(dc->font->face, (FT_ULong)s[i], FT_LOAD_RENDER) != 0) continue;
++		FT_GlyphSlot g = dc->font->face->glyph;
++		FT_Bitmap& src = g->bitmap;
++		int left = pen + g->bitmap_left;
++		int top  = y + dc->font->ascent - g->bitmap_top;
++		for (unsigned row = 0; row < src.rows; ++row) {
++			int dy = top + (int)row;
++			if (dy < 0 || dy >= bm->height) continue;
++			for (unsigned col = 0; col < src.width; ++col) {
++				int dx = left + (int)col;
++				if (dx < 0 || dx >= bm->width) continue;
++				uint8_t cov = src.buffer[row * src.pitch + col];
++				uint8_t* p = bm->bits + (size_t)dy * bm->stride + dx * 3;
++				p[0] = p[1] = p[2] = cov;
++			}
++		}
++		pen += (int)((g->advance.x + 63) >> 6);
++	}
++	return TRUE;
++}
++
++#endif
