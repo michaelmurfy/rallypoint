@@ -1023,7 +1023,9 @@ function modInitials(name) {
   const words = name.replace(/^C&C:?\s*/i, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
   return ((words[0] || "?")[0] + (words[1] ? words[1][0] : (words[0] || "").slice(1, 2))).toUpperCase();
 }
-const modTile = (name, kind) => h("span", { class: "modtile " + (kind || ""), "aria-hidden": "true" }, modInitials(name));
+/** One of six tile colours, always the same one for the same mod. */
+const modHue = (name) => "hue" + ([...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 6);
+const modTile = (name, kind) => h("span", { class: `modtile ${modHue(name)} ${kind || ""}`, "aria-hidden": "true" }, modInitials(name));
 /** A Remove button that asks for a second click. */
 function removeButton(folder, name) {
   let armed = false;
@@ -2036,6 +2038,7 @@ function go(name) {
   const head = current.el.querySelector(".page-head");
   if (head) head.after(h("div", { class: "page-status" }, pageStatus.el));
   document.getElementById("pagehost").replaceChildren(current.el);
+  document.getElementById("main").dataset.page = name; // the page's own colour (style.css: main[data-page])
   document.querySelectorAll(".nav").forEach((n) => (n.dataset.page === name ? n.setAttribute("aria-current", "page") : n.removeAttribute("aria-current")));
 }
 
@@ -2060,7 +2063,7 @@ function shell() {
   const nav = Object.entries(PAGES).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
   document.getElementById("root").append(h("div", { class: "app" },
     h("aside", { class: "sidebar" },
-      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("b", {}, "Rallypoint")),
+      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"), h("span", {}, "Generals Zero Hour"))),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
