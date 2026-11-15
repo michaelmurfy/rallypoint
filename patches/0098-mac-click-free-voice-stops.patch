@@ -1,0 +1,199 @@
+diff --git a/cmake/miles_apple/miles_apple.mm b/cmake/miles_apple/miles_apple.mm
+--- a/cmake/miles_apple/miles_apple.mm
++++ b/cmake/miles_apple/miles_apple.mm
+@@ -22,6 +22,7 @@
+ #include "mss/mss.h"
+ 
+ #include <atomic>
++#include <unistd.h>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+@@ -189,7 +190,16 @@
+ 
+ } // namespace
+ 
++// A voice that is stopped is faded out over a few milliseconds first: cutting a waveform off mid-cycle is a click, and the
++// game stops or steals voices all the time in a battle. `token` changes whenever the voice is stopped or restarted, so a
++// fade that is still running knows it has been overtaken; `pending` says a fade has not reached its `stop` yet.
++struct FadeState {
++    std::atomic<int> token{0};
++    std::atomic<bool> pending{false};
++};
++
+ struct ApplePlayerBase {
++    std::shared_ptr<FadeState> fade = std::make_shared<FadeState>();
+     AVAudioPlayerNode *node = nil;
+     AVAudioPCMBuffer *buffer = nil;
+     AVAudioFormat *bufferFormat = nil;
+@@ -704,6 +714,10 @@
+ // let the audio thread play the first few milliseconds of a far-away sound at full volume: a click.
+ static void scheduleAndPlay(ApplePlayerBase *p, void *owner, dispatch_block_t onCompleted, bool setVolume = true) {
+     if (!p || !p->node || !p->buffer) return;
++    if (p->fade->pending.exchange(false)) {
++        p->fade->token.fetch_add(1); // the fade is overtaken: cut the old sound off now, then start the new one
++        @try { [p->node stop]; } @catch (NSException *) {}
++    }
+     if (setVolume) p->node.volume = g_muted ? 0.0f : p->volume;
+     int gen = p->generation.load();
+     @try {
+@@ -733,23 +747,54 @@
+     }
+ }
+ 
+-static void stopAndDetach(ApplePlayerBase *p) {
++// Stop a voice without a click: ramp its volume to zero over about 6 ms (on a worker thread), then stop it. With `retire` the
++// node is also taken off the engine afterwards (on the game thread, where the other graph changes happen) and the voice
++// lets go of it now. Without it the voice may be started again at once: `scheduleAndPlay` then finishes the stop itself.
++static void stopAndDetach(ApplePlayerBase *p, bool retire = false) {
+     if (!p) return;
+     p->generation.fetch_add(1);
+-    if (p->node) {
++    p->playing.store(false);
++    AVAudioPlayerNode *node = p->node;
++    if (!node) return;
++    // NOTE: deliberately not calling `-reset`. On macOS Sequoia (and possibly earlier) `-reset` puts the node into an
++    // internal "disconnected" state: any later `-play` throws `player started when in a disconnected state`.
++    // `-stop` alone halts playback; the next `scheduleBuffer:` clears the pending queue.
++    std::shared_ptr<FadeState> fade = p->fade;
++    const int tok = fade->token.fetch_add(1) + 1;
++    BOOL audible = NO;
++    @try { audible = node.isPlaying; } @catch (NSException *) {}
++    if (retire) p->node = nil;
++    if (!audible && !retire) {
++        @try { [node stop]; } @catch (NSException *ex) { MLOG(1, "stopAndDetach stop NSException: %s", ex.reason.UTF8String ?: "?"); }
++        fade->pending.store(false);
++        return;
++    }
++    if (!retire) fade->pending.store(true);
++    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+         @try {
+-            [p->node stop];
++            if (audible) {
++                const float v0 = node.volume;
++                for (int step = 1; step <= 4; ++step) {
++                    if (!retire && fade->token.load() != tok) return; // started again: scheduleAndPlay owns the node now
++                    node.volume = v0 * (1.0f - 0.25f * step);
++                    usleep(1500);
++                }
++            }
++            if (!retire && fade->token.load() != tok) return;
++            [node stop];
+         } @catch (NSException *ex) {
+-            MLOG(1, "stopAndDetach stop NSException: %s", ex.reason.UTF8String ?: "?");
++            MLOG(1, "stopAndDetach fade NSException: %s", ex.reason.UTF8String ?: "?");
+         }
+-        // NOTE: deliberately not calling `-reset`. On macOS Sequoia (and
+-        // possibly earlier) `-reset` puts the node into an internal
+-        // "disconnected" state — any subsequent `-play` then throws
+-        // `com.apple.coreaudio.avfaudio — player started when in a
+-        // disconnected state`. `-stop` alone is sufficient to halt
+-        // playback; the next `scheduleBuffer:` clears the pending queue.
+-    }
+-    p->playing.store(false);
++        if (retire) {
++            enqueueCallback(nullptr, ^{
++                @try { [g_device.engine detachNode:node]; } @catch (NSException *ex) {
++                    MLOG(1, "retire detach NSException: %s", ex.reason.UTF8String ?: "?");
++                }
++            });
++        } else if (fade->token.load() == tok) {
++            fade->pending.store(false);
++        }
++    });
+ }
+ 
+ // ============================================================================
+@@ -910,12 +955,7 @@
+ void AIL_release_sample_handle(HSAMPLE sample) {
+     if (!sample) return;
+     AppleSample *s = (AppleSample *)sample;
+-    stopAndDetach(s);
+-    @try {
+-        if (s->node) [g_device.engine detachNode:s->node];
+-    } @catch (NSException *ex) {
+-        MLOG(1, "release_sample_handle detach NSException: %s", ex.reason.UTF8String ?: "?");
+-    }
++    stopAndDetach(s, true);
+     s->node = nil; s->buffer = nil; s->bufferFormat = nil;
+     // Remove from live-handle set BEFORE delete; drainCallbacks consults this
+     // to drop blocks queued for `s` (UAF guard — see PendingCallback docs).
+@@ -936,7 +976,7 @@
+     if (!sample || !file_image) return 0;
+     MLOG(2, "AIL_set_sample_file(%p)", sample);
+     AppleSample *s = (AppleSample *)sample;
+-    stopAndDetach(s);
++    stopAndDetach(s, true);
+     AVAudioPCMBuffer *buf = nil;
+     // IMA-ADPCM round-trip: AudioFileCache calls our AIL_decompress_ADPCM,
+     // then passes the raw PCM pointer here. No WAV header to parse.
+@@ -974,16 +1014,7 @@
+     // expensive (~µs per voice) but reliable, and Miles only re-binds when
+     // an event is starting, never inside the audio thread.
+     @try {
+-        if (s->node) {
+-            // Stop before detach (and bump the generation so stale completion
+-            // blocks no-op). Detaching a still-playing node leaves its internal
+-            // AudioUnit alive inside AVAudioEngine — at battle sound rates
+-            // (~3 binds/s) that accumulated hundreds of AUAudioUnitV2Bridge
+-            // objects per minute (heap-diff verified), a steady leak.
+-            stopAndDetach(s);
+-            [g_device.engine detachNode:s->node];
+-            s->node = nil;
+-        }
++        if (s->node) stopAndDetach(s, true); // (stopped, then detached: a node detached while playing leaks its AudioUnit)
+         s->node = [[AVAudioPlayerNode alloc] init];
+         [g_device.engine attachNode:s->node];
+         [g_device.engine connect:s->node to:g_device.mixer2D format:buf.format];
+@@ -1212,12 +1243,7 @@
+ void AIL_release_3D_sample_handle(H3DSAMPLE sample) {
+     if (!sample) return;
+     Apple3DSample *s = (Apple3DSample *)sample;
+-    stopAndDetach(&s->player);
+-    @try {
+-        if (s->player.node) [g_device.engine detachNode:s->player.node];
+-    } @catch (NSException *ex) {
+-        MLOG(1, "release_3D_sample_handle detach NSException: %s", ex.reason.UTF8String ?: "?");
+-    }
++    stopAndDetach(&s->player, true);
+     markDead(s);
+     delete s;
+ }
+@@ -1226,7 +1252,7 @@
+     drainCallbacks();
+     if (!sample || !file_image) return 0;
+     Apple3DSample *s = (Apple3DSample *)sample;
+-    stopAndDetach(&s->player);
++    stopAndDetach(&s->player, true);
+     AVAudioPCMBuffer *buf = nil;
+     {
+         std::lock_guard<std::mutex> lk(g_imaLock);
+@@ -1265,13 +1291,7 @@
+     }
+     s->player.buffer = buf;
+     @try {
+-        if (s->player.node) {
+-            // Stop before detach — same AudioUnit-accumulation leak as the 2D
+-            // path in AIL_set_sample_file above.
+-            stopAndDetach(&s->player);
+-            [g_device.engine detachNode:s->player.node];
+-            s->player.node = nil;
+-        }
++        if (s->player.node) stopAndDetach(&s->player, true);
+         s->player.node = [[AVAudioPlayerNode alloc] init];
+         [g_device.engine attachNode:s->player.node];
+         // 3D path: player → mainMixer with manual pan + distance-volume
+@@ -1594,12 +1614,7 @@
+ void AIL_close_stream(HSTREAM stream) {
+     if (!stream) return;
+     AppleStream *s = (AppleStream *)stream;
+-    stopAndDetach(s);
+-    @try {
+-        if (s->node) [g_device.engine detachNode:s->node];
+-    } @catch (NSException *ex) {
+-        MLOG(1, "close_stream detach NSException: %s", ex.reason.UTF8String ?: "?");
+-    }
++    stopAndDetach(s, true);
+     if (g_streamCount.load() > 0) g_streamCount.fetch_sub(1);
+     // Drop this stream from the live-handle set BEFORE the actual delete —
+     // any pending loop-continuation block enqueued from its AVAudio
