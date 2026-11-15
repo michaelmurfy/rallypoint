@@ -41,7 +41,7 @@
  extern HDC     CreateCompatibleDC(HDC);
 --- a/cmake/dx8_stub/gdi_text_linux.cpp
 +++ b/cmake/dx8_stub/gdi_text_linux.cpp
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,290 @@
 +// Linux stand-in for the GDI slice FontCharsClass uses to build glyph atlases
 +// (render2dsentence.cpp). macOS does this in gdi_text.mm. The engine draws each
 +// glyph white-on-black into a 24bpp top-down DIB and reads the low byte of every
@@ -104,8 +104,18 @@
 +	return lib;
 +}
 +
++// The packages ship DejaVu Sans in <engine folder>/fonts, so no distribution needs a font package. The system
++// copies are the fallback for a hand-built engine.
 +const char* fontFile(int weight)
 +{
++	static char beside[2][4096];
++	char* mine = beside[weight >= 600];
++	if (!mine[0]) {
++		ssize_t n = readlink("/proc/self/exe", mine, sizeof(beside[0]) - 64);
++		char* slash = n > 0 ? (mine[n] = 0, std::strrchr(mine, '/')) : nullptr;
++		std::strcpy(slash ? slash + 1 : mine, weight >= 600 ? "fonts/DejaVuSans-Bold.ttf" : "fonts/DejaVuSans.ttf");
++	}
++	if (access(mine, R_OK) == 0) return mine;
 +	static const char* regular[] = {
 +		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 +		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",

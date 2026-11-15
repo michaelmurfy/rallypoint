@@ -63,11 +63,12 @@ test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server
 	sh tests/run.sh
 
-linux-client: ## Build the Linux launcher (.deb, .rpm and .AppImage)
+linux-client: ## Build the Linux launcher with the engine in it (.deb and .rpm)
 	@[ "$$(uname -s)" = Linux ] || { echo "linux-client builds on Linux only"; exit 1; }
+	@[ -x launcher/src-tauri/engine/generalszh ] || { echo "no engine to bundle; see README: Linux, build the engine and run scripts/package-linux.sh first"; exit 1; }
 	@pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo "missing build libraries; on Debian/Ubuntu: sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev"; exit 1; }
 	@cargo tauri --version >/dev/null 2>&1 || cargo install tauri-cli --version "^2" --locked
-	cd launcher/src-tauri && cargo tauri build
+	cd launcher/src-tauri && cargo tauri build --bundles deb,rpm
 	@echo "built: target/release/bundle/"
 
 release: ## Tag and publish a release: make release VERSION=0.2.0-beta.1
