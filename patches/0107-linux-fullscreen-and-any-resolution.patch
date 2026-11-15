@@ -16,7 +16,21 @@
  };
  
  struct MouseEv { int type, x, y, delta; };
-@@ -167,6 +169,29 @@
+@@ -157,8 +159,11 @@
+                 if (n == 1 && buf[0] >= 32 && buf[0] != 127) g_chars.push_back((unsigned char)buf[0]);
+             }
+         } else if (e.type == ConfigureNotify) {
+-            g->width = e.xconfigure.width;
+-            g->height = e.xconfigure.height;
++            // A late configure for the original 800x600 must not undo fullscreen.
++            if (!g->borderless || (e.xconfigure.width >= g->screenW - 2 && e.xconfigure.height >= g->screenH - 2)) {
++                g->width = e.xconfigure.width;
++                g->height = e.xconfigure.height;
++            }
+         } else if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == g->wmDelete) {
+             std::fprintf(stderr, "[linux] window closed\n");
+             std::_Exit(0);
+@@ -167,6 +172,40 @@
  }
  
  Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
@@ -27,10 +41,19 @@
 +void applyBorderless(Win* w)
 +{
 +    if (!w || !w->dpy || !w->win || !w->borderless) return;
++    XSizeHints size{};
++    size.flags = PPosition | PSize | PMinSize | PMaxSize;
++    size.x = 0; size.y = 0;
++    size.width = size.min_width = size.max_width = w->screenW;
++    size.height = size.min_height = size.max_height = w->screenH;
++    XSetWMNormalHints(w->dpy, w->win, &size);
++    XMoveResizeWindow(w->dpy, w->win, 0, 0, (unsigned)w->screenW, (unsigned)w->screenH);
++    w->width = w->screenW;
++    w->height = w->screenH;
 +    Atom motif = XInternAtom(w->dpy, "_MOTIF_WM_HINTS", 0);
 +    unsigned long hints[5] = { 2, 0, 0, 0, 0 }; // decorations = none
 +    XChangeProperty(w->dpy, w->win, motif, motif, 32, PropModeReplace, reinterpret_cast<unsigned char*>(hints), 5);
-+    if (w->width < w->screenW - 2 || w->height < w->screenH - 2) return;
++    // xfwm ignores a fullscreen request whose source is "unspecified".
 +    Atom state = XInternAtom(w->dpy, "_NET_WM_STATE", 0);
 +    Atom full = XInternAtom(w->dpy, "_NET_WM_STATE_FULLSCREEN", 0);
 +    XChangeProperty(w->dpy, w->win, state, XA_ATOM, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&full), 1);
@@ -41,12 +64,14 @@
 +    ev.xclient.format = 32;
 +    ev.xclient.data.l[0] = 1; // _NET_WM_STATE_ADD
 +    ev.xclient.data.l[1] = static_cast<long>(full);
++    ev.xclient.data.l[3] = 1; // application
 +    XSendEvent(w->dpy, DefaultRootWindow(w->dpy), 0, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
++    std::fprintf(stderr, "[linux] fullscreen %dx%d\n", w->screenW, w->screenH);
 +}
  
  } // namespace
  
-@@ -223,7 +248,7 @@
+@@ -223,7 +262,7 @@
  ATOM RegisterClass(const WNDCLASS*) { return (ATOM)1; }
  BOOL UnregisterClass(const char*, HINSTANCE) { return TRUE; }
  
@@ -55,16 +80,16 @@
  {
      if (!g) g = new Win;
      if (!g->dpy) {
-@@ -237,6 +262,8 @@
+@@ -237,6 +276,8 @@
      }
      if (w <= 0) w = 800;
      if (h <= 0) h = 600;
 +    g->borderless = (style & WS_POPUP) && !(style & WS_CAPTION);
-+    if (g->borderless) { x = 0; y = 0; }
++    if (g->borderless) { x = 0; y = 0; w = g->screenW; h = g->screenH; }
      g->width = w;
      g->height = h;
      int scr = DefaultScreen(g->dpy);
-@@ -245,10 +272,11 @@
+@@ -245,10 +286,11 @@
      if (title) XStoreName(g->dpy, g->win, title);
      g->wmDelete = XInternAtom(g->dpy, "WM_DELETE_WINDOW", 0);
      XSetWMProtocols(g->dpy, g->win, &g->wmDelete, 1);
@@ -77,11 +102,11 @@
      return g;
  }
  
-@@ -284,12 +312,14 @@
+@@ -284,12 +326,14 @@
  {
      Win* win = asWin(h);
      if (!win || !win->dpy || !win->win) return TRUE;
-+    if (win->borderless) { x = 0; y = 0; }
++    if (win->borderless) { x = 0; y = 0; w = win->screenW; hgt = win->screenH; flags &= ~0x0001u; }
      if (!(flags & 0x0001)) { // SWP_NOSIZE
          win->width = w;
          win->height = hgt;
