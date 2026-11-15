@@ -35,6 +35,7 @@
     "resources": [
       "engine"
     ],
+    "category": "Game",
     "shortDescription": "Launcher for C&C Generals: Zero Hour",
     "macOS": {
       "signingIdentity": "-"
