@@ -70,7 +70,7 @@ diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.
 +
 +	const Player *player = obj->getControllingPlayer();
 +	const Coord3D *pos = obj->getPosition();
-+	const Path *path = getPath();
++	Path *path = getPath();
 +	if (!player || player->getPlayerType() != PLAYER_COMPUTER || !path || !path->getLastNode()
 +		|| !isMoving() || isWaitingForPath() || isAiInDeadState() || obj->isEffectivelyDead() || obj->isDisabled() || obj->isContained())
 +	{
