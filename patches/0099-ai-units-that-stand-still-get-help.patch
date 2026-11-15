@@ -1,0 +1,157 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h	2026-11-15 15:20:39
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h	2026-11-15 15:20:39
+@@ -792,6 +792,14 @@
+ 	Bool				m_isMoving;									///< True if we are in an AIInternalMoveToState.
+ 	Bool				m_isBlocked;
+ 	Bool				m_isBlockedAndStuck;				///< True if we are stuck & need to recompute path.
++
++	// Rallypoint: a computer player's unit that has a destination but does not move is helped along (see watchForStuck).
++	// Deliberately not saved: a loaded game just starts watching again.
++	UnsignedInt	m_stuckNextCheck;						///< Next frame to look at the unit's progress.
++	Coord3D			m_stuckPos;									///< Where it was at the last check.
++	UnsignedByte m_stuckChecks;							///< Checks in a row without progress.
++	UnsignedByte m_stuckStage;							///< What has been tried: 0 nothing, 1 a new path, 2 a nudge.
++	void watchForStuck(UpdateSleepTime &sleep);
+ 	Bool				m_upgradedLocomotors;
+ 	Bool				m_canPathThroughUnits;			///< Can path through units.
+ 	Bool				m_randomlyOffsetMoodCheck;	///< If true, randomly offset the mood check rate next time, to avoid "spiking" of ai checks
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp	2026-11-15 15:20:39
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp	2026-11-15 15:20:39
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 8;
++		static const UnsignedInt kRallypointSimulationId = 9;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp	2026-11-15 15:20:39
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp	2026-11-15 15:20:39
+@@ -234,6 +234,10 @@
+ 	m_pathExtraDistance = 0;
+ 	m_pathfindGoalCell.x = m_pathfindGoalCell.y = -1;
+ 	m_pathfindCurCell.x = m_pathfindCurCell.y = -1;
++	m_stuckNextCheck = 0;
++	m_stuckPos.zero();
++	m_stuckChecks = 0;
++	m_stuckStage = 0;
+ 	m_blockedFrames = 0;
+ 	m_curMaxBlockedSpeed = 0;
+ 	m_bumpSpeedLimit = FAST_AS_POSSIBLE;
+@@ -1000,6 +1004,103 @@
+  * The "main loop" of the AI subsystem
+  */
+ DECLARE_PERF_TIMER(AIUpdateInterface_update)
++// ------------------------------------------------------------------------------------------------
++/** Rallypoint: units of the computer players that have somewhere to go but do not move (boxed in by a chokepoint,
++ *  a path that no longer fits, allies that will not budge) used to stand there for the rest of the game.
++ *  Every second we compare the position with the last one. After 8 seconds without moving more than a cell:
++ *  1. ask for a new path to the same destination; 2. if that did not help, step the unit a couple of cells towards
++ *  the destination onto the nearest place it can stand; 3. if that did not help either, give up on the order, so the
++ *  AI's team moves on instead of waiting for it forever. Only uses what every player's game has (positions, frame,
++ *  paths), so it is the same everywhere; humans' units are never touched. */
++// ------------------------------------------------------------------------------------------------
++void AIUpdateInterface::watchForStuck(UpdateSleepTime &sleep)
++{
++	Object *obj = getObject();
++	const UnsignedInt now = TheGameLogic->getFrame();
++	if (now < m_stuckNextCheck)
++	{
++		// we are watching this unit: wake up for the next check even if the state machine would sleep longer
++		if (m_stuckChecks > 0 && UPDATE_SLEEP(m_stuckNextCheck - now) < sleep)
++			sleep = UPDATE_SLEEP(m_stuckNextCheck - now);
++		return;
++	}
++	m_stuckNextCheck = now + LOGICFRAMES_PER_SECOND;
++
++	const Player *player = obj->getControllingPlayer();
++	const Coord3D *pos = obj->getPosition();
++	const Path *path = getPath();
++	if (!player || player->getPlayerType() != PLAYER_COMPUTER || !path || !path->getLastNode()
++		|| !isMoving() || isWaitingForPath() || isAiInDeadState() || obj->isEffectivelyDead() || obj->isDisabled() || obj->isContained())
++	{
++		m_stuckChecks = 0;
++		m_stuckStage = 0;
++		m_stuckPos = *pos;
++		return;
++	}
++
++	const Real dx = pos->x - m_stuckPos.x;
++	const Real dy = pos->y - m_stuckPos.y;
++	if (dx*dx + dy*dy > PATHFIND_CELL_SIZE_F*PATHFIND_CELL_SIZE_F)
++	{
++		m_stuckChecks = 0;
++		m_stuckStage = 0;
++		m_stuckPos = *pos;
++		return;
++	}
++
++	if (++m_stuckChecks < 8)
++	{
++		if (UPDATE_SLEEP(LOGICFRAMES_PER_SECOND) < sleep)
++			sleep = UPDATE_SLEEP(LOGICFRAMES_PER_SECOND);
++		return;
++	}
++	m_stuckChecks = 0;
++
++	const Coord3D goal = *path->getLastNode()->getPosition();
++	fprintf(stderr, "[stuck] frame %u object %u %s at %.0f,%.0f for 8 s, going to %.0f,%.0f, step %d\n", now, (unsigned)obj->getID(),
++		obj->getTemplate()->getName().str(), pos->x, pos->y, goal.x, goal.y, (int)m_stuckStage);
++
++	switch (m_stuckStage)
++	{
++		case 0:
++			m_stuckStage = 1;
++			aiMoveToPosition(&goal, CMD_FROM_AI);
++			break;
++
++		case 1:
++		{
++			m_stuckStage = 2;
++			Coord3D to = *pos;
++			const Real gx = goal.x - pos->x, gy = goal.y - pos->y;
++			const Real len = sqrtf(gx*gx + gy*gy);
++			if (len > 1.0f && isDoingGroundMovement() && obj->getLayer() == LAYER_GROUND)
++			{
++				to.x += gx / len * PATHFIND_CELL_SIZE_F * 2;
++				to.y += gy / len * PATHFIND_CELL_SIZE_F * 2;
++				if (TheAI->pathfinder()->adjustToPossibleDestination(obj, getLocomotorSet(), &to))
++				{
++					const Real mx = to.x - pos->x, my = to.y - pos->y;
++					if (mx*mx + my*my <= 16 * PATHFIND_CELL_SIZE_F * PATHFIND_CELL_SIZE_F)
++					{
++						to.z = TheTerrainLogic->getGroundHeight(to.x, to.y);
++						obj->setPosition(&to);
++						TheAI->pathfinder()->updatePos(obj, &to);
++					}
++				}
++			}
++			aiMoveToPosition(&goal, CMD_FROM_AI);
++			break;
++		}
++
++		default:
++			m_stuckStage = 0;
++			aiIdle(CMD_FROM_AI);
++			break;
++	}
++	m_stuckPos = *obj->getPosition();
++	sleep = UPDATE_SLEEP_NONE;
++}
++
+ UpdateSleepTime AIUpdateInterface::update()
+ {
+ 	//DEBUG_LOG(("AIUpdateInterface frame %d: %08lx",TheGameLogic->getFrame(),getObject()));
+@@ -1115,6 +1216,8 @@
+ 	UpdateSleepTime tmp = doLocomotor();
+ 	if (tmp < subMachineSleep)
+ 		subMachineSleep = tmp;
++
++	watchForStuck(subMachineSleep);
+ 
+ #ifdef ALLOW_DEMORALIZE
+ 	RELEASE_CRASH(("If ALLOW_DEMORALIZE is ever defined, this code must be redone to do proper SLEEPY updates. (srj)"));
