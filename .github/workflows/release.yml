@@ -402,7 +402,9 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
           # tauri.conf.json carries the base 0.1.0; this file overrides it so installers and the app are named by the real version
-          printf '{"version":"%s"}' "$VERSION" > launcher/src-tauri/tauri.version.json
+          # rpm rejects a '-' in a version; '~' means "before the plain release" to both rpm and dpkg, which is what a beta is.
+          BUNDLE_VERSION="$VERSION"; [ "$RUNNER_OS" != Linux ] || BUNDLE_VERSION=$(printf %s "$VERSION" | tr - '~')
+          printf '{"version":"%s"}' "$BUNDLE_VERSION" > launcher/src-tauri/tauri.version.json
           echo "building $VERSION"
       # RALLYPOINT_VERSION (set above) is also compiled into the app, so the updater can tell 0.1.0-beta.1 from 0.1.0-beta.2
       # macOS runners now and then fail to make the disk image ("hdiutil: create failed - Resource busy"). The second
@@ -434,7 +436,12 @@ jobs:
           mkdir -p dist
           find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
           # The plain archive is the deb's /usr tree (see scripts/package-linux.sh), for CachyOS and anything else.
-          if [ "$RUNNER_OS" = Linux ]; then sh scripts/package-linux.sh tarball "$RALLYPOINT_VERSION" dist/*.deb dist; fi
+          # File names get the '-' of the version back (the packages inside keep the '~'): GitHub rewrites '~' in asset names,
+          # which would break SHA256SUMS.
+          if [ "$RUNNER_OS" = Linux ]; then
+            sh scripts/package-linux.sh tarball "$RALLYPOINT_VERSION" dist/*.deb dist
+            for f in dist/*; do case "$f" in *'~'*) mv -v "$f" "$(printf %s "$f" | tr '~' -)" ;; esac; done
+          fi
           ls dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
