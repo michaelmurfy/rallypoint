@@ -1151,16 +1151,46 @@ function resolutionSelect() {
 }
 
 const AI_BOOSTS = [[0, "Off"], [1, "Sharper"], [2, "Strong"], [3, "Relentless"]];
-const aiBoost = () => (AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0);
-/** The Stronger AI level beside the other skirmish options (money, speed, screen): the same saved choice as on the Play page. */
+// Stronger AI is one setting everywhere (Play options, the skirmish dialog, the Online page's Room card). In a room the
+// master's choice is everyone's: the others see it, locked, and the controls follow it.
+const aiRoom = () => { const d = net.last; return d && d.room_master != null ? { master: !!d.room_master, level: d.ai_level ?? 0 } : null; };
+let aiHeld = 0, aiAsked = null; // a level just asked for stays on screen until the relay confirms it (or 5 s pass)
+const aiBoost = () => {
+  const r = aiRoom();
+  if (r) return aiAsked != null && Date.now() - aiHeld < 5000 ? aiAsked : r.level;
+  return AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0;
+};
+/** Why the control is locked, or "" when it is not. */
+const aiLockedNote = () => { const r = aiRoom(); return r && !r.master ? "Set by the room master" : ""; };
+async function setAiBoost(v) {
+  const r = aiRoom();
+  if (!r) { prefs.set({ aiBoost: v }); return; }
+  if (!r.master) return;
+  aiHeld = Date.now(); aiAsked = v;
+  try { await invoke("relay_set_ai", { level: v }); } catch (e) { aiAsked = null; say(errText(e), "bad"); }
+  window.dispatchEvent(new Event("net"));
+}
+/** Keep a Stronger AI select showing the shared level and locked for players who are not the room master. `after` runs on each refresh. */
+function bindAiSelect(sel, after) {
+  const sync = () => {
+    sel.value = String(aiBoost());
+    sel.disabled = !!aiLockedNote();
+    if (after) after();
+  };
+  const onNet = () => { if (!sel.isConnected) window.removeEventListener("net", onNet); else sync(); };
+  window.addEventListener("net", onNet);
+  sync();
+  sel.addEventListener("change", () => setAiBoost(+sel.value));
+}
+/** The Stronger AI level beside the other skirmish options (money, speed, screen). */
 function aiSelect() {
-  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI", title: "How fast the computer players build, field teams and gather" },
+  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI" },
     ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, v ? `${t} AI` : "Normal AI")));
-  sel.value = String(aiBoost());
   const wrap = h("div", { class: "speedpick" }, icon("ai"), sel);
-  const mark = () => wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
-  mark();
-  sel.addEventListener("change", () => { prefs.set({ aiBoost: +sel.value }); mark(); });
+  bindAiSelect(sel, () => {
+    wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
+    sel.title = aiLockedNote() || "How fast the computer players build and gather";
+  });
   return wrap;
 }
 const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : DEFAULT_CASH);
@@ -1196,9 +1226,12 @@ function playPage() {
   const custom = h("div", { class: "row", hidden: true }, cw, "×", ch);
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
-  const aiSel = h("select", { "aria-label": "Stronger AI", onchange: () => prefs.set({ aiBoost: +aiSel.value }) },
-    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
-  aiSel.value = String(aiBoost());
+  const aiSel = h("select", { "aria-label": "Stronger AI" }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const aiNote = h("span", {});
+  bindAiSelect(aiSel, () => {
+    const r = aiRoom();
+    aiNote.textContent = !r ? "Computer players build and gather faster." : r.master ? "Computer players build and gather faster. Everyone in your room plays with this." : "Set by the room master.";
+  });
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
   // The chosen game's own picture, read from the player's files, fading in from the right edge of the card. Two layers:
@@ -1293,7 +1326,7 @@ function playPage() {
       h("div", { class: "settings" },
         setting("Fullscreen", "Fill the screen instead of a window.", h("label", { class: "switch" }, fs)),
         setting("Higher camera", "See further out. Leave it off for a normal online view.", h("label", { class: "switch" }, cam)),
-        setting("Stronger AI", "Skirmish computer players build, field teams and gather faster, in any mod. It changes their pace, not their tactics. Multiplayer games ignore it.", aiSel)),
+        setting("Stronger AI", aiNote, aiSel)),
       ));
   return { el, dispose: () => refreshers.delete(fillMods) };
 }
@@ -1529,11 +1562,9 @@ function connectionCard() {
 /** The room's settings. The first player into a room is its master and picks the "Stronger AI" level every player's game
  *  starts with (for computer players in a multiplayer game); everyone else sees it and cannot change it. */
 function roomCard() {
-  let held = 0, asked = null; // the relay answers on the next ping: keep the choice on screen until it has
   const badge = h("span", {}), note = h("span", {}), fb = liveStatus(), level = h("span", { class: "pill" });
-  const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: async () => {
-    try { held = Date.now(); asked = +sel.value; fb.busy("Saving…"); await invoke("relay_set_ai", { level: asked }); } catch (e) { asked = null; fb.bad(errText(e)); }
-  } }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: () => { fb.busy("Saving…"); setAiBoost(+sel.value); } },
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
   const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
     h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-inline" }, fb.el, sel, level))));
   function draw() {
@@ -1542,16 +1573,14 @@ function roomCard() {
     if (card.hidden) return;
     const master = !!d.room_master;
     fill(badge, pill(master ? "You are the room master" : "Room master: another player", master ? "ok" : ""));
-    // the relay has confirmed the level we asked for, or five seconds passed without it
-    if (asked != null && (d.ai_level ?? 0) === asked) { asked = null; held = 0; fb.ok("Saved for the room"); }
-    else if (asked != null && Date.now() - held > 5000) { asked = null; fb.bad("Not confirmed, try again"); }
-    if (Date.now() - held > 5000) sel.value = String(d.ai_level ?? 0);
+    // the relay has confirmed the level that was asked for, or five seconds passed without it
+    if (aiAsked != null && (d.ai_level ?? 0) === aiAsked) { aiAsked = null; fb.ok("Saved for the room"); }
+    else if (aiAsked != null && Date.now() - aiHeld > 5000) { aiAsked = null; fb.bad("Not confirmed, try again"); }
+    sel.value = String(aiBoost());
     // only the master has a control; everyone else sees the level as a value, not a greyed-out menu
     sel.hidden = !master; level.hidden = master;
     level.textContent = (AI_BOOSTS.find(([v]) => v === (d.ai_level ?? 0)) || AI_BOOSTS[0])[1];
-    note.textContent = master
-      ? "Computer players build and gather faster in everyone's game. Set it before the game starts."
-      : "Chosen by the room master. It applies when the game starts.";
+    note.textContent = master ? "Computer players build and gather faster for everyone in the room." : "Set by the room master.";
   }
   window.addEventListener("net", draw);
   draw();
