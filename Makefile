@@ -63,7 +63,7 @@ test: ## Run the test suites
 	cargo test -p generals-core -p generals-proto -p generals-server
 	sh tests/run.sh
 
-linux-client: ## Build the Linux launcher (.deb, .rpm, .AppImage); no engine on Linux yet
+linux-client: ## Build the Linux launcher (.deb, .rpm and .AppImage)
 	@[ "$$(uname -s)" = Linux ] || { echo "linux-client builds on Linux only"; exit 1; }
 	@pkg-config --exists webkit2gtk-4.1 gtk+-3.0 || { echo "missing build libraries; on Debian/Ubuntu: sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev"; exit 1; }
 	@cargo tauri --version >/dev/null 2>&1 || cargo install tauri-cli --version "^2" --locked

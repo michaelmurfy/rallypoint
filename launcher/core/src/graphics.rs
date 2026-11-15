@@ -78,6 +78,10 @@ pub fn camera_env(height: u32) -> (String, String) {
 /// renderer of the 64-bit engine (`GENERALS_GFX=vulkan`; the 32-bit engine has none), on macOS the Metal backend's Enhanced
 /// mode (`GENERALS_GFX=metal`). Anything else keeps the classic path.
 pub fn renderer_env(renderer: &str, engine: &std::path::Path, os: &str) -> Option<(String, String)> {
+    // Linux has no Direct3D 8 path. The native Vulkan renderer is the game.
+    if os == "linux" {
+        return Some(("GENERALS_GFX".into(), "vulkan".into()));
+    }
     if renderer != "enhanced" {
         return None;
     }
@@ -90,7 +94,7 @@ pub fn renderer_env(renderer: &str, engine: &std::path::Path, os: &str) -> Optio
 
 /// Whether this platform has an Enhanced renderer at all (the Settings switch is shown only then).
 pub fn renderer_available(os: &str, both_windows_engines: bool) -> bool {
-    os == "macos" || (os == "windows" && both_windows_engines)
+    os == "macos" || os == "linux" || (os == "windows" && both_windows_engines)
 }
 
 /// The Enhanced renderer's effect settings the launcher offers: (Options.ini key, allowed values, default, also on macOS).
@@ -281,7 +285,8 @@ mod tests {
         let mac = std::path::Path::new("/Applications/Rallypoint.app/Contents/Resources/engine/generalszh");
         assert_eq!(renderer_env("enhanced", mac, "macos"), Some(("GENERALS_GFX".into(), "metal".into())));
         assert_eq!(renderer_env("classic", mac, "macos"), None);
-        assert_eq!(renderer_env("enhanced", mac, "linux"), None);
+        assert_eq!(renderer_env("enhanced", mac, "linux"), Some(("GENERALS_GFX".into(), "vulkan".into())));
+        assert_eq!(renderer_env("classic", mac, "linux"), Some(("GENERALS_GFX".into(), "vulkan".into())));
         assert!(renderer_available("macos", false) && renderer_available("windows", true) && !renderer_available("windows", false));
     }
 
