@@ -1,0 +1,84 @@
+diff --git a/Dependencies/Utility/Utility/thread_compat.h b/Dependencies/Utility/Utility/thread_compat.h
+index b4d1b9a..47a789e 100644
+--- a/Dependencies/Utility/Utility/thread_compat.h
++++ b/Dependencies/Utility/Utility/thread_compat.h
+@@ -25,6 +25,10 @@
+ #include <pthread.h>
+ #include <unistd.h>
+ #include <cstdint>
++#if defined(__APPLE__)
++#include <atomic>
++#include <os/lock.h>
++#endif
+ 
+ inline uint64_t GetCurrentThreadId()
+ {
+@@ -38,6 +42,52 @@ inline void Sleep(int ms)
+   usleep(ms * 1000);
+ }
+ 
++#if defined(__APPLE__)
++// Rallypoint: CRITICAL_SECTION on macOS. A recursive pthread mutex never takes the fast path there (every lock and
++// unlock went through _pthread_mutex_firstfit_lock_slow / unlock_slow), and the game takes one for every allocation
++// and release of pool memory: about 6% of the game thread in a big battle. This is the usual recursive lock built on
++// a plain one: the owner and a depth beside an os_unfair_lock, which is a single compare-and-swap when uncontended.
++// Same meaning as Win32: the owning thread may enter again, initialise before use.
++struct CRITICAL_SECTION
++{
++  os_unfair_lock lock;
++  std::atomic<uintptr_t> owner;
++  int depth;
++};
++
++inline void InitializeCriticalSection(CRITICAL_SECTION* cs)
++{
++  cs->lock = OS_UNFAIR_LOCK_INIT;
++  cs->owner.store(0, std::memory_order_relaxed);
++  cs->depth = 0;
++}
++
++inline void EnterCriticalSection(CRITICAL_SECTION* cs)
++{
++  const uintptr_t self = reinterpret_cast<uintptr_t>(pthread_self());
++  if (cs->owner.load(std::memory_order_relaxed) == self)
++  {
++    ++cs->depth;
++    return;
++  }
++  os_unfair_lock_lock(&cs->lock);
++  cs->owner.store(self, std::memory_order_relaxed);
++  cs->depth = 1;
++}
++
++inline void LeaveCriticalSection(CRITICAL_SECTION* cs)
++{
++  if (--cs->depth == 0)
++  {
++    cs->owner.store(0, std::memory_order_relaxed);
++    os_unfair_lock_unlock(&cs->lock);
++  }
++}
++
++inline void DeleteCriticalSection(CRITICAL_SECTION*)
++{
++}
++#else
+ // CRITICAL_SECTION shim. Mirrors Win32 semantics: recursive locking is allowed,
+ // initialization is required before use.
+ struct CRITICAL_SECTION
+@@ -68,6 +118,7 @@ inline void DeleteCriticalSection(CRITICAL_SECTION* cs)
+ {
+   pthread_mutex_destroy(&cs->mutex);
+ }
++#endif
+ 
+ // Minimal WaitForSingleObject shim — only the "wait forever on a mutex" form
+ // is used by the engine. Real Win32 handles aren't faked here; callers that
+@@ -81,6 +132,6 @@ inline void DeleteCriticalSection(CRITICAL_SECTION* cs)
+ 
+ inline unsigned WaitForSingleObject(CRITICAL_SECTION* cs, unsigned /*timeout_ms*/)
+ {
+-  pthread_mutex_lock(&cs->mutex);
++  EnterCriticalSection(cs);
+   return WAIT_OBJECT_0;
+ }

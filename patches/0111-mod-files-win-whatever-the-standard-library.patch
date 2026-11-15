@@ -1,0 +1,16 @@
+diff --git a/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp b/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
+index efaca34..9850f49 100644
+--- a/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
++++ b/Core/GameEngine/Source/Common/System/ArchiveFileSystem.cpp
+@@ -158,7 +158,10 @@ void ArchiveFileSystem::loadIntoDirectoryTree(ArchiveFile *archiveFile, Bool ove
+ 		if (overwrite)
+ 		{
+ 			// When overwriting, try place the new value at the beginning of the key list.
+-			fileIt = dirInfo->m_files.find(token);
++			// Rallypoint: lower_bound, not find. find may return any of several equal keys (newer libc++ returns whichever
++			// it meets first in the tree), so a mod's file could land behind the game's own copy of it: a build with a
++			// newer Xcode read Zero Hour's CommandButton.ini under Shockwave and stopped with an INI error.
++			fileIt = dirInfo->m_files.lower_bound(token);
+ 		}
+ 		else
+ 		{

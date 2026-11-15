@@ -1,0 +1,80 @@
+diff --git a/Core/GameEngine/Include/Common/CRCDebug.h b/Core/GameEngine/Include/Common/CRCDebug.h
+index 74c5b13..7f94700 100644
+--- a/Core/GameEngine/Include/Common/CRCDebug.h
++++ b/Core/GameEngine/Include/Common/CRCDebug.h
+@@ -45,16 +45,23 @@
+ #include "WWMath/matrix3d.h"
+ 
+ 	#define AS_INT(x) (*(Int *)(&x))
++	// Rallypoint: the sync log is written for the first 300 frames and then one frame in 100, but every DUMP and
++	// CRCDEBUG_LOG line built its arguments (two AsciiStrings for the file and the name, or a formatted description of the
++	// object) on every frame and only then found out that the frame is not logged. With sync logs on that was a third of
++	// the simulation's time in a big battle, and the object descriptions were built with sync logs off too. The frame is
++	// now asked first. What is written does not change.
++	Bool crcDebugLogsThisFrame();
++	#define CRC_LOGS_THIS_FRAME (TheCRCFirstFrameToLog >= 0 && crcDebugLogsThisFrame())
+ 	#define DUMPVEL DUMPCOORD3DNAMED(&m_vel, "m_vel")
+ 	#define DUMPACCEL DUMPCOORD3DNAMED(&m_accel, "m_accel")
+ 	#define DUMPVECTOR3(x) DUMPVECTOR3NAMED(x, #x)
+-	#define DUMPVECTOR3NAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpVector3(x, y, __FILE__, __LINE__); } while (0)
++	#define DUMPVECTOR3NAMED(x, y) do { if (CRC_LOGS_THIS_FRAME) dumpVector3(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPCOORD3D(x) DUMPCOORD3DNAMED(x, #x)
+-	#define DUMPCOORD3DNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpCoord3D(x, y, __FILE__, __LINE__); } while (0)
++	#define DUMPCOORD3DNAMED(x, y) do { if (CRC_LOGS_THIS_FRAME) dumpCoord3D(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPMATRIX3D(x) DUMPMATRIX3DNAMED(x, #x)
+-	#define DUMPMATRIX3DNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpMatrix3D(x, y, __FILE__, __LINE__); } while (0)
++	#define DUMPMATRIX3DNAMED(x, y) do { if (CRC_LOGS_THIS_FRAME) dumpMatrix3D(x, y, __FILE__, __LINE__); } while (0)
+ 	#define DUMPREAL(x) DUMPREALNAMED(x, #x)
+-	#define DUMPREALNAMED(x, y) do { if (TheCRCFirstFrameToLog >= 0) dumpReal(x, y, __FILE__, __LINE__); } while (0)
++	#define DUMPREALNAMED(x, y) do { if (CRC_LOGS_THIS_FRAME) dumpReal(x, y, __FILE__, __LINE__); } while (0)
+ 
+ 	extern Int TheCRCFirstFrameToLog;
+ 	extern UnsignedInt TheCRCLastFrameToLog;
+@@ -73,9 +80,9 @@
+ 	void addCRCDebugLineNoCounter(const char *fmt, ...);
+ 	void addCRCDumpLine(const char *fmt, ...);
+ 	void addCRCGenLine(const char *fmt, ...);
+-	#define CRCDEBUG_LOG(x) addCRCDebugLine x
++	#define CRCDEBUG_LOG(x) do { if (CRC_LOGS_THIS_FRAME) addCRCDebugLine x; } while (0)
+ 	#define CRCDUMP_LOG(x) addCRCDumpLine x
+-	#define CRCGEN_LOG(x) addCRCGenLine x
++	#define CRCGEN_LOG(x) do { if (CRC_LOGS_THIS_FRAME) addCRCGenLine x; } while (0)
+ 
+ 	class CRCVerification
+ 	{
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+index 7a60872..589e72e 100644
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -54,6 +54,11 @@ static Int numDebugStrings = 0;
+ 	&& TheGameLogic->getFrame() <= TheCRCLastFrameToLog \
+ 	&& (TheGameLogic->getFrame() <= 300 || (TheGameLogic->getFrame() % 100) == 0)
+ 
++Bool crcDebugLogsThisFrame()
++{
++	return TheGameLogic != nullptr && (IS_FRAME_OK_TO_LOG);
++}
++
+ CRCVerification::CRCVerification()
+ {
+ #ifdef DEBUG_LOGGING
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DDependencyModelDraw.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DDependencyModelDraw.cpp
+index 07e057d..f3e03b5 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DDependencyModelDraw.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Drawable/Draw/W3DDependencyModelDraw.cpp
+@@ -145,7 +145,14 @@ void W3DDependencyModelDraw::adjustTransformMtx(Matrix3D& mtx) const
+ 			else
+ 			{
+         mtx = *theirDrawable->getTransformMatrix();//TransformMatrix();
+-				DEBUG_LOG(("m_attachToDrawableBoneInContainer %s not found",getW3DDependencyModelDrawModuleData()->m_attachToDrawableBoneInContainer.str()));
++				// Rallypoint: said every frame for every such rider (610,000 lines, most of a 48 MB engine.log, in one
++				// Shockwave game); twenty times is enough to know.
++				static Int said = 0;
++				if (said < 20)
++				{
++					++said;
++					DEBUG_LOG(("m_attachToDrawableBoneInContainer %s not found",getW3DDependencyModelDrawModuleData()->m_attachToDrawableBoneInContainer.str()));
++				}
+ 			}
+ 		}
+ 	}
