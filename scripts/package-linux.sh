@@ -2,6 +2,8 @@
 # Linux release packaging, run from the repository root.
 #   package-linux.sh engine OUT            collect the built engine into OUT/engine (stripped, with its font and assets)
 #                                          and its debug symbols into OUT/symbols
+#   package-linux.sh debversion VERSION DEB    give the launcher .deb the real version (tauri only takes the numeric core):
+#                                          0.8.3-beta.1 becomes 0.8.3~beta.1, so the release 0.8.3 upgrades it; the file is renamed
 #   package-linux.sh tarball VERSION DEB OUT   turn the launcher .deb into OUT/rallypoint-VERSION-linux-x86_64.tar.gz
 # The tarball is the deb's /usr tree: extract it with `--strip-components=1 -C ~/.local` (or /usr/local) and
 # the launcher finds the engine in ../lib/Rallypoint/engine, the same place as in the deb and rpm.
@@ -23,6 +25,17 @@ engine)
   strings -a "$out/engine/generalszh" | grep -q 'DebugFrame_' || { echo "sync log writer missing from the engine"; exit 1; }
   ls -lR "$out/engine" | head -40
   ;;
+debversion)
+  ver=$2; deb=$3
+  tmp=$(mktemp -d)
+  dpkg-deb -R "$deb" "$tmp/p"
+  sed -i "s/^Version: .*/Version: $(printf %s "$ver" | tr - '~')/" "$tmp/p/DEBIAN/control"
+  out="$(dirname "$deb")/Rallypoint_${ver}_amd64.deb"
+  rm -f "$deb"
+  dpkg-deb --root-owner-group -b "$tmp/p" "$out" >/dev/null
+  rm -rf "$tmp"
+  dpkg-deb -f "$out" Version
+  ;;
 tarball)
   ver=$2; deb=$3; out=$4
   tmp=$(mktemp -d)
@@ -35,7 +48,7 @@ tarball)
   ls -l "$out"
   ;;
 *)
-  echo "usage: package-linux.sh engine OUT | tarball VERSION DEB OUT" >&2
+  echo "usage: package-linux.sh engine OUT | debversion VERSION DEB | tarball VERSION DEB OUT" >&2
   exit 2
   ;;
 esac
