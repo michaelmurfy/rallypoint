@@ -1,0 +1,44 @@
+diff --git a/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp b/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
+--- a/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
+@@ -98,7 +98,9 @@
+         {
+             if (!(access & File::WRITE))
+                 return std::filesystem::path();
+-            pathFixed = p;
++            // Rallypoint: a folder or file that is not there yet (a map being received) keeps its name and its place.
++            // This used to throw away everything before it ("pathFixed = p"), leaving a path relative to the game folder.
++            pathFixedPart = p;
+         }
+ 
+         pathFixed /= pathFixedPart;
+@@ -125,7 +127,16 @@
+ 		return nullptr;
+ 	}
+ 
++#if defined(__APPLE__)
++	// Rallypoint: the Windows loop below splits the name at every slash and builds the folders up again with
++	// backslashes and no leading slash, so for "/Users/me/Documents/.../Maps/<map>/<map>.map" it made
++	// "Users/me/Documents/..." inside the game folder and never the real one. A map sent by the host then could not
++	// be saved ("Cannot open file!" in the log, "Unable to transfer the map" in the lobby). On macOS the folders are
++	// made from the fixed path, further down.
++	if (false) {
++#else
+ 	if (access & File::WRITE) {
++#endif
+ 		// if opening the file for writing, we need to make sure the directory is there
+ 		// before we try to create the file.
+ 		AsciiString string;
+@@ -151,6 +162,12 @@
+ 		deleteInstance(file);
+ 		return nullptr;
+ 	}
++	if (access & File::WRITE) {
++		std::error_code ec;
++		std::filesystem::create_directories(normalized.parent_path(), ec);
++		if (ec)
++			fprintf(stderr, "[files] could not make the folder for %s: %s\n", normalized.c_str(), ec.message().c_str());
++	}
+ 	const char* openName = normalized.c_str();
+ #else
+ 	const char* openName = filename;
