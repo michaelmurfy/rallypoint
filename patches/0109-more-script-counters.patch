@@ -1,0 +1,40 @@
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/ScriptEngine.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/ScriptEngine.h
+@@ -215,7 +215,11 @@
+ {
+ 
+ public:
+-	enum {MAX_COUNTERS=256, MAX_FLAGS=256, MAX_ATTACK_PRIORITIES=256};
++	// 255 real slots (index 0 is unused). Script-heavy custom maps, such as the
++	// survival maps, define more counters than that and the next one was dropped;
++	// drawing its timer then read a null pointer. Saves store the used count, so
++	// a larger table still loads an old save.
++	enum {MAX_COUNTERS=1024, MAX_FLAGS=256, MAX_ATTACK_PRIORITIES=256};
+ 	enum TFade {FADE_NONE, FADE_SUBTRACT, FADE_ADD, FADE_SATURATE, FADE_MULTIPLY};
+ 	ScriptEngine();
+ 	virtual ~ScriptEngine() override;
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/InGameUI.cpp
+@@ -4144,7 +4144,10 @@
+ 			{
+ 				// found one - draw it
+ 				UnicodeString line;
+-				Int framesLeft = TheScriptEngine->getCounter(timerName)->value;
++				const TCounter *counter = TheScriptEngine->getCounter(timerName);
++				if (counter == nullptr)
++					continue;
++				Int framesLeft = counter->value;
+ 				UnsignedInt readyFrame = TheGameLogic->getFrame();
+ 				if (framesLeft > 0)
+ 					readyFrame += framesLeft;
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 12;
++		static const UnsignedInt kRallypointSimulationId = 13;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
