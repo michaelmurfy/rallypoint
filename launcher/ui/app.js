@@ -1161,7 +1161,7 @@ const aiBoost = () => {
   return AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0;
 };
 /** Why the control is locked, or "" when it is not. */
-const aiLockedNote = () => { const r = aiRoom(); return r && !r.master ? "Set by the room master" : ""; };
+const aiLockedNote = () => { const r = aiRoom(); return r && !r.master ? "The room master can set this if they choose to" : ""; };
 async function setAiBoost(v) {
   const r = aiRoom();
   if (!r) { prefs.set({ aiBoost: v }); return; }
@@ -1230,7 +1230,7 @@ function playPage() {
   const aiNote = h("span", {});
   bindAiSelect(aiSel, () => {
     const r = aiRoom();
-    aiNote.textContent = !r ? "Computer players build and gather faster." : r.master ? "Computer players build and gather faster. Everyone in your room plays with this." : "Set by the room master.";
+    aiNote.textContent = !r ? "Need a bit more of a challenge? Make the AI build and gather faster." : r.master ? "Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room." : "The room master can set this if they choose to.";
   });
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
@@ -1580,7 +1580,7 @@ function roomCard() {
     // only the master has a control; everyone else sees the level as a value, not a greyed-out menu
     sel.hidden = !master; level.hidden = master;
     level.textContent = (AI_BOOSTS.find(([v]) => v === (d.ai_level ?? 0)) || AI_BOOSTS[0])[1];
-    note.textContent = master ? "Computer players build and gather faster for everyone in the room." : "Set by the room master.";
+    note.textContent = master ? "Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room." : "The room master can set this if they choose to.";
   }
   window.addEventListener("net", draw);
   draw();
