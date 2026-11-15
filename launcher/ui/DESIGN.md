@@ -19,7 +19,7 @@ It uses the platform's own UI font on purpose (a desktop app should look native)
 | `--accent` | `#d4312f` | `#b3201f` | the primary action, the live wizard step, the switch when on; `--accent-ink` is its text |
 | `--rose` | `#f08f8a` | `#a3322f` | secondary: links |
 | `--gold` | `#e8b84a` | `#8a5a00` | the brand block (the icon's edge, the line under the name, its chevrons) and the sixth mod tile colour. Not for actions or state |
-| `--c-play` `--c-mods` `--c-maps` `--c-online` `--c-settings` | coral, amber, green, blue, violet | darker | one hue per section: its nav icon chip (tinted, solid when current), the chevrons beside its page title, the soft light behind the title, the live tab. `main[data-page]` exposes the current one as `--page`. `--hue-ink` is text on a solid hue |
+| `--c-play` `--c-mods` `--c-maps` `--c-online` `--c-settings` | coral, amber, green, blue, steel | darker | one hue per section: its nav icon chip (tinted, solid when current), the chevrons beside its page title, the soft light behind the title, the live tab. No purple anywhere, and headings inside a page (the effect groups) stay `--rose`, not the page hue. `main[data-page]` exposes the current one as `--page`. `--hue-ink` is text on a solid hue |
 | `--ok-ink` `--warn-ink` `--bad-ink` | green, gold, light coral | darker | state text and dots only |
 
 State colors stay off the red scale on purpose, so "installed", "waiting" and "failed" are not confused with the theme.
