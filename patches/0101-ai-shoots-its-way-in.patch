@@ -1,0 +1,148 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
+@@ -800,6 +800,12 @@
+ 	UnsignedByte m_stuckChecks;							///< Checks in a row without progress.
+ 	UnsignedByte m_stuckStage;							///< What has been tried: 0 nothing, 1 a new path, 2 a nudge.
+ 	Bool m_stuckSkipWaypoint;								///< A unit on a waypoint path could not reach its waypoint: go on to the next one.
++	// Rallypoint: no route to where the unit was sent (walled off, say): see watchForNoRoute. Not saved either.
++	UnsignedInt	m_noRouteFrame;							///< Frame of the last path request that found no way to its destination (0 = none).
++	Coord3D			m_noRouteGoal;							///< Where that request wanted to go.
++	Coord3D			m_noRoutePos;								///< Where the unit was when we started counting.
++	UnsignedByte m_noRouteChecks;						///< Checks in a row standing short of that destination.
++	Bool watchForNoRoute(UnsignedInt now);
+ public:
+ 	/// Rallypoint: asked by the waypoint-following state; true once after watchForStuck gave up on the current waypoint.
+ 	Bool friend_takeStuckSkipWaypoint() { Bool skip = m_stuckSkipWaypoint; m_stuckSkipWaypoint = FALSE; return skip; }
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 10;
++		static const UnsignedInt kRallypointSimulationId = 11;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
+@@ -239,6 +239,10 @@
+ 	m_stuckChecks = 0;
+ 	m_stuckStage = 0;
+ 	m_stuckSkipWaypoint = FALSE;
++	m_noRouteFrame = 0;
++	m_noRouteGoal.zero();
++	m_noRoutePos.zero();
++	m_noRouteChecks = 0;
+ 	m_blockedFrames = 0;
+ 	m_curMaxBlockedSpeed = 0;
+ 	m_bumpSpeedLimit = FAST_AS_POSSIBLE;
+@@ -1013,7 +1017,71 @@
+  *  the destination onto the nearest place it can stand; 3. if that did not help either, give up on the order, so the
+  *  AI's team moves on instead of waiting for it forever. Only uses what every player's game has (positions, frame,
+  *  paths), so it is the same everywhere; humans' units are never touched. */
++// ------------------------------------------------------------------------------------------------
+ // ------------------------------------------------------------------------------------------------
++/** Rallypoint: a computer player's unit was sent somewhere no route leads to: the way into a base closed off with
++ *  buildings, usually. The pathfinder then takes it as close as it can get, and it stood there for the rest of the
++ *  game, asking for the same path again and again (a whole army, in the report that led here). What a player would
++ *  do is shoot a way in. So an armed unit that has stood short of such a destination for 8 seconds attacks the
++ *  nearest enemy building within 30 cells; one it cannot see (camouflaged) is fired at where it stands. When the
++ *  building is gone the unit's team gives it its next order and a route may exist.
++ *  Returns true when it gave an order. Same on every machine: positions, frames and the partition manager only. */
++// ------------------------------------------------------------------------------------------------
++Bool AIUpdateInterface::watchForNoRoute(UnsignedInt now)
++{
++	Object *obj = getObject();
++	const Player *player = obj->getControllingPlayer();
++	const Coord3D *pos = obj->getPosition();
++	const Bool fighting = obj->testStatus(OBJECT_STATUS_IS_ATTACKING) || obj->testStatus(OBJECT_STATUS_IS_FIRING_WEAPON)
++		|| obj->testStatus(OBJECT_STATUS_IS_AIMING_WEAPON);
++	if (m_noRouteFrame == 0 || now - m_noRouteFrame > 30 * LOGICFRAMES_PER_SECOND || fighting
++		|| !player || player->getPlayerType() != PLAYER_COMPUTER || !obj->isAbleToAttack()
++		|| isAiInDeadState() || obj->isEffectivelyDead() || obj->isDisabled() || obj->isContained())
++	{
++		m_noRouteChecks = 0;
++		return FALSE;
++	}
++
++	const Real gx = m_noRouteGoal.x - pos->x, gy = m_noRouteGoal.y - pos->y;
++	const Real mx = pos->x - m_noRoutePos.x, my = pos->y - m_noRoutePos.y;
++	const Real cell = PATHFIND_CELL_SIZE_F;
++	if (m_noRouteChecks == 0 || mx*mx + my*my > cell*cell || gx*gx + gy*gy < 36 * cell*cell)
++	{
++		// first look, still walking to the closest place, or close enough to the destination after all
++		m_noRoutePos = *pos;
++		m_noRouteChecks = (gx*gx + gy*gy < 36 * cell*cell) ? 0 : 1;
++		return FALSE;
++	}
++	if (++m_noRouteChecks < 8)
++		return FALSE;
++	m_noRouteChecks = 0;
++	m_noRouteFrame = 0;
++
++	PartitionFilterRelationship enemies(obj, PartitionFilterRelationship::ALLOW_ENEMIES);
++	PartitionFilterAcceptByKindOf buildings(MAKE_KINDOF_MASK(KINDOF_STRUCTURE), MAKE_KINDOF_MASK(KINDOF_MINE));
++	PartitionFilterAlive alive;
++	PartitionFilter *filters[] = { &enemies, &buildings, &alive, nullptr };
++	Object *wall = ThePartitionManager->getClosestObject(pos, 30 * cell, FROM_CENTER_2D, filters);
++	if (!wall)
++	{
++		fprintf(stderr, "[noroute] frame %u object %u %s at %.0f,%.0f has no way to %.0f,%.0f and no enemy building near\n", now,
++			(unsigned)obj->getID(), obj->getTemplate()->getName().str(), pos->x, pos->y, m_noRouteGoal.x, m_noRouteGoal.y);
++		return FALSE;
++	}
++	const Bool hidden = wall->testStatus(OBJECT_STATUS_STEALTHED) && !wall->testStatus(OBJECT_STATUS_DETECTED);
++	fprintf(stderr, "[noroute] frame %u object %u %s at %.0f,%.0f has no way to %.0f,%.0f: attacks %s at %.0f,%.0f%s\n", now,
++		(unsigned)obj->getID(), obj->getTemplate()->getName().str(), pos->x, pos->y, m_noRouteGoal.x, m_noRouteGoal.y,
++		wall->getTemplate()->getName().str(), wall->getPosition()->x, wall->getPosition()->y, hidden ? " (hidden: fires at the spot)" : "");
++	if (hidden)
++	{
++		const Coord3D spot = *wall->getPosition();
++		aiAttackPosition(&spot, 12, CMD_FROM_AI);
++	}
++	else
++		aiAttackObject(wall, NO_MAX_SHOTS_LIMIT, CMD_FROM_AI);
++	return TRUE;
++}
++
+ void AIUpdateInterface::watchForStuck(UpdateSleepTime &sleep)
+ {
+ 	Object *obj = getObject();
+@@ -1021,11 +1089,22 @@
+ 	if (now < m_stuckNextCheck)
+ 	{
+ 		// we are watching this unit: wake up for the next check even if the state machine would sleep longer
+-		if (m_stuckChecks > 0 && UPDATE_SLEEP(m_stuckNextCheck - now) < sleep)
++		if ((m_stuckChecks > 0 || m_noRouteChecks > 0) && UPDATE_SLEEP(m_stuckNextCheck - now) < sleep)
+ 			sleep = UPDATE_SLEEP(m_stuckNextCheck - now);
+ 		return;
+ 	}
+ 	m_stuckNextCheck = now + LOGICFRAMES_PER_SECOND;
++
++	if (watchForNoRoute(now))
++	{
++		m_stuckChecks = 0;
++		m_stuckStage = 0;
++		m_stuckPos = *obj->getPosition();
++		sleep = UPDATE_SLEEP_NONE;
++		return;
++	}
++	if (m_noRouteChecks > 0 && UPDATE_SLEEP(LOGICFRAMES_PER_SECOND) < sleep)
++		sleep = UPDATE_SLEEP(LOGICFRAMES_PER_SECOND);
+ 
+ 	const Player *player = obj->getControllingPlayer();
+ 	const Coord3D *pos = obj->getPosition();
+@@ -1859,6 +1938,9 @@
+ 	}
+ 	if (theNewPath==nullptr && m_path==nullptr) {
+ 		Real pathCostFactor = 0.0f;
++		// Rallypoint: there is no way to the destination; what follows only gets as close as it can. Remembered for watchForNoRoute.
++		m_noRouteFrame = TheGameLogic->getFrame();
++		m_noRouteGoal = originalDestination;
+ 		theNewPath = pathServices->findClosestPath( getObject(), m_locomotorSet, getObject()->getPosition(),
+ 			destination, m_isBlockedAndStuck, pathCostFactor, FALSE );
+ 		m_retryPath = true;
