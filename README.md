@@ -2,13 +2,13 @@
 
 # Rallypoint
 
-Play **Command & Conquer: Generals – Zero Hour** on a Mac or a PC, at any resolution, and play it online with friends.
+Play **Command & Conquer: Generals – Zero Hour** on a Mac, a Windows PC or Linux, at any resolution, and play it online with friends.
 
 You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data, and never will.
 
 **Playing over the internet needs a Rallypoint server.** It's a small program that passes the game's traffic between you and your friends, and one cheap server is enough for everyone. Setting one up takes about ten minutes: see [Run a server](#run-a-server). Skirmishes, mods and maps work without one, and so does a LAN game on the same network.
 
-**Where it stands:** single player works on macOS and Windows, and online games have been played Windows against Windows and Mac against Windows. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
+**Where it stands:** single player works on macOS, Windows and Linux, and online games have been played Windows against Windows and Mac against Windows. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
 
 ## Get started
 
@@ -18,24 +18,58 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 - **macOS (Apple Silicon only):** open the `.dmg`, drag Rallypoint to Applications. The first launch is blocked by Gatekeeper: right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/Rallypoint.app`.
 - **Windows:** run the `-setup.exe`. If SmartScreen warns, choose **More info → Run anyway**.
-- **Linux:** no launcher or engine yet. The relay server runs there, and Linux is the best place to host one (see [Run a server](#run-a-server)).
+- **Linux:** pick your distribution below. You need a 64-bit PC, a Vulkan driver and **glibc 2.39 or newer** (Debian 13, Ubuntu 24.04, Fedora 40, CachyOS). Debian 12 and Ubuntu 22.04 are too old.
+
+### Linux
+
+Each release has three Linux downloads: a `.deb`, an `.rpm` and a `.tar.gz`. The game window is an X11 window, so on Wayland it runs through XWayland (KDE and GNOME both have it).
+
+**Graphics:** AMD and Intel use Mesa's Vulkan driver (`mesa-vulkan-drivers`). NVIDIA uses its own driver. With no GPU driver the game still starts on a software renderer, but slowly.
+
+**Debian and Ubuntu**
+
+```bash
+sudo apt install ./Rallypoint_<version>_amd64.deb
+```
+
+**Fedora**
+
+```bash
+sudo dnf install ./Rallypoint-*.x86_64.rpm
+```
+
+**CachyOS and other Arch-based systems:** use the `.tar.gz`. It installs into your home folder, so no root is needed beyond the libraries.
+
+```bash
+sudo pacman -S --needed webkit2gtk-4.1 gtk3 libx11 freetype2 vulkan-icd-loader alsa-lib
+mkdir -p ~/.local
+tar xzf rallypoint-<version>-linux-x86_64.tar.gz --strip-components=1 -C ~/.local
+~/.local/bin/generals-launcher
+```
+
+Add `vulkan-radeon` (AMD), `vulkan-intel` or `nvidia-utils` for your GPU if it isn't installed yet. After the first run Rallypoint is in your application menu.
+
+The `.tar.gz` works on any other distribution too: install the same libraries under their names there. To remove it, delete `~/.local/bin/generals-launcher`, `~/.local/lib/Rallypoint`, `~/.local/share/applications/Rallypoint.desktop` and the Rallypoint icons under `~/.local/share/icons`.
+
+**Updates on Linux:** Rallypoint tells you when a new release is out and has a **Download page** button. It doesn't install updates itself (the other systems do). Install the new package the same way as the first one.
 
 ## What works
 
 | | macOS | Windows | Linux |
 |---|---|---|---|
-| Launcher, engine, skirmish | ✅ | ✅ | ❌ |
-| Widescreen, 4K, HiDPI | ✅ | ✅ | – |
-| Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | – |
-| Online through the relay | ✅ | ✅ | – |
+| Launcher, engine, skirmish | ✅ | ✅ | ✅ (tried on Debian 13) |
+| Widescreen, 4K, HiDPI | ✅ | ✅ | ✅ |
+| Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | not tried yet |
+| Online through the relay | ✅ | ✅ | not tried yet |
+| Packages | `.dmg` | `-setup.exe` | `.deb`, `.rpm`, `.tar.gz` |
 | Relay server | – | – | ✅ x86_64, arm64, armv7 (Debian and Ubuntu setup script) |
 
 ## Your game files
 
 Rallypoint needs the folder with `INIZH.big` (that's Zero Hour's main data file). You have to own the game; Rallypoint just needs to know where it lives.
 
-- **Windows:** Steam installs are found automatically.
-- **macOS:** in *Settings → Game files* (or the setup wizard) open **Download them from Steam**. Enter your Steam account and password. Rallypoint downloads Generals and Zero Hour (about 4 GB) with the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader). Approve the sign-in on your phone or type the code. The password is never saved, and the sign-in token the downloader keeps is deleted when the download ends. The account must own both games.
+- **Windows and Linux:** Steam installs are found automatically (Linux: the normal Steam and the Flatpak one).
+- **macOS and Linux:** in *Settings → Game files* (or the setup wizard) open **Download them from Steam**. Enter your Steam account and password. Rallypoint downloads Generals and Zero Hour (about 4 GB) with the open-source [DepotDownloader](https://github.com/SteamRE/DepotDownloader). Approve the sign-in on your phone or type the code. The password is never saved, and the sign-in token the downloader keeps is deleted when the download ends. The account must own both games.
 - **Already have them?** Point to the folder in the wizard or in *Settings → Game files*.
 
 ## Play
@@ -200,15 +234,19 @@ Settings live in `.env`: the port, and `ALLOWED_COUNTRIES` to accept only some c
 
 ## Linux
 
-No Linux launcher in releases and no Linux engine yet (Proton or Wine is a possible future route). To build the launcher yourself:
+The Linux install steps are under [Get started](#linux). It is a native engine (our own Vulkan renderer, an X11 window, ALSA sound), not Wine or Proton. To build the packages yourself, on Debian, Ubuntu, Fedora or Arch:
 
 ```bash
-sudo apt install build-essential curl libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 git clone --depth 1 https://github.com/michaelmurfy/rallypoint && cd rallypoint
-make linux-client            # .deb, .rpm and .AppImage in target/release/bundle/
+sh scripts/linux-deps.sh                      # compilers, libraries and Rust, with apt, dnf or pacman
+sh patches/apply.sh
+(cd engine && cmake --preset linux-x64 && cmake --build build/linux-x64 --target z_generals)
+sh scripts/package-linux.sh engine out        # strips the engine and adds its font and assets
+cp -R out/engine/. launcher/src-tauri/engine/
+make linux-client                             # .deb and .rpm in target/release/bundle/
 ```
 
-It manages mods, maps and relay rooms, but has no engine to start.
+`sh scripts/package-linux.sh tarball <version> <the .deb> .` makes the `.tar.gz` from the `.deb`.
 
 ## Build from source
 
@@ -220,14 +258,14 @@ cargo install tauri-cli --version "^2" --locked
 cd launcher/src-tauri && cargo tauri build  # needs the engine in launcher/src-tauri/engine/
 ```
 
-Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --preset apple-arm64-release`, target `z_generals`; Windows: `cmake --preset win32`). Releases are built when a `v*` tag is pushed (`make release VERSION=x.y.z`). More for contributors and AI agents in [`agent.md`](agent.md).
+Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --preset apple-arm64-release`, target `z_generals`; Windows: `cmake --preset win32`; Linux: see [Linux](#linux-1)). Releases are built when a `v*` tag is pushed (`make release VERSION=x.y.z`). More for contributors and AI agents in [`agent.md`](agent.md).
 
 | Path | What |
 |---|---|
 | `launcher/` | Tauri 2 app: `core/` (logic, tested), `src-tauri/` (thin shell), `ui/` (plain HTML) |
 | `server/`, `shared/` | Relay server and the wire protocol |
 | `deploy/` | Ansible playbook and the `rallypoint` command for setting up a server |
-| `engine/` | The macOS/Windows engine port (trimmed copy; our changes are `patches/`) |
+| `engine/` | The macOS, Windows and Linux engine port (trimmed copy; our changes are `patches/`) |
 | `third-party/` | Code the engine build needs, kept in-tree so nothing is fetched (see its README) |
 | `patches/` | Our engine changes, applied with `patches/apply.sh` |
 | `mods/` | Mod and map-pack lists |
@@ -235,7 +273,8 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 ## Known limitations
 
 - Some long online games drift out of sync. We're on it, and sync logs and debug logs are how you can help.
-- No Linux engine and no Intel Mac engine. Sorry, Intel Mac folks.
+- No Intel Mac engine. Sorry, Intel Mac folks.
+- Linux is x86_64 only and new: it has had one tester on one machine. Mods and online play there are untried, and there is no Flatpak yet.
 - Mods and the Epic Showdown pack are downloaded in your browser, not inside the launcher.
 - Game speed can be changed in skirmishes only, not in online games.
 - Not built yet: save and load in multiplayer, controlling allies' units, co-op, bringing an out-of-step player back mid-game.
@@ -243,4 +282,4 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 
 ## Credits and legal
 
-Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the macOS port by **dvcdsys** ([original](https://github.com/dvcdsys/GeneralsGameCode-macOS)), which our engine is forked from ([fork](https://github.com/michaelmurfy/GeneralsGameCode-macOS)). The engine and our patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md` and [`patches/LICENSE.md`](patches/LICENSE.md)). The launcher, relay server and scripts are MIT licensed ([`LICENSE`](LICENSE)); the launcher runs the engine as a separate program. Not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The Windows 64-bit engine build (audio on miniaudio, a Direct3D 8 replacement for d3dx8, 64-bit pointer fixes) and the Enhanced (Vulkan) renderer with its effects are taken from the [ModernGeneralsZH](https://github.com/JaChriCaeTob/ModernGeneralsZH) fork by JaChriCaeTob, also GPL-3.0 with EA's terms; it ships [DXVK](https://github.com/doitsujin/dxvk) (zlib licence) for Direct3D 8 on Vulkan, [miniaudio](https://github.com/mackron/miniaudio) (public domain), the Khronos [Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0 or MIT) and FFmpeg (LGPL, from vcpkg). Steam downloads use the open-source (GPL-2.0) [DepotDownloader](https://github.com/SteamRE/DepotDownloader), fetched at runtime and not bundled. Releases bundle the engine; its complete source is `engine/`, `third-party/` and `patches/` at the tagged commit (`third-party/README.md` lists each piece and its licence).
+Rallypoint stands on [Electronic Arts' GPL release of the Generals source](https://github.com/electronicarts/CnC_Generals_Zero_Hour), [TheSuperHackers/GeneralsGameCode](https://github.com/TheSuperHackers/GeneralsGameCode) and the macOS port by **dvcdsys** ([original](https://github.com/dvcdsys/GeneralsGameCode-macOS)), which our engine is forked from ([fork](https://github.com/michaelmurfy/GeneralsGameCode-macOS)). The engine and our patches are GPL-3.0 with EA's additional terms (see `engine/LICENSE.md` and [`patches/LICENSE.md`](patches/LICENSE.md)). The launcher, relay server and scripts are MIT licensed ([`LICENSE`](LICENSE)); the launcher runs the engine as a separate program. Not endorsed by or affiliated with Electronic Arts. *Command & Conquer* and *Generals* are trademarks of EA. The Windows 64-bit engine build (audio on miniaudio, a Direct3D 8 replacement for d3dx8, 64-bit pointer fixes) and the Enhanced (Vulkan) renderer with its effects are taken from the [ModernGeneralsZH](https://github.com/JaChriCaeTob/ModernGeneralsZH) fork by JaChriCaeTob, also GPL-3.0 with EA's terms; it ships [DXVK](https://github.com/doitsujin/dxvk) (zlib licence) for Direct3D 8 on Vulkan, [miniaudio](https://github.com/mackron/miniaudio) (public domain), the Khronos [Vulkan headers](https://github.com/KhronosGroup/Vulkan-Headers) (Apache-2.0 or MIT) and FFmpeg (LGPL, from vcpkg). The Linux engine draws text with [FreeType](https://freetype.org/) (FreeType licence) and ships the [DejaVu Sans](https://dejavu-fonts.github.io/) font (free licence, copy in `fonts/LICENSE`). Steam downloads use the open-source (GPL-2.0) [DepotDownloader](https://github.com/SteamRE/DepotDownloader), fetched at runtime and not bundled. Releases bundle the engine; its complete source is `engine/`, `third-party/` and `patches/` at the tagged commit (`third-party/README.md` lists each piece and its licence).

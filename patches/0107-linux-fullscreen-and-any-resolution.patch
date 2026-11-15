@@ -1,0 +1,177 @@
+--- a/cmake/dx8_stub/linux_window.cpp
++++ b/cmake/dx8_stub/linux_window.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
++#include <X11/Xatom.h>
+ #include <X11/keysym.h>
+ #undef Bool
+ #undef Status
+@@ -28,6 +29,7 @@
+     int screenH = 1080;
+     Atom wmDelete = 0;
+     bool caps = false;
++    bool borderless = false;
+ };
+ 
+ struct MouseEv { int type, x, y, delta; };
+@@ -157,8 +159,11 @@
+                 if (n == 1 && buf[0] >= 32 && buf[0] != 127) g_chars.push_back((unsigned char)buf[0]);
+             }
+         } else if (e.type == ConfigureNotify) {
+-            g->width = e.xconfigure.width;
+-            g->height = e.xconfigure.height;
++            // A late configure for the original 800x600 must not undo fullscreen.
++            if (!g->borderless || (e.xconfigure.width >= g->screenW - 2 && e.xconfigure.height >= g->screenH - 2)) {
++                g->width = e.xconfigure.width;
++                g->height = e.xconfigure.height;
++            }
+         } else if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == g->wmDelete) {
+             std::fprintf(stderr, "[linux] window closed\n");
+             std::_Exit(0);
+@@ -167,6 +172,40 @@
+ }
+ 
+ Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
++
++// A fullscreen game window is WS_POPUP without a caption. XFCE still draws a
++// title bar unless the motif hints say there are no decorations, and it keeps
++// the panel on top unless the window is the screen and asks to be fullscreen.
++void applyBorderless(Win* w)
++{
++    if (!w || !w->dpy || !w->win || !w->borderless) return;
++    XSizeHints size{};
++    size.flags = PPosition | PSize | PMinSize | PMaxSize;
++    size.x = 0; size.y = 0;
++    size.width = size.min_width = size.max_width = w->screenW;
++    size.height = size.min_height = size.max_height = w->screenH;
++    XSetWMNormalHints(w->dpy, w->win, &size);
++    XMoveResizeWindow(w->dpy, w->win, 0, 0, (unsigned)w->screenW, (unsigned)w->screenH);
++    w->width = w->screenW;
++    w->height = w->screenH;
++    Atom motif = XInternAtom(w->dpy, "_MOTIF_WM_HINTS", 0);
++    unsigned long hints[5] = { 2, 0, 0, 0, 0 }; // decorations = none
++    XChangeProperty(w->dpy, w->win, motif, motif, 32, PropModeReplace, reinterpret_cast<unsigned char*>(hints), 5);
++    // xfwm ignores a fullscreen request whose source is "unspecified".
++    Atom state = XInternAtom(w->dpy, "_NET_WM_STATE", 0);
++    Atom full = XInternAtom(w->dpy, "_NET_WM_STATE_FULLSCREEN", 0);
++    XChangeProperty(w->dpy, w->win, state, XA_ATOM, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&full), 1);
++    XEvent ev{};
++    ev.type = ClientMessage;
++    ev.xclient.window = w->win;
++    ev.xclient.message_type = state;
++    ev.xclient.format = 32;
++    ev.xclient.data.l[0] = 1; // _NET_WM_STATE_ADD
++    ev.xclient.data.l[1] = static_cast<long>(full);
++    ev.xclient.data.l[3] = 1; // application
++    XSendEvent(w->dpy, DefaultRootWindow(w->dpy), 0, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
++    std::fprintf(stderr, "[linux] fullscreen %dx%d\n", w->screenW, w->screenH);
++}
+ 
+ } // namespace
+ 
+@@ -223,7 +262,7 @@
+ ATOM RegisterClass(const WNDCLASS*) { return (ATOM)1; }
+ BOOL UnregisterClass(const char*, HINSTANCE) { return TRUE; }
+ 
+-HWND CreateWindow(const char*, const char* title, DWORD, int x, int y, int w, int h, HWND, HMENU, HINSTANCE, void*)
++HWND CreateWindow(const char*, const char* title, DWORD style, int x, int y, int w, int h, HWND, HMENU, HINSTANCE, void*)
+ {
+     if (!g) g = new Win;
+     if (!g->dpy) {
+@@ -237,6 +276,8 @@
+     }
+     if (w <= 0) w = 800;
+     if (h <= 0) h = 600;
++    g->borderless = (style & WS_POPUP) && !(style & WS_CAPTION);
++    if (g->borderless) { x = 0; y = 0; w = g->screenW; h = g->screenH; }
+     g->width = w;
+     g->height = h;
+     int scr = DefaultScreen(g->dpy);
+@@ -245,10 +286,11 @@
+     if (title) XStoreName(g->dpy, g->win, title);
+     g->wmDelete = XInternAtom(g->dpy, "WM_DELETE_WINDOW", 0);
+     XSetWMProtocols(g->dpy, g->win, &g->wmDelete, 1);
++    applyBorderless(g);
+     XSelectInput(g->dpy, g->win, KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask | FocusChangeMask);
+     XMapWindow(g->dpy, g->win);
+     XFlush(g->dpy);
+-    std::fprintf(stderr, "[linux] window %dx%d on %dx%d\n", w, h, g->screenW, g->screenH);
++    std::fprintf(stderr, "[linux] window %dx%d on %dx%d%s\n", w, h, g->screenW, g->screenH, g->borderless ? " borderless" : "");
+     return g;
+ }
+ 
+@@ -284,12 +326,14 @@
+ {
+     Win* win = asWin(h);
+     if (!win || !win->dpy || !win->win) return TRUE;
++    if (win->borderless) { x = 0; y = 0; w = win->screenW; hgt = win->screenH; flags &= ~0x0001u; }
+     if (!(flags & 0x0001)) { // SWP_NOSIZE
+         win->width = w;
+         win->height = hgt;
+         XResizeWindow(win->dpy, win->win, (unsigned)w, (unsigned)hgt);
+     }
+     if (!(flags & 0x0002)) XMoveWindow(win->dpy, win->win, x, y); // SWP_NOMOVE
++    applyBorderless(win);
+     XFlush(win->dpy);
+     return TRUE;
+ }
+--- a/Core/Libraries/Source/WWVegas/WW3D2/dx8wrapper.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/dx8wrapper.cpp
+@@ -51,6 +51,7 @@
+ #endif
+ 
+ #include "dx8wrapper.h"
++#include <string.h>
+ #include "gfx_null.h"
+ #include "gfx_vulkan.h"
+ #include "dx8webbrowser.h"
+@@ -1522,7 +1523,16 @@
+ 	}
+ 
+ 	if (!found) {
+-		return false;
++		// The Vulkan and null backends draw at whatever size the window is. A resolution that is not in
++		// the fixed list (a VM at 1280x800, an odd widescreen mode) must still get a real backbuffer
++		// format, or every texture format is marked unsupported and the menu draws black.
++		D3DADAPTER_IDENTIFIER8 id;
++		::ZeroMemory(&id, sizeof(id));
++		if (FAILED(D3DInterface->GetAdapterIdentifier(D3DADAPTER_DEFAULT, D3DENUM_NO_WHQL_LEVEL, &id))
++			|| (::strcmp(id.Driver, "vulkan") != 0 && ::strcmp(id.Driver, "null") != 0))
++			return false;
++		*set_backbuffer = *set_colorbuffer = format_table[0];
++		WWDEBUG_SAY(("No listed mode for %d x %d; using format %d", resx, resy, format_table[0]));
+ 	} else {
+ 		*set_backbuffer=*set_colorbuffer = format_table[format_index];
+ 	}
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -883,7 +883,7 @@
+ 		WW3D::Set_Collision_Box_Display_Mask(0x00);	///<set to 0xff to make collision boxes visible
+ 		WW3D::Enable_Static_Sort_Lists(true);
+ 		WW3D::Set_Thumbnail_Enabled(false);
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		// Metal's rasterizer (like D3D10+) samples texel centers at pixel
+ 		// centers for screen-space quads, so the legacy D3D8 -0.5px half-texel
+ 		// compensation must NOT be applied here. With it on, every 2D UI draw
+@@ -913,6 +913,18 @@
+ 			{
+ 			case 0:
+ 			{
++				// Linux has no display-mode switch. Fullscreen means the window covers the
++				// XFCE screen, so the picture has to be that size or it sits in the corner.
++#if defined(__linux__)
++				if (!TheGlobalData->m_windowed) {
++					int sw = ::GetSystemMetrics(SM_CXSCREEN);
++					int sh = ::GetSystemMetrics(SM_CYSCREEN);
++					if (sw >= 640 && sh >= 480) {
++						TheWritableGlobalData->m_xResolution = sw;
++						TheWritableGlobalData->m_yResolution = sh;
++					}
++				}
++#endif
+ 				// set our default width and height and bit depth
+ 				setWidth( TheGlobalData->m_xResolution );
+ 				setHeight( TheGlobalData->m_yResolution );

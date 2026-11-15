@@ -1,0 +1,32 @@
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+@@ -22,7 +22,9 @@
+ #include "gfx_vk_shaders.h"
+ #include <cstdarg>
+ #include <cstdio>
+-#include <strings.h>
++#if defined(__linux__)
++#include <strings.h> // strcasecmp
++#endif
+ #include <map>
+ #include <string>
+ #include <algorithm>
+@@ -58,11 +60,17 @@
+ 
+ // ---- function loading -----------------------------------------------------------------------------------------------------
+ 
++// Only Windows has this entry point; the Linux surface is made through Linux_CreateVulkanSurface.
++#if defined(VK_USE_PLATFORM_WIN32_KHR)
++#define VKFN_SURFACE(X) X(vkCreateWin32SurfaceKHR)
++#else
++#define VKFN_SURFACE(X)
++#endif
+ #define VKFN_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties)
+ #define VKFN_INSTANCE(X) \
+ 	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceFeatures) \
+ 	X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) \
+-	X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkEnumerateDeviceExtensionProperties) X(vkDestroySurfaceKHR) \
++	X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkEnumerateDeviceExtensionProperties) X(vkDestroySurfaceKHR) VKFN_SURFACE(X) \
+ 	X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
+ 	X(vkGetPhysicalDeviceSurfacePresentModesKHR)
+ #define VKFN_DEVICE(X) \

@@ -122,6 +122,7 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 .gamepath { overflow-wrap: anywhere; }
 .card.hero h2 { font-size: 22px; font-weight: 750; letter-spacing: -.015em; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.pick > input { flex: 1; width: auto; min-width: 0; }
 .row.end { justify-content: flex-end; }
 .row.between { justify-content: space-between; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

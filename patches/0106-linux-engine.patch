@@ -1,0 +1,1648 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e283e71..6083ee2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -52,6 +52,9 @@ endif()
+ if(APPLE)
+     include(cmake/apple.cmake)
+ endif()
++if(UNIX AND NOT APPLE)
++    include(cmake/linux.cmake)
++endif()
+ 
+ # Find/Add build dependencies and stubs shared by all projects.
+ #
+@@ -66,7 +69,7 @@ if(WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows")
+     include(cmake/miles.cmake)
+     include(cmake/bink.cmake)
+     include(cmake/dx8.cmake)
+-elseif(APPLE)
++elseif(APPLE OR (UNIX AND NOT APPLE))
+     # macOS MVP: the engine still references the Miles/Bink/DX8 API surface
+     # unconditionally (milesstub / binkstub / d3d8lib are linked by the Core
+     # public interface targets). Fetch the stub SDKs so the engine compiles and
+diff --git a/CMakePresets.json b/CMakePresets.json
+index 8a52360..0a77134 100644
+--- a/CMakePresets.json
++++ b/CMakePresets.json
+@@ -234,6 +234,30 @@
+                 "RTS_BUILD_OPTION_FFMPEG": "OFF"
+             }
+         },
++        {
++            "name": "linux-x64",
++            "displayName": "Linux x86_64 Release",
++            "generator": "Ninja",
++            "binaryDir": "${sourceDir}/build/${presetName}",
++            "cacheVariables": {
++                "CMAKE_BUILD_TYPE": "Release",
++                "CMAKE_C_COMPILER": "clang",
++                "CMAKE_CXX_COMPILER": "clang++",
++                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
++                "RTS_BUILD_GENERALS": "OFF",
++                "RTS_BUILD_ZEROHOUR": "ON",
++                "RTS_BUILD_CORE_TOOLS": "OFF",
++                "RTS_BUILD_ZEROHOUR_TOOLS": "OFF",
++                "RTS_BUILD_ZEROHOUR_EXTRAS": "OFF",
++                "RTS_BUILD_CORE_EXTRAS": "OFF",
++                "RTS_CRASHDUMP_ENABLE": "OFF",
++                "RTS_DEBUG_LOGGING": "ON",
++                "RTS_DEBUG_PROFILE": "OFF",
++                "RTS_DEBUG_STACKTRACE": "OFF",
++                "RTS_DEBUG_CRASHING": "OFF",
++                "RTS_BUILD_OPTION_FFMPEG": "OFF"
++            }
++        },
+         {
+             "name": "mingw-w64-i686",
+             "displayName": "MinGW-w64 32-bit (i686) Release",
+diff --git a/Core/GameEngine/Source/Common/CRCDebug.cpp b/Core/GameEngine/Source/Common/CRCDebug.cpp
+index 439945f..7a60872 100644
+--- a/Core/GameEngine/Source/Common/CRCDebug.cpp
++++ b/Core/GameEngine/Source/Common/CRCDebug.cpp
+@@ -152,7 +152,7 @@ static void outputCRCDebugLinesPerFrame()
+ 		return;
+ 	AsciiString fname;
+ 	fname.format("%s/DebugFrame_%06d.txt", g_saveDebugCRCPerFrameDir.str(), lastCRCDebugFrame);
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen(::apple_path::normalize(fname.str()), frameFileStarted ? "at" : "wt");
+ #else
+ 	FILE *fp = fopen(fname.str(), frameFileStarted ? "at" : "wt");
+diff --git a/Core/GameEngine/Source/Common/System/Debug.cpp b/Core/GameEngine/Source/Common/System/Debug.cpp
+index cd2f5e2..c17d653 100644
+--- a/Core/GameEngine/Source/Common/System/Debug.cpp
++++ b/Core/GameEngine/Source/Common/System/Debug.cpp
+@@ -376,7 +376,7 @@ void DebugInit(int flags)
+ 
+ 		char dirbuf[ _MAX_PATH ];
+ 		::GetModuleFileName( nullptr, dirbuf, sizeof( dirbuf ) );
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		// GetModuleFileName shim returns POSIX path with `/` separators.
+ 		// Original code only stripped past '\\' which never matched.
+ 		if (char *pEnd = strrchr(dirbuf, '/'))
+@@ -426,7 +426,7 @@ void DebugInit(int flags)
+ 			}
+ 		}
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		theLogFile = fopen(::apple_path::normalize(theLogFileName), "w");
+ #else
+ 		theLogFile = fopen(theLogFileName, "w");
+@@ -794,7 +794,7 @@ void ReleaseCrash(const char *reason)
+ 		}
+ 	}
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	theReleaseCrashLogFile = fopen(::apple_path::normalize(curbuf), "w");
+ #else
+ 	theReleaseCrashLogFile = fopen(curbuf, "w");
+@@ -886,7 +886,7 @@ void ReleaseCrashLocalized(const AsciiString& p, const AsciiString& m)
+ 		}
+ 	}
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	theReleaseCrashLogFile = fopen(::apple_path::normalize(curbuf), "w");
+ #else
+ 	theReleaseCrashLogFile = fopen(curbuf, "w");
+diff --git a/Core/GameEngine/Source/Common/System/GameMemory.cpp b/Core/GameEngine/Source/Common/System/GameMemory.cpp
+index d8ca2f8..498e7e0 100644
+--- a/Core/GameEngine/Source/Common/System/GameMemory.cpp
++++ b/Core/GameEngine/Source/Common/System/GameMemory.cpp
+@@ -3270,7 +3270,7 @@ void STLSpecialAlloc::deallocate(void* __p, size_t)
+ }
+ 
+ //-----------------------------------------------------------------------------
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // On arm64 the C/C++ ABI requires that the standard global `operator new` return
+ // memory aligned to at least __STDCPP_DEFAULT_NEW_ALIGNMENT__ (16 bytes). Our
+ // pool hands user data back at a fixed offset past the MemoryPoolSingleBlock
+@@ -3319,7 +3319,7 @@ static inline void poolDeleteAligned16(void* p)
+ void *operator new(size_t size)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	return poolNewAligned16(size, "global operator new");
+ #else
+ 	preMainInitMemoryManager();
+@@ -3335,7 +3335,7 @@ void *operator new(size_t size)
+ void *operator new[](size_t size)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	return poolNewAligned16(size, "global operator new[]");
+ #else
+ 	preMainInitMemoryManager();
+@@ -3351,7 +3351,7 @@ void *operator new[](size_t size)
+ void operator delete(void *p)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	poolDeleteAligned16(p);
+ #else
+ 	preMainInitMemoryManager();
+@@ -3367,7 +3367,7 @@ void operator delete(void *p)
+ void operator delete[](void *p)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	poolDeleteAligned16(p);
+ #else
+ 	preMainInitMemoryManager();
+@@ -3383,7 +3383,7 @@ void operator delete[](void *p)
+ void* operator new(size_t size, const char * fname, int)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	// Must use the same 16-aligned wrapping as the plain operator new: a pointer
+ 	// produced here is normally released through the *plain* operator delete
+ 	// (the MFC-debug delete only runs if a ctor throws), which unwraps p[-1].
+@@ -3406,7 +3406,7 @@ void* operator new(size_t size, const char * fname, int)
+ void operator delete(void * p, const char *, int)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	poolDeleteAligned16(p);
+ #else
+ 	preMainInitMemoryManager();
+@@ -3422,7 +3422,7 @@ void operator delete(void * p, const char *, int)
+ void* operator new[](size_t size, const char * fname, int)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	return poolNewAligned16(size, fname ? fname : "global operator new[](dbg)");
+ #else
+ 	preMainInitMemoryManager();
+@@ -3442,7 +3442,7 @@ void* operator new[](size_t size, const char * fname, int)
+ void operator delete[](void * p, const char *, int)
+ {
+ 	++theLinkTester;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	poolDeleteAligned16(p);
+ #else
+ 	preMainInitMemoryManager();
+diff --git a/Core/GameEngine/Source/Common/System/GameMemoryInit.cpp b/Core/GameEngine/Source/Common/System/GameMemoryInit.cpp
+index 7c80b35..b6c7c29 100644
+--- a/Core/GameEngine/Source/Common/System/GameMemoryInit.cpp
++++ b/Core/GameEngine/Source/Common/System/GameMemoryInit.cpp
+@@ -119,7 +119,7 @@ void userMemoryManagerInitPools()
+ 	}
+ 	strlcat(buf, "\\Data\\INI\\MemoryPools.ini", ARRAY_SIZE(buf));
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE* fp = fopen(::apple_path::normalize(buf), "r");
+ #else
+ 	FILE* fp = fopen(buf, "r");
+diff --git a/Core/GameEngine/Source/Common/System/LocalFile.cpp b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+index f8d6c90..2527faa 100644
+--- a/Core/GameEngine/Source/Common/System/LocalFile.cpp
++++ b/Core/GameEngine/Source/Common/System/LocalFile.cpp
+@@ -190,7 +190,7 @@ Bool LocalFile::open( const Char *filename, Int access, size_t bufferSize )
+ 		mode = binary ? "rb" : "r";
+ 	}
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_file = fopen(::apple_path::normalize(filename), mode);
+ #else
+ 	m_file = fopen(filename, mode);
+diff --git a/Core/GameEngine/Source/Common/System/XferCRC.cpp b/Core/GameEngine/Source/Common/System/XferCRC.cpp
+index 184ebbf..9189493 100644
+--- a/Core/GameEngine/Source/Common/System/XferCRC.cpp
++++ b/Core/GameEngine/Source/Common/System/XferCRC.cpp
+@@ -218,7 +218,7 @@ void XferDeepCRC::open( AsciiString identifier )
+ 	Xfer::open( identifier );
+ 
+ 	// open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_fileFP = fopen( ::apple_path::normalize(identifier.str()), "w+b" );
+ #else
+ 	m_fileFP = fopen( identifier.str(), "w+b" );
+diff --git a/Core/GameEngine/Source/Common/System/XferLoad.cpp b/Core/GameEngine/Source/Common/System/XferLoad.cpp
+index 54a1e5d..fa1ab82 100644
+--- a/Core/GameEngine/Source/Common/System/XferLoad.cpp
++++ b/Core/GameEngine/Source/Common/System/XferLoad.cpp
+@@ -80,7 +80,7 @@ void XferLoad::open( AsciiString identifier )
+ 	Xfer::open( identifier );
+ 
+ 	// open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_fileFP = fopen( ::apple_path::normalize(identifier.str()), "rb" );
+ #else
+ 	m_fileFP = fopen( identifier.str(), "rb" );
+diff --git a/Core/GameEngine/Source/Common/System/XferSave.cpp b/Core/GameEngine/Source/Common/System/XferSave.cpp
+index 52a2881..0a3fdf8 100644
+--- a/Core/GameEngine/Source/Common/System/XferSave.cpp
++++ b/Core/GameEngine/Source/Common/System/XferSave.cpp
+@@ -120,7 +120,7 @@ void XferSave::open( AsciiString identifier )
+ 	Xfer::open( identifier );
+ 
+ 	// open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_fileFP = fopen( ::apple_path::normalize(identifier.str()), "w+b" );
+ #else
+ 	m_fileFP = fopen( identifier.str(), "w+b" );
+diff --git a/Core/GameEngine/Source/Common/UserPreferences.cpp b/Core/GameEngine/Source/Common/UserPreferences.cpp
+index e51002a..36d8bab 100644
+--- a/Core/GameEngine/Source/Common/UserPreferences.cpp
++++ b/Core/GameEngine/Source/Common/UserPreferences.cpp
+@@ -123,7 +123,7 @@ Bool UserPreferences::load(AsciiString fname)
+ 	m_filename = TheGlobalData->getPath_UserData();
+ 	m_filename.concat(fname);
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	// TheSuperHackers @port macOS 2026-05-25: fname is hardcoded with
+ 	// backslashes (e.g. "GeneralsOnline\\QMPref%d.ini"). POSIX fopen
+ 	// won't parse those — normalise via apple_path so the user's
+@@ -163,7 +163,7 @@ Bool UserPreferences::write()
+ 	if (m_filename.isEmpty())
+ 		return false;
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen(::apple_path::normalize(m_filename.str()), "w");
+ #else
+ 	FILE *fp = fopen(m_filename.str(), "w");
+diff --git a/Core/GameEngine/Source/GameClient/GUI/GameWindowGlobal.cpp b/Core/GameEngine/Source/GameClient/GUI/GameWindowGlobal.cpp
+index 67b0945..2564963 100644
+--- a/Core/GameEngine/Source/GameClient/GUI/GameWindowGlobal.cpp
++++ b/Core/GameEngine/Source/GameClient/GUI/GameWindowGlobal.cpp
+@@ -208,7 +208,7 @@ Int GameWindowManager::winIsDigit( Int c )
+ Int GameWindowManager::winIsAscii( Int c )
+ {
+ 
+-	return iswascii( c );
++	return c >= 0 && c <= 127;
+ 
+ }
+ 
+diff --git a/Core/GameEngine/Source/GameClient/MapUtil.cpp b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+index c404ce5..be8c03f 100644
+--- a/Core/GameEngine/Source/GameClient/MapUtil.cpp
++++ b/Core/GameEngine/Source/GameClient/MapUtil.cpp
+@@ -337,7 +337,7 @@ void MapCache::writeCacheINI( const AsciiString &mapDir )
+ 	TheFileSystem->createDirectory(mapDir);
+ 
+ 	filepath.concat(m_mapCacheName);
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen(::apple_path::normalize(filepath.str()), "w");
+ #else
+ 	FILE *fp = fopen(filepath.str(), "w");
+diff --git a/Core/GameEngine/Source/GameNetwork/GameSpy/MainMenuUtils.cpp b/Core/GameEngine/Source/GameNetwork/GameSpy/MainMenuUtils.cpp
+index fef9ebd..7859a66 100644
+--- a/Core/GameEngine/Source/GameNetwork/GameSpy/MainMenuUtils.cpp
++++ b/Core/GameEngine/Source/GameNetwork/GameSpy/MainMenuUtils.cpp
+@@ -378,7 +378,7 @@ static GHTTPBool configCallback( GHTTPRequest request, GHTTPResult result,
+ 
+ 	AsciiString fname;
+ 	fname.format("%sGeneralsOnline\\Config.txt", TheGlobalData->getPath_UserData().str());
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen(::apple_path::normalize(fname.str()), "wb");
+ #else
+ 	FILE *fp = fopen(fname.str(), "wb");
+@@ -437,7 +437,7 @@ static GHTTPBool configHeadCallback( GHTTPRequest request, GHTTPResult result,
+ 				Int fileLen = 0;
+ 				AsciiString fname;
+ 				fname.format("%sGeneralsOnline\\Config.txt", TheGlobalData->getPath_UserData().str());
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 				FILE *fp = fopen(::apple_path::normalize(fname.str()), "rb");
+ #else
+ 				FILE *fp = fopen(fname.str(), "rb");
+@@ -465,7 +465,7 @@ static GHTTPBool configHeadCallback( GHTTPRequest request, GHTTPResult result,
+ 
+ 					AsciiString fname;
+ 					fname.format("%sGeneralsOnline\\Config.txt", TheGlobalData->getPath_UserData().str());
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 					FILE *fp = fopen(::apple_path::normalize(fname.str()), "rb");
+ #else
+ 					FILE *fp = fopen(fname.str(), "rb");
+diff --git a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+index fc2b3e2..c7860e9 100644
+--- a/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
++++ b/Core/GameEngine/Source/GameNetwork/LANAPI.cpp
+@@ -357,7 +357,7 @@ void LANAPI::checkMOTD()
+ 		UnsignedInt newMOTDCRC = 0;
+ 		AsciiString asciiMOTD;
+ 		char buf[4096];
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		FILE *fp = fopen(::apple_path::normalize(TheGlobalData->m_MOTDPath.str()), "r");
+ #else
+ 		FILE *fp = fopen(TheGlobalData->m_MOTDPath.str(), "r");
+diff --git a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWaterTracks.cpp b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWaterTracks.cpp
+index 7b82866..c2ed2fd 100644
+--- a/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWaterTracks.cpp
++++ b/Core/GameEngineDevice/Source/W3DDevice/GameClient/Water/W3DWaterTracks.cpp
+@@ -964,7 +964,7 @@ void WaterTracksRenderSystem::saveTracks()
+ 	WaterTracksObj *umod;
+ 	Int trackCount=0;
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp=fopen(::apple_path::normalize(fileName.str()), "wb");
+ #else
+ 	FILE *fp=fopen(fileName.str(), "wb");
+diff --git a/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp b/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
+index b932ffd..215f57e 100644
+--- a/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/Common/Win32LocalFileSystem.cpp
+@@ -34,7 +34,7 @@
+ #include "Win32Device/Common/Win32LocalFile.h"
+ #include <io.h>
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include <filesystem>
+ #include <algorithm>
+ #include <string>
+@@ -156,7 +156,7 @@ File * Win32LocalFileSystem::openFile(const Char *filename, Int access, size_t b
+ 	// TheSuperHackers @fix Mauller 21/04/2025 Create new file handle when necessary to prevent memory leak
+ 	Win32LocalFile *file = newInstance( Win32LocalFile );
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	std::filesystem::path normalized = apple_fixWindowsPath(filename, access);
+ 	if (normalized.empty()) {
+ 		deleteInstance(file);
+@@ -218,7 +218,7 @@ void Win32LocalFileSystem::reset()
+ Bool Win32LocalFileSystem::doesFileExist(const Char *filename) const
+ {
+ 	//USE_PERF_TIMER(Win32LocalFileSystem_doesFileExist)
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	// Same Windows-path normalisation as openFile, so callers that probe
+ 	// existence with backslash paths (e.g. via TheFileSystem) get a truthful
+ 	// answer instead of false-negative.
+diff --git a/Core/GameEngineDevice/Source/Win32Device/GameClient/CocoaKeyboard.cpp b/Core/GameEngineDevice/Source/Win32Device/GameClient/CocoaKeyboard.cpp
+index 0dcdf84..4701d10 100644
+--- a/Core/GameEngineDevice/Source/Win32Device/GameClient/CocoaKeyboard.cpp
++++ b/Core/GameEngineDevice/Source/Win32Device/GameClient/CocoaKeyboard.cpp
+@@ -22,7 +22,7 @@
+ 
+ // macOS-only device. Compiles to nothing elsewhere so it can be listed
+ // unconditionally in CMake without breaking the Windows/MSVC build.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 
+ #include <windows.h>   // osdep_compat shim (timeGetTime, types)
+ 
+diff --git a/Core/Libraries/Source/EABrowserDispatch/CMakeLists.txt b/Core/Libraries/Source/EABrowserDispatch/CMakeLists.txt
+index 7cf2d5b..d23bdcf 100644
+--- a/Core/Libraries/Source/EABrowserDispatch/CMakeLists.txt
++++ b/Core/Libraries/Source/EABrowserDispatch/CMakeLists.txt
+@@ -35,6 +35,15 @@ target_include_directories(core_browserdispatch INTERFACE ${CMAKE_CURRENT_BINARY
+ # generated BrowserDispatch.h is never produced in the binary dir. A hand-written
+ # stub lives in the source tree (EABrowserDispatch/BrowserDispatch.h); expose its
+ # parent dir on the include path so "EABrowserDispatch/BrowserDispatch.h" resolves.
+-if(NOT (WIN32 OR "${CMAKE_SYSTEM}" MATCHES "Windows"))
++if(APPLE)
+     target_include_directories(core_browserdispatch INTERFACE ${CMAKE_CURRENT_LIST_DIR}/..)
++elseif(UNIX)
++    # Core/Libraries/Source also contains debug/debug.h. libstdc++ includes that
++    # name, so the parent directory cannot be on the -I path.
++    set(_eab_inc ${CMAKE_BINARY_DIR}/linux-includes)
++    file(MAKE_DIRECTORY ${_eab_inc})
++    if(NOT EXISTS ${_eab_inc}/EABrowserDispatch)
++        file(CREATE_LINK ${CMAKE_CURRENT_LIST_DIR} ${_eab_inc}/EABrowserDispatch SYMBOLIC)
++    endif()
++    target_include_directories(core_browserdispatch INTERFACE ${_eab_inc})
+ endif()
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/CMakeLists.txt b/Core/Libraries/Source/WWVegas/WW3D2/CMakeLists.txt
+index 68d5bac..dcef078 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/CMakeLists.txt
++++ b/Core/Libraries/Source/WWVegas/WW3D2/CMakeLists.txt
+@@ -246,9 +246,13 @@ target_sources(corei_ww3d2 INTERFACE ${WW3D2_SRC})
+ 
+ # The in-memory Direct3D 8 device (GENERALS_GFX=null, and the base of the native Vulkan renderer) is Windows code;
+ # on macOS gfx_vulkan.cpp only builds its empty stand-ins.
+-if(WIN32)
++if(WIN32 OR (UNIX AND NOT APPLE))
+     target_sources(corei_ww3d2 INTERFACE gfx_null.cpp)
+ endif()
++if(UNIX AND NOT APPLE)
++    target_include_directories(corei_ww3d2 INTERFACE ${CMAKE_SOURCE_DIR}/Dependencies/Vulkan-Headers/include)
++    target_compile_definitions(corei_ww3d2 INTERFACE VK_NO_PROTOTYPES VK_USE_PLATFORM_XLIB_KHR)
++endif()
+ 
+ if (MSVC AND NOT IS_VS6_BUILD)
+     target_link_libraries(corei_ww3d2 INTERFACE
+diff --git a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+index 592d54b..b8b1df7 100644
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+@@ -15,17 +15,22 @@
+ #include "WWLib/always.h"
+ #include "gfx_vulkan.h"
+ 
+-#if defined(VK_NO_PROTOTYPES) && defined(VK_USE_PLATFORM_WIN32_KHR)
++#if defined(VK_NO_PROTOTYPES) && (defined(VK_USE_PLATFORM_WIN32_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR))
+ 
+ #include <vulkan/vulkan.h>
+ #include "gfx_mem.h"
+ #include "gfx_vk_shaders.h"
+ #include <cstdarg>
+ #include <cstdio>
++#include <strings.h>
+ #include <map>
+ #include <string>
+ #include <algorithm>
+ 
++#if defined(__linux__)
++extern "C" int Linux_CreateVulkanSurface(void* hwnd, void* instance, void* getProc, void** surface);
++#endif
++
+ using namespace gfxmem;
+ 
+ namespace
+@@ -57,7 +62,7 @@ void Log(const char* fmt, ...)
+ #define VKFN_INSTANCE(X) \
+ 	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceFeatures) \
+ 	X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) \
+-	X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkEnumerateDeviceExtensionProperties) X(vkCreateWin32SurfaceKHR) X(vkDestroySurfaceKHR) \
++	X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkEnumerateDeviceExtensionProperties) X(vkDestroySurfaceKHR) \
+ 	X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR) \
+ 	X(vkGetPhysicalDeviceSurfacePresentModesKHR)
+ #define VKFN_DEVICE(X) \
+@@ -914,8 +919,13 @@ VkPipeline GetPipeline(const PipeKey& key)
+ 
+ bool LoadVulkan()
+ {
+-	B.lib = LoadLibraryA("vulkan-1.dll");
+-	if (!B.lib) { Log("vulkan-1.dll not found"); return false; }
++#if defined(_WIN32)
++	const char* libs[] = { "vulkan-1.dll", nullptr };
++#else
++	const char* libs[] = { "libvulkan.so.1", "libvulkan.so", nullptr };
++#endif
++	for (int i = 0; libs[i] && !B.lib; ++i) B.lib = LoadLibraryA(libs[i]);
++	if (!B.lib) { Log("Vulkan loader not found"); return false; }
+ 	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(B.lib, "vkGetInstanceProcAddr");
+ 	if (!vkGetInstanceProcAddr) return false;
+ #define VKFN_LOAD_GLOBAL(n) n = (PFN_##n)vkGetInstanceProcAddr(nullptr, #n);
+@@ -938,7 +948,11 @@ bool CreateInstanceAndDevice(HWND window)
+ {
+ 	B.window = window;
+ 	const bool validation = getenv("GENERALS_VALIDATION") != nullptr;
++#if defined(VK_USE_PLATFORM_XLIB_KHR)
++	const char* instExt[] = { VK_KHR_SURFACE_EXTENSION_NAME, "VK_KHR_xlib_surface", VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
++#else
+ 	const char* instExt[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
++#endif
+ 	const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
+ 	VkApplicationInfo app{ VK_STRUCTURE_TYPE_APPLICATION_INFO };
+ 	app.pApplicationName = "Generals Zero Hour"; app.apiVersion = VK_API_VERSION_1_3;
+@@ -965,9 +979,13 @@ bool CreateInstanceAndDevice(HWND window)
+ 		if (create && create(B.instance, &mi, nullptr, &messenger) == VK_SUCCESS) Log("Vulkan validation layer active");
+ 	}
+ 
++#if defined(VK_USE_PLATFORM_XLIB_KHR)
++	if (Linux_CreateVulkanSurface(window, B.instance, (void*)vkGetInstanceProcAddr, (void**)&B.surface) != 0) { Log("surface creation failed"); return false; }
++#else
+ 	VkWin32SurfaceCreateInfoKHR sci{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+ 	sci.hinstance = GetModuleHandle(nullptr); sci.hwnd = window;
+ 	if (vkCreateWin32SurfaceKHR(B.instance, &sci, nullptr, &B.surface) != VK_SUCCESS) { Log("surface creation failed"); return false; }
++#endif
+ 
+ 	uint32_t n = 0;
+ 	vkEnumeratePhysicalDevices(B.instance, &n, nullptr);
+@@ -2307,14 +2325,23 @@ bool VkGfx_NativeActive() { return B.ready; }
+ 
+ bool VkGfx_Requested()
+ {
++#if defined(__linux__)
++	const char* value = getenv("GENERALS_GFX");
++	if (value && value[0] && strcasecmp(value, "vulkan") != 0) return false;
++#else
+ 	char value[32] = {};
+ 	DWORD n = GetEnvironmentVariableA("GENERALS_GFX", value, sizeof(value));
+ 	// Rallypoint: only an explicit GENERALS_GFX=vulkan (the launcher's Enhanced renderer) selects this backend; the Classic
+ 	// renderer (Direct3D 8 through DXVK) is the default.
+ 	if (!(n > 0 && n < sizeof(value) && _stricmp(value, "vulkan") == 0))
+ 		return false;
+-	// the enhanced renderer needs a Vulkan 1.3 capable driver; without one the classic path is used
++#endif
++#if defined(_WIN32)
+ 	HMODULE lib = LoadLibraryA("vulkan-1.dll");
++#else
++	HMODULE lib = LoadLibraryA("libvulkan.so.1");
++	if (!lib) lib = LoadLibraryA("libvulkan.so");
++#endif
+ 	if (!lib)
+ 		return false;
+ 	typedef VkResult (VKAPI_PTR *PFN_ver)(uint32_t*);
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/bittype.h b/Core/Libraries/Source/WWVegas/WWLib/bittype.h
+index c9491e3..047762c 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/bittype.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/bittype.h
+@@ -47,7 +47,7 @@
+ 
+ typedef unsigned char	uint8;
+ typedef unsigned short	uint16;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // TheSuperHackers @fix macOS-port: on LP64 (macOS/arm64) `long` is 64-bit, but a
+ // type named uint32/sint32 MUST be exactly 32 bits — it backs the on-disk binary
+ // layout of W3D structs (W3dMeshHeader3Struct etc.) and the chunk header
+@@ -76,7 +76,7 @@ typedef signed int      sint;
+ typedef float				float32;
+ typedef double				float64;
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // TheSuperHackers @fix macOS-port-LP64-sweep: Win32 ABI defines DWORD/ULONG
+ // as **32-bit** unsigned (MSDN: DWORD is "A 32-bit unsigned integer"). On
+ // macOS LP64 `unsigned long` is 64 bits, so the historical typedef silently
+diff --git a/Core/Libraries/Source/WWVegas/WWLib/stringex.h b/Core/Libraries/Source/WWVegas/WWLib/stringex.h
+index 8e23b02..7b0d870 100644
+--- a/Core/Libraries/Source/WWVegas/WWLib/stringex.h
++++ b/Core/Libraries/Source/WWVegas/WWLib/stringex.h
+@@ -21,6 +21,10 @@
+ #include "bittype.h"
+ #include <string.h>
+ #include <ctype.h>
++#if defined(__GLIBC__)
++#include <wchar.h>
++#include <wctype.h>
++#endif
+ 
+ 
+ // Declaration
+@@ -36,10 +40,12 @@ size_t wcsnlen(const wchar_t *str, size_t maxlen);
+ template<typename T> size_t strlcpy_t(T *dst, const T *src, size_t dstsize);
+ template<typename T> size_t strlcat_t(T *dst, const T *src, size_t dstsize);
+ 
++#if !defined(__GLIBC__)
+ size_t strlcpy(char *dst, const char *src, size_t dstsize);
+ size_t strlcat(char *dst, const char *src, size_t dstsize);
+ size_t wcslcpy(wchar_t *dst, const wchar_t *src, size_t dstsize);
+ size_t wcslcat(wchar_t *dst, const wchar_t *src, size_t dstsize);
++#endif
+ 
+ template<typename T> size_t strlmove_t(T *dst, const T *src, size_t dstsize);
+ template<typename T> size_t strlmcat_t(T *dst, const T *src, size_t dstsize);
+@@ -132,6 +138,7 @@ template<typename T> size_t strlcat_t(T *dst, const T *src, size_t dstsize)
+ 	return dstlen + srclen; // length tried to create
+ }
+ 
++#if !defined(__GLIBC__)
+ #ifndef HAVE_STRLCPY
+ inline size_t strlcpy(char *dst, const char *src, size_t dstsize) { return strlcpy_t(dst, src, dstsize); }
+ #endif
+@@ -140,6 +147,7 @@ inline size_t strlcat(char *dst, const char *src, size_t dstsize) { return strlc
+ #endif
+ inline size_t wcslcpy(wchar_t *dst, const wchar_t *src, size_t dstsize) { return strlcpy_t(dst, src, dstsize); }
+ inline size_t wcslcat(wchar_t *dst, const wchar_t *src, size_t dstsize) { return strlcat_t(dst, src, dstsize); }
++#endif
+ 
+ // Templated strlmove. Prefer using this over strlcpy if dst and src overlap.
+ // Moves src into dst until dstsize minus one. Always null terminates.
+diff --git a/Core/Libraries/Source/debug/debug_debug.cpp b/Core/Libraries/Source/debug/debug_debug.cpp
+index 8b78980..9895353 100644
+--- a/Core/Libraries/Source/debug/debug_debug.cpp
++++ b/Core/Libraries/Source/debug/debug_debug.cpp
+@@ -904,20 +904,20 @@ Debug& Debug::operator<<(__int64 val)
+   return (*this) << _i64toa(val,help,m_radix);
+ }
+ 
+-#ifdef _WIN32
++#if defined(_WIN32)
+ Debug& Debug::operator<<(unsigned __int64 val)
+-#else
+-// See debug_debug.h: "unsigned __int64" is invalid where __int64 is a typedef.
++#elif !defined(__linux__)
++// __int64 is a typedef off MSVC, so "unsigned __int64" is not valid. On Linux
++// uint64_t is unsigned long and the overload above already covers it.
+ Debug& Debug::operator<<(UNSIGNED_INT64_COMPAT val)
+ #endif
++#if defined(_WIN32) || !defined(__linux__)
+ {
+-  // usually having a fixed size buffer and a function
+-  // that doesn't check for buffer overflow isn't a good idea
+-  // but in this case we know how long it can be at max...
+-  char help[64+1]; // sign, 64 digits, NUL
++  char help[64+1];
+   AddOutput(m_prefix,strlen(m_prefix));
+   return (*this) << _ui64toa(val,help,m_radix);
+ }
++#endif
+ 
+ Debug& Debug::operator<<(const void *ptr)
+ {
+diff --git a/Core/Libraries/Source/debug/debug_debug.h b/Core/Libraries/Source/debug/debug_debug.h
+index 95238a0..1e6c49a 100644
+--- a/Core/Libraries/Source/debug/debug_debug.h
++++ b/Core/Libraries/Source/debug/debug_debug.h
+@@ -586,9 +586,9 @@ DLOG( "My HResult is: " << Debug::HResult(SomeHRESULTValue) << "\n" );
+   */
+ #ifdef _WIN32
+   Debug& operator<<(unsigned __int64 val);
+-#else
++#elif !defined(__linux__)
+   // __int64 is a typedef (not a keyword) on non-MSVC, so "unsigned __int64" is
+-  // not valid syntax; use the unsigned 64-bit compat typedef instead.
++  // not valid syntax. On Linux uint64_t is unsigned long, already declared above.
+   Debug& operator<<(UNSIGNED_INT64_COMPAT val);
+ #endif
+ 
+diff --git a/Dependencies/D3DX8Compat/D3DX8Compat.cpp b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
+index 21f79e9..a68ea9c 100644
+--- a/Dependencies/D3DX8Compat/D3DX8Compat.cpp
++++ b/Dependencies/D3DX8Compat/D3DX8Compat.cpp
+@@ -140,7 +140,7 @@ HRESULT WINAPI D3DXCreateFont(LPDIRECT3DDEVICE8, HFONT, LPD3DXFONT*) { return E_
+ HRESULT WINAPI D3DXGetErrorStringA(HRESULT hr, LPSTR buf, UINT len)
+ {
+ 	if (!buf || !len) return D3DERR_INVALIDCALL;
+-	_snprintf_s(buf, len, _TRUNCATE, "HRESULT 0x%08lX", (unsigned long)hr);
++	snprintf(buf, len, "HRESULT 0x%08lX", (unsigned long)hr);
+ 	return D3D_OK;
+ }
+ 
+diff --git a/Dependencies/Miles/CMakeLists.txt b/Dependencies/Miles/CMakeLists.txt
+index 4b83511..c60cdee 100644
+--- a/Dependencies/Miles/CMakeLists.txt
++++ b/Dependencies/Miles/CMakeLists.txt
+@@ -15,6 +15,13 @@ target_include_directories(milesstub PUBLIC
+ )
+ 
+ target_include_directories(milesstub PRIVATE ${miniaudio_SOURCE_DIR})
++if(UNIX AND NOT APPLE)
++    target_include_directories(milesstub PRIVATE
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility/osdep_compat
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility)
++    target_compile_definitions(milesstub PRIVATE _UNIX)
++    target_link_libraries(milesstub PUBLIC pthread)
++endif()
+ target_compile_definitions(milesstub PRIVATE NOMINMAX)
+ # Movies play their sound through MiniMiles (no OpenAL on this platform).
+ target_compile_definitions(milesstub PUBLIC RTS_MINIMILES)
+diff --git a/Dependencies/Utility/osdep_compat/apple_path_shim.h b/Dependencies/Utility/osdep_compat/apple_path_shim.h
+index e71556d..b4a3ed6 100644
+--- a/Dependencies/Utility/osdep_compat/apple_path_shim.h
++++ b/Dependencies/Utility/osdep_compat/apple_path_shim.h
+@@ -28,7 +28,7 @@
+ 
+ #pragma once
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 
+ #include <cstdio>
+ #include <cstring>
+diff --git a/Dependencies/Utility/osdep_compat/direct.h b/Dependencies/Utility/osdep_compat/direct.h
+index 9de9432..0f29f7b 100644
+--- a/Dependencies/Utility/osdep_compat/direct.h
++++ b/Dependencies/Utility/osdep_compat/direct.h
+@@ -10,7 +10,7 @@
+ // path. Guarded so multiple compat headers can define it in one TU.
+ #ifndef OSDEP_COMPAT_NP_DEFINED
+ #define OSDEP_COMPAT_NP_DEFINED
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include "apple_path_shim.h"
+ namespace osdep_compat_detail {
+   inline const char* np(const char* p)  { return p ? ::apple_path::normalize(p)   : p; }
+diff --git a/Dependencies/Utility/osdep_compat/io.h b/Dependencies/Utility/osdep_compat/io.h
+index edc90c5..d006a78 100644
+--- a/Dependencies/Utility/osdep_compat/io.h
++++ b/Dependencies/Utility/osdep_compat/io.h
+@@ -16,7 +16,7 @@
+ // full rationale; the helper is shared (guarded against double definition).
+ #ifndef OSDEP_COMPAT_NP_DEFINED
+ #define OSDEP_COMPAT_NP_DEFINED
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include "apple_path_shim.h"
+ namespace osdep_compat_detail {
+   inline const char* np(const char* p)  { return p ? ::apple_path::normalize(p)   : p; }
+diff --git a/Dependencies/Utility/osdep_compat/win32_api.h b/Dependencies/Utility/osdep_compat/win32_api.h
+index 686f9e0..41dafa3 100644
+--- a/Dependencies/Utility/osdep_compat/win32_api.h
++++ b/Dependencies/Utility/osdep_compat/win32_api.h
+@@ -32,6 +32,15 @@
+ #include <limits.h>       // PATH_MAX
+ #include <string>         // std::string (find-handle bookkeeping)
+ 
++inline DWORD GetEnvironmentVariableA(const char* name, char* buf, DWORD cap) {
++    const char* v = name ? ::getenv(name) : nullptr;
++    if (!v) return 0;
++    const size_t n = ::strlen(v);
++    if (!buf || cap <= n) return (DWORD)(n + 1);
++    ::memcpy(buf, v, n + 1);
++    return (DWORD)n;
++}
++
+ // COLORREF (0x00bbggrr) used by the GDI text stubs below.
+ #ifndef _COLORREF_DEFINED
+ #define _COLORREF_DEFINED
+@@ -66,7 +75,7 @@ typedef DWORD COLORREF;
+ // ---------------------------------------------------------------------------
+ #ifndef OSDEP_COMPAT_NP_DEFINED
+ #define OSDEP_COMPAT_NP_DEFINED
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include "apple_path_shim.h"
+ namespace osdep_compat_detail {
+   inline const char* np(const char* p)  { return p ? ::apple_path::normalize(p)   : p; }
+@@ -1048,6 +1057,13 @@ inline DWORD GetFileAttributes(const char *path)
+ #define WS_EX_TOPMOST    0x00000008u
+ #endif
+ 
++#if defined(__linux__)
++BOOL GetClientRect(HWND hwnd, RECT *r);
++BOOL GetWindowRect(HWND hwnd, RECT *r);
++BOOL SetWindowPos(HWND, HWND, int, int, int, int, unsigned);
++BOOL SetWindowText(HWND, const char *);
++int GetSystemMetrics(int index);
++#else
+ inline BOOL GetClientRect(HWND /*hwnd*/, RECT *r)
+ {
+   if (r) { r->left = r->top = 0; r->right = 0; r->bottom = 0; }
+@@ -1059,7 +1075,9 @@ inline BOOL GetWindowRect(HWND /*hwnd*/, RECT *r)
+   return TRUE; // TODO(macos): real impl needs SDL window / Metal.
+ }
+ inline BOOL SetWindowPos(HWND, HWND, int, int, int, int, unsigned)
+-{ return TRUE; }     // TODO(macos): real impl needs SDL window / Metal.
++{ return TRUE; }
++inline BOOL SetWindowText(HWND, const char *)   { return TRUE; }
++#endif
+ inline LONG GetWindowLong(HWND, int)            { return 0; }   // TODO(macos)
+ inline LONG SetWindowLong(HWND, int, LONG)      { return 0; }   // TODO(macos)
+ inline BOOL ClientToScreen(HWND, POINT *)       { return TRUE; }
+@@ -1067,8 +1085,6 @@ inline BOOL ScreenToClient(HWND, POINT *)       { return TRUE; }
+ inline BOOL AdjustWindowRect(RECT *, DWORD, BOOL) { return TRUE; }
+ inline BOOL ShowWindow(HWND, int)               { return TRUE; }
+ inline BOOL UpdateWindow(HWND)                  { return TRUE; }
+-// Window title: no OS window yet. TODO(macos): SDL_SetWindowTitle.
+-inline BOOL SetWindowText(HWND, const char *)   { return TRUE; }
+ inline BOOL SetWindowTextA(HWND h, const char *s)  { return SetWindowText(h, s); }
+ inline BOOL SetWindowTextW(HWND, const WCHAR *) { return TRUE; }
+ inline HWND GetDesktopWindow()                  { return nullptr; }
+@@ -1081,12 +1097,14 @@ inline BOOL IsWindow(HWND h)                    { return h != nullptr; }
+ #define SM_CXSCREEN 0
+ #define SM_CYSCREEN 1
+ #endif
++#if !defined(__linux__)
+ inline int GetSystemMetrics(int index)
+ {
+   if (index == SM_CXSCREEN) return 1920;
+   if (index == SM_CYSCREEN) return 1080;
+   return 0; // TODO(macos): real impl needs SDL/AppKit display query.
+ }
++#endif
+ 
+ // ---------------------------------------------------------------------------
+ // Monitor enumeration (dx8wrapper full-screen handling).
+@@ -1525,10 +1543,12 @@ inline int MessageBoxW(void * /*hwnd*/, const WCHAR *text,
+ // cursor as needed. A non-null HCURSOR is the engine's "show some cursor"
+ // signal; null is "hide cursor (engine draws its own)".
+ // ---------------------------------------------------------------------------
++#if defined(__APPLE__)
+ extern "C" int   MetalCursor_Show(int show);
+ extern "C" int   MetalCursor_WarpClient(int clientX, int clientY);
+ extern "C" void* MetalCursor_LoadAni(const char* path);
+ extern "C" void  MetalCursor_SetActiveAni(void* handle);
++#endif
+ 
+ // Forward declaration so the inline LoadCursorFromFile below can call
+ // the path normaliser. The full definition lives in apple_path_shim.h,
+@@ -1536,6 +1556,7 @@ extern "C" void  MetalCursor_SetActiveAni(void* handle);
+ // inline-body parsing happy regardless of include order at the call site.
+ namespace apple_path { const char* normalize(const char* path); }
+ 
++#if defined(__APPLE__)
+ inline HCURSOR SetCursor(HCURSOR c) {
+     // The engine alternates SetCursor(nullptr) <-> SetCursor(bitmap) each time
+     // the cursor mode flips between "software-only" and "system+software".
+@@ -1571,9 +1592,19 @@ inline HCURSOR LoadCursorFromFile(const char *path) {
+     // recognises 0x1 and treats it as "no cursor".
+     return h ? (HCURSOR)h : (HCURSOR)0x1;
+ }
++#else
++inline HCURSOR SetCursor(HCURSOR) { return nullptr; }
++inline int     ShowCursor(BOOL) { return 0; }
++inline HCURSOR LoadCursorFromFile(const char *) { return (HCURSOR)(uintptr_t)1; }
++#endif
+ inline HCURSOR LoadCursorFromFileA(const char *p)        { return LoadCursorFromFile(p); }
++#if defined(__APPLE__)
+ inline BOOL    GetCursorPos(POINT *p)  { if (p) { p->x = 0; p->y = 0; } return TRUE; }
+ inline BOOL    SetCursorPos(int x, int y) { return MetalCursor_WarpClient(x, y) ? TRUE : FALSE; }
++#else
++inline BOOL    GetCursorPos(POINT *p)  { if (p) { p->x = 0; p->y = 0; } return TRUE; }
++inline BOOL    SetCursorPos(int, int) { return TRUE; }
++#endif
+ inline BOOL    ClipCursor(const RECT * /*r*/)            { return TRUE; }
+ inline BOOL    IsIconic(HWND /*hwnd*/)                   { return FALSE; }
+ // Keyboard state: no OS keyboard polling yet. Reports "not pressed".
+@@ -1581,6 +1612,11 @@ inline BOOL    IsIconic(HWND /*hwnd*/)                   { return FALSE; }
+ inline SHORT   GetAsyncKeyState(int /*vk*/)              { return 0; }
+ inline SHORT   GetKeyState(int /*vk*/)                   { return 0; }
+ 
++// Windows atomics. LONG is 32-bit here, so these must not use `long` (64-bit on LP64).
++inline LONG InterlockedIncrement(volatile LONG *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
++inline LONG InterlockedDecrement(volatile LONG *p) { return __atomic_sub_fetch(p, 1, __ATOMIC_SEQ_CST); }
++inline LONG InterlockedExchange(volatile LONG *p, LONG v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
++
+ // ---------------------------------------------------------------------------
+ // CreateThread -> pthread. Maps the Win32 LPTHREAD_START_ROUTINE (DWORD(void*))
+ // onto a pthread start function; the returned HANDLE wraps the pthread_t.
+@@ -2130,17 +2166,26 @@ typedef struct tagPAINTSTRUCT {
+   BYTE rgbReserved[32];
+ } PAINTSTRUCT, *PPAINTSTRUCT, *LPPAINTSTRUCT;
+ 
++#if defined(__linux__)
++ATOM RegisterClass(const WNDCLASS *wc);
++BOOL UnregisterClass(const char *, HINSTANCE);
++HWND CreateWindow(const char *, const char *, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, void *);
++HWND CreateWindowEx(DWORD, const char *, const char *, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, void *);
++BOOL DestroyWindow(HWND);
++extern "C" int Linux_CreateVulkanSurface(void* hwnd, void* instance, void* getProc, void** surface);
++#else
+ inline ATOM RegisterClass(const WNDCLASS * /*wc*/)  { return (ATOM)1; }
+-inline ATOM RegisterClassA(const WNDCLASS *wc)      { return RegisterClass(wc); }
+ inline BOOL UnregisterClass(const char *, HINSTANCE){ return TRUE; }
+ inline HWND CreateWindow(const char *, const char *, DWORD, int, int, int, int,
+                          HWND, HMENU, HINSTANCE, void *) { return nullptr; }
+ inline HWND CreateWindowEx(DWORD, const char *, const char *, DWORD, int, int, int, int,
+                            HWND, HMENU, HINSTANCE, void *) { return nullptr; }
++inline BOOL DestroyWindow(HWND) { return TRUE; }
++#endif
++inline ATOM RegisterClassA(const WNDCLASS *wc)      { return RegisterClass(wc); }
+ inline LRESULT DefWindowProc(HWND, UINT, WPARAM, LPARAM) { return 0; }
+ inline LRESULT DefWindowProcA(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProc(h, m, w, l); }
+ inline void PostQuitMessage(int /*exitCode*/) { }
+-inline BOOL DestroyWindow(HWND) { return TRUE; }
+ inline LRESULT SendMessage(HWND, UINT, WPARAM, LPARAM) { return 0; }
+ inline BOOL PostMessage(HWND, UINT, WPARAM, LPARAM) { return TRUE; }
+ 
+diff --git a/Dependencies/Utility/osdep_compat/windows.h b/Dependencies/Utility/osdep_compat/windows.h
+index ea778c2..ff3acbc 100644
+--- a/Dependencies/Utility/osdep_compat/windows.h
++++ b/Dependencies/Utility/osdep_compat/windows.h
+@@ -129,14 +129,14 @@ typedef uint16_t            ATOM;
+ 
+ // MSVC sized-integer keywords used throughout the engine.
+ #ifndef _MSC_VER
+-typedef int64_t             __int64;
++typedef signed long long    __int64;
+ typedef int32_t             __int32;
+ typedef int16_t             __int16;
+ typedef int8_t              __int8;
+ // The legacy profile/* code uses the non-standard single-underscore spelling
+ // "_int64" (not a real MSVC keyword either). Alias it to the 64-bit type so the
+ // many existing call sites compile unchanged on clang/arm64.
+-typedef int64_t             _int64;
++typedef signed long long    _int64;
+ // On MSVC __int64/_int64 are keywords, so "unsigned __int64" is valid. Here they
+ // are typedefs, so "unsigned __int64" is a syntax error. A handful of call sites
+ // (debug_debug, profile_funclevel) need the unsigned 64-bit form; provide named
+@@ -626,7 +626,7 @@ typedef LONG HRESULT;
+ // with `\` separators that bypass TheFileSystem and would fail on
+ // POSIX fopen. Pulled in last so the override macros expand after the
+ // standard `<cstdio>` declarations are in scope.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include "apple_path_shim.h"
+ #endif
+ 
+diff --git a/Dependencies/Utility/osdep_compat/winsock.h b/Dependencies/Utility/osdep_compat/winsock.h
+index ce37be3..0dc65c3 100644
+--- a/Dependencies/Utility/osdep_compat/winsock.h
++++ b/Dependencies/Utility/osdep_compat/winsock.h
+@@ -175,7 +175,7 @@ inline int  closesocket(SOCKET s) { return ::close(s); }
+ #define WSAEREMOTE      EREMOTE
+ #endif
+ #ifndef WSAEPROCLIM
+-#define WSAEPROCLIM     EPROCLIM
++#define WSAEPROCLIM     (WSABASEERR + 67)
+ #endif
+ // No POSIX equivalent for "graceful shutdown in progress"; use the Win32 value.
+ #ifndef WSAEDISCON
+diff --git a/tmp/engine-linux/Dependencies/Vulkan-Headers/include/vulkan/vulkan_xlib.h b/Dependencies/Vulkan-Headers/include/vulkan/vulkan_xlib.h
+new file mode 100644
+index 0000000..1abd743
+--- /dev/null
++++ b/Dependencies/Vulkan-Headers/include/vulkan/vulkan_xlib.h
+@@ -0,0 +1,46 @@
++#ifndef VULKAN_XLIB_H_
++#define VULKAN_XLIB_H_ 1
++
++/*
++** Copyright 2015-2025 The Khronos Group Inc.
++**
++** SPDX-License-Identifier: Apache-2.0
++*/
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define VK_KHR_xlib_surface 1
++#define VK_KHR_XLIB_SURFACE_SPEC_VERSION 6
++#define VK_KHR_XLIB_SURFACE_EXTENSION_NAME "VK_KHR_xlib_surface"
++typedef VkFlags VkXlibSurfaceCreateFlagsKHR;
++typedef struct VkXlibSurfaceCreateInfoKHR {
++    VkStructureType                sType;
++    const void*                    pNext;
++    VkXlibSurfaceCreateFlagsKHR    flags;
++    Display*                       dpy;
++    Window                         window;
++} VkXlibSurfaceCreateInfoKHR;
++
++typedef VkResult (VKAPI_PTR *PFN_vkCreateXlibSurfaceKHR)(VkInstance instance, const VkXlibSurfaceCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++typedef VkBool32 (VKAPI_PTR *PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, Display* dpy, VisualID visualID);
++
++#ifndef VK_NO_PROTOTYPES
++VKAPI_ATTR VkResult VKAPI_CALL vkCreateXlibSurfaceKHR(
++    VkInstance                                  instance,
++    const VkXlibSurfaceCreateInfoKHR*           pCreateInfo,
++    const VkAllocationCallbacks*                pAllocator,
++    VkSurfaceKHR*                               pSurface);
++VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceXlibPresentationSupportKHR(
++    VkPhysicalDevice                            physicalDevice,
++    uint32_t                                    queueFamilyIndex,
++    Display*                                    dpy,
++    VisualID                                    visualID);
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/MiniLog.cpp b/GeneralsMD/Code/GameEngine/Source/Common/MiniLog.cpp
+index a2237d8..900a8ab 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/MiniLog.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/MiniLog.cpp
+@@ -40,7 +40,7 @@ LogClass::LogClass(const char *fname)
+ 	// with '/' separators, so strrchr(buffer, '\\') never matched — the exe name
+ 	// was not stripped and the path pointed *inside* the binary file (fopen then
+ 	// failed silently). Strip and re-join with the native path separator.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	const char kPathSep = '/';
+ #else
+ 	const char kPathSep = '\\';
+@@ -51,7 +51,7 @@ LogClass::LogClass(const char *fname)
+ 	}
+ 	// TheSuperHackers @fix Caball009 03/06/2025 Don't use AsciiString here anymore because its memory allocator may not have been initialized yet.
+ 	const std::string fullPath = std::string(buffer) + kPathSep + fname;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_fp = fopen(::apple_path::normalize(fullPath.c_str()), "wt");
+ #else
+ 	m_fp = fopen(fullPath.c_str(), "wt");
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/PerfTimer.cpp b/GeneralsMD/Code/GameEngine/Source/Common/PerfTimer.cpp
+index 0381296..debcc05 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/PerfTimer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/PerfTimer.cpp
+@@ -353,7 +353,7 @@ void PerfGather::reset()
+ 	strcpy(tmp, s_buf);
+ 	strlcat(tmp, ".csv", ARRAY_SIZE(tmp));
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	s_perfStatsFile = fopen(::apple_path::normalize(tmp), "w");
+ #else
+ 	s_perfStatsFile = fopen(tmp, "w");
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/Recorder.cpp b/GeneralsMD/Code/GameEngine/Source/Common/Recorder.cpp
+index a3e9068..f18715b 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/Recorder.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/Recorder.cpp
+@@ -96,7 +96,7 @@ static FILE* openStatsLogFile()
+ 	AsciiString statsFile = TheGlobalData->m_baseStatsDir;
+ 	statsFile.concat(computerName);
+ 	statsFile.concat(".txt");
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	return fopen( ::apple_path::normalize(statsFile.str()), "a+");
+ #else
+ 	return fopen(statsFile.str(), "a+");
+@@ -239,7 +239,7 @@ void RecorderClass::cleanUpReplayFile()
+ 		debugFname.truncateBy(3);
+ 		debugFname.concat("txt");
+ 		UnsignedInt fileSize = 0;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		FILE *fp = fopen( ::apple_path::normalize(logFileName), "rb");
+ #else
+ 		FILE *fp = fopen(logFileName, "rb");
+@@ -262,7 +262,7 @@ void RecorderClass::cleanUpReplayFile()
+ 		else
+ 		{
+ 			DEBUG_LOG(("manual copy of %s", logFileName));
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 			FILE *ifp = fopen( ::apple_path::normalize(logFileName), "rb");
+ 			FILE *ofp = fopen( ::apple_path::normalize(debugFname.str()), "wb");
+ #else
+@@ -1655,7 +1655,7 @@ AsciiString RecorderClass::getLastReplayFileName()
+ 			testString.format("%s%s%s", getReplayDir().str(), full.str(), replayExtention);
+ 
+ 			FILE *fp;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 			fp = fopen( ::apple_path::normalize(testString.str()), "rb");
+ #else
+ 			fp = fopen(testString.str(), "rb");
+@@ -1673,7 +1673,7 @@ AsciiString RecorderClass::getLastReplayFileName()
+ 			{
+ 				fullPlusNum.format("%s_%d", full.str(), test);
+ 				testString.format("%s%s%s", getReplayDir().str(), fullPlusNum.str(), replayExtention);
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 				fp = fopen( ::apple_path::normalize(testString.str()), "rb");
+ #else
+ 				fp = fopen(testString.str(), "rb");
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/StatsCollector.cpp b/GeneralsMD/Code/GameEngine/Source/Common/StatsCollector.cpp
+index 3780ffe..6664e0d 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/StatsCollector.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/StatsCollector.cpp
+@@ -216,7 +216,7 @@ void StatsCollector::incrementMoveCount()
+ void StatsCollector::writeFileEnd()
+ {
+ 	//open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *f = fopen(::apple_path::normalize(m_statsFileName.str()), "a");
+ #else
+ 	FILE *f = fopen(m_statsFileName.str(), "a");
+@@ -364,7 +364,7 @@ void StatsCollector::createFileName()
+ void StatsCollector::writeInitialFileInfo()
+ {
+ 	//open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *f = fopen(::apple_path::normalize(m_statsFileName.str()), "w");
+ #else
+ 	FILE *f = fopen(m_statsFileName.str(), "w");
+@@ -406,7 +406,7 @@ void StatsCollector::writeInitialFileInfo()
+ void StatsCollector::writeStatInfo()
+ {
+ 	//open the file
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *f = fopen(::apple_path::normalize(m_statsFileName.str()), "a");
+ #else
+ 	FILE *f = fopen(m_statsFileName.str(), "a");
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/DataChunk.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/DataChunk.cpp
+index 4ea4b3e..b80c347 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/DataChunk.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/DataChunk.cpp
+@@ -236,7 +236,7 @@ m_pOut(pOut)
+ {
+ 	AsciiString tmpFileName = TheGlobalData->getPath_UserData();
+ 	tmpFileName.concat(TEMP_FILENAME);
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	m_tmp_file = ::fopen( ::apple_path::normalize(tmpFileName.str()), "wb" );
+ #else
+ 	m_tmp_file = ::fopen( tmpFileName.str(), "wb" );
+@@ -255,7 +255,7 @@ DataChunkOutput::~DataChunkOutput()
+ 	AsciiString tmpFileName = TheGlobalData->getPath_UserData();
+ 	tmpFileName.concat(TEMP_FILENAME);
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+  	m_tmp_file = ::fopen( ::apple_path::normalize(tmpFileName.str()), "rb" );
+ #else
+  	m_tmp_file = ::fopen( tmpFileName.str(), "rb" );
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameStateMap.cpp b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameStateMap.cpp
+index 123d4b8..9e15e65 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameStateMap.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/System/SaveGame/GameStateMap.cpp
+@@ -132,7 +132,7 @@ static void embedInUseMap( AsciiString map, Xfer *xfer )
+ 	// TheSuperHackers @port macOS — `map` is a full save-dir path built with `\`
+ 	// separators (getFilePathInSaveDirectory); normalise so POSIX fopen resolves
+ 	// the same on-disk file the rest of the save code writes. See XferSave.cpp.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen( ::apple_path::normalize(map.str()), "rb" );
+ #else
+ 	FILE *fp = fopen( map.str(), "rb" );
+@@ -197,7 +197,7 @@ static void extractAndSaveMap( AsciiString mapToSave, Xfer *xfer )
+ 	// TheSuperHackers @port macOS — `mapToSave` is a full save-dir path built with
+ 	// `\` separators; normalise so the extracted scratch .map lands where the game
+ 	// later looks for it (else load can't find the map). See XferSave.cpp.
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen( ::apple_path::normalize(mapToSave.str()), "w+b" );
+ #else
+ 	FILE *fp = fopen( mapToSave.str(), "w+b" );
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/WOLLoginMenu.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/WOLLoginMenu.cpp
+index b641aa1..a30f8e4 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/WOLLoginMenu.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/GUICallbacks/Menus/WOLLoginMenu.cpp
+@@ -205,7 +205,7 @@ Bool GameSpyLoginPreferences::write()
+ 	if (m_filename.isEmpty())
+ 		return false;
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	FILE *fp = fopen( ::apple_path::normalize(m_filename.str()), "w");
+ #else
+ 	FILE *fp = fopen(m_filename.str(), "w");
+diff --git a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DGameClient.h b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DGameClient.h
+index 106cd75..677bb06 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DGameClient.h
++++ b/GeneralsMD/Code/GameEngineDevice/Include/W3DDevice/GameClient/W3DGameClient.h
+@@ -50,7 +50,7 @@
+ #include "VideoDevice/FFmpeg/FFmpegVideoPlayer.h"
+ #endif
+ #include "Win32Device/GameClient/Win32DIKeyboard.h"
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ #include "Win32Device/GameClient/CocoaKeyboard.h"
+ #endif
+ #include "Win32Device/GameClient/Win32DIMouse.h"
+@@ -129,7 +129,7 @@ protected:
+ 
+ };
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // @port DirectInput is unavailable on macOS; use the Cocoa/NSEvent keyboard.
+ inline Keyboard *W3DGameClient::createKeyboard() { return NEW CocoaKeyboard; }
+ #else
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp b/GeneralsMD/Code/GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp
+index f09d054..bffcab1 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp
+@@ -131,7 +131,7 @@ void Win32GameEngine::update()
+ 	* we would call this at least once each time around the game loop to keep
+ 	* Windows services from backing up */
+ //-------------------------------------------------------------------------------------------------
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // TheSuperHackers @port On macOS there is no Win32 WndProc; the Cocoa window
+ // (Metal backend) captures NSEvents into a global queue. Drain the mouse queue
+ // here each frame and synthesize the same Win32 messages the Win32Mouse event
+@@ -175,7 +175,7 @@ static void Apple_PumpMouseInput()
+ 
+ void Win32GameEngine::serviceWindowsOS()
+ {
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	Apple_PumpMouseInput();
+ #endif
+ 	MSG msg;
+diff --git a/GeneralsMD/Code/Main/WinMain.cpp b/GeneralsMD/Code/Main/WinMain.cpp
+index 5b59d2c..a5f25e2 100644
+--- a/GeneralsMD/Code/Main/WinMain.cpp
++++ b/GeneralsMD/Code/Main/WinMain.cpp
+@@ -84,7 +84,7 @@ const char *gAppPrefix = ""; /// So WB can have a different debug log file name.
+ 
+ static Bool gInitializing = false;
+ static Bool gDoPaint = true;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ // TheSuperHackers @port On macOS there is no Win32 WndProc, so the WM_ACTIVATEAPP
+ // branch below that flips isWinMainActive TRUE on focus never runs. Left at the
+ // Win32 default of FALSE, TheGameEngine->m_isActive would stay FALSE for the
+diff --git a/cmake/bink.cmake b/cmake/bink.cmake
+index 33f6d91..dd41dc0 100644
+--- a/cmake/bink.cmake
++++ b/cmake/bink.cmake
+@@ -1,7 +1,7 @@
+ if(NOT DEFINED RTS_THIRD_PARTY_DIR)
+     set(RTS_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/../third-party")
+ endif()
+-if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++if((WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) OR (UNIX AND NOT APPLE))
+     # binkw32.dll is 32-bit only. The engine plays movies through FFmpeg on 64-bit builds; the Bink stub
+     # (every function returns a neutral value) is only linked so that the Bink video player still builds.
+     # In-tree copy (third-party/bink).
+diff --git a/cmake/dx8.cmake b/cmake/dx8.cmake
+index 0357a45..72971f3 100644
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
+@@ -107,3 +107,31 @@ if(APPLE)
+     target_compile_definitions(metal_smoketest PRIVATE _UNIX)
+     target_link_libraries(metal_smoketest PRIVATE d3d8 apple_frameworks)
+ endif()
++
++if(UNIX AND NOT APPLE)
++    set(RTS_USE_D3DX8_COMPAT TRUE)
++    add_subdirectory(${CMAKE_SOURCE_DIR}/Dependencies/D3DX8Compat ${CMAKE_BINARY_DIR}/d3dx8compat)
++    target_include_directories(deps_d3dx8compat PRIVATE
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility/osdep_compat
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility)
++    target_compile_definitions(deps_d3dx8compat PRIVATE _UNIX)
++    add_library(d3d8 STATIC
++        ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/dx8_stub.cpp
++        ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/linux_window.cpp
++    )
++    target_include_directories(d3d8 PRIVATE
++        ${dx8_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility/osdep_compat
++        ${CMAKE_SOURCE_DIR}/Dependencies/Utility
++    )
++    target_compile_definitions(d3d8 PRIVATE _UNIX)
++    target_link_libraries(d3d8 PUBLIC linux_sys deps_d3dx8compat)
++    add_library(dinput8 INTERFACE)
++    target_link_libraries(dinput8 INTERFACE d3d8)
++    add_library(dxguid INTERFACE)
++    target_link_libraries(dxguid INTERFACE d3d8)
++    add_library(d3dx8 INTERFACE)
++    target_link_libraries(d3dx8 INTERFACE d3d8)
++    add_library(d3dx8d INTERFACE)
++    target_link_libraries(d3dx8d INTERFACE d3d8)
++endif()
+diff --git a/cmake/dx8_stub/dx8_stub.cpp b/cmake/dx8_stub/dx8_stub.cpp
+index 831e108..e32db46 100644
+--- a/cmake/dx8_stub/dx8_stub.cpp
++++ b/cmake/dx8_stub/dx8_stub.cpp
+@@ -81,6 +81,8 @@ const DIDATAFORMAT c_dfDIJoystick  = {0};
+ const DIDATAFORMAT c_dfDIJoystick2 = {0};
+ }
+ 
++// Linux links Dependencies/D3DX8Compat for these. The copies here would be duplicates.
++#if !defined(RTS_PLATFORM_LINUX)
+ // ==========================================================================
+ // D3DX matrix / vector math (implemented for real -- pure CPU math)
+ // ==========================================================================
+@@ -320,3 +322,4 @@ HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE8, LPCSTR, UINT, UIN
+ }
+ 
+ } // extern "C"  (texture/shader)
++#endif
+diff --git a/tmp/engine-linux/cmake/dx8_stub/linux_window.cpp b/cmake/dx8_stub/linux_window.cpp
+new file mode 100644
+index 0000000..c04097b
+--- /dev/null
++++ b/cmake/dx8_stub/linux_window.cpp
+@@ -0,0 +1,313 @@
++// X11 window for the Linux engine. The rest of the game still speaks Win32
++// (HWND, GetClientRect). Input is queued in the same shape the macOS keyboard
++// and mouse already drain (MetalInput_Poll*), so no second input path is needed.
++#include <windows.h>
++#include <cstdint>
++#include <cstring>
++#include <deque>
++#include <string>
++
++#include <X11/Xlib.h>
++#include <X11/Xutil.h>
++#include <X11/keysym.h>
++#undef Bool
++#undef Status
++#undef True
++#undef False
++#undef None
++#undef Success
++
++namespace {
++
++struct Win {
++    Display* dpy = nullptr;
++    ::Window win = 0;
++    int width = 800;
++    int height = 600;
++    int screenW = 1920;
++    int screenH = 1080;
++    Atom wmDelete = 0;
++    bool caps = false;
++};
++
++struct MouseEv { int type, x, y, delta; };
++struct KeyEv { int code, down; };
++
++Win* g = nullptr;
++std::deque<MouseEv> g_mouse;
++std::deque<KeyEv> g_keys;
++std::deque<unsigned> g_chars;
++
++// macOS virtual key codes, the values CocoaKeyboard::MapMacKey already understands.
++enum {
++    kVK_A=0x00, kVK_S=0x01, kVK_D=0x02, kVK_F=0x03, kVK_H=0x04, kVK_G=0x05,
++    kVK_Z=0x06, kVK_X=0x07, kVK_C=0x08, kVK_V=0x09, kVK_B=0x0B, kVK_Q=0x0C,
++    kVK_W=0x0D, kVK_E=0x0E, kVK_R=0x0F, kVK_Y=0x10, kVK_T=0x11,
++    kVK_1=0x12, kVK_2=0x13, kVK_3=0x14, kVK_4=0x15, kVK_6=0x16, kVK_5=0x17,
++    kVK_Equal=0x18, kVK_9=0x19, kVK_7=0x1A, kVK_Minus=0x1B, kVK_8=0x1C, kVK_0=0x1D,
++    kVK_RightBracket=0x1E, kVK_O=0x1F, kVK_U=0x20, kVK_LeftBracket=0x21,
++    kVK_I=0x22, kVK_P=0x23, kVK_Return=0x24, kVK_L=0x25, kVK_J=0x26,
++    kVK_Quote=0x27, kVK_K=0x28, kVK_Semicolon=0x29, kVK_Backslash=0x2A,
++    kVK_Comma=0x2B, kVK_Slash=0x2C, kVK_N=0x2D, kVK_M=0x2E, kVK_Period=0x2F,
++    kVK_Tab=0x30, kVK_Space=0x31, kVK_Grave=0x32, kVK_Delete=0x33, kVK_Escape=0x35,
++    kVK_Shift=0x38, kVK_CapsLock=0x39, kVK_Option=0x3A, kVK_Control=0x3B,
++    kVK_RightShift=0x3C, kVK_RightOption=0x3D, kVK_RightControl=0x3E,
++    kVK_F1=0x7A, kVK_F2=0x78, kVK_F3=0x63, kVK_F4=0x76, kVK_F5=0x60, kVK_F6=0x61,
++    kVK_F7=0x62, kVK_F8=0x64, kVK_F9=0x65, kVK_F10=0x6D, kVK_F11=0x67, kVK_F12=0x6F,
++    kVK_LeftArrow=0x7B, kVK_RightArrow=0x7C, kVK_DownArrow=0x7D, kVK_UpArrow=0x7E,
++    kVK_ForwardDelete=0x75, kVK_Home=0x73, kVK_End=0x77, kVK_PageUp=0x74, kVK_PageDown=0x79,
++    kVK_KP0=0x52, kVK_KP1=0x53, kVK_KP2=0x54, kVK_KP3=0x55, kVK_KP4=0x56,
++    kVK_KP5=0x57, kVK_KP6=0x58, kVK_KP7=0x59, kVK_KP8=0x5B, kVK_KP9=0x5C,
++    kVK_KPEnter=0x4C, kVK_KPPlus=0x45, kVK_KPMinus=0x4E, kVK_KPMultiply=0x43,
++    kVK_KPDivide=0x4B, kVK_KPDecimal=0x41,
++};
++
++int macKey(KeySym k)
++{
++    if (k >= XK_a && k <= XK_z) {
++        static const int map[] = { kVK_A,kVK_B,kVK_C,kVK_D,kVK_E,kVK_F,kVK_G,kVK_H,kVK_I,kVK_J,kVK_K,kVK_L,kVK_M,kVK_N,kVK_O,kVK_P,kVK_Q,kVK_R,kVK_S,kVK_T,kVK_U,kVK_V,kVK_W,kVK_X,kVK_Y,kVK_Z };
++        return map[k - XK_a];
++    }
++    if (k >= XK_A && k <= XK_Z) return macKey(k - XK_A + XK_a);
++    if (k >= XK_0 && k <= XK_9) {
++        static const int map[] = { kVK_0,kVK_1,kVK_2,kVK_3,kVK_4,kVK_5,kVK_6,kVK_7,kVK_8,kVK_9 };
++        return map[k - XK_0];
++    }
++    if (k >= XK_KP_0 && k <= XK_KP_9) {
++        static const int map[] = { kVK_KP0,kVK_KP1,kVK_KP2,kVK_KP3,kVK_KP4,kVK_KP5,kVK_KP6,kVK_KP7,kVK_KP8,kVK_KP9 };
++        return map[k - XK_KP_0];
++    }
++    if (k >= XK_F1 && k <= XK_F12) {
++        static const int map[] = { kVK_F1,kVK_F2,kVK_F3,kVK_F4,kVK_F5,kVK_F6,kVK_F7,kVK_F8,kVK_F9,kVK_F10,kVK_F11,kVK_F12 };
++        return map[k - XK_F1];
++    }
++    switch (k) {
++    case XK_Return: case XK_KP_Enter: return k == XK_KP_Enter ? kVK_KPEnter : kVK_Return;
++    case XK_Escape: return kVK_Escape;
++    case XK_space: return kVK_Space;
++    case XK_Tab: return kVK_Tab;
++    case XK_BackSpace: return kVK_Delete;
++    case XK_Delete: return kVK_ForwardDelete;
++    case XK_minus: return kVK_Minus;
++    case XK_equal: return kVK_Equal;
++    case XK_bracketleft: return kVK_LeftBracket;
++    case XK_bracketright: return kVK_RightBracket;
++    case XK_semicolon: return kVK_Semicolon;
++    case XK_apostrophe: return kVK_Quote;
++    case XK_grave: return kVK_Grave;
++    case XK_backslash: return kVK_Backslash;
++    case XK_comma: return kVK_Comma;
++    case XK_period: return kVK_Period;
++    case XK_slash: return kVK_Slash;
++    case XK_Caps_Lock: return kVK_CapsLock;
++    case XK_Shift_L: return kVK_Shift;
++    case XK_Shift_R: return kVK_RightShift;
++    case XK_Control_L: return kVK_Control;
++    case XK_Control_R: return kVK_RightControl;
++    case XK_Alt_L: return kVK_Option;
++    case XK_Alt_R: return kVK_RightOption;
++    case XK_Up: return kVK_UpArrow;
++    case XK_Down: return kVK_DownArrow;
++    case XK_Left: return kVK_LeftArrow;
++    case XK_Right: return kVK_RightArrow;
++    case XK_Home: return kVK_Home;
++    case XK_End: return kVK_End;
++    case XK_Page_Up: return kVK_PageUp;
++    case XK_Page_Down: return kVK_PageDown;
++    case XK_KP_Add: return kVK_KPPlus;
++    case XK_KP_Subtract: return kVK_KPMinus;
++    case XK_KP_Multiply: return kVK_KPMultiply;
++    case XK_KP_Divide: return kVK_KPDivide;
++    case XK_KP_Decimal: return kVK_KPDecimal;
++    default: return -1;
++    }
++}
++
++void drain()
++{
++    if (!g || !g->dpy) return;
++    while (XPending(g->dpy)) {
++        XEvent e;
++        XNextEvent(g->dpy, &e);
++        if (e.xany.window != g->win) continue;
++        if (e.type == MotionNotify) {
++            g_mouse.push_back({1, e.xmotion.x, e.xmotion.y, 0});
++        } else if (e.type == ButtonPress || e.type == ButtonRelease) {
++            int down = e.type == ButtonPress;
++            int x = e.xbutton.x, y = e.xbutton.y;
++            if (e.xbutton.button == Button4 || e.xbutton.button == Button5) {
++                if (down) g_mouse.push_back({9, x, y, e.xbutton.button == Button4 ? 120 : -120});
++                continue;
++            }
++            int type = 0;
++            if (e.xbutton.button == Button1) type = down ? 2 : 3;
++            else if (e.xbutton.button == Button3) type = down ? 5 : 6;
++            else if (e.xbutton.button == Button2) type = down ? 7 : 8;
++            if (type) g_mouse.push_back({type, x, y, 0});
++        } else if (e.type == KeyPress || e.type == KeyRelease) {
++            // Key-repeat comes through as a release plus a press. Keep both.
++            KeySym k = XLookupKeysym(&e.xkey, 0);
++            int code = macKey(k);
++            int down = e.type == KeyPress;
++            if (code == kVK_CapsLock && down) g->caps = !g->caps;
++            if (code >= 0) g_keys.push_back({code, down});
++            if (down) {
++                char buf[8] = {};
++                int n = XLookupString(&e.xkey, buf, sizeof(buf), nullptr, nullptr);
++                if (n == 1 && buf[0] >= 32 && buf[0] != 127) g_chars.push_back((unsigned char)buf[0]);
++            }
++        } else if (e.type == ConfigureNotify) {
++            g->width = e.xconfigure.width;
++            g->height = e.xconfigure.height;
++        } else if (e.type == ClientMessage && (Atom)e.xclient.data.l[0] == g->wmDelete) {
++            std::fprintf(stderr, "[linux] window closed\n");
++            std::_Exit(0);
++        }
++    }
++}
++
++Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
++
++} // namespace
++
++extern "C" int MetalInput_PollMouse(int* type, int* x, int* y, int* delta)
++{
++    drain();
++    if (g_mouse.empty()) return 0;
++    MouseEv e = g_mouse.front();
++    g_mouse.pop_front();
++    if (type) *type = e.type;
++    if (x) *x = e.x;
++    if (y) *y = e.y;
++    if (delta) *delta = e.delta;
++    return 1;
++}
++extern "C" int MetalInput_PollKey(int* code, int* down)
++{
++    drain();
++    if (g_keys.empty()) return 0;
++    KeyEv e = g_keys.front();
++    g_keys.pop_front();
++    if (code) *code = e.code;
++    if (down) *down = e.down;
++    return 1;
++}
++extern "C" int MetalInput_CapsOn(void) { return g && g->caps ? 1 : 0; }
++extern "C" int MetalInput_PollChar(unsigned int* out)
++{
++    drain();
++    if (g_chars.empty()) return 0;
++    if (out) *out = g_chars.front();
++    g_chars.pop_front();
++    return 1;
++}
++
++extern "C" int Linux_CreateVulkanSurface(void* hwnd, void* instance, void* getProc, void** surface)
++{
++    Win* w = asWin((HWND)hwnd);
++    if (!w || !w->dpy || !instance || !getProc || !surface) return -1;
++    using GetProc = void* (*)(void*, const char*);
++    using Create = int (*)(void*, const void*, const void*, void**);
++    auto gp = reinterpret_cast<GetProc>(getProc);
++    auto create = reinterpret_cast<Create>(gp(instance, "vkCreateXlibSurfaceKHR"));
++    if (!create) return -1;
++    struct Info {
++        uint32_t sType; const void* pNext; uint32_t flags; Display* dpy; ::Window window;
++    } sci{};
++    sci.sType = 1000004000; // VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR
++    sci.dpy = w->dpy;
++    sci.window = w->win;
++    return create(instance, &sci, nullptr, surface);
++}
++
++ATOM RegisterClass(const WNDCLASS*) { return (ATOM)1; }
++BOOL UnregisterClass(const char*, HINSTANCE) { return TRUE; }
++
++HWND CreateWindow(const char*, const char* title, DWORD, int x, int y, int w, int h, HWND, HMENU, HINSTANCE, void*)
++{
++    if (!g) g = new Win;
++    if (!g->dpy) {
++        g->dpy = XOpenDisplay(nullptr);
++        if (!g->dpy) {
++            std::fprintf(stderr, "[linux] XOpenDisplay failed. Set DISPLAY (an XWayland session is enough).\n");
++            return nullptr;
++        }
++        g->screenW = DisplayWidth(g->dpy, DefaultScreen(g->dpy));
++        g->screenH = DisplayHeight(g->dpy, DefaultScreen(g->dpy));
++    }
++    if (w <= 0) w = 800;
++    if (h <= 0) h = 600;
++    g->width = w;
++    g->height = h;
++    int scr = DefaultScreen(g->dpy);
++    g->win = XCreateSimpleWindow(g->dpy, RootWindow(g->dpy, scr), x < 0 ? 0 : x, y < 0 ? 0 : y, (unsigned)w, (unsigned)h, 0,
++        BlackPixel(g->dpy, scr), BlackPixel(g->dpy, scr));
++    if (title) XStoreName(g->dpy, g->win, title);
++    g->wmDelete = XInternAtom(g->dpy, "WM_DELETE_WINDOW", 0);
++    XSetWMProtocols(g->dpy, g->win, &g->wmDelete, 1);
++    XSelectInput(g->dpy, g->win, KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask | FocusChangeMask);
++    XMapWindow(g->dpy, g->win);
++    XFlush(g->dpy);
++    std::fprintf(stderr, "[linux] window %dx%d on %dx%d\n", w, h, g->screenW, g->screenH);
++    return g;
++}
++
++HWND CreateWindowEx(DWORD, const char* cls, const char* title, DWORD style, int x, int y, int w, int h, HWND parent, HMENU menu, HINSTANCE inst, void* param)
++{
++    return CreateWindow(cls, title, style, x, y, w, h, parent, menu, inst, param);
++}
++
++BOOL DestroyWindow(HWND h)
++{
++    Win* w = asWin(h);
++    if (w && w->dpy && w->win) {
++        XDestroyWindow(w->dpy, w->win);
++        w->win = 0;
++        XFlush(w->dpy);
++    }
++    return TRUE;
++}
++
++BOOL GetClientRect(HWND h, RECT* r)
++{
++    Win* w = asWin(h);
++    if (r) {
++        r->left = r->top = 0;
++        r->right = w ? w->width : 0;
++        r->bottom = w ? w->height : 0;
++    }
++    return TRUE;
++}
++BOOL GetWindowRect(HWND h, RECT* r) { return GetClientRect(h, r); }
++
++BOOL SetWindowPos(HWND h, HWND, int x, int y, int w, int hgt, unsigned flags)
++{
++    Win* win = asWin(h);
++    if (!win || !win->dpy || !win->win) return TRUE;
++    if (!(flags & 0x0001)) { // SWP_NOSIZE
++        win->width = w;
++        win->height = hgt;
++        XResizeWindow(win->dpy, win->win, (unsigned)w, (unsigned)hgt);
++    }
++    if (!(flags & 0x0002)) XMoveWindow(win->dpy, win->win, x, y); // SWP_NOMOVE
++    XFlush(win->dpy);
++    return TRUE;
++}
++
++BOOL SetWindowText(HWND h, const char* s)
++{
++    Win* w = asWin(h);
++    if (w && w->dpy && w->win && s) XStoreName(w->dpy, w->win, s);
++    return TRUE;
++}
++
++int GetSystemMetrics(int index)
++{
++    if (g && g->dpy) {
++        if (index == 0) return g->screenW;
++        if (index == 1) return g->screenH;
++    }
++    if (index == 0) return 1920;
++    if (index == 1) return 1080;
++    return 0;
++}
+diff --git a/tmp/engine-linux/cmake/linux.cmake b/cmake/linux.cmake
+new file mode 100644
+index 0000000..d7c358f
+--- /dev/null
++++ b/cmake/linux.cmake
+@@ -0,0 +1,21 @@
++# Linux x86_64. The game window is X11 (XWayland on a Wayland desktop) and the picture is the native Vulkan renderer.
++if(UNIX AND NOT APPLE)
++    message(STATUS "Configuring Linux build settings")
++    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
++        message(FATAL_ERROR "The Linux build requires 64-bit pointers.")
++    endif()
++    add_compile_options(
++        -fno-strict-aliasing
++        -ffp-contract=off
++        -fdeclspec
++        -Wno-deprecated-declarations
++        -Wno-ignored-attributes
++    )
++    add_compile_definitions(_USE_MATH_DEFINES RTS_PLATFORM_LINUX=1 _snprintf=snprintf _vsnprintf=vsnprintf)
++    # One binary for Debian, Ubuntu, Fedora and Arch: the C++ runtime travels with the executable.
++    # Vulkan, X11 and ALSA stay shared libraries. Their sonames are the same on those distros.
++    add_link_options(-static-libstdc++ -static-libgcc)
++    find_package(X11 REQUIRED)
++    add_library(linux_sys INTERFACE)
++    target_link_libraries(linux_sys INTERFACE X11::X11 ${CMAKE_DL_LIBS} pthread)
++endif()
+diff --git a/cmake/miles.cmake b/cmake/miles.cmake
+index bf554f6..083e43b 100644
+--- a/cmake/miles.cmake
++++ b/cmake/miles.cmake
+@@ -4,7 +4,7 @@ if(APPLE)
+     # `milesstub` / `mss32` target so downstream linkage is unchanged.
+     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/miles_apple
+                      ${CMAKE_BINARY_DIR}/miles_apple-build)
+-elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
++elseif((WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8) OR (UNIX AND NOT APPLE))
+     # mss32.dll is a 32-bit library: implement the Miles API the engine uses on top of miniaudio.
+     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../Dependencies/Miles ${CMAKE_BINARY_DIR}/miles_x64-build)
+ else()

@@ -40,9 +40,11 @@ int main()
 	const UiScale wnd = uiScale(3440, 1440, 800, 600, false);
 	UiScale c = schemeScale(3440, 1440, 800, 600);
 	assert(near(c.x, 2.4f) && near(c.y, 2.4f) && c.xOffset == wnd.xOffset && std::abs(c.xOffset - 760) <= 1);
-	// a scheme authored 16:9 (1920x1080) keeps its own aspect inside that region: same width as the windows' region
+	// a scheme authored 16:9 (Control Bar Pro) gets a centred 16:9 region of its own, scaled uniformly, exactly like a
+	// ControlBar.wnd with the same creation resolution (patch 0089), so the frame art and the buttons stay together
 	c = schemeScale(3440, 1440, 1920, 1080);
-	assert(std::fabs(c.x * 1920.0f - 1920.0f) < 0.5f && std::fabs(c.y * 1080.0f - 1440.0f) < 0.5f && c.xOffset == wnd.xOffset);
+	const UiScale pro = uiScale(3440, 1440, 1920, 1080, false);
+	assert(near(c.x, 1440.0f / 1080.0f) && near(c.y, c.x) && std::abs(c.xOffset - 440) <= 1 && c.xOffset == pro.xOffset);
 	// plain 4:3, and taller than 4:3, behave exactly like the retail stretch (display / creation res)
 	c = schemeScale(1024, 768, 800, 600);
 	assert(near(c.x, 1.28f) && near(c.y, 1.28f) && c.xOffset == 0);

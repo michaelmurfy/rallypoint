@@ -226,6 +226,11 @@ function showUpdateNotes(u, bad) {
   else invoke("open_release_page").catch((e) => bad(errText(e)));
 }
 
+/** Linux has no in-app installer (the packages are .deb, .rpm and .tar.gz): the release page is how it updates. */
+const pageButton = (u, bad) => !u.installer && store.cfg.os === "linux"
+  ? h("button", { class: "btn primary", onclick: () => invoke("open_release_page").catch((e) => bad(errText(e))) }, "Download page")
+  : null;
+
 function renderUpdate() {
   const host = document.getElementById("updatehost");
   if (!host) return;
@@ -242,7 +247,8 @@ function renderUpdate() {
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
     h("div", { class: "row" },
       u.installer ? install : null,
-      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
+      pageButton(u, (m) => say(m, "bad")),
+      h("button", { class: u.installer || pageButton(u, () => {}) ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
       h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"),
       h("button", { class: "btn ghost", onclick: async () => {
         try { await invoke("update_skip"); u.skipped = true; renderUpdate(); } catch (e) { say(errText(e), "bad"); }
@@ -306,8 +312,8 @@ function updatesCard() {
   } });
   function report() {
     const u = store.update;
-    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
-    fill(actions, u && u.installer ? install : null, u ? notes : null);
+    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : store.cfg.os === "linux" ? ". Install the new .deb, .rpm or .tar.gz from the download page" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
+    fill(actions, u && u.installer ? install : null, u ? pageButton(u, fb.bad) : null, u ? notes : null);
   }
   if (store.update) report();
   drawBetaNote();
@@ -944,6 +950,22 @@ function gameFilesPanel(onChange) {
     return r.ok;
   }
   dir.addEventListener("change", () => check(dir.value));
+  const browse = h("button", { class: "btn", type: "button", onclick: async () => {
+    let picked;
+    try {
+      picked = await tauri.dialog.open({
+        multiple: false, directory: true, defaultPath: dir.value || undefined,
+        title: "Choose the folder that contains INIZH.big",
+      });
+    } catch (e) {
+      status.className = "msg bad";
+      status.textContent = "Couldn't open the folder picker: " + errText(e);
+      return;
+    }
+    if (!picked) return;
+    dir.value = typeof picked === "string" ? picked : picked.path;
+    check(dir.value);
+  } }, "Browse");
 
   const zh = store.games.filter((g) => g.zero_hour);
   zh.forEach((g) => {
@@ -998,7 +1020,7 @@ function gameFilesPanel(onChange) {
 
   const el = h("div", { class: "stack" },
     detected,
-    h("label", { class: "field" }, h("span", {}, "Game folder"), dir),
+    h("label", { class: "field" }, h("span", {}, "Game folder"), h("div", { class: "row pick" }, dir, browse)),
     status, steam);
 
   // initial state: remembered folder, else the first Steam install
