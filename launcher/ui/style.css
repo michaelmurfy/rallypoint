@@ -15,7 +15,7 @@
   --accent-ink: #ffffff;
   --rose: #f08f8a;          /* secondary: links, info */
   --gold: #e8b84a;          /* the shield in the icon: the second brand colour (brand block, quiet highlights) */
-  --c-play: #ff6a55; --c-mods: #f2a33c; --c-maps: #4cc98d; --c-online: #5aa5ff; --c-settings: #b493f5; /* one hue per section */
+  --c-play: #ff6a55; --c-mods: #f2a33c; --c-maps: #4cc98d; --c-online: #5aa5ff; --c-settings: #a3b3c6; /* one hue per section */
   --hue-ink: #1a0a0c;       /* text on a solid section hue */
   --warn-ink: #f2c94c;
   --ok-ink: #6fd8a0;
@@ -40,7 +40,7 @@
     --accent-ink: #ffffff;
     --rose: #a3322f;
     --gold: #8a5a00;
-    --c-play: #c62f25; --c-mods: #a86400; --c-maps: #1a7f4e; --c-online: #2563c9; --c-settings: #6d4bc4;
+    --c-play: #c62f25; --c-mods: #a86400; --c-maps: #1a7f4e; --c-online: #2563c9; --c-settings: #4d5d72;
     --hue-ink: #ffffff;
     --warn-ink: #7a5300;
     --ok-ink: #0f6b3d;
@@ -565,7 +565,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 /* ---- enhanced effects: groups side by side, rows a little tighter than a full-width setting ---- */
 .fxgroups { columns: 2 340px; column-gap: 36px; }
 .fxgroup { break-inside: avoid; padding-bottom: 22px; }
-.fxgroup h3 { color: var(--page, var(--rose)); font-size: 13px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.fxgroup h3 { color: var(--rose); font-size: 13px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .fxgroup .setting { padding: 9px 0; gap: 12px; border-top: 0; }
 .fxgroup .setting-ctl select { width: 150px; }
 .card:has(> .fxgroups) > .live { margin-top: -22px; }
