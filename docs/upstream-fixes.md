@@ -35,6 +35,25 @@ git apply --check -p1 --directory=engine /tmp/c.diff   # after sh patches/apply.
 
 Not taken: `5430d9de` #3380 (supply attack detection), `1abf73d5` #3332 and `8207c684` #2296 (pathfinder movement) do not apply; they need the newer pathfinder files. `bfa3bbf4` only restores compatibility for a change we do not have.
 
+### 2026-11-16 performance survey (upstream head `e655cb28`, 2026-11-15)
+
+Looked at every `perf(...)` commit since the base while finding out why a three-player Art of Defense game ran at 15 frames a second (see `patches/0112` to `0115` in `agent.md`). None of them is the cause of that game's slowness, and upstream has none of the fixes in those patches, so nothing was taken this time. For the next round:
+
+| Upstream | What | State |
+|---|---|---|
+| `288a3ea4`, `e61aa09d`, `fc278ed2` #3198 | Pathfinder: no repeated crusher test, parent position out of the loop, faster append to a path | apply cleanly, not taken (pathfinding was 0 to 2% of this game) |
+| `d37051f6` #2791 | `Pathfinder::checkForAdjust` skips a redundant path-exists check | applies cleanly, not taken |
+| `8a794058` #3096 | `ScriptEngine::findScript` about 85% cheaper | applies cleanly, not taken |
+| `f06f1838` #2761 | Waypoint and polygon trigger labels 90% cheaper | applies cleanly, not taken |
+| `deb728c0` #2700 | Game message arguments in vectors | applies cleanly, not taken |
+| `b1fec67c` #3613 | `XferCRC` without the byte swaps | applies cleanly, not taken: check first that the checksum value stays the same |
+| `34ff975b` #3266 | `preMainInitMemoryManager` inline | applies cleanly; the rest of #3266 (`e2a2c933`, `1fe815cd`, `9977605b`) conflicts |
+| `de20ae0c` #3155 | Particles of one type drawn in one batch (15 to 30% of particle drawing) | conflicts (Enhanced renderer changes in the same files): worth a hand port |
+| `923bb911` #2854, `d95a9f8c` #3140 | Sorting renderer and smudge early returns | conflict |
+| `28170001` #3258, `36a1a68b` #3270, `b3d3a062` #2992, `810371bb` #2659 | Terrain flatten bounds, production cancel, view cache, transport loop | conflict |
+
+Anything taken from this table has to pass the replay check in `agent.md` (same sync logs before and after) or raise `kRallypointSimulationId`.
+
 ### 2026-11-14 survey (upstream head `f5e823ba`, 2026-11-12)
 
 `patches/0088` takes the fixes below, all of which applied cleanly and leave the simulation alone (`kRallypointSimulationId` unchanged).

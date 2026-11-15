@@ -1,0 +1,456 @@
+diff --git a/Core/GameEngine/Include/Common/FramePacer.h b/Core/GameEngine/Include/Common/FramePacer.h
+index 9d3dfa2..7bcc37c 100644
+--- a/Core/GameEngine/Include/Common/FramePacer.h
++++ b/Core/GameEngine/Include/Common/FramePacer.h
+@@ -72,6 +72,12 @@ public:
+ 	/// cap in this mode. Always FALSE off macOS and at the default 30 FPS.
+ 	Bool isMacHighFpsMode() const { return m_macHighFps; }
+ 
++	// Rallypoint: see GameEngine.cpp, planNextFrame(). The next update() waits no longer than this (negative: no limit), and
++	// the display leaves out the picture of the coming loop when asked, so a late simulation catches up.
++	void setWaitLimit(Real seconds) { m_waitLimit = seconds; }
++	void setPictureSkipped(Bool skip) { m_pictureSkipped = skip; }
++	Bool isPictureSkipped() const { return m_pictureSkipped; }
++
+ protected:
+ 
+ 	FrameRateLimit m_frameRateLimit;
+@@ -86,6 +92,8 @@ protected:
+ 	Bool m_isTimeFrozen;
+ 	Bool m_isGameHalted;
+ 	Bool m_macHighFps; ///< macOS: render cap raised above 30 → logic-time-scale decoupling active
++	Bool m_pictureSkipped = FALSE;
++	Real m_waitLimit = -1.0f;
+ };
+ 
+ extern FramePacer* TheFramePacer;
+diff --git a/Core/GameEngine/Include/Common/FrameRateLimit.h b/Core/GameEngine/Include/Common/FrameRateLimit.h
+index 5bb2b5f..bcb8079 100644
+--- a/Core/GameEngine/Include/Common/FrameRateLimit.h
++++ b/Core/GameEngine/Include/Common/FrameRateLimit.h
+@@ -26,7 +26,7 @@ class FrameRateLimit
+ public:
+ 	FrameRateLimit();
+ 
+-	Real wait(UnsignedInt maxFps);
++	Real wait(UnsignedInt maxFps, Real maxWaitSeconds = -1.0f); ///< Rallypoint: maxWaitSeconds >= 0 ends the wait that long from now at the latest.
+ 
+ private:
+ 	Int64 m_freq;
+diff --git a/Core/GameEngine/Include/GameNetwork/NetworkInterface.h b/Core/GameEngine/Include/GameNetwork/NetworkInterface.h
+index c8333fd..3e6a1ee 100644
+--- a/Core/GameEngine/Include/GameNetwork/NetworkInterface.h
++++ b/Core/GameEngine/Include/GameNetwork/NetworkInterface.h
+@@ -59,6 +59,7 @@ public:
+ 	virtual void liteupdate() = 0;															///< does a lightweight update for passing messages around.
+ 
+ 	virtual void setLocalAddress(UnsignedInt ip, UnsignedInt port) = 0;	///< Tell the network what local ip and port to bind to.
++	virtual Bool getSecondsUntilNextFrame(Real &seconds, Real &period) = 0;		///< Rallypoint: time until the next logic frame is due (negative: overdue) and the frame period. False outside a game.
+ 	virtual Bool isFrameDataReady() = 0;												///< Are the commands for the next frame available?
+ 	virtual Bool isStalling() = 0;
+ 	virtual void parseUserList( const GameInfo *game ) = 0;						///< Parse a userlist, creating connections
+diff --git a/Core/GameEngine/Source/Common/FramePacer.cpp b/Core/GameEngine/Source/Common/FramePacer.cpp
+index bca99df..203a84a 100644
+--- a/Core/GameEngine/Source/Common/FramePacer.cpp
++++ b/Core/GameEngine/Source/Common/FramePacer.cpp
+@@ -113,7 +113,8 @@ void FramePacer::update()
+ 	// TheSuperHackers @bugfix xezon 05/08/2025 Re-implements the frame rate limiter
+ 	// with higher resolution counters to cap the frame rate more accurately to the desired limit.
+ 	const UnsignedInt maxFps = getActualFramesPerSecondLimit();// allowFpsLimit ? getFramesPerSecondLimit() : RenderFpsPreset::UncappedFpsValue;
+-	m_updateTime = m_frameRateLimit.wait(maxFps);
++	m_updateTime = m_frameRateLimit.wait(maxFps, m_waitLimit);
++	m_waitLimit = -1.0f;
+ }
+ 
+ void FramePacer::setFramesPerSecondLimit( Int fps )
+@@ -193,6 +194,9 @@ Int FramePacer::getActualFramesPerSecondLimit() const
+ 		s_cap = (e && *e) ? atoi(e) : 30;
+ 	}
+ 	if (s_cap <= 0) return RenderFpsPreset::UncappedFpsValue;
++	// Rallypoint: fast-forward in a replay runs as fast as it can, as on the other platforms; the 30 cap made the key do nothing.
++	if (TheGameLogic != nullptr && TheGlobalData->m_TiVOFastMode && TheGameLogic->isInReplayGame() && !TheGameLogic->isGamePaused())
++		return RenderFpsPreset::UncappedFpsValue;
+ 	// Rallypoint: GEN_GAME_SPEED above 100 needs a render cap above the logic rate.
+ 	if (m_enableLogicTimeScale && m_logicTimeScaleFPS > (Int)LOGICFRAMES_PER_SECOND && s_cap < m_logicTimeScaleFPS * 2)
+ 		return m_logicTimeScaleFPS * 2;
+diff --git a/Core/GameEngine/Source/Common/FrameRateLimit.cpp b/Core/GameEngine/Source/Common/FrameRateLimit.cpp
+index ffd76c2..11474c2 100644
+--- a/Core/GameEngine/Source/Common/FrameRateLimit.cpp
++++ b/Core/GameEngine/Source/Common/FrameRateLimit.cpp
+@@ -30,13 +30,16 @@ FrameRateLimit::FrameRateLimit()
+ 	m_start = start.QuadPart;
+ }
+ 
+-Real FrameRateLimit::wait(UnsignedInt maxFps)
++Real FrameRateLimit::wait(UnsignedInt maxFps, Real maxWaitSeconds)
+ {
+ 	PROFILER_SECTION;
+ 	LARGE_INTEGER tick;
+ 	QueryPerformanceCounter(&tick);
+ 	double elapsedSeconds = static_cast<double>(tick.QuadPart - m_start) / m_freq;
+-	const double targetSeconds = 1.0 / maxFps;
++	double targetSeconds = 1.0 / maxFps;
++	// Rallypoint: the caller knows when the next logic frame is due and does not want to sleep past it.
++	if (maxWaitSeconds >= 0.0f && elapsedSeconds + maxWaitSeconds < targetSeconds)
++		targetSeconds = elapsedSeconds + maxWaitSeconds;
+ 	const double sleepSeconds = targetSeconds - elapsedSeconds - 0.002; // leave ~2ms for spin wait
+ 
+ 	if (sleepSeconds > 0.0)
+diff --git a/Core/GameEngine/Source/GameNetwork/Network.cpp b/Core/GameEngine/Source/GameNetwork/Network.cpp
+index 6fc390f..575aa1b 100644
+--- a/Core/GameEngine/Source/GameNetwork/Network.cpp
++++ b/Core/GameEngine/Source/GameNetwork/Network.cpp
+@@ -115,6 +115,7 @@ public:
+ 	virtual UnsignedInt getRunAhead() override { return m_runAhead; }
+ 	virtual UnsignedInt getFrameRate() override { return m_frameRate; }
+ 	virtual UnsignedInt getPacketArrivalCushion() override;								///< Returns the smallest packet arrival cushion since this was last called.
++	virtual Bool getSecondsUntilNextFrame(Real &seconds, Real &period) override;
+ 	virtual Bool isFrameDataReady() override;
+ 	virtual Bool isStalling() override;
+ 	virtual void parseUserList( const GameInfo *game ) override;
+@@ -811,6 +812,21 @@ Bool Network::timeForNewFrame() {
+ 	return FALSE;
+ }
+ 
++/**
++ * Rallypoint: how long until timeForNewFrame() allows the next logic frame, so the engine loop can wake up for it
++ * instead of sleeping to its own frame cap, and can tell when it has fallen behind.
++ */
++Bool Network::getSecondsUntilNextFrame(Real &seconds, Real &period)
++{
++	if (m_localStatus != NETLOCALSTATUS_INGAME || m_nextFrameTime == 0 || m_frameRate <= 0 || m_perfCountFreq <= 0)
++		return FALSE;
++	__int64 curTime;
++	QueryPerformanceCounter((LARGE_INTEGER *)&curTime);
++	seconds = (Real)((double)(m_nextFrameTime - curTime) / (double)m_perfCountFreq);
++	period = 1.0f / (Real)m_frameRate;
++	return TRUE;
++}
++
+ /**
+  * Returns true if the game commands for the next frame have been put on the command list.
+  */
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+index fe325fe..40c478c 100644
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GameEngine.cpp
+@@ -28,6 +28,8 @@
+ 
+ #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+ 
++#include <chrono>
++
+ #if defined(__APPLE__)
+ #include <strings.h>  // strcasecmp for GEN_FORCE_* env-var harness
+ #endif
+@@ -910,6 +912,17 @@ void GameEngine::init()
+ 			}
+ 		}
+ 
++		// Rallypoint: GEN_AUTO_REPLAY=<file in the Replays folder> plays that replay at start (see GameEngine::execute).
++		{
++			const char *autoReplay = ::getenv("GEN_AUTO_REPLAY");
++			if (autoReplay && autoReplay[0])
++			{
++				TheWritableGlobalData->m_shellMapOn = FALSE;
++				TheWritableGlobalData->m_playIntro = FALSE;
++				TheWritableGlobalData->m_afterIntro = TRUE;
++			}
++		}
++
+ 		//
+ 		if (TheMapCache && TheGlobalData->m_shellMapOn)
+ 		{
+@@ -1066,6 +1079,149 @@ Bool GameEngine::canUpdateRegularGameLogic()
+ 	return false;
+ }
+ 
++// Rallypoint: where the time of a game goes, once every 1000 logic frames on stderr (so in engine.log):
++// "[perf] frame 34000: 1000 frames in 58.1 s (17.2 a second), logic 21.3 ms, picture 36.0 ms a frame (1.0 pictures a frame),
++// worst logic 180 ms, 5210 objects". "logic" is GameLogic::update, "picture" everything else in the loop (drawing, sound,
++// input, network), per logic frame. Two clock reads a loop, nothing else.
++namespace
++{
++	struct PerfWindow
++	{
++		std::chrono::steady_clock::time_point start;
++		double logic = 0.0, client = 0.0, worstLogic = 0.0;
++		Int frames = 0, loops = 0, skipped = 0;
++		Bool running = FALSE;
++	};
++	PerfWindow s_perf;
++
++	double perfSeconds(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b)
++	{
++		return std::chrono::duration<double>(b - a).count();
++	}
++
++	void notePerfIdle(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point clientDone)
++	{
++		if (s_perf.running)
++		{
++			s_perf.client += perfSeconds(start, clientDone);
++			++s_perf.loops;
++			if (TheFramePacer->isPictureSkipped())
++				++s_perf.skipped;
++		}
++	}
++
++	// Rallypoint: the loop is "sound, input, picture, network, one logic frame, wait for the frame cap". A loop that takes
++	// longer than a logic frame (33 ms) therefore slowed the simulation, and in a network game the slowest machine's rate
++	// becomes everyone's (ConnectionManager::updateRunAhead). The logic has a schedule: the network's own frame clock in a
++	// network game, one frame per cap period otherwise. After each loop this looks at it:
++	//  - the next frame is not due yet: wait until it is (not to the cap, which could be a little later and lose the slot);
++	//  - it is overdue: do not wait, and if it is more than half a frame late leave out the picture of the next loop
++	//    (never two in a row), so that loop is short and the simulation catches up.
++	// Lost time is never made up beyond two frames (the network clock already works like that). GEN_NO_PICTURE_SKIP=1
++	// switches it off. Nothing here touches the simulation itself.
++	void planNextFrame(Bool ranLogic)
++	{
++		static Int off = -1;
++		static Bool haveDue = FALSE;
++		static std::chrono::steady_clock::time_point due;
++		if (off < 0)
++		{
++			const char *e = ::getenv("GEN_NO_PICTURE_SKIP");
++			off = (e && e[0] && e[0] != '0') ? 1 : 0;
++		}
++
++		const Bool skippedThis = TheFramePacer->isPictureSkipped();
++		TheFramePacer->setPictureSkipped(FALSE);
++		TheFramePacer->setWaitLimit(-1.0f);
++
++		const Bool playing = !off && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame() && !TheGameLogic->isGamePaused()
++			&& !(TheGlobalData->m_TiVOFastMode && TheGameLogic->isInReplayGame());
++		if (!playing)
++		{
++			haveDue = FALSE;
++			return;
++		}
++
++		Real untilDue = 0.0f;
++		Real period = 0.0f;
++		if (TheNetwork != nullptr)
++		{
++			if (!TheNetwork->getSecondsUntilNextFrame(untilDue, period))
++				return;
++			if (!ranLogic && untilDue <= 0.0f)
++				return;	// due, but the other players' commands are not here yet: nothing to catch up with
++		}
++		else
++		{
++			const Int cap = TheFramePacer->getActualFramesPerSecondLimit();
++			if (!ranLogic || TheFramePacer->isLogicTimeScaleEnabled() || cap < (Int)LOGICFRAMES_PER_SECOND || cap > 60)
++			{
++				haveDue = FALSE;
++				return;
++			}
++			period = 1.0f / (Real)cap;
++			const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
++			const std::chrono::steady_clock::duration step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(period));
++			if (!haveDue)
++			{
++				haveDue = TRUE;
++				due = now;
++			}
++			due += step;
++			if (due + 2 * step < now)
++				due = now;
++			untilDue = (Real)perfSeconds(now, due);
++		}
++
++		if (untilDue > 0.0f)
++		{
++			TheFramePacer->setWaitLimit(untilDue);
++		}
++		else
++		{
++			TheFramePacer->setWaitLimit(0.0f);
++			if (untilDue < -0.5f * period && !skippedThis)
++				TheFramePacer->setPictureSkipped(TRUE);
++		}
++	}
++
++	void notePerfFrame(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point clientDone)
++	{
++		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
++		if (!TheGameLogic->isInGame() || TheGameLogic->isInShellGame())
++		{
++			s_perf.running = FALSE;
++			return;
++		}
++		if (!s_perf.running)
++		{
++			s_perf = PerfWindow();
++			s_perf.running = TRUE;
++			s_perf.start = start;
++		}
++		const double logic = perfSeconds(clientDone, now);
++		s_perf.client += perfSeconds(start, clientDone);
++		s_perf.logic += logic;
++		if (logic > s_perf.worstLogic)
++			s_perf.worstLogic = logic;
++		++s_perf.loops;
++		if (TheFramePacer->isPictureSkipped())
++			++s_perf.skipped;
++		if (++s_perf.frames >= 1000)
++		{
++			const double wall = perfSeconds(s_perf.start, now);
++			fprintf(stderr, "[perf] frame %u: %d frames in %.1f s (%.1f a second), logic %.1f ms, picture %.1f ms a frame (%.2f pictures a frame), worst logic %.0f ms, %u objects\n",
++				TheGameLogic->getFrame(), s_perf.frames, wall, wall > 0.0 ? s_perf.frames / wall : 0.0,
++				1000.0 * s_perf.logic / s_perf.frames, 1000.0 * s_perf.client / s_perf.frames, (double)(s_perf.loops - s_perf.skipped) / s_perf.frames,
++				1000.0 * s_perf.worstLogic, TheGameLogic->getObjectCount());
++			fflush(stderr);
++			s_perf = PerfWindow();
++			s_perf.running = TRUE;
++			s_perf.start = now;
++		}
++	}
++}
++
+ /// -----------------------------------------------------------------------------------------------
+ DECLARE_PERF_TIMER(GameEngine_update)
+ 
+@@ -1075,6 +1231,8 @@ DECLARE_PERF_TIMER(GameEngine_update)
+ void GameEngine::update()
+ {
+ 	USE_PERF_TIMER(GameEngine_update)
++	const std::chrono::steady_clock::time_point perfStart = std::chrono::steady_clock::now();
++	std::chrono::steady_clock::time_point perfClientDone = perfStart;
+ 	{
+ 		{
+ 			// VERIFY CRC needs to be in this code block.  Please to not pull TheGameLogic->update() inside this block.
+@@ -1093,6 +1251,7 @@ void GameEngine::update()
+ 				TheNetwork->UPDATE();
+ 			}
+ 		}
++		perfClientDone = std::chrono::steady_clock::now();
+ 
+ #ifdef RTS_HAS_EXTERNAL_CONTROL
+ 		// Service external-control API requests on the engine thread, before the logic update.
+@@ -1117,12 +1276,19 @@ void GameEngine::update()
+ 		{
+ 			TheGameClient->step();
+ 			TheGameLogic->UPDATE();
++			notePerfFrame(perfStart, perfClientDone);
++			planNextFrame(TRUE);
+ 		}
+-		else if (canUpdateScript)
++		else
+ 		{
+-			// TheSuperHackers @info Still update the Script Engine to allow
+-			// for scripted camera movements while the time is frozen.
+-			TheScriptEngine->UPDATE();
++			notePerfIdle(perfStart, perfClientDone);
++			if (canUpdateScript)
++			{
++				// TheSuperHackers @info Still update the Script Engine to allow
++				// for scripted camera movements while the time is frozen.
++				TheScriptEngine->UPDATE();
++			}
++			planNextFrame(FALSE);
+ 		}
+ 	}
+ }
+@@ -1140,9 +1306,48 @@ void GameEngine::execute()
+ 	DWORD startTime = timeGetTime() / 1000;
+ #endif
+ 
++	// Rallypoint: a development aid for performance work. GEN_AUTO_REPLAY=<file in the Replays folder> plays that replay
++	// straight away, GEN_AUTO_REPLAY_SKIP=<frame> fast-forwards to that frame (logic as fast as it goes, a picture every
++	// 30th frame) and GEN_AUTO_REPLAY_END=<frame> closes the game there. With the [perf] lines of GameEngine::update this
++	// measures the same game before and after a change.
++	Int autoReplaySkip = 0;
++	Int autoReplayEnd = 0;
++	Bool autoReplay = FALSE;
++	{
++		const char *name = ::getenv("GEN_AUTO_REPLAY");
++		if (name && name[0] && TheRecorder)
++		{
++			const char *skip = ::getenv("GEN_AUTO_REPLAY_SKIP");
++			const char *end = ::getenv("GEN_AUTO_REPLAY_END");
++			autoReplaySkip = skip ? atoi(skip) : 0;
++			autoReplayEnd = end ? atoi(end) : 0;
++			autoReplay = TheRecorder->playbackFile(name);
++			fprintf(stderr, "[perf] replay '%s' %s, fast to frame %d, ends at frame %d\n", name, autoReplay ? "started" : "could not be opened", autoReplaySkip, autoReplayEnd);
++			fflush(stderr);
++		}
++	}
++
+ 	// pretty basic for now
+ 	while( !m_quitting )
+ 	{
++		if (autoReplay && TheGameLogic->isInGame())
++		{
++			const Int frame = (Int)TheGameLogic->getFrame();
++			if (autoReplaySkip > 0 && frame > 1)
++			{
++				const Bool fast = frame < autoReplaySkip;
++				if ((TheGlobalData->m_TiVOFastMode != 0) != fast)
++					TheWritableGlobalData->m_TiVOFastMode = fast;
++				if (!fast)
++					autoReplaySkip = 0;
++			}
++			if (autoReplayEnd > 0 && frame >= autoReplayEnd)
++			{
++				fprintf(stderr, "[perf] replay reached frame %d, closing\n", frame);
++				fflush(stderr);
++				_exit(0);
++			}
++		}
+ 
+ 		//if (TheGlobalData->m_vTune)
+ 		{
+diff --git a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+index 5676c2d..16da36a 100644
+--- a/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
++++ b/GeneralsMD/Code/GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp
+@@ -1121,11 +1121,22 @@ void W3DDisplay::updateAverageFPS()
+ 		historyOffset = 0;
+ 
+ 	m_currentFPS = 1.0f/elapsedSeconds;
+-	fpsHistory[historyOffset++] = m_currentFPS;
++	fpsHistory[historyOffset++] = elapsedSeconds;
+ 
+ 	// determine average frame rate over our past history.
+-	const Real sum = std::accumulate(fpsHistory, fpsHistory + FPS_HISTORY_SIZE, 0.0f);
+-	m_averageFPS = sum / FPS_HISTORY_SIZE;
++	// Rallypoint: frames over time, not the mean of the single rates. A slow loop followed by a fast one (55 ms, 15 ms) is
++	// 28 loops a second, and the mean of 18 and 66 said 42: this is the number a network game reports to the other players.
++	Real sum = 0.0f;
++	Int samples = 0;
++	for (Int i = 0; i < FPS_HISTORY_SIZE; ++i)
++	{
++		if (fpsHistory[i] > 0.0f)
++		{
++			sum += fpsHistory[i];
++			++samples;
++		}
++	}
++	m_averageFPS = sum > 0.0f ? samples / sum : 0.0f;
+ 
+ 	lastUpdateTime64 = time64;
+ }
+@@ -2166,8 +2177,22 @@ AGAIN:
+ 		#else
+ 	    if ( (TheGameLogic->getFrame() % 30 == 1) || ( ! (!TheGameLogic->isGamePaused() && TheGlobalData->m_TiVOFastMode && TheGameLogic->isInReplayGame())) )
+     #endif
++		// Rallypoint: the simulation is late and catching up: this loop has no picture (GameEngine.cpp, planNextFrame).
++		if (!TheFramePacer->isPictureSkipped())
+ 		{
+ 			//USE_PERF_TIMER(BigAssRenderLoop)
++			// Rallypoint: GEN_TEST_PICTURE_MS=N (development) makes every picture N ms slower, to try the catching up of
++			// GameEngine.cpp planNextFrame() on a fast machine.
++			{
++				static Int testPictureMs = -1;
++				if (testPictureMs < 0)
++				{
++					const char *e = ::getenv("GEN_TEST_PICTURE_MS");
++					testPictureMs = (e && e[0]) ? atoi(e) : 0;
++				}
++				if (testPictureMs > 0 && TheGameLogic->isInGame() && !TheGameLogic->isInShellGame())
++					Sleep(testPictureMs);
++			}
+ 			static Bool couldRender = true;
+ 			if ((TheGlobalData->m_breakTheMovie == FALSE) && (TheGlobalData->m_disableRender == false) && WW3D::Begin_Render( true, true, Vector3( 0.0f, 0.0f, 0.0f ), TheWaterTransparency->m_minWaterOpacity ) == WW3D_ERROR_OK)
+ 			{

@@ -1,0 +1,182 @@
+diff --git a/Core/GameEngine/Include/GameClient/ParticleSys.h b/Core/GameEngine/Include/GameClient/ParticleSys.h
+index 5054cd2..c3875c8 100644
+--- a/Core/GameEngine/Include/GameClient/ParticleSys.h
++++ b/Core/GameEngine/Include/GameClient/ParticleSys.h
+@@ -833,6 +833,10 @@ protected:
+ private:
+ 	TemplateMap m_templateMap;		///< a hash map of all particle system templates
+ 	ParticleSystemIDMap m_systemMap; ///< a hash map of all particle systems
++	// Rallypoint: where each system sits in m_allParticleSystemList, so removing one does not search the list.
++	// Keyed by the system itself: its id can change when a saved game is loaded.
++	typedef std::map<ParticleSystem *, ParticleSystemListIt> ParticleSystemPlaceMap;
++	ParticleSystemPlaceMap m_systemPlace;
+ };
+ 
+ // TheSuperHackers @feature bobtista 31/01/2026
+diff --git a/Core/GameEngine/Source/GameClient/System/ParticleSys.cpp b/Core/GameEngine/Source/GameClient/System/ParticleSys.cpp
+index b516a33..025a37a 100644
+--- a/Core/GameEngine/Source/GameClient/System/ParticleSys.cpp
++++ b/Core/GameEngine/Source/GameClient/System/ParticleSys.cpp
+@@ -3258,6 +3258,7 @@ void ParticleSystemManager::friend_addParticleSystem( ParticleSystem *particleSy
+ 	DEBUG_ASSERTCRASH(particleSystemToAdd != nullptr, ("ParticleSystemManager::friend_addParticleSystem: ParticleSystem is null"));
+ 	m_allParticleSystemList.push_back(particleSystemToAdd);
+ 	m_systemMap[particleSystemToAdd->getSystemID()] = particleSystemToAdd;
++	m_systemPlace[particleSystemToAdd] = std::prev(m_allParticleSystemList.end());
+ 	++m_particleSystemCount;
+ }
+ 
+@@ -3266,7 +3267,18 @@ void ParticleSystemManager::friend_addParticleSystem( ParticleSystem *particleSy
+ // ------------------------------------------------------------------------------------------------
+ void ParticleSystemManager::friend_removeParticleSystem( ParticleSystem *particleSystemToRemove )
+ {
+-	ParticleSystemListIt it = std::find(m_allParticleSystemList.begin(), m_allParticleSystemList.end(), particleSystemToRemove);
++	// Rallypoint: this searched the list of every particle system for each one that ended (a tenth of the game thread
++	// when a big wave died). The place is remembered when the system is added; the search stays as the fallback.
++	ParticleSystemListIt it = m_allParticleSystemList.end();
++	ParticleSystemPlaceMap::iterator place = m_systemPlace.find(particleSystemToRemove);
++	if (place != m_systemPlace.end())
++	{
++		if (*place->second == particleSystemToRemove)
++			it = place->second;
++		m_systemPlace.erase(place);
++	}
++	if (it == m_allParticleSystemList.end())
++		it = std::find(m_allParticleSystemList.begin(), m_allParticleSystemList.end(), particleSystemToRemove);
+ 	if (it != m_allParticleSystemList.end()) {
+ 		m_systemMap.erase((*it)->getSystemID());
+ 		m_allParticleSystemList.erase(it);
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/PartitionManager.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/PartitionManager.cpp
+index d9b669a..b74a1a6 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/PartitionManager.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/PartitionManager.cpp
+@@ -994,7 +994,7 @@ public:
+ 	PartitionContactListNode*			m_next;			///< next node
+ 	PartitionData*								m_obj;			///< one object that is possibly colliding
+ 	PartitionData*								m_other;		///< the other object (or null for collisions with the terrain)
+-	Int														m_hashValue;///< index into hash table
++	Int														m_hashValue;///< hash of the pair (Rallypoint: the whole hash, not the index, so the table can grow)
+ };
+ 
+ inline PartitionContactListNode::~PartitionContactListNode() { }
+@@ -1016,14 +1016,21 @@ private:
+ 	enum { PartitionContactList_SOCKET_COUNT = 5381 };
+ 
+ 
+-	PartitionContactListNode* m_contactHash[PartitionContactList_SOCKET_COUNT];
++	// Rallypoint: the table was a fixed 5381 sockets. A few thousand objects in one partition cell (a wave dying in one
++	// place on an Art of Defense map) are millions of pairs, hundreds to a socket, and every new pair walked its socket's
++	// list: one frame took a second. The table now grows with the number of pairs. It only answers "is this pair already
++	// noted"; the contacts are still processed in the order they were added, so nothing plays out differently.
++	std::vector<PartitionContactListNode*> m_contactHash;
++	UnsignedInt m_contactCount;
+ 	PartitionContactListNode* m_contactList;
+ 
++	void growContactHash();
++
+ public:
+ 
+-	PartitionContactList()
++	PartitionContactList() : m_contactHash(PartitionContactList_SOCKET_COUNT, nullptr)
+ 	{
+-		memset(m_contactHash, 0, sizeof(m_contactHash));
++		m_contactCount = 0;
+ 		m_contactList = nullptr;
+ 	}
+ 
+@@ -2440,8 +2447,8 @@ void PartitionContactList::addToContactList( PartitionData *obj, PartitionData *
+ 		return;
+ 
+ 	// compute hash index based on object's ids.
+-	UnsignedInt hashValue = hash2ints(obj_obj->getID(), other_obj->getID());
+-	hashValue %= PartitionContactList_SOCKET_COUNT;
++	const UnsignedInt pairHash = hash2ints(obj_obj->getID(), other_obj->getID());
++	UnsignedInt hashValue = pairHash % (UnsignedInt)m_contactHash.size();
+ 
+ 	// make sure given hit has not already been recorded
+ 	for (PartitionContactListNode* cd = m_contactHash[ hashValue ]; cd; cd = cd->m_nextHash )
+@@ -2458,7 +2465,7 @@ void PartitionContactList::addToContactList( PartitionData *obj, PartitionData *
+ 	PartitionContactListNode *ncd = newInstance(PartitionContactListNode);
+ 	ncd->m_obj = obj;
+ 	ncd->m_other = other;
+-	ncd->m_hashValue = hashValue;
++	ncd->m_hashValue = (Int)pairHash;
+ 
+ 	// add to hash table
+ 	ncd->m_nextHash = m_contactHash[ hashValue ];
+@@ -2468,6 +2475,9 @@ void PartitionContactList::addToContactList( PartitionData *obj, PartitionData *
+ 	ncd->m_next = m_contactList;
+ 	m_contactList = ncd;
+ 
++	if (++m_contactCount > 4 * (UnsignedInt)m_contactHash.size())
++		growContactHash();
++
+ 
+ #if 0
+ 
+@@ -2517,6 +2527,19 @@ aggcount,aggtotal/(aggcount*PartitionContactList_SOCKET_COUNT),(aggfull*100)/(ag
+ 
+ }
+ 
++//-----------------------------------------------------------------------------
++void PartitionContactList::growContactHash()
++{
++	const size_t newSize = m_contactHash.size() * 8 + 1;
++	m_contactHash.assign(newSize, nullptr);
++	for (PartitionContactListNode* cd = m_contactList; cd; cd = cd->m_next)
++	{
++		const UnsignedInt socket = (UnsignedInt)cd->m_hashValue % (UnsignedInt)newSize;
++		cd->m_nextHash = m_contactHash[socket];
++		m_contactHash[socket] = cd;
++	}
++}
++
+ //-----------------------------------------------------------------------------
+ void PartitionContactList::removeSpecificPartitionData(PartitionData* data)
+ {
+@@ -2541,7 +2564,11 @@ void PartitionContactList::resetContactList()
+ 		deleteInstance(cd);
+ 	}
+ 
+-	memset(m_contactHash, 0, sizeof(m_contactHash));
++	if (m_contactHash.size() != PartitionContactList_SOCKET_COUNT)
++		std::vector<PartitionContactListNode*>(PartitionContactList_SOCKET_COUNT, nullptr).swap(m_contactHash);
++	else
++		std::fill(m_contactHash.begin(), m_contactHash.end(), (PartitionContactListNode*)nullptr);
++	m_contactCount = 0;
+ 	m_contactList = nullptr;
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+index 2177119..f803e46 100644
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/System/GameLogic.cpp
+@@ -2693,14 +2693,26 @@ void GameLogic::processDestroyList()
+ 		UpdateModulePtr sleepyUpdatesForThisObject[MAX_SUO];
+ 		Int numSUO = 0;
+ 
+-		for (std::vector<UpdateModulePtr>::iterator it2 = m_sleepyUpdates.begin(); it2 != m_sleepyUpdates.end(); ++it2)
++		// Rallypoint: this walked the whole list of update modules (every module of every object) for each object that is
++		// destroyed, which in a game that destroys dozens of objects a frame among thousands was a seventh of the simulation's
++		// time. The object's own modules are the only ones that can be in the list (sendObjectCreated puts them there), so
++		// ask those, and put them in the order the walk found them (by place in the list), so the modules are removed in
++		// the same order and the list ends up exactly as before.
++		for (BehaviorModule** b = currentObject->getBehaviorModules(); b && *b; ++b)
+ 		{
+-			UpdateModulePtr u = *it2;
+-			if (u->friend_getObject() == currentObject && numSUO < MAX_SUO)
++#ifdef DIRECT_UPDATEMODULE_ACCESS
++			UpdateModulePtr u = (UpdateModulePtr)((*b)->getUpdate());
++#else
++			UpdateModulePtr u = (*b)->getUpdate();
++#endif
++			if (u && u->friend_getIndexInLogic() >= 0 && numSUO < MAX_SUO)
+ 			{
++				DEBUG_ASSERTCRASH(u->friend_getObject() == currentObject, ("update module of another object"));
+ 				sleepyUpdatesForThisObject[numSUO++] = u;
+ 			}
+ 		}
++		std::sort(sleepyUpdatesForThisObject, sleepyUpdatesForThisObject + numSUO,
++			[](UpdateModulePtr x, UpdateModulePtr y) { return x->friend_getIndexInLogic() < y->friend_getIndexInLogic(); });
+ 
+ 		for (--numSUO; numSUO >= 0; --numSUO)
+ 		{
