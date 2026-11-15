@@ -226,6 +226,11 @@ function showUpdateNotes(u, bad) {
   else invoke("open_release_page").catch((e) => bad(errText(e)));
 }
 
+/** Linux has no in-app installer (the packages are .deb, .rpm and .tar.gz): the release page is how it updates. */
+const pageButton = (u, bad) => !u.installer && store.cfg.os === "linux"
+  ? h("button", { class: "btn primary", onclick: () => invoke("open_release_page").catch((e) => bad(errText(e))) }, "Download page")
+  : null;
+
 function renderUpdate() {
   const host = document.getElementById("updatehost");
   if (!host) return;
@@ -242,7 +247,8 @@ function renderUpdate() {
       h("p", { class: "muted small" }, store.updateNote || `You have ${u.current}.${u.size_mb ? ` The download is about ${u.size_mb} MB.` : ""}`)),
     h("div", { class: "row" },
       u.installer ? install : null,
-      h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
+      pageButton(u, (m) => say(m, "bad")),
+      h("button", { class: u.installer || pageButton(u, () => {}) ? "btn" : "btn primary", onclick: () => showUpdateNotes(u, (m) => say(m, "bad")) }, "What's new"),
       h("button", { class: "btn ghost", onclick: () => { store.updateDismissed = true; renderUpdate(); } }, "Later"),
       h("button", { class: "btn ghost", onclick: async () => {
         try { await invoke("update_skip"); u.skipped = true; renderUpdate(); } catch (e) { say(errText(e), "bad"); }
@@ -306,8 +312,8 @@ function updatesCard() {
   } });
   function report() {
     const u = store.update;
-    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
-    fill(actions, u && u.installer ? install : null, u ? notes : null);
+    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : store.cfg.os === "linux" ? ". Install the new .deb, .rpm or .tar.gz from the download page" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
+    fill(actions, u && u.installer ? install : null, u ? pageButton(u, fb.bad) : null, u ? notes : null);
   }
   if (store.update) report();
   drawBetaNote();

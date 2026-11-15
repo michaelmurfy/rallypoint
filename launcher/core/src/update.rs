@@ -416,6 +416,15 @@ mod tests {
         assert!(installer_for("freebsd", "x86_64", &a).is_none());
     }
 
+    #[test]
+    fn linux_packages_are_announced_with_the_release_page_but_not_installed_in_app() {
+        let names = ["Rallypoint_0.2.0_amd64.deb", "Rallypoint-0.2.0-1.x86_64.rpm", "rallypoint-0.2.0-linux-x86_64.tar.gz", "rallypoint-server-0.2.0-linux-x86_64.tar.gz", "SHA256SUMS", "SHA256SUMS.sig"];
+        let r = Release { tag_name: "v0.2.0".into(), html_url: format!("https://github.com/{REPO}/releases/tag/v0.2.0"), body: None, draft: false, prerelease: false, assets: names.iter().map(|n| asset(n)).collect() };
+        assert!(installer_for("linux", "x86_64", &r.assets).is_none());
+        let u = newer("0.1.0", &[r], "linux", "x86_64", false).expect("the update is still offered");
+        assert!(!u.installer && u.page.ends_with("/v0.2.0") && u.latest == "0.2.0");
+    }
+
     fn release(tag: &str, draft: bool) -> Release {
         Release { tag_name: tag.into(), html_url: format!("https://github.com/{REPO}/releases/tag/{tag}"), body: Some("notes".into()), draft, prerelease: false, assets: assets() }
     }

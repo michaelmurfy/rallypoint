@@ -51,7 +51,7 @@ Add `vulkan-radeon` (AMD), `vulkan-intel` or `nvidia-utils` for your GPU if it i
 
 The `.tar.gz` works on any other distribution too: install the same libraries under their names there. To remove it, delete `~/.local/bin/generals-launcher`, `~/.local/lib/Rallypoint`, `~/.local/share/applications/Rallypoint.desktop` and the Rallypoint icons under `~/.local/share/icons`.
 
-**Updates on Linux:** Rallypoint tells you when a new release is out and opens its page. Install the new package the same way as the first one.
+**Updates on Linux:** Rallypoint tells you when a new release is out and has a **Download page** button. It doesn't install updates itself (the other systems do). Install the new package the same way as the first one.
 
 ## What works
 
