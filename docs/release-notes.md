@@ -1,3 +1,14 @@
+## Rallypoint 0.9.1
+
+**Big games run faster.** Less time in the simulation, and when a machine falls behind it drops a picture instead of slowing everyone in the room.
+
+- **About a third less simulation time** in the late stages of a large game (measured on the 0.8.3 Art of Defense replay that prompted this: three players, Shockwave Chaos, tens of thousands of objects).
+- **A late machine no longer drags the room down with it.** When the simulation is more than half a frame late, the next loop skips drawing (never two skips in a row). The rate shown in a network game is frames over time. `GEN_NO_PICTURE_SKIP=1` turns the skip off.
+- **`[perf]` lines in `engine.log`** every 1000 frames (logic ms, picture ms, pictures a frame, worst frame, objects), so the next slow game says where the time went and on which machine.
+- **Mods load reliably** when several archives share the same file name (a standard-library change that would have broken Shockwave on the next Xcode).
+- **Tried on Windows** as well as Mac: Shockwave Chaos skirmish, and the AoD replay through the busy stretch at about 29 frames a second with picture-skip. Linux packages are built; mods and online play on Linux have also been tried.
+- **Compatible with 0.9.0 in multiplayer.** Nothing here changes the simulation.
+
 ## Rallypoint 0.9.0
 
 **Rallypoint runs on Linux.** A native engine, not Wine or Proton, with packages for Debian, Ubuntu, Fedora and everything else.
