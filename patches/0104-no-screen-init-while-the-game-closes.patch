@@ -1,0 +1,36 @@
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Shell/Shell.cpp b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Shell/Shell.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Shell/Shell.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameClient/GUI/Shell/Shell.cpp
+@@ -88,14 +88,23 @@
+ }
+ 
+ //-------------------------------------------------------------------------------------------------
++// Rallypoint: true while the shell is being taken apart. Popping a screen normally runs the init of the screen under it,
++// which is right when a player goes back a screen and wrong when the game is closing: by then other subsystems are
++// gone. With the Load Game screen in the stack its init listed the save files through a GameState that had already
++// been deleted (a 0.8.0 Windows crash dump: Shell::deconstruct > doPop > SaveLoadMenuFullScreenInit >
++// GameState::getSaveGameInfoFromFile > findBlockInfoByToken, access violation reading 0x18).
++static Bool s_shellDeconstructing = FALSE;
++
+ void Shell::deconstruct()
+ {
++	s_shellDeconstructing = TRUE;
+ 	WindowLayout *newTop = top();
+ 	while(newTop)
+ 	{
+ 		popImmediate();
+ 		newTop = top();
+ 	}
++	s_shellDeconstructing = FALSE;
+ 
+ 	if(m_background)
+ 	{
+@@ -707,7 +716,7 @@
+ 
+ 	// run the init for the new top of the stack if present
+ 	WindowLayout *newTop = top();
+-	if( newTop && !impendingPush )
++	if( newTop && !impendingPush && !s_shellDeconstructing )
+ 	{
+ 		newTop->runInit( nullptr );
+ 		//newTop->bringForward();
