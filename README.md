@@ -8,7 +8,7 @@ You need your own copy of the game (for example *C&C The Ultimate Collection* on
 
 **Playing over the internet needs a Rallypoint server.** It's a small program that passes the game's traffic between you and your friends, and one cheap server is enough for everyone. Setting one up takes about ten minutes: see [Run a server](#run-a-server). Skirmishes, mods and maps work without one, and so does a LAN game on the same network.
 
-**Where it stands:** single player works on macOS, Windows and Linux, and online games have been played Windows against Windows and Mac against Windows. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
+**Where it stands:** single player works on macOS, Windows and Linux, and online games have been played Windows against Windows, Mac against Windows, and Linux against the others. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
 
 ## Get started
 
@@ -59,8 +59,8 @@ The `.tar.gz` works on any other distribution too: install the same libraries un
 |---|---|---|---|
 | Launcher, engine, skirmish | ✅ | ✅ | ✅ (tried on Debian 13) |
 | Widescreen, 4K, HiDPI | ✅ | ✅ | ✅ |
-| Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | not tried yet |
-| Online through the relay | ✅ | ✅ | not tried yet |
+| Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | ✅ |
+| Online through the relay | ✅ | ✅ | ✅ |
 | Packages | `.dmg` | `-setup.exe` | `.deb`, `.rpm`, `.tar.gz` |
 | Relay server | – | – | ✅ x86_64, arm64, armv7 (Debian and Ubuntu setup script) |
 
@@ -274,7 +274,7 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 
 - Some long online games drift out of sync. We're on it, and sync logs and debug logs are how you can help.
 - No Intel Mac engine. Sorry, Intel Mac folks.
-- Linux is x86_64 only and new: it has had one tester on one machine. Mods and online play there are untried, and there is no Flatpak yet.
+- Linux is x86_64 only and new: it has had one tester on one machine, including mods and online play. There is no Flatpak yet.
 - Mods and the Epic Showdown pack are downloaded in your browser, not inside the launcher.
 - Game speed can be changed in skirmishes only, not in online games.
 - Not built yet: save and load in multiplayer, controlling allies' units, co-op, bringing an out-of-step player back mid-game.
