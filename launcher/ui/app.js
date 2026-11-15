@@ -1155,10 +1155,12 @@ const AI_BOOSTS = [[0, "Off"], [1, "Sharper"], [2, "Strong"], [3, "Relentless"]]
 // master's choice is everyone's: the others see it, locked, and the controls follow it.
 const aiRoom = () => { const d = net.last; return d && d.room_master != null ? { master: !!d.room_master, level: d.ai_level ?? 0 } : null; };
 let aiHeld = 0, aiAsked = null; // a level just asked for stays on screen until the relay confirms it (or 5 s pass)
+// A skirmish is local, so it always uses the player's own level (`aiLocal`); the room's level is only for games through the relay.
+const aiLocal = () => (AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0);
 const aiBoost = () => {
   const r = aiRoom();
   if (r) return aiAsked != null && Date.now() - aiHeld < 5000 ? aiAsked : r.level;
-  return AI_BOOSTS.some(([v]) => v === prefs.get().aiBoost) ? prefs.get().aiBoost : 0;
+  return aiLocal();
 };
 /** Why the control is locked, or "" when it is not. */
 const aiLockedNote = () => { const r = aiRoom(); return r && !r.master ? "The room master can set this if they choose to" : ""; };
@@ -1184,13 +1186,13 @@ function bindAiSelect(sel, after) {
 }
 /** The Stronger AI level beside the other skirmish options (money, speed, screen). */
 function aiSelect() {
-  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI" },
+  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI", title: "How fast the computer players build and gather" },
     ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, v ? `${t} AI` : "Normal AI")));
+  sel.value = String(aiLocal());
   const wrap = h("div", { class: "speedpick" }, icon("ai"), sel);
-  bindAiSelect(sel, () => {
-    wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
-    sel.title = aiLockedNote() || "How fast the computer players build and gather";
-  });
+  const mark = () => wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
+  mark();
+  sel.addEventListener("change", () => { prefs.set({ aiBoost: +sel.value }); mark(); });
   return wrap;
 }
 const skirmishCash = () => (CASHES.some(([v]) => v === prefs.get().skCash) ? prefs.get().skCash : DEFAULT_CASH);
@@ -1204,7 +1206,7 @@ async function startGame({ skirmish = false, map = null, ai = null, difficulty =
   const busy = busyOverlay(map ? `Starting a skirmish on ${map}…` : skirmish ? "Starting a skirmish…" : "Starting the game…");
   let started = false;
   try {
-    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, aiBoost: aiBoost(), skirmishSlots: slots });
+    await invoke("launch_game", { gameDir: store.cfg.game_dir, modFolders: launchFolders(), width: w, height: hh, fullscreen: !!p.fs, skirmish, raisedCamera: !!p.camera, skirmishMap: map, skirmishAi: ai, skirmishDifficulty: difficulty, skirmishStart: start, skirmishSpeed: slots ? skirmishSpeed() : null, skirmishCash: slots && skirmishCash() ? skirmishCash() : null, aiBoost: aiLocal(), skirmishSlots: slots });
     started = true;
   } catch (e) { say(errText(e), "bad"); }
   // The game's own window takes a few seconds to appear; keep the notice up until then.
