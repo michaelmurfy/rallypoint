@@ -944,6 +944,22 @@ function gameFilesPanel(onChange) {
     return r.ok;
   }
   dir.addEventListener("change", () => check(dir.value));
+  const browse = h("button", { class: "btn", type: "button", onclick: async () => {
+    let picked;
+    try {
+      picked = await tauri.dialog.open({
+        multiple: false, directory: true, defaultPath: dir.value || undefined,
+        title: "Choose the folder that contains INIZH.big",
+      });
+    } catch (e) {
+      status.className = "msg bad";
+      status.textContent = "Couldn't open the folder picker: " + errText(e);
+      return;
+    }
+    if (!picked) return;
+    dir.value = typeof picked === "string" ? picked : picked.path;
+    check(dir.value);
+  } }, "Browse");
 
   const zh = store.games.filter((g) => g.zero_hour);
   zh.forEach((g) => {
@@ -998,7 +1014,7 @@ function gameFilesPanel(onChange) {
 
   const el = h("div", { class: "stack" },
     detected,
-    h("label", { class: "field" }, h("span", {}, "Game folder"), dir),
+    h("label", { class: "field" }, h("span", {}, "Game folder"), h("div", { class: "row pick" }, dir, browse)),
     status, steam);
 
   // initial state: remembered folder, else the first Steam install
