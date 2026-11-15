@@ -35,7 +35,7 @@ sudo apt install ./Rallypoint_<version>_amd64.deb
 **Fedora**
 
 ```bash
-sudo dnf install ./Rallypoint-<version>-1.x86_64.rpm
+sudo dnf install ./Rallypoint-*.x86_64.rpm
 ```
 
 **CachyOS and other Arch-based systems:** use the `.tar.gz`. It installs into your home folder, so no root is needed beyond the libraries.
