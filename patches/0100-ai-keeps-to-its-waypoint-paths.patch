@@ -1,0 +1,201 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/Module/AIUpdate.h
+@@ -799,6 +799,11 @@
+ 	Coord3D			m_stuckPos;									///< Where it was at the last check.
+ 	UnsignedByte m_stuckChecks;							///< Checks in a row without progress.
+ 	UnsignedByte m_stuckStage;							///< What has been tried: 0 nothing, 1 a new path, 2 a nudge.
++	Bool m_stuckSkipWaypoint;								///< A unit on a waypoint path could not reach its waypoint: go on to the next one.
++public:
++	/// Rallypoint: asked by the waypoint-following state; true once after watchForStuck gave up on the current waypoint.
++	Bool friend_takeStuckSkipWaypoint() { Bool skip = m_stuckSkipWaypoint; m_stuckSkipWaypoint = FALSE; return skip; }
++protected:
+ 	void watchForStuck(UpdateSleepTime &sleep);
+ 	Bool				m_upgradedLocomotors;
+ 	Bool				m_canPathThroughUnits;			///< Can path through units.
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 9;
++		static const UnsignedInt kRallypointSimulationId = 10;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIStates.cpp
+@@ -3941,6 +3941,13 @@
+ 			m_goalPosition = dest;
+ 		}
+ 	} else {
++		// Rallypoint: a skirmish computer player's unit keeps its place in the group, but only where it can stand.
++		// A place in a cliff, in water or inside a building sent it on a long detour (or nowhere); it now takes the waypoint itself.
++		if ((m_groupOffset.x != 0.0f || m_groupOffset.y != 0.0f) && ai->isDoingGroundMovement()
++				&& obj->getControllingPlayer() && obj->getControllingPlayer()->isSkirmishAIPlayer()
++				&& !TheAI->pathfinder()->validMovementPosition(obj->getCrusherLevel() > 0, LAYER_GROUND, ai->getLocomotorSet(), &m_goalPosition)) {
++			m_goalPosition = dest;
++		}
+ 		m_goalPosition.z = TheTerrainLogic->getGroundHeight(m_goalPosition.x, m_goalPosition.y);
+ 	}
+ 	Region3D extent;
+@@ -4074,8 +4081,22 @@
+ 			group->getCenter( &center );
+ 			m_groupOffset.x = obj->getPosition()->x - center.x;
+ 			m_groupOffset.y = obj->getPosition()->y - center.y;
++
++			// Rallypoint: the offset is the unit's place in the group, measured when the order is given. A team that is
++			// still scattered (members just built, or left behind) gave offsets of half a map, and each unit then walked
++			// its own far-off copy of the path. For skirmish computer players the place is kept within 8 cells of the path.
++			if (obj->getControllingPlayer() && obj->getControllingPlayer()->isSkirmishAIPlayer()) {
++				const Real maxOffset = 8.0f * PATHFIND_CELL_SIZE_F;
++				const Real lenSqr = m_groupOffset.x*m_groupOffset.x + m_groupOffset.y*m_groupOffset.y;
++				if (lenSqr > maxOffset*maxOffset) {
++					const Real scale = maxOffset / sqrtf(lenSqr);
++					m_groupOffset.x *= scale;
++					m_groupOffset.y *= scale;
++				}
++			}
+ 		}
+ 	}
++	ai->friend_takeStuckSkipWaypoint(); // a leftover from an earlier order must not skip a waypoint of this one.
+ 	if (m_currentWaypoint==nullptr && m_moveAsGroup) {
+ 		m_currentWaypoint = obj->getTeam()->getCurrentWaypoint();
+ 	}
+@@ -4212,6 +4233,28 @@
+ 		}
+ 	}
+ 
++	// Rallypoint: waypoints in the middle of a path are places to pass, not to stand on. Every unit of a skirmish
++	// computer player used to need the exact spot, so a column queued up at each waypoint and shoved each other around
++	// it. Within 4 cells (plus its own size) a ground unit now turns for the next waypoint. The last waypoint is
++	// still reached properly.
++	if (status == STATE_CONTINUE && hasNextWaypoint() && ai->isDoingGroundMovement() && !ai->isWaitingForPath()
++			&& obj->getControllingPlayer() && obj->getControllingPlayer()->isSkirmishAIPlayer()) {
++		const Real dx = obj->getPosition()->x - m_goalPosition.x;
++		const Real dy = obj->getPosition()->y - m_goalPosition.y;
++		const Real reach = 4.0f * PATHFIND_CELL_SIZE_F + obj->getGeometryInfo().getMajorRadius();
++		if (dx*dx + dy*dy <= reach*reach) {
++			status = STATE_SUCCESS;
++		}
++	}
++
++	// Rallypoint: the unit stood still on the way to this waypoint and a new path and a nudge did not help
++	// (AIUpdateInterface::watchForStuck): go on to the next waypoint rather than drop the path.
++	if (ai->friend_takeStuckSkipWaypoint() && status == STATE_CONTINUE) {
++		fprintf(stderr, "[stuck] frame %u object %u %s skips waypoint %s\n", TheGameLogic->getFrame(), (unsigned)obj->getID(),
++			obj->getTemplate()->getName().str(), m_currentWaypoint ? m_currentWaypoint->getName().str() : "?");
++		status = STATE_SUCCESS;
++	}
++
+ 	// if move to has finished, move to next point on waypoint path
+ 	if (status != STATE_CONTINUE)
+ 	{
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/Object/Update/AIUpdate.cpp
+@@ -238,6 +238,7 @@
+ 	m_stuckPos.zero();
+ 	m_stuckChecks = 0;
+ 	m_stuckStage = 0;
++	m_stuckSkipWaypoint = FALSE;
+ 	m_blockedFrames = 0;
+ 	m_curMaxBlockedSpeed = 0;
+ 	m_bumpSpeedLimit = FAST_AS_POSSIBLE;
+@@ -1029,7 +1030,16 @@
+ 	const Player *player = obj->getControllingPlayer();
+ 	const Coord3D *pos = obj->getPosition();
+ 	Path *path = getPath();
+-	if (!player || player->getPlayerType() != PLAYER_COMPUTER || !path || !path->getLastNode()
++	// A new path was asked for (ours, below, or the state's own): look again when it is there, without forgetting what was tried.
++	if (isMoving() && m_stuckStage > 0 && (isWaitingForPath() || !path))
++		return;
++
++	// A unit that stands still because it is shooting is not stuck. Attack-move and attack-follow keep their move
++	// state while the unit fights, and this used to take their order away after 8 seconds of fighting.
++	const Bool fighting = obj->testStatus(OBJECT_STATUS_IS_ATTACKING) || obj->testStatus(OBJECT_STATUS_IS_FIRING_WEAPON)
++		|| obj->testStatus(OBJECT_STATUS_IS_AIMING_WEAPON);
++
++	if (!player || player->getPlayerType() != PLAYER_COMPUTER || !path || !path->getLastNode() || fighting
+ 		|| !isMoving() || isWaitingForPath() || isAiInDeadState() || obj->isEffectivelyDead() || obj->isDisabled() || obj->isContained())
+ 	{
+ 		m_stuckChecks = 0;
+@@ -1057,14 +1067,24 @@
+ 	m_stuckChecks = 0;
+ 
+ 	const Coord3D goal = *path->getLastNode()->getPosition();
+-	fprintf(stderr, "[stuck] frame %u object %u %s at %.0f,%.0f for 8 s, going to %.0f,%.0f, step %d\n", now, (unsigned)obj->getID(),
+-		obj->getTemplate()->getName().str(), pos->x, pos->y, goal.x, goal.y, (int)m_stuckStage);
++	// On a waypoint path the order is the path, not the waypoint we happen to be walking to: a plain move to that
++	// waypoint would leave the unit standing there with its path forgotten. So the unit keeps its order: the path
++	// is thrown away (the state asks for a new one on its next update), and when nothing helps it goes on to the
++	// next waypoint instead of giving up.
++	const StateID state = getStateMachine()->getCurrentStateID();
++	const Bool onWaypointPath = state == AI_FOLLOW_WAYPOINT_PATH_AS_TEAM || state == AI_FOLLOW_WAYPOINT_PATH_AS_INDIVIDUALS
++		|| state == AI_ATTACKFOLLOW_WAYPOINT_PATH_AS_TEAM || state == AI_ATTACKFOLLOW_WAYPOINT_PATH_AS_INDIVIDUALS;
++	fprintf(stderr, "[stuck] frame %u object %u %s at %.0f,%.0f for 8 s, going to %.0f,%.0f, step %d%s\n", now, (unsigned)obj->getID(),
++		obj->getTemplate()->getName().str(), pos->x, pos->y, goal.x, goal.y, (int)m_stuckStage, onWaypointPath ? ", on a waypoint path" : "");
+ 
+ 	switch (m_stuckStage)
+ 	{
+ 		case 0:
+ 			m_stuckStage = 1;
+-			aiMoveToPosition(&goal, CMD_FROM_AI);
++			if (onWaypointPath)
++				destroyPath();
++			else
++				aiMoveToPosition(&goal, CMD_FROM_AI);
+ 			break;
+ 
+ 		case 1:
+@@ -1088,13 +1108,19 @@
+ 					}
+ 				}
+ 			}
+-			aiMoveToPosition(&goal, CMD_FROM_AI);
++			if (onWaypointPath)
++				destroyPath();
++			else
++				aiMoveToPosition(&goal, CMD_FROM_AI);
+ 			break;
+ 		}
+ 
+ 		default:
+ 			m_stuckStage = 0;
+-			aiIdle(CMD_FROM_AI);
++			if (onWaypointPath)
++				m_stuckSkipWaypoint = TRUE;
++			else
++				aiIdle(CMD_FROM_AI);
+ 			break;
+ 	}
+ 	m_stuckPos = *obj->getPosition();
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/ScriptEngine/ScriptActions.cpp
+@@ -1742,6 +1742,22 @@
+ 	Waypoint *way = TheTerrainLogic->getClosestWaypointOnPath( &pos, pathLabel );
+ 	if (!way) {
+ 		return;
++	}
++
++	// Rallypoint: the closest waypoint is often one the team is already past, so an attack began by walking back
++	// towards its own base before turning round. If the team is on the far side of that waypoint (seen along the
++	// path) it starts at the next one. One step only, and not where the path forks.
++	if (way->getNumLinks() == 1) {
++		Waypoint *next = way->getLink(0);
++		if (next && next != way) {
++			const Coord3D *w = way->getLocation();
++			const Coord3D *n = next->getLocation();
++			if ((pos.x - w->x) * (n->x - w->x) + (pos.y - w->y) * (n->y - w->y) > 0.0f) {
++				fprintf(stderr, "[waypoint] frame %u team %s at %.0f,%.0f joins %s at %.0f,%.0f, not the one behind it at %.0f,%.0f\n",
++					TheGameLogic->getFrame(), teamName.str(), pos.x, pos.y, pathLabel.str(), n->x, n->y, w->x, w->y);
++				way = next;
++			}
++		}
+ 	}
+ 
+ 	Player *aiPlayer = TheScriptEngine->getCurrentPlayer();
