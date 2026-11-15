@@ -1,0 +1,369 @@
+diff --git a/cmake/miles_apple/miles_apple.mm b/cmake/miles_apple/miles_apple.mm
+--- a/cmake/miles_apple/miles_apple.mm
++++ b/cmake/miles_apple/miles_apple.mm
+@@ -210,8 +210,46 @@
+     int loopsRemaining = 0;
+     std::atomic<bool> playing{false};
+     std::atomic<int> generation{0}; // bump on stop/reload so stale completion handlers ignore
++    float sentVolume = -1.0f;  // what the node was last told (see setNodeMix); -1 / -2 = tell it again
++    float sentPan = -2.0f;
+ };
+ 
++// Rallypoint: the game thread no longer talks to AVAudioEngine for sound effects. Attaching a node, starting it,
++// stopping it, setting its pan and detaching it each take the engine's lock and can wait for the audio thread: a
++// profile of a large battle had 57% of the game thread in those calls (-[AVAudioPlayerNode play] alone 25%), and the
++// simulation ran at a quarter of its speed. They now go, in order, to one serial queue. The game thread only records
++// what it wants; completions still come back through enqueueCallback and run on the game thread as before.
++// Streams (music, speech) are few and keep their direct calls.
++static dispatch_queue_t audioQueue() {
++    static dispatch_queue_t q = dispatch_queue_create("rallypoint.audio.commands",
++        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
++    return q;
++}
++static void audioAsync(dispatch_block_t work) {
++    dispatch_async(audioQueue(), ^{
++        @autoreleasepool {
++            @try { work(); } @catch (NSException *ex) { MLOG(1, "audio command NSException: %s", ex.reason.UTF8String ?: "?"); }
++        }
++    });
++}
++// For the rare calls that still act on a node directly (seeking): let everything queued for it happen first.
++static void audioFlush() { dispatch_sync(audioQueue(), ^{}); }
++
++// Volume and pan are set every frame for every playing 3D voice; only a real change is sent.
++static void setNodeMix(ApplePlayerBase *p, float volume, float pan) {
++    AVAudioPlayerNode *node = p->node;
++    if (!node) return;
++    const bool newVolume = fabsf(volume - p->sentVolume) > 0.004f;
++    const bool newPan = fabsf(pan - p->sentPan) > 0.01f;
++    if (!newVolume && !newPan) return;
++    if (newVolume) p->sentVolume = volume;
++    if (newPan) p->sentPan = pan;
++    audioAsync(^{
++        if (newVolume) node.volume = volume;
++        if (newPan) node.pan = pan;
++    });
++}
++
+ struct AppleSample : ApplePlayerBase {
+     AIL_sample_callback eosCallback = nullptr;
+     HDIGDRIVER owner = nullptr;
+@@ -291,8 +329,7 @@
+     }
+     if (pan >  1.0f) pan =  1.0f;
+     if (pan < -1.0f) pan = -1.0f;
+-    s->player.node.pan = pan;
+-    s->player.node.volume = (g_muted ? 0.0f : s->player.volume) * distGain;
++    setNodeMix(&s->player, (g_muted ? 0.0f : s->player.volume) * distGain, pan);
+ }
+ 
+ struct AppleStream : ApplePlayerBase {
+@@ -714,37 +751,35 @@
+ // let the audio thread play the first few milliseconds of a far-away sound at full volume: a click.
+ static void scheduleAndPlay(ApplePlayerBase *p, void *owner, dispatch_block_t onCompleted, bool setVolume = true) {
+     if (!p || !p->node || !p->buffer) return;
+-    if (p->fade->pending.exchange(false)) {
+-        p->fade->token.fetch_add(1); // the fade is overtaken: cut the old sound off now, then start the new one
+-        @try { [p->node stop]; } @catch (NSException *) {}
+-    }
+-    if (setVolume) p->node.volume = g_muted ? 0.0f : p->volume;
+-    int gen = p->generation.load();
+-    @try {
+-        [p->node scheduleBuffer:p->buffer
+-                         atTime:nil
+-                        options:0
+-              completionHandler:^{
++    AVAudioPlayerNode *node = p->node;
++    AVAudioPCMBuffer *buffer = p->buffer;
++    // a fade that has not reached its stop yet is overtaken: cut the old sound off, then start the new one
++    const bool stopFirst = p->fade->pending.exchange(false);
++    if (stopFirst) p->fade->token.fetch_add(1);
++    const float volume = g_muted ? 0.0f : p->volume;
++    if (setVolume) p->sentVolume = volume;
++    p->playing.store(true);
++    audioAsync(^{
++        if (stopFirst) { @try { [node stop]; } @catch (NSException *) {} }
++        if (setVolume) node.volume = volume;
++        @try {
++            [node scheduleBuffer:buffer
++                          atTime:nil
++                         options:0
++               completionHandler:^{
++                enqueueCallback(owner, ^{
++                    if (onCompleted) onCompleted();
++                });
++            }];
++            [node play];
++        } @catch (NSException *ex) {
++            MLOG(0, "scheduleAndPlay NSException: %s — %s", ex.name.UTF8String ?: "?", ex.reason.UTF8String ?: "?");
++            // the sound did not start: tell the game it is over, or the voice would be waited on for ever
+             enqueueCallback(owner, ^{
+                 if (onCompleted) onCompleted();
+             });
+-            (void)gen;
+-        }];
+-        [p->node play];
+-        p->playing.store(true);
+-        MLOG(2, "scheduleAndPlay: node=%p vol=%.2f pan=%.2f isPlaying=%d engineRunning=%d",
+-             (__bridge void*)p->node, p->node.volume, p->node.pan,
+-             (int)p->node.isPlaying, (int)g_device.engine.isRunning);
+-    } @catch (NSException *ex) {
+-        // Diagnose disconnection: dump engine state + node's attached-ness.
+-        BOOL attached = [g_device.engine.attachedNodes containsObject:p->node];
+-        NSArray<AVAudioConnectionPoint*> *outs =
+-            [g_device.engine outputConnectionPointsForNode:p->node outputBus:0];
+-        MLOG(0, "scheduleAndPlay NSException: %s — %s [attached=%d outputs=%lu]",
+-             ex.name.UTF8String ?: "?", ex.reason.UTF8String ?: "?",
+-             (int)attached, (unsigned long)outs.count);
+-        p->playing.store(false);
+-    }
++        }
++    });
+ }
+ 
+ // Stop a voice without a click: ramp its volume to zero over about 6 ms (on a worker thread), then stop it. With `retire` the
+@@ -753,19 +788,19 @@
+ static void stopAndDetach(ApplePlayerBase *p, bool retire = false) {
+     if (!p) return;
+     p->generation.fetch_add(1);
+-    p->playing.store(false);
++    const bool audible = p->playing.exchange(false); // (asking the node whether it is playing takes the engine's lock)
+     AVAudioPlayerNode *node = p->node;
+     if (!node) return;
++    p->sentVolume = -1.0f; // the fade below changes the node's volume: the next start must set it again
++    p->sentPan = -2.0f;
+     // NOTE: deliberately not calling `-reset`. On macOS Sequoia (and possibly earlier) `-reset` puts the node into an
+     // internal "disconnected" state: any later `-play` throws `player started when in a disconnected state`.
+     // `-stop` alone halts playback; the next `scheduleBuffer:` clears the pending queue.
+     std::shared_ptr<FadeState> fade = p->fade;
+     const int tok = fade->token.fetch_add(1) + 1;
+-    BOOL audible = NO;
+-    @try { audible = node.isPlaying; } @catch (NSException *) {}
+     if (retire) p->node = nil;
+     if (!audible && !retire) {
+-        @try { [node stop]; } @catch (NSException *ex) { MLOG(1, "stopAndDetach stop NSException: %s", ex.reason.UTF8String ?: "?"); }
++        audioAsync(^{ [node stop]; });
+         fade->pending.store(false);
+         return;
+     }
+@@ -786,11 +821,8 @@
+             MLOG(1, "stopAndDetach fade NSException: %s", ex.reason.UTF8String ?: "?");
+         }
+         if (retire) {
+-            enqueueCallback(nullptr, ^{
+-                @try { [g_device.engine detachNode:node]; } @catch (NSException *ex) {
+-                    MLOG(1, "retire detach NSException: %s", ex.reason.UTF8String ?: "?");
+-                }
+-            });
++            AVAudioEngine *engine = g_device.engine;
++            audioAsync(^{ [engine detachNode:node]; }); // after anything still queued for this node
+         } else if (fade->token.load() == tok) {
+             fade->pending.store(false);
+         }
+@@ -1015,9 +1047,16 @@
+     // an event is starting, never inside the audio thread.
+     @try {
+         if (s->node) stopAndDetach(s, true); // (stopped, then detached: a node detached while playing leaks its AudioUnit)
+-        s->node = [[AVAudioPlayerNode alloc] init];
+-        [g_device.engine attachNode:s->node];
+-        [g_device.engine connect:s->node to:g_device.mixer2D format:buf.format];
++        AVAudioPlayerNode *node = [[AVAudioPlayerNode alloc] init];
++        AVAudioEngine *engine = g_device.engine;
++        AVAudioMixerNode *mixer = g_device.mixer2D;
++        AVAudioFormat *format = buf.format;
++        s->node = node;
++        s->sentVolume = -1.0f; s->sentPan = -2.0f;
++        audioAsync(^{
++            [engine attachNode:node];
++            [engine connect:node to:mixer format:format];
++        });
+     } @catch (NSException *ex) {
+         MLOG(0, "set_sample_file attach NSException: %s — %s",
+              ex.name.UTF8String ?: "?", ex.reason.UTF8String ?: "?");
+@@ -1047,6 +1086,7 @@
+         if (captured->loopCount == 0 || --captured->loopsRemaining > 0) {
+             int gen2 = captured->generation.load();
+             AppleSample *self = captured;
++            audioFlush();
+             @try {
+                 [self->node scheduleBuffer:self->buffer atTime:nil options:0
+                          completionHandler:^{
+@@ -1075,14 +1115,15 @@
+ void AIL_resume_sample(HSAMPLE sample) {
+     if (!sample) return;
+     AppleSample *s = (AppleSample *)sample;
+-    if (s->node) [s->node play];
++    AVAudioPlayerNode *node = s->node;
++    if (node) audioAsync(^{ [node play]; });
+ }
+ 
+ void AIL_set_sample_volume(HSAMPLE sample, int volume) {
+     if (!sample) return;
+     AppleSample *s = (AppleSample *)sample;
+     s->volume = volume / 127.0f;
+-    if (s->node) s->node.volume = g_muted ? 0.0f : s->volume;
++    setNodeMix(s, g_muted ? 0.0f : s->volume, (s->pan - 0.5f) * 2.0f);
+ }
+ int AIL_sample_volume(HSAMPLE sample) {
+     if (!sample) return 0;
+@@ -1092,7 +1133,7 @@
+     if (!sample) return;
+     AppleSample *s = (AppleSample *)sample;
+     s->pan = pan / 127.0f;
+-    if (s->node) s->node.pan = (s->pan - 0.5f) * 2.0f;  // -1..1
++    setNodeMix(s, g_muted ? 0.0f : s->volume, (s->pan - 0.5f) * 2.0f);  // -1..1
+ }
+ int AIL_sample_pan(HSAMPLE sample) {
+     if (!sample) return 0;
+@@ -1102,10 +1143,7 @@
+     if (!sample) return;
+     AppleSample *s = (AppleSample *)sample;
+     s->volume = volume; s->pan = pan;
+-    if (s->node) {
+-        s->node.volume = g_muted ? 0.0f : volume;
+-        s->node.pan = (pan - 0.5f) * 2.0f;
+-    }
++    setNodeMix(s, g_muted ? 0.0f : volume, (pan - 0.5f) * 2.0f);
+ }
+ void AIL_sample_volume_pan(HSAMPLE sample, float *volume, float *pan) {
+     if (!sample) return;
+@@ -1150,6 +1188,7 @@
+     }
+     AVAudioPCMBuffer *slice = sliceBufferFromFrame(s->buffer, startFrame);
+     if (!slice) return;
++    audioFlush();
+     @try { [s->node stop]; } @catch (NSException *ex) {
+         MLOG(1, "set_sample_ms_position stop NSException: %s", ex.reason.UTF8String ?: "?");
+     }
+@@ -1292,8 +1331,16 @@
+     s->player.buffer = buf;
+     @try {
+         if (s->player.node) stopAndDetach(&s->player, true);
+-        s->player.node = [[AVAudioPlayerNode alloc] init];
+-        [g_device.engine attachNode:s->player.node];
++        AVAudioPlayerNode *node = [[AVAudioPlayerNode alloc] init];
++        AVAudioEngine *engine = g_device.engine;
++        AVAudioMixerNode *mixer = g_device.mixer2D;
++        AVAudioFormat *format = buf.format;
++        s->player.node = node;
++        s->player.sentVolume = -1.0f; s->player.sentPan = -2.0f;
++        audioAsync(^{
++            [engine attachNode:node];
++            [engine connect:node to:mixer format:format];
++        });
+         // 3D path: player → mainMixer with manual pan + distance-volume
+         // applied at start time based on the listener pose. AVAudioEnvironmentNode
+         // would do this internally but empirically throws "player started
+@@ -1301,7 +1348,6 @@
+         // (regardless of rendering algorithm), so we hand-roll the spatial
+         // math. For an RTS top-down camera this is plenty: stereo pan from
+         // X delta + inverse-distance volume.
+-        [g_device.engine connect:s->player.node to:g_device.mixer2D format:buf.format];
+     } @catch (NSException *ex) {
+         MLOG(0, "set_3D_sample_file attach NSException: %s — %s",
+              ex.name.UTF8String ?: "?", ex.reason.UTF8String ?: "?");
+@@ -1333,7 +1379,9 @@
+ }
+ void AIL_end_3D_sample(H3DSAMPLE sample) { AIL_stop_3D_sample(sample); }
+ void AIL_resume_3D_sample(H3DSAMPLE sample) {
+-    if (sample) [((Apple3DSample *)sample)->player.node play];
++    if (!sample) return;
++    AVAudioPlayerNode *node = ((Apple3DSample *)sample)->player.node;
++    if (node) audioAsync(^{ [node play]; });
+ }
+ 
+ #ifdef MILES_NOFLOAT
+@@ -1388,6 +1436,7 @@
+     }
+     AVAudioPCMBuffer *slice = sliceBufferFromFrame(s->player.buffer, startFrame);
+     if (!slice) return;
++    audioFlush();
+     @try { [s->player.node stop]; } @catch (NSException *ex) {
+         MLOG(1, "set_3D_sample_offset stop NSException: %s", ex.reason.UTF8String ?: "?");
+     }
+@@ -1594,6 +1643,7 @@
+     (void)fromCache;
+     @try {
+         st->node = [[AVAudioPlayerNode alloc] init];
++        st->sentVolume = -1.0f; st->sentPan = -2.0f;
+         [g_device.engine attachNode:st->node];
+         [g_device.engine connect:st->node to:g_device.mixer2D format:buf.format];
+     } @catch (NSException *ex) {
+@@ -1672,7 +1722,7 @@
+     if (!stream) return;
+     AppleStream *s = (AppleStream *)stream;
+     s->volume = volume / 127.0f;
+-    if (s->node) s->node.volume = g_muted ? 0.0f : s->volume;
++    setNodeMix(s, g_muted ? 0.0f : s->volume, (s->pan - 0.5f) * 2.0f);
+ }
+ int AIL_stream_volume(HSTREAM stream) {
+     return stream ? (int)(((AppleStream *)stream)->volume * 127.0f) : 0;
+@@ -1681,7 +1731,7 @@
+     if (!stream) return;
+     AppleStream *s = (AppleStream *)stream;
+     s->pan = pan / 127.0f;
+-    if (s->node) s->node.pan = (s->pan - 0.5f) * 2.0f;
++    setNodeMix(s, g_muted ? 0.0f : s->volume, (s->pan - 0.5f) * 2.0f);
+ }
+ int AIL_stream_pan(HSTREAM stream) {
+     return stream ? (int)(((AppleStream *)stream)->pan * 127.0f) : 0;
+@@ -1691,10 +1741,8 @@
+     AppleStream *s = (AppleStream *)stream;
+     MLOG(2, "AIL_set_stream_volume_pan(%p, vol=%.3f, pan=%.3f)", stream, volume, pan);
+     s->volume = volume; s->pan = pan;
+-    if (s->node) {
+-        s->node.volume = g_muted ? 0.0f : volume;
+-        s->node.pan = (pan - 0.5f) * 2.0f;
+-    }
++    // (the game sets this every frame for the music; unchanged values are not sent, and it never waits for the engine)
++    setNodeMix(s, g_muted ? 0.0f : volume, (pan - 0.5f) * 2.0f);
+ }
+ void AIL_stream_volume_pan(HSTREAM stream, float *volume, float *pan) {
+     if (!stream) return;
+diff --git a/Core/GameEngine/Include/Common/GameDefines.h b/Core/GameEngine/Include/Common/GameDefines.h
+--- a/Core/GameEngine/Include/Common/GameDefines.h
++++ b/Core/GameEngine/Include/Common/GameDefines.h
+@@ -92,8 +92,12 @@
+ #endif
+ 
+ // This is here to easily toggle between the retail compatible with fixed pathfinding fallback and pure fixed pathfinding mode
++// Rallypoint: 0. With 1 the pathfinder keeps the original game's open list (a sorted linked list filled from the head,
++// the single most expensive function in a large battle) until it meets the case that crashed the original, then
++// switches to the fixed code for the rest of the game. Rallypoint games are never played against the original game
++// (builds are matched by kRallypointSimulationId), so the fixed, faster code runs from the first frame.
+ #ifndef RETAIL_COMPATIBLE_PATHFINDING
+-#define RETAIL_COMPATIBLE_PATHFINDING (1)
++#define RETAIL_COMPATIBLE_PATHFINDING (0)
+ #endif
+ 
+ // This is here to easily toggle between the retail compatible pathfinding memory allocation and the new static allocated data mode
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 11;
++		static const UnsignedInt kRallypointSimulationId = 12;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
+@@ -1405,7 +1405,7 @@
+ 
+ AsciiString GlobalData::BuildUserDataPathFromRegistry()
+ {
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 	// TheSuperHackers @port macOS — launcher-controllable user-data directory.
+ 	// GEN_USER_DATA overrides the computed ~/Documents/<leaf>/ path so the macOS
+ 	// launcher can relocate maps, saves and Options.ini (all resolved through
+@@ -1463,7 +1463,7 @@
+ 
+ 	if (!myDocumentsDirectory.isEmpty()) {
+ 		// Now build the full path string
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__linux__)
+ 		// TheSuperHackers @port macOS 2026-05-25
+ 		// SHGetSpecialFolderPath shim returns POSIX-style paths
+ 		// ("/Users/.../Documents"). Use `/` so the whole path stays
