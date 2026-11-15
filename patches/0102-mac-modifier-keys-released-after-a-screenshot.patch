@@ -1,0 +1,83 @@
+diff --git a/cmake/dx8_stub/metal_backend.mm b/cmake/dx8_stub/metal_backend.mm
+--- a/cmake/dx8_stub/metal_backend.mm
++++ b/cmake/dx8_stub/metal_backend.mm
+@@ -1158,6 +1158,51 @@
+     g_keyQ.push_back(k);
+ }
+ 
++// Rallypoint: which modifier keys the game has been told are down, by key. macOS reports modifiers as one set of flags
++// and the game wants a press and a release per key. The old code sent the release under the key code of whatever
++// event carried the change, and sent nothing when no event came. Cmd+Shift+4 (a screenshot) is both: the system takes
++// the keyboard for its crosshair and the releases never reach this app, so the game kept Shift and Command (its
++// Control: force-fire) held down. Clicking a damaged building then attacked it instead of repairing it, units would
++// not enter buildings, and hotkeys stopped matching, until the same keys were pressed and released again.
++// Now each key that went down is remembered, and it is released when its flag clears, whether an event says so
++// (ApplyModifierFlags from flagsChanged) or not (SyncModifierKeys, every frame, from the system's current flags).
++namespace {
++struct ModKey { int keyCode; unsigned long mask; bool down; };
++ModKey g_modKeys[] = {
++    { 0x38, NSEventModifierFlagShift, false },   { 0x3C, NSEventModifierFlagShift, false },
++    { 0x3B, NSEventModifierFlagControl, false }, { 0x3E, NSEventModifierFlagControl, false },
++    { 0x3A, NSEventModifierFlagOption, false },  { 0x3D, NSEventModifierFlagOption, false },
++    { 0x37, NSEventModifierFlagCommand, false }, { 0x36, NSEventModifierFlagCommand, false },
++};
++void ApplyModifierFlags(unsigned long modFlags, int keyCode, const char* why)
++{
++    for (auto& mk : g_modKeys) {
++        const bool flag = (modFlags & mk.mask) != 0;
++        if (mk.down && !flag) {
++            // the flag is clear, so neither the left nor the right key of this kind is held
++            mk.down = false;
++            KeyEv k; k.macKeyCode = mk.keyCode; k.down = 0;
++            g_keyQ.push_back(k);
++            if (why[0]) fprintf(stderr, "[mtl-focus] modifier key 0x%02X released %s\n", (unsigned)mk.keyCode, why);
++        } else if (mk.keyCode == keyCode && flag != mk.down) {
++            // this event is about this key (with both keys of a kind held, letting one go keeps the flag set)
++            mk.down = !mk.down;
++            KeyEv k; k.macKeyCode = mk.keyCode; k.down = mk.down ? 1 : 0;
++            g_keyQ.push_back(k);
++        }
++    }
++    g_prevModFlags = modFlags;
++}
++} // namespace
++
++// Called once a frame: release modifier keys whose flag is clear in the system although no event told us.
++static void SyncModifierKeys()
++{
++    const unsigned long now = (unsigned long)[NSEvent modifierFlags];
++    for (auto& mk : g_modKeys)
++        if (mk.down && !(now & mk.mask)) { ApplyModifierFlags(now, -1, "without an event (a system shortcut took the keyboard)"); return; }
++}
++
+ extern "C" void MetalView_PushFlagsChanged(unsigned long modFlags, int keyCode)
+ {
+     if (InputLogOn() && g_inputLogCount < kInputLogMax) {
+@@ -1166,18 +1211,7 @@
+         ++g_inputLogCount;
+     }
+     g_capsOn = (modFlags & NSEventModifierFlagCapsLock) != 0;
+-    unsigned long changed = modFlags ^ g_prevModFlags;
+-    struct { unsigned long mask; } mods[] = {
+-        { NSEventModifierFlagShift }, { NSEventModifierFlagControl },
+-        { NSEventModifierFlagOption }, { NSEventModifierFlagCommand },
+-    };
+-    for (auto& md : mods) {
+-        if (changed & md.mask) {
+-            KeyEv k; k.macKeyCode = keyCode; k.down = (modFlags & md.mask) ? 1 : 0;
+-            g_keyQ.push_back(k);
+-        }
+-    }
+-    g_prevModFlags = modFlags;
++    ApplyModifierFlags(modFlags, keyCode, "");
+ }
+ 
+ extern "C" void MetalView_PushChar(unsigned int ch)
+@@ -1314,6 +1348,7 @@
+             [NSApp sendEvent:event];
+         }
+     }
++    SyncModifierKeys();
+ }
+ 
+ // ---------------------------------------------------------------------------
