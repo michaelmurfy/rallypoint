@@ -58,6 +58,10 @@ pub fn mac_script(pid: u32, new_app: &Path, target: &Path) -> String {
 /// The installer result is written to `log` first, and the previous launcher is started even when the
 /// installer fails, so a failed update still leaves the app open.
 pub fn win_script(pid: u32, setup: &Path, exe: &Path, log: &Path) -> String {
+    // /D= installs into the folder this app runs from. Without it NSIS takes the folder from a registry key that is named
+    // after the publisher, which 0.9.0 changed: an app installed anywhere but the default folder was "updated" into the
+    // default one and kept running (and offering the update) from the old one.
+    let dir = ps_quote(&format!("/D={}", exe.parent().unwrap_or(exe).to_string_lossy()));
     let (setup, exe, log) = (ps_quote(&setup.to_string_lossy()), ps_quote(&exe.to_string_lossy()), ps_quote(&log.to_string_lossy()));
     format!(
         "$log = {log}\n\
@@ -65,7 +69,7 @@ pub fn win_script(pid: u32, setup: &Path, exe: &Path, log: &Path) -> String {
          Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
          Start-Sleep -Milliseconds 400\n\
          try {{\n\
-           $p = Start-Process -FilePath {setup} -ArgumentList '/S' -Wait -PassThru\n\
+           $p = Start-Process -FilePath {setup} -ArgumentList '/S',{dir} -Wait -PassThru\n\
            Note \"installer $($p.ExitCode)\"\n\
          }} catch {{\n\
            Note $_.Exception.Message\n\
@@ -195,7 +199,7 @@ mod tests {
         assert!(s.contains("kill -0 42") && s.contains("'/t/it'\\''s/New.app'") && s.contains("'/Apps/Rally point.app'"));
         assert!(s.contains("open '/Apps/Rally point.app'"));
         let w = win_script(7, Path::new("C:\\Users\\O'Neil\\setup.exe"), Path::new("C:\\App\\r.exe"), Path::new("C:\\App\\apply-update.log"));
-        assert!(w.contains("-Id 7") && w.contains("'C:\\Users\\O''Neil\\setup.exe'") && w.contains("'/S'"));
+        assert!(w.contains("-Id 7") && w.contains("'C:\\Users\\O''Neil\\setup.exe'") && w.contains("'/S','/D="));
         assert!(w.contains("'C:\\App\\apply-update.log'") && w.contains("Start-Process -FilePath 'C:\\App\\r.exe'"));
     }
 
