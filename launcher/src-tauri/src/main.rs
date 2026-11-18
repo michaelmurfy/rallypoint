@@ -30,6 +30,10 @@ struct MapJobs(Mutex<Option<maps::MapJob>>);
 #[derive(Default)]
 struct Updates(Mutex<Option<update::UpdateInfo>>, Mutex<&'static str>);
 
+/// The map editor while it runs: a second one would only be another copy of the same slow start.
+#[derive(Default)]
+struct Editor(Mutex<Option<std::process::Child>>);
+
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
 }
@@ -1080,9 +1084,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     Ok(())
 }
 
-/// Open the map editor (WorldBuilder) with the same game folder and selected mod layers as a game.
+/// Open the map editor (WorldBuilder) with the given mod layers (the same stack a game would get), on one of the player's maps when `map` names it.
 #[tauri::command]
-fn launch_editor(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<Vec<String>>) -> Result<(), String> {
+fn launch_editor(app: tauri::AppHandle, running: tauri::State<Editor>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, map: Option<String>) -> Result<(), String> {
     let editor = engine::editor(app.path().resource_dir().ok().as_deref()).ok_or("This build has no map editor for your platform")?;
     if !game_dir.join("INIZH.big").is_file() {
         return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
@@ -1092,9 +1096,24 @@ fn launch_editor(app: tauri::AppHandle, game_dir: PathBuf, mod_folders: Option<V
     if let Some((a, b)) = mods::conflict(&cat, &ordered) {
         return Err(format!("{a} and {b} can't be used together. Untick one of them."));
     }
+    let map_file = match map.as_deref() {
+        None => None,
+        Some(n) if maporg::is_safe_name(n) => {
+            let f = maps_dir(&app)?.join(n).join(format!("{n}.map"));
+            if !f.is_file() {
+                return Err(format!("{n} isn't switched on, so the editor can't open it. Switch it on in the list first."));
+            }
+            Some(f)
+        }
+        Some(_) => return Err("That isn't a map name".into()),
+    };
+    let mut slot = running.0.lock().unwrap();
+    if slot.as_mut().is_some_and(|c| c.try_wait().ok().flatten().is_none()) {
+        return Err("World Builder is already open. Close it to open another map.".into());
+    }
     let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
     let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base(&app)?));
-    launch::editor_command(&editor, &game_dir, base_game.as_deref(), mod_path.as_deref()).spawn().map_err(|e| format!("{}: {e}", editor.display()))?;
+    *slot = Some(launch::editor_command(&editor, &game_dir, base_game.as_deref(), mod_path.as_deref(), map_file.as_deref()).spawn().map_err(|e| format!("{}: {e}", editor.display()))?);
     Ok(())
 }
 
@@ -1114,6 +1133,7 @@ fn main() {
         .manage(RelayServer::default())
         .manage(ModWatch::default())
         .manage(Updates::default())
+        .manage(Editor::default())
         .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

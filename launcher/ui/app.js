@@ -843,8 +843,9 @@ function mapOrganiser(onLoad) {
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
       const idx = v.indexOf(m);
-      const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") }, m.official ? h("span", {}) : box,
+      const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") + (!m.official && store.cfg.editor_available ? " editable" : "") }, m.official ? h("span", {}) : box,
         h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
+        m.official || !store.cfg.editor_available ? null : (() => { const b = h("button", { class: "btn small", "aria-label": `Edit ${m.name} in World Builder`, title: `Open ${m.name} in World Builder with ${editorGame().name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); launchEditor(m.name, [b]); } }, "Edit"); return b; })(),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
       hoverPreview(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
       return row;
@@ -911,35 +912,54 @@ function mapOrganiser(onLoad) {
   return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("focusin", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
-/** "Open World Builder": ask which game or mod the editor loads (its objects, terrain and scripts options), starting from the Play selection. */
-function openEditorDialog() {
-  const games = gameChoices().filter((g) => g.installed);
-  const game = h("select", { "aria-label": "Game or mod" }, ...games.map((g) => new Option(g.name, g.id)));
-  game.value = selectedGame().id;
-  const ticked = new Set(selectedExtras());
-  const extras = extraMods().map((m) => h("label", { class: "switch" }, h("input", { type: "checkbox", checked: ticked.has(m.folder), onchange: (e) => (e.target.checked ? ticked.add(m.folder) : ticked.delete(m.folder)) }), m.name));
-  const msg = h("div", { class: "msg", role: "status" });
-  const finish = () => { document.removeEventListener("keydown", onKey); overlay.remove(); };
-  const go = h("button", { class: "btn primary", onclick: async () => {
-    go.disabled = true; msg.className = "msg muted"; msg.textContent = "Starting…";
-    try {
-      await invoke("launch_editor", { gameDir: store.cfg.game_dir, modFolders: launchFolders(games.find((g) => g.id === game.value), [...ticked]) });
-      finish();
-    } catch (e) { go.disabled = false; msg.className = "msg bad"; msg.textContent = errText(e); }
-  } }, "Open World Builder");
-  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Open World Builder" },
-    h("div", { class: "wizard bundledialog" },
-      h("div", { class: "wiz-head" }, h("h2", {}, "Open World Builder")),
-      h("div", { class: "wiz-body" },
-        h("p", {}, "Choose what the editor loads. A mod brings its own objects, terrain and script options."),
-        h("label", { class: "stack tight" }, h("b", {}, "Game or mod"), game),
-        extras.length ? h("div", { class: "stack tight" }, h("b", {}, "Also load"), ...extras) : null,
-        msg),
-      h("div", { class: "wiz-foot" }, h("button", { class: "btn", onclick: finish }, "Cancel"), go)));
-  const onKey = (e) => { if (e.key === "Escape") finish(); };
+// ---------------------------------------------------------------- map editor (World Builder)
+/** The game or mod the editor loads: the player's last pick for it, else what Play is set to. Extras stay a Play matter. */
+function editorGame() {
+  const id = prefs.get().editorGame;
+  return gameChoices().find((g) => g.id === id && g.installed) || selectedGame();
+}
+let editorBusy = false;
+/** Start the editor, on one of the player's maps or empty. It takes several seconds to show, so the buttons wait instead of starting a second copy. */
+async function launchEditor(map, buttons) {
+  if (editorBusy) return;
+  editorBusy = true;
+  buttons.forEach((b) => { b.disabled = true; });
+  const kids = [...buttons[0].childNodes];
+  buttons[0].replaceChildren("Starting\u2026");
+  const done = () => { editorBusy = false; buttons.forEach((b) => { b.disabled = false; }); buttons[0].replaceChildren(...kids); };
+  try {
+    await invoke("launch_editor", { gameDir: store.cfg.game_dir, modFolders: launchFolders(editorGame(), []), map: map || null });
+    setTimeout(done, 8000);
+  } catch (e) { done(); say(errText(e), "bad"); }
+}
+/** "Open World Builder \u00b7 Shockwave" with a caret to pick another installed game or mod. Off, with the reason, where there is no editor. */
+function editorControl() {
+  if (!store.cfg.editor_available) {
+    return h("button", { class: "btn small", disabled: true, title: store.cfg.os === "windows" ? "This build does not include World Builder" : "World Builder is only available on Windows" }, "Open World Builder");
+  }
+  const name = h("span", { class: "muted" });
+  const main = h("button", { class: "btn small", onclick: () => launchEditor(null, [main]) }, "Open World Builder", name);
+  const menu = h("div", { class: "menu", role: "menu", "aria-label": "Game or mod for World Builder", hidden: true });
+  const caret = h("button", { class: "btn small caret", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "Choose the game or mod for World Builder", onclick: () => toggle(menu.hidden) }, "\u25be");
+  function toggle(open) {
+    menu.hidden = !open;
+    caret.setAttribute("aria-expanded", String(open));
+    if (open) { const on = menu.querySelector("[aria-checked=true]"); (on || menu.firstChild).focus(); }
+  }
+  function draw() {
+    const cur = editorGame();
+    name.textContent = `\u00b7 ${cur.name}`;
+    fill(menu, gameChoices().filter((g) => g.installed).map((g) => h("button", { class: "menuitem", role: "menuitemradio", "aria-checked": String(g.id === cur.id), onclick: () => { prefs.set({ editorGame: g.id }); draw(); toggle(false); caret.focus(); } }, g.id === cur.id ? "\u2713 " : "\u2003", g.name)));
+  }
+  draw();
+  const el = h("div", { class: "splitbtn" }, main, caret, menu);
+  const closeOutside = (e) => { if (!menu.hidden && !el.contains(e.target)) toggle(false); };
+  const onKey = (e) => { if (e.key === "Escape" && !menu.hidden) { toggle(false); caret.focus(); } };
+  document.addEventListener("pointerdown", closeOutside, true);
   document.addEventListener("keydown", onKey);
-  document.getElementById("root").append(overlay);
-  go.focus();
+  refreshers.add(draw); // the list of installed games changes while the page is open
+  el.dispose = () => { document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("keydown", onKey); refreshers.delete(draw); };
+  return el;
 }
 
 function mapsPage() {
@@ -947,14 +967,13 @@ function mapsPage() {
   let packs = null;
   const org = mapOrganiser(() => packs && packs.render());
   packs = mapsCard((name) => org.packCount(name));
+  const editor = { el: editorControl() };
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Maps"),
-      // The editor loads the same layers a game would: the selected game and mods.
-      store.cfg.editor_available ? h("button", { class: "btn small", title: "Choose the game or mod to edit maps for", onclick: openEditorDialog }, "Open World Builder") : null),
+    h("div", { class: "page-head" }, h("h1", {}, "Maps"), editor.el),
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));
-  return { el, dispose: () => { packs.dispose(); org.dispose(); } };
+  return { el, dispose: () => { packs.dispose(); org.dispose(); editor.el.dispose && editor.el.dispose(); } };
 }
 
 // ---------------------------------------------------------------- components
