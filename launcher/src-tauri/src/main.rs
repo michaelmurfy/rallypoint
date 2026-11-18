@@ -30,6 +30,10 @@ struct MapJobs(Mutex<Option<maps::MapJob>>);
 #[derive(Default)]
 struct Updates(Mutex<Option<update::UpdateInfo>>, Mutex<&'static str>);
 
+/// The map editor while it runs: a second one would only be another copy of the same slow start.
+#[derive(Default)]
+struct Editor(Mutex<Option<std::process::Child>>);
+
 fn base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().data_dir().map_err(|e| e.to_string())?.join("GeneralsZH"))
 }
@@ -204,6 +208,8 @@ struct ConfigView {
     /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
     engine_arch: String,
     engines_bundled: bool,
+    /// The map editor is bundled (Windows).
+    editor_available: bool,
     /// This platform has an Enhanced renderer (macOS, or Windows with the 64-bit engine).
     renderer_available: bool,
     /// "classic" or "enhanced" (the Vulkan renderer, only in the 64-bit Windows engine).
@@ -237,6 +243,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         control_bar: if c.control_bar == "pro" { "pro".into() } else { "hd".into() },
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
+        editor_available: engine::editor(app.path().resource_dir().ok().as_deref()).is_some(),
         renderer_available: graphics::renderer_available(std::env::consts::OS, engine::both_bundled(app.path().resource_dir().ok().as_deref())),
         renderer: if c.renderer == "enhanced" { "enhanced".into() } else { "classic".into() },
         effects: graphics::effects_view(&c.effects, cfg!(target_os = "macos")),
@@ -981,7 +988,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             mod_args.extend(m.args.iter().cloned());
         }
     }
-    let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
+    let mod_path = mods::stack(&mods_dir(&app)?, &ordered, mods::RUN_GAME)?.map(|p| p.to_string_lossy().to_string());
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
@@ -1077,6 +1084,39 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     Ok(())
 }
 
+/// Open the map editor (WorldBuilder) with the given mod layers (the same stack a game would get), on one of the player's maps when `map` names it.
+#[tauri::command]
+fn launch_editor(app: tauri::AppHandle, running: tauri::State<Editor>, game_dir: PathBuf, mod_folders: Option<Vec<String>>, map: Option<String>) -> Result<(), String> {
+    let editor = engine::editor(app.path().resource_dir().ok().as_deref()).ok_or("This build has no map editor for your platform")?;
+    if !game_dir.join("INIZH.big").is_file() {
+        return Err(format!("{} has no Zero Hour data (INIZH.big missing)", game_dir.display()));
+    }
+    let cat = catalog()?;
+    let ordered = mods::with_bases(&cat, &mod_folders.unwrap_or_default());
+    if let Some((a, b)) = mods::conflict(&cat, &ordered) {
+        return Err(format!("{a} and {b} can't be used together. Untick one of them."));
+    }
+    let map_file = match map.as_deref() {
+        None => None,
+        Some(n) if maporg::is_safe_name(n) => {
+            let f = maps_dir(&app)?.join(n).join(format!("{n}.map"));
+            if !f.is_file() {
+                return Err(format!("{n} isn't switched on, so the editor can't open it. Switch it on in the list first."));
+            }
+            Some(f)
+        }
+        Some(_) => return Err("That isn't a map name".into()),
+    };
+    let mut slot = running.0.lock().unwrap();
+    if slot.as_mut().is_some_and(|c| c.try_wait().ok().flatten().is_none()) {
+        return Err("World Builder is already open. Close it to open another map.".into());
+    }
+    let mod_path = mods::stack(&mods_dir(&app)?, &ordered, mods::RUN_EDITOR)?.map(|p| p.to_string_lossy().to_string());
+    let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base(&app)?));
+    *slot = Some(launch::editor_command(&editor, &game_dir, base_game.as_deref(), mod_path.as_deref(), map_file.as_deref()).spawn().map_err(|e| format!("{}: {e}", editor.display()))?);
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         // Each start: clear out what the updater downloaded or staged for the version that is now running.
@@ -1093,6 +1133,7 @@ fn main() {
         .manage(RelayServer::default())
         .manage(ModWatch::default())
         .manage(Updates::default())
+        .manage(Editor::default())
         .manage(MapJobs::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -1102,7 +1143,7 @@ fn main() {
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
-            launch_game
+            launch_game, launch_editor
         ])
         .run(tauri::generate_context!())
         .expect("tauri");
