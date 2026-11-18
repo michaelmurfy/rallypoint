@@ -129,7 +129,7 @@ jobs:
         if: env.BUILD == '1'
         working-directory: engine
         run: |
-          cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF
+          cmake --preset win32 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_WORLDBUILDER=ON -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF -DRTS_DEBUG_LOGGING=ON -DRTS_DEBUG_CRASHING=OFF -DRTS_DEBUG_STACKTRACE=OFF -DRTS_DEBUG_PROFILE=OFF
           cmake --build --preset win32
       - name: Collect
         if: env.BUILD == '1'
@@ -144,6 +144,13 @@ jobs:
           if (-not (Get-ChildItem out/engine -Filter *.exe | Select-String -Pattern 'DebugFrame_' -Quiet)) { throw "sync log writer missing from the engine" }
           if (-not $crt) { throw "no x86 CRT under $env:VCToolsRedistDir" }
           'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll' | ForEach-Object { Copy-Item (Join-Path $crt.FullName $_) out/engine -Verbose }
+          # The map editor (patch 0116, WorldBuilder) is an MFC program: it runs on the MFC DLLs of the same toolset.
+          $wb = Get-ChildItem engine/build/win32 -Recurse -Filter WorldBuilderZH.exe | Select-Object -First 1
+          if (-not $wb) { throw "WorldBuilderZH.exe was not built" }
+          Copy-Item $wb.FullName out/engine -Verbose
+          $mfc = Get-ChildItem "$env:VCToolsRedistDir\x86" -Directory -Filter 'Microsoft.VC*.MFC' | Select-Object -First 1
+          if (-not $mfc) { throw "no x86 MFC redistributable under $env:VCToolsRedistDir" }
+          Get-ChildItem $mfc.FullName -Filter *.dll | Copy-Item -Destination out/engine -Verbose
           # The symbols are kept with the engine, so a reused engine still has the ones that match it.
           New-Item -ItemType Directory -Force -Path out/symbols | Out-Null
           Get-ChildItem engine/build/win32/GeneralsMD/Release -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.pdb', '.map' } | Copy-Item -Destination out/symbols -Verbose
@@ -431,6 +438,7 @@ jobs:
           if [ "${{ matrix.engine64 }}" != "" ]; then
             [ -f "$res/x64/generalszh.exe" ] || { echo "::error::the 64-bit engine (engine/x64) is not among the bundled resources"; exit 1; }
             [ -f "$res/generalszh.exe" ] || { echo "::error::the 32-bit engine is not among the bundled resources"; exit 1; }
+            [ -f "$res/WorldBuilderZH.exe" ] || { echo "::error::the map editor (WorldBuilderZH.exe) is not among the bundled resources"; exit 1; }
             res="$res/x64"
           fi
           [ -f "$res/assets/Art/Textures/exscorch01.dds" ] || { echo "::error::the Enhanced renderer's assets folder is not among the bundled resources"; exit 1; }
