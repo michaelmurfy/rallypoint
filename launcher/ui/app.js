@@ -913,10 +913,10 @@ function mapOrganiser(onLoad) {
 }
 
 // ---------------------------------------------------------------- map editor (World Builder)
-/** The game or mod the editor loads: the player's last pick for it, else what Play is set to. Extras stay a Play matter. */
+/** The game or mod the editor loads: what Play is set to, unless another was picked in the menu since the Maps page opened. Extras stay a Play matter. */
+let editorPick = null;
 function editorGame() {
-  const id = prefs.get().editorGame;
-  return gameChoices().find((g) => g.id === id && g.installed) || selectedGame();
+  return gameChoices().find((g) => g.id === editorPick && g.installed) || selectedGame();
 }
 let editorBusy = false;
 /** Start the editor, on one of the player's maps or empty. It takes several seconds to show, so the buttons wait instead of starting a second copy. */
@@ -937,6 +937,7 @@ function editorControl() {
   if (!store.cfg.editor_available) {
     return h("button", { class: "btn small", disabled: true, title: store.cfg.os === "windows" ? "This build does not include World Builder" : "World Builder is only available on Windows" }, "Open World Builder");
   }
+  editorPick = null; // each visit starts from the Play selection
   const name = h("span", { class: "muted" });
   const main = h("button", { class: "btn small", onclick: () => launchEditor(null, [main]) }, "Open World Builder", name);
   const menu = h("div", { class: "menu", role: "menu", "aria-label": "Game or mod for World Builder", hidden: true });
@@ -949,7 +950,7 @@ function editorControl() {
   function draw() {
     const cur = editorGame();
     name.textContent = `\u00b7 ${cur.name}`;
-    fill(menu, gameChoices().filter((g) => g.installed).map((g) => h("button", { class: "menuitem", role: "menuitemradio", "aria-checked": String(g.id === cur.id), onclick: () => { prefs.set({ editorGame: g.id }); draw(); toggle(false); caret.focus(); } }, g.id === cur.id ? "\u2713 " : "\u2003", g.name)));
+    fill(menu, gameChoices().filter((g) => g.installed).map((g) => h("button", { class: "menuitem", role: "menuitemradio", "aria-checked": String(g.id === cur.id), onclick: () => { editorPick = g.id; draw(); toggle(false); caret.focus(); } }, g.id === cur.id ? "\u2713 " : "\u2003", g.name)));
   }
   draw();
   const el = h("div", { class: "splitbtn" }, main, caret, menu);
