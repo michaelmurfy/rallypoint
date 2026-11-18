@@ -163,10 +163,9 @@ function toggleExtra(folder, on) {
   notifyMods();
 }
 /** What the engine loads, bottom layer first: the bundled icons, the chosen game, then the ticked extras. */
-function launchFolders() {
-  const g = selectedGame();
+function launchFolders(g = selectedGame(), extras = selectedExtras()) {
   const has = (f) => store.mods.other.some((o) => o.folder === f);
-  return [...(has(ICON_FOLDER) ? [ICON_FOLDER] : []), ...(store.cfg && store.cfg.control_bar === "pro" && has(PRO_FOLDER) ? [PRO_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...selectedExtras()];
+  return [...(has(ICON_FOLDER) ? [ICON_FOLDER] : []), ...(store.cfg && store.cfg.control_bar === "pro" && has(PRO_FOLDER) ? [PRO_FOLDER] : []), ...(g.folder ? [g.folder] : []), ...extras];
 }
 /** The names of the games an official map comes with (its tags). */
 const gameNames = (m) => (m.games || []).map((id) => (gameChoices().find((g) => g.id === id) || { name: id }).name.replace(/^C&C: /, ""));
@@ -912,6 +911,37 @@ function mapOrganiser(onLoad) {
   return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("focusin", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
+/** "Open World Builder": ask which game or mod the editor loads (its objects, terrain and scripts options), starting from the Play selection. */
+function openEditorDialog() {
+  const games = gameChoices().filter((g) => g.installed);
+  const game = h("select", { "aria-label": "Game or mod" }, ...games.map((g) => new Option(g.name, g.id)));
+  game.value = selectedGame().id;
+  const ticked = new Set(selectedExtras());
+  const extras = extraMods().map((m) => h("label", { class: "switch" }, h("input", { type: "checkbox", checked: ticked.has(m.folder), onchange: (e) => (e.target.checked ? ticked.add(m.folder) : ticked.delete(m.folder)) }), m.name));
+  const msg = h("div", { class: "msg", role: "status" });
+  const finish = () => { document.removeEventListener("keydown", onKey); overlay.remove(); };
+  const go = h("button", { class: "btn primary", onclick: async () => {
+    go.disabled = true; msg.className = "msg muted"; msg.textContent = "Starting…";
+    try {
+      await invoke("launch_editor", { gameDir: store.cfg.game_dir, modFolders: launchFolders(games.find((g) => g.id === game.value), [...ticked]) });
+      finish();
+    } catch (e) { go.disabled = false; msg.className = "msg bad"; msg.textContent = errText(e); }
+  } }, "Open World Builder");
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Open World Builder" },
+    h("div", { class: "wizard bundledialog" },
+      h("div", { class: "wiz-head" }, h("h2", {}, "Open World Builder")),
+      h("div", { class: "wiz-body" },
+        h("p", {}, "Choose what the editor loads. A mod brings its own objects, terrain and script options."),
+        h("label", { class: "stack tight" }, h("b", {}, "Game or mod"), game),
+        extras.length ? h("div", { class: "stack tight" }, h("b", {}, "Also load"), ...extras) : null,
+        msg),
+      h("div", { class: "wiz-foot" }, h("button", { class: "btn", onclick: finish }, "Cancel"), go)));
+  const onKey = (e) => { if (e.key === "Escape") finish(); };
+  document.addEventListener("keydown", onKey);
+  document.getElementById("root").append(overlay);
+  go.focus();
+}
+
 function mapsPage() {
   // the packs list says which packs are already in the library, so it follows the organiser
   let packs = null;
@@ -920,7 +950,7 @@ function mapsPage() {
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps"),
       // The editor loads the same layers a game would: the selected game and mods.
-      store.cfg.editor_available ? h("button", { class: "btn small", title: "Opens the map editor with the game and mods you have selected", onclick: () => invoke("launch_editor", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }).catch((e) => say(errText(e), "bad")) }, "Open World Builder") : null),
+      store.cfg.editor_available ? h("button", { class: "btn small", title: "Choose the game or mod to edit maps for", onclick: openEditorDialog }, "Open World Builder") : null),
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));
