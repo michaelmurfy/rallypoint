@@ -988,7 +988,7 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             mod_args.extend(m.args.iter().cloned());
         }
     }
-    let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
+    let mod_path = mods::stack(&mods_dir(&app)?, &ordered, mods::RUN_GAME)?.map(|p| p.to_string_lossy().to_string());
     // Connected to a server: the engine gets our virtual IP. Still connecting or rejected: don't start on the wrong network.
     let relay_cfg = launch::relay_for_launch(relay.0.lock().unwrap().as_ref().map(|a| (a.local.to_string(), a.status())))?;
     let relay_cfg_on = relay_cfg.is_some();
@@ -1111,7 +1111,7 @@ fn launch_editor(app: tauri::AppHandle, running: tauri::State<Editor>, game_dir:
     if slot.as_mut().is_some_and(|c| c.try_wait().ok().flatten().is_none()) {
         return Err("World Builder is already open. Close it to open another map.".into());
     }
-    let mod_path = mods::stack(&mods_dir(&app)?, &ordered)?.map(|p| p.to_string_lossy().to_string());
+    let mod_path = mods::stack(&mods_dir(&app)?, &ordered, mods::RUN_EDITOR)?.map(|p| p.to_string_lossy().to_string());
     let base_game = steam::base_game_for(&steam::detect(), &assets::generals_dir(&base(&app)?));
     *slot = Some(launch::editor_command(&editor, &game_dir, base_game.as_deref(), mod_path.as_deref(), map_file.as_deref()).spawn().map_err(|e| format!("{}: {e}", editor.display()))?);
     Ok(())

@@ -264,9 +264,14 @@ pub fn conflict(catalog: &[Mod], ordered: &[String]) -> Option<(String, String)>
     None
 }
 
-/// The engine loads one `-mod` folder. One selection is used as-is; several are hard-linked into `Mods/.run`
+/// The engine loads one `-mod` folder. One selection is used as-is; several are hard-linked into `Mods/<run>`
 /// (later folders replace earlier files of the same name). The dot keeps it out of the installed list.
-pub fn stack(mods_dir: &Path, folders: &[String]) -> Result<Option<PathBuf>, String> {
+/// The game uses `RUN_GAME` and the map editor `RUN_EDITOR`: both can be open at once, and Windows will not delete
+/// an archive a running program has open, so a shared folder would keep the other one's files.
+pub const RUN_GAME: &str = ".run";
+pub const RUN_EDITOR: &str = ".run-editor";
+
+pub fn stack(mods_dir: &Path, folders: &[String], run: &str) -> Result<Option<PathBuf>, String> {
     let mut dirs = vec![];
     for f in folders {
         let name = sanitize_folder(f).filter(|n| n == f).ok_or("invalid mod")?;
@@ -280,7 +285,7 @@ pub fn stack(mods_dir: &Path, folders: &[String]) -> Result<Option<PathBuf>, Str
         [] => Ok(None),
         [one] => Ok(Some(one.clone())),
         _ => {
-            let out = mods_dir.join(".run");
+            let out = mods_dir.join(run);
             let _ = std::fs::remove_dir_all(&out);
             for d in &dirs {
                 link_tree(d, &out)?;
@@ -422,12 +427,18 @@ mod tests {
             Mod { id: "add".into(), name: "Add".into(), description: String::new(), homepage: "https://example.com".into(), download_page: String::new(), path: "Addon".into(), detect: vec![], notes: String::new(), args: vec![], addon_for: Some("base".into()), pick: false, conflicts: vec![] },
         ];
         assert_eq!(with_bases(&cat, &["Addon".into()]), ["Base".to_string(), "Addon".to_string()]);
-        let stacked = stack(&mods, &with_bases(&cat, &["Addon".into()])).unwrap().unwrap();
+        let stacked = stack(&mods, &with_bases(&cat, &["Addon".into()]), RUN_GAME).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(stacked.join("same.big")).unwrap(), "addon");
         assert_eq!(std::fs::read_to_string(stacked.join("a.big")).unwrap(), "base-a");
-        assert!(stack(&mods, &[]).unwrap().is_none());
-        assert_eq!(stack(&mods, &["Base".into()]).unwrap().unwrap(), mods.join("Base"));
-        assert!(list_installed(&mods).iter().all(|i| i.folder != ".run"));
+        assert!(stack(&mods, &[], RUN_GAME).unwrap().is_none());
+        assert_eq!(stack(&mods, &["Base".into()], RUN_GAME).unwrap().unwrap(), mods.join("Base"));
+        // the editor's stack is its own folder: rebuilding it for other mods leaves the game's alone
+        let editor = stack(&mods, &["Base".into(), "Addon".into()], RUN_EDITOR).unwrap().unwrap();
+        assert_ne!(editor, stacked);
+        stack(&mods, &["Addon".into(), "Base".into()], RUN_EDITOR).unwrap();
+        assert_eq!(std::fs::read_to_string(stacked.join("same.big")).unwrap(), "addon", "the game's stack is untouched");
+        assert_eq!(std::fs::read_to_string(editor.join("same.big")).unwrap(), "base");
+        assert!(list_installed(&mods).iter().all(|i| !i.folder.starts_with(".run")));
         std::fs::remove_dir_all(t).unwrap();
     }
 
