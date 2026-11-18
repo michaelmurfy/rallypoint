@@ -932,11 +932,9 @@ async function launchEditor(map, buttons) {
     setTimeout(done, 8000);
   } catch (e) { done(); say(errText(e), "bad"); }
 }
-/** "Open World Builder \u00b7 Shockwave" with a caret to pick another installed game or mod. Off, with the reason, where there is no editor. */
+/** "Open World Builder \u00b7 Shockwave" with a caret to pick another installed game or mod. Nothing where there is no editor. */
 function editorControl() {
-  if (!store.cfg.editor_available) {
-    return h("button", { class: "btn small", disabled: true, title: store.cfg.os === "windows" ? "This build does not include World Builder" : "World Builder is only available on Windows" }, "Open World Builder");
-  }
+  if (!store.cfg.editor_available) return null;
   editorPick = null; // each visit starts from the Play selection
   const name = h("span", { class: "muted" });
   const main = h("button", { class: "btn small", onclick: () => launchEditor(null, [main]) }, "Open World Builder", name);
@@ -974,7 +972,7 @@ function mapsPage() {
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));
-  return { el, dispose: () => { packs.dispose(); org.dispose(); editor.el.dispose && editor.el.dispose(); } };
+  return { el, dispose: () => { packs.dispose(); org.dispose(); editor.el && editor.el.dispose(); } };
 }
 
 // ---------------------------------------------------------------- components
