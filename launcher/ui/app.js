@@ -918,7 +918,9 @@ function mapsPage() {
   const org = mapOrganiser(() => packs && packs.render());
   packs = mapsCard((name) => org.packCount(name));
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Maps")),
+    h("div", { class: "page-head" }, h("h1", {}, "Maps"),
+      // The editor loads the same layers a game would: the selected game and mods.
+      store.cfg.editor_available ? h("button", { class: "btn small", title: "Opens the map editor with the game and mods you have selected", onclick: () => invoke("launch_editor", { gameDir: store.cfg.game_dir, modFolders: launchFolders() }).catch((e) => say(errText(e), "bad")) }, "Open World Builder") : null),
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));

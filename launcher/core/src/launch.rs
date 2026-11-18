@@ -278,6 +278,22 @@ pub fn command(engine: &Path, game_dir: &Path, o: &LaunchOptions) -> Command {
     c
 }
 
+/// The map editor: started in the game folder like the engine, with the selected mod's layers (`mod_path`, the folder
+/// `mods::stack` made, or a single archive) and the base game, which the editor reads through the same variables.
+pub fn editor_command(editor: &Path, game_dir: &Path, base_game: Option<&Path>, mod_path: Option<&str>) -> Command {
+    let mut c = Command::new(editor);
+    quiet(&mut c).current_dir(game_dir);
+    c.env("GEN_ZH_PATH", game_dir);
+    if let Some(b) = base_game {
+        c.env("GEN_GENERALS_PATH", b);
+    }
+    if let Some(m) = mod_path {
+        let single = [".big", ".gib"].iter().any(|e| m.to_ascii_lowercase().ends_with(e));
+        c.env(if single { "GEN_MOD" } else { "GEN_MOD_DIR" }, m);
+    }
+    c
+}
+
 /// Fresh log file with a first line saying how the engine was started (never the room password or serial).
 fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
     use std::io::Write;
@@ -299,6 +315,16 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_editor_gets_the_game_folder_and_the_mod() {
+        let env = |c: &Command| c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<Vec<_>>();
+        let e = env(&editor_command(Path::new("/e/WorldBuilderZH.exe"), Path::new("/games/zh"), Some(Path::new("/games/g")), Some("/m/.run")));
+        assert!(e.contains(&("GEN_ZH_PATH".into(), Some("/games/zh".into()))) && e.contains(&("GEN_GENERALS_PATH".into(), Some("/games/g".into()))));
+        assert!(e.contains(&("GEN_MOD_DIR".into(), Some("/m/.run".into()))));
+        let one = env(&editor_command(Path::new("/e/w.exe"), Path::new("/g"), None, Some("/m/Mod.GIB")));
+        assert!(one.iter().any(|(k, _)| k == "GEN_MOD") && !one.iter().any(|(k, _)| k == "GEN_MOD_DIR" || k == "GEN_GENERALS_PATH"));
+    }
+
     #[test]
     fn stronger_ai_is_one_to_three() {
         assert_eq!(ai_boost_env(0), None);

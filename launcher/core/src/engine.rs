@@ -10,6 +10,13 @@ pub fn find(override_path: Option<&str>, resources: Option<&Path>, data: &Path, 
     find_with(override_path, resources, data, cfg!(windows) && !x86)
 }
 
+/// The map editor (WorldBuilder, patch 0116) sits beside the 32-bit Windows engine; no other platform has one.
+pub const EDITOR: &str = "WorldBuilderZH.exe";
+
+pub fn editor(resources: Option<&Path>) -> Option<PathBuf> {
+    resources.map(|r| r.join("engine").join(EDITOR)).filter(|p| cfg!(windows) && p.is_file())
+}
+
 /// Both engines are bundled, so the Settings switch means something.
 pub fn both_bundled(resources: Option<&Path>) -> bool {
     resources.is_some_and(|r| r.join("engine").join("x64").join(EXE).is_file() && r.join("engine").join(EXE).is_file())
