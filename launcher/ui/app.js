@@ -265,7 +265,6 @@ async function checkUpdate(quiet) {
   return null;
 }
 
-/** Settings card: Check now with the answer beside it, and the install actions once there is something to install. */
 /** One line of a settings card: what it is and what it does on the left, its control on the right. */
 function setting(title, desc, ...controls) {
   return h("div", { class: "setting" },
@@ -273,6 +272,7 @@ function setting(title, desc, ...controls) {
     h("div", { class: "setting-ctl" }, ...controls));
 }
 
+/** Settings card: Check now with the answer beside it, and the install actions once there is something to install. */
 function updatesCard() {
   const fb = liveStatus();
   const actions = h("div", { class: "row end" });
@@ -305,6 +305,8 @@ function updatesCard() {
     try {
       await invoke("set_beta_updates", { on: beta.checked });
       store.cfg.beta_updates = beta.checked;
+      // The backend forgot a found beta when opting out; do the same here so no install button is left for it.
+      if (!beta.checked && store.update && store.update.beta) { store.update = null; renderUpdate(); }
       drawBetaNote();
       await runCheck();
     } catch (e) { beta.checked = !!store.cfg.beta_updates; fb.bad(errText(e)); }

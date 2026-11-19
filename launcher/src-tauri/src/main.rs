@@ -291,13 +291,19 @@ fn set_check_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     c.save(&path).map_err(|e| e.to_string())
 }
 
-/// Opt in to (or out of) beta releases. The next check uses it.
+/// Opt in to (or out of) beta releases. The next check uses it; a beta the last check found is forgotten now, so it
+/// cannot be installed after opting out even if that check fails.
 #[tauri::command]
-fn set_beta_updates(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+fn set_beta_updates(app: tauri::AppHandle, updates: tauri::State<Updates>, on: bool) -> Result<(), String> {
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     c.beta_updates = on;
-    c.save(&path).map_err(|e| e.to_string())
+    c.save(&path).map_err(|e| e.to_string())?;
+    let mut found = updates.0.lock().unwrap();
+    if !on && found.as_ref().is_some_and(|u| u.beta) {
+        *found = None;
+    }
+    Ok(())
 }
 
 /// "Skip this version": the start-up banner stays away for the release the last check found.

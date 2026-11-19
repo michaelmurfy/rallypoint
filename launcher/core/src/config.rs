@@ -151,6 +151,9 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        // Written beside it and renamed over it: a crash or a full disk mid-write leaves the old file, not an empty one
+        // (which would lose the serials and the pinned server keys).
+        let tmp = path.with_extension("json.tmp");
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -158,13 +161,16 @@ impl Config {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600); // owner-only from the moment the file exists
         }
-        let mut f = opts.open(path)?;
+        let mut f = opts.open(&tmp)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?; // also tightens a pre-existing file
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?; // also tightens a leftover temporary file
         }
-        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())
+        f.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
     }
 }
 
@@ -182,6 +188,7 @@ mod tests {
         let back = Config::load(&p);
         assert_eq!((back.server.as_str(), back.serial_for("PLAY.example:7777")), ("play.example:7777", "55BC-E547-64E4-5A53"));
         assert_eq!(back.serial_for("other.example:7777"), "", "a serial is only for the server that issued it");
+        assert!(!p.with_extension("json.tmp").exists(), "the temporary file is renamed into place");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -572,19 +572,25 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: dist
-      - name: Create release
+      # Compiled on its own, with no secrets in the environment: crate build scripts run here, not in the steps below.
+      - name: Build release tools
+        run: cargo build --release --locked -q -p generals-core --example release_sign
+      - name: Sign checksums
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           (cd dist && sha256sum * > SHA256SUMS)
           # Sign the checksums: the app only installs an update whose SHA256SUMS.sig checks against the key built into it.
           # Without the secret the release is still published, but the in-app updater will refuse it.
           if [ -n "$RELEASE_SIGNING_KEY" ]; then
-            cargo run --release -q -p generals-core --example release_sign -- sign dist/SHA256SUMS
+            target/release/examples/release_sign sign dist/SHA256SUMS
           else
             echo "::warning::RELEASE_SIGNING_KEY is not set: this release is unsigned and cannot be installed by the in-app updater"
           fi
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
           # The release page (and the in-app "What's new") shows this release and the two before it, not the whole history.
           awk '/^## Rallypoint /{n++} n<=3' docs/release-notes.md > release-notes-short.md

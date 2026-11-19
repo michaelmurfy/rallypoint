@@ -187,8 +187,14 @@ impl Session {
         }
         let mut plain = vec![0u8; data.len()];
         let n = self.state.read_message(counter, &data[COUNTER..], &mut plain).ok()?;
-        // Only a verified packet may move the replay window, or a forger could use it to lock real traffic out.
-        self.replay.lock().ok()?.mark(counter);
+        // Only a verified packet may move the replay window, or a forger could use it to lock real traffic out. Checked
+        // again under the same lock as the mark: two threads opening the same datagram must not both accept it.
+        let mut replay = self.replay.lock().ok()?;
+        if !replay.fresh(counter) {
+            return None;
+        }
+        replay.mark(counter);
+        drop(replay);
         Packet::decode(&plain[..n])
     }
 }
