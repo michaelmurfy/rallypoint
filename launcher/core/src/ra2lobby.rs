@@ -76,6 +76,9 @@ pub struct RoomSettings {
     pub auto_repair: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_minimum: Option<u32>,
+    /// Stronger AI (0 off, 1..3); carried into `Ra2Setup::ai_boost` on start.
+    #[serde(default, skip_serializing_if = "crate::ra2launch::is_zero_u8")]
+    pub ai_boost: u8,
     #[serde(default)]
     pub ai: Vec<AiSeat>,
     /// Changes with every change the host makes; its address is in the top byte, so a new host never reuses one.
@@ -118,6 +121,7 @@ pub fn decode(b: &[u8]) -> Option<Msg> {
                 && (2..=ra2launch::MAX_PLAYERS as u8).contains(&r.starts)
                 && ra2launch::CREDITS.contains(&r.credits)
                 && r.speed <= ra2launch::SLOWEST
+                && r.ai_boost <= 3
                 && r.ai.len() < ra2launch::MAX_PLAYERS
                 && r.ai.iter().all(|a| seat_ok(a.side, a.color, a.start, a.team)) =>
         {
@@ -325,6 +329,7 @@ impl Lobby {
             allies: r.allies,
             auto_repair: r.auto_repair,
             crate_minimum: if r.crates { r.crate_minimum } else { None },
+            ai_boost: r.ai_boost.min(3),
             seed,
             tunnel: None,
         };
@@ -380,6 +385,7 @@ mod tests {
             allies: true,
             auto_repair: true,
             crate_minimum: None,
+            ai_boost: 0,
             ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }],
             rev: 0,
         }
@@ -439,7 +445,17 @@ mod tests {
             a.receive(10, 2, &m);
         }
         assert_eq!(a.view().blocked, "");
+        // Stronger AI on the room becomes AIBoost on the start (and in the launch file).
+        a.set_settings(RoomSettings { ai_boost: 3, ..settings() }).unwrap();
+        for m in a.outgoing() {
+            b.receive(15, 1, &m);
+        }
+        b.set_seat(Seat { ready: true, color: 3, ..Seat::default() }).unwrap();
+        for m in b.outgoing() {
+            a.receive(16, 2, &m);
+        }
         let s = a.start(42).unwrap();
+        assert_eq!(s.ai_boost, 3);
         assert_eq!(s.players.iter().map(|p| p.tunnel_id).collect::<Vec<_>>(), [Some(1), Some(2), None]);
         let sent: Vec<Vec<u8>> = (0..4).flat_map(|_| a.outgoing()).collect();
         assert_eq!(sent.iter().filter(|m| m.starts_with(br#"{"t":"start""#)).count(), START_REPEATS as usize);
@@ -447,7 +463,7 @@ mod tests {
             b.receive(20, 1, m);
         }
         let got = b.view().start.expect("Bob gets the start once");
-        assert_eq!((got.seed, got.players[1].name.as_str()), (42, "Bob"));
+        assert_eq!((got.seed, got.ai_boost, got.players[1].name.as_str()), (42, 3, "Bob"));
         assert!(b.view().start.is_none(), "repeats of the same start are not launched twice");
         // nobody else's start is heard
         let mut c = Lobby::default();

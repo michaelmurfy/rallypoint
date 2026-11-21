@@ -1411,10 +1411,15 @@ fn ra2_lobby_room(
     allies: Option<bool>,
     auto_repair: Option<bool>,
     crate_minimum: Option<u32>,
+    ai_boost: Option<u8>,
     ai: Vec<ra2lobby::AiSeat>,
 ) -> Result<(), String> {
     let m = ra2_find_map(&app, &map)?;
     let crates_on = crates.unwrap_or(true);
+    let boost = ai_boost.unwrap_or(0);
+    if boost > 3 {
+        return Err("Stronger AI level must be 0 to 3".into());
+    }
     let settings = ra2lobby::RoomSettings {
         map,
         map_name: m.name,
@@ -1426,6 +1431,7 @@ fn ra2_lobby_room(
         allies: allies.unwrap_or(true),
         auto_repair: auto_repair.unwrap_or(true),
         crate_minimum: if crates_on { crate_minimum } else { None },
+        ai_boost: boost,
         ai,
         rev: 0,
     };

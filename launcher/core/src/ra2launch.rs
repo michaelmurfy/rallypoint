@@ -81,10 +81,17 @@ pub struct Ra2Setup {
     /// Increased=8, Extreme=40). `None` = the rules default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crate_minimum: Option<u32>,
+    /// Stronger AI (0 off, 1..3): engine `[Game] AIBoost=` (patch 0037). Computer houses only.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub ai_boost: u8,
     #[serde(default)]
     pub seed: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<Tunnel>,
+}
+
+pub(crate) fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 /// A map file name with no folder in it and a map extension.
@@ -120,6 +127,9 @@ pub fn validate(mut setup: Ra2Setup, starts: usize, online: bool) -> Result<Ra2S
     }
     if setup.speed > SLOWEST {
         return Err("Unknown game speed".into());
+    }
+    if setup.ai_boost > 3 {
+        return Err("Stronger AI level must be 0 to 3".into());
     }
     let (mut seen_start, mut seen_color, mut seen_tunnel) = (vec![], vec![], vec![]);
     for p in &mut setup.players {
@@ -210,6 +220,9 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
             let _ = writeln!(f, "CrateMinimum={n}");
         }
     }
+    if (1..=3).contains(&setup.ai_boost) {
+        let _ = writeln!(f, "AIBoost={}", setup.ai_boost);
+    }
     if online || setup.seed != 0 {
         let _ = writeln!(f, "Seed={}", setup.seed);
     }
@@ -274,6 +287,7 @@ mod tests {
             allies: true,
             auto_repair: true,
             crate_minimum: None,
+            ai_boost: 0,
             seed: 0,
             tunnel: Some(Tunnel { port: 1, id: 1, token: [0; 16] }),
         }
@@ -336,10 +350,19 @@ mod tests {
             assert!(off.contains(want), "{want} in {off}");
         }
         assert!(!off.contains("CrateMinimum="), "no crate floor when crates are off");
+        assert!(!off.contains("AIBoost="), "off by default");
         s.crates = true;
         s.crate_minimum = Some(40);
         let dense = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
         assert!(dense.contains("Crates=yes\n") && dense.contains("CrateMinimum=40\n"), "{dense}");
+        s.ai_boost = 2;
+        let boosted = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
+        assert!(boosted.contains("AIBoost=2\n"), "{boosted}");
+        s.ai_boost = 0;
+        assert!(!launch_ini(&s, "/maps/Lake.yrm", 0).unwrap().contains("AIBoost="));
+        s.ai_boost = 4;
+        assert!(validate(s.clone(), 4, false).unwrap_err().contains("Stronger AI"));
+        s.ai_boost = 0;
         // online: network mode, the tunnel, everyone's tunnel id and the seed
         let (mut a, mut b) = (human("Host"), human("Guest"));
         a.tunnel_id = Some(1);

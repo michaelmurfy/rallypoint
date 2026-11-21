@@ -224,6 +224,7 @@ fn main() {
         allies: true,
         auto_repair: true,
         crate_minimum: None,
+        ai_boost: 0,
         ai: vec![],
         rev: 0,
     })

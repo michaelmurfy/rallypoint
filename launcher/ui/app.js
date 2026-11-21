@@ -2134,7 +2134,8 @@ function firstRunSetupRow() {
 
 // ---------------------------------------------------------------- Red Alert 2
 // The second game: the same shell and components, its own Play, Maps, Online lobby and Settings. Nothing of the
-// Generals-only features (mods, World Builder, command bar, renderer, sync logs, Stronger AI) appears here.
+// Generals-only features (mods, World Builder, command bar, renderer, sync logs) appears here. Stronger AI
+// reuses prefs.aiBoost (same Off/Sharper/Strong/Relentless labels) and becomes AIBoost= in the launch file.
 const isRa2 = () => store.cfg.game === "ra2";
 const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
 const RA2_NAME = "Red Alert 2: Yuri's Revenge";
@@ -2168,8 +2169,10 @@ function ra2MatchOpts() {
     superweapons: ra2Flag("ra2Superweapons"),
     allies: ra2Flag("ra2Allies"),
     auto_repair: ra2Flag("ra2AutoRepair"),
+    ai_boost: aiLocal(),
   };
 }
+const ra2AiBoostLabel = (n) => (AI_BOOSTS.find(([v]) => v === n) || AI_BOOSTS[0])[1];
 function ra2CrateDensityLabel(dens, crates, min) {
   if (crates === false || dens === "off") return "No crates";
   if (min === 40 || dens === "extreme") return "Crates extreme";
@@ -2235,6 +2238,7 @@ function ra2Skirmish(onChange) {
   const credits = pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), ra2Credits(), (v) => prefs.set({ ra2Credits: +v }));
   const speed = pick("Game speed", RA2_SPEEDS, ra2Speed(), (v) => prefs.set({ ra2Speed: +v }));
   const crateDensity = pick("Crates", RA2_CRATE_DENSITIES, ra2CrateDensity(), (v) => prefs.set({ ra2CrateDensity: v, ra2Crates: v !== "off" }));
+  const strongerAi = pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), aiLocal(), (v) => prefs.set({ aiBoost: +v }));
   const superweapons = ra2OptCheck("Superweapons", "ra2Superweapons");
   const allies = ra2OptCheck("Allies allowed", "ra2Allies");
   const autoRepair = ra2OptCheck("Auto repair", "ra2AutoRepair");
@@ -2330,6 +2334,7 @@ function ra2Skirmish(onChange) {
   const setup = () => ({
     map: mapSel.value, credits: +credits.value, speed: +speed.value, seed: 0,
     ...ra2MatchOpts(),
+    ai_boost: +strongerAi.value,
     players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
   });
   /** Why Play cannot start this setup yet ("" when it can). */
@@ -2348,11 +2353,12 @@ function ra2Skirmish(onChange) {
         h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
         h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
         h("label", { class: "field" }, h("span", {}, "Crates"), crateDensity),
+        h("label", { class: "field" }, h("span", {}, "Stronger AI"), strongerAi),
         superweapons, allies, autoRepair)));
   const el = h("div", { class: "stack" }, empty, body);
   const show = () => { empty.hidden = !!maps.length || !store.ra2Maps; body.hidden = !maps.length; };
   reload();
-  return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length }); } };
+  return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length, aiBoost: +strongerAi.value }); } };
 }
 
 function ra2PlayPage() {
@@ -2507,6 +2513,7 @@ function ra2LobbyCard() {
         allies: settings.allies !== false,
         auto_repair: settings.auto_repair !== false,
         crate_minimum: settings.crates === false ? null : (settings.crate_minimum ?? null),
+        ai_boost: AI_BOOSTS.some(([v]) => v === settings.ai_boost) ? settings.ai_boost : aiLocal(),
       };
       await invoke("ra2_lobby_room", {
         map: settings.map, credits: settings.credits, speed: settings.speed,
@@ -2611,6 +2618,7 @@ function ra2LobbyCard() {
         if ("superweapons" in patch) prefs.set({ ra2Superweapons: n.superweapons });
         if ("allies" in patch) prefs.set({ ra2Allies: n.allies });
         if ("auto_repair" in patch) prefs.set({ ra2AutoRepair: n.auto_repair });
+        if ("ai_boost" in patch) prefs.set({ aiBoost: n.ai_boost });
         sendRoom(n);
       };
       const mapSel = pick("Map", all.map((m) => [fileOf(m.path), `${m.name} (${m.players})`]), cur.map, (v) => set({ map: v }));
@@ -2623,12 +2631,14 @@ function ra2LobbyCard() {
         crates: v !== "off",
         crate_minimum: v in RA2_CRATE_MIN ? RA2_CRATE_MIN[v] : null,
       }));
+      const boost = AI_BOOSTS.some(([v]) => v === cur.ai_boost) ? cur.ai_boost : aiLocal();
       options = h("div", { class: "stack tight" },
         h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps. Add some on the Maps page.")),
         h("div", { class: "ra2opts" },
           h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
           h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
           h("label", { class: "field" }, h("span", {}, "Crates"), densSel),
+          h("label", { class: "field" }, h("span", {}, "Stronger AI"), pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), boost, (v) => set({ ai_boost: +v }))),
           flag("Superweapons", "superweapons"), flag("Allies allowed", "allies"), flag("Auto repair", "auto_repair")));
     } else {
       const flags = s ? [
@@ -2636,7 +2646,8 @@ function ra2LobbyCard() {
         s.superweapons !== false ? "Superweapons" : "No superweapons",
         s.allies !== false ? "Allies" : "No allies",
         s.auto_repair !== false ? "Auto repair" : "No auto repair",
-      ] : [];
+        s.ai_boost ? `${ra2AiBoostLabel(s.ai_boost)} AI` : null,
+      ].filter(Boolean) : [];
       options = s ? h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "factline" }, [`$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`, ...flags].map((b) => h("span", {}, b))))
         : h("p", { class: "muted small" }, "Waiting for the host to choose a map.");
     }
