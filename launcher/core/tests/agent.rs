@@ -562,7 +562,7 @@ fn red_alert_2_lobby_ready_start_then_tunnel_auth() {
     // launch_ini shape the engines would get
     let mut for_host = setup.clone();
     for_host.tunnel = Some(generals_core::ra2launch::Tunnel { port: host_agent.tunnel_port(), id: host_vip, token: ta });
-    let ini = generals_core::ra2launch::launch_ini(&for_host, std::path::Path::new("xmp01t4.map"), 0).unwrap();
+    let ini = generals_core::ra2launch::launch_ini(&for_host, "xmp01t4.map", 0).unwrap();
     assert!(ini.contains("Mode=network") && ini.contains("Token=") && ini.contains(&format!("TunnelId={host_vip}")));
     stop.store(true, Ordering::Relaxed);
 }

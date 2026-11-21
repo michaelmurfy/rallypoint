@@ -319,12 +319,16 @@ fn main() {
             );
         } else {
             let map_path = data.join(&args.map);
-            let map_for_ini = if map_path.is_file() { map_path.as_path() } else { Path::new(args.map.as_str()) };
+            let map_for_ini = if map_path.is_file() {
+                map_path.to_string_lossy().replace('\\', "/")
+            } else {
+                args.map.clone()
+            };
             let mut children: Vec<(String, Child)> = Vec::new();
             let write_side = |label: &str, agent: &Agent, vip: u8, token: [u8; 16], local: usize, setup: &Ra2Setup| -> (String, Child) {
                 let mut s = setup.clone();
                 s.tunnel = Some(Tunnel { port: agent.tunnel_port(), id: vip, token });
-                let ini_body = ra2launch::launch_ini(&s, map_for_ini, local).expect("ini");
+                let ini_body = ra2launch::launch_ini(&s, &map_for_ini, local).expect("ini");
                 let ini_path = log_dir.join(format!("{label}.ini"));
                 std::fs::write(&ini_path, &ini_body).unwrap();
                 let log = log_dir.join(format!("{label}.log"));
