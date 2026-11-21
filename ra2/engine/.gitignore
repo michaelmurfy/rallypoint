@@ -1,0 +1,34 @@
+# Build output
+/build/
+/build-*/
+# Android build outputs + machine-specific SDK/NDK paths (never commit)
+/android/build/
+/android/app/build/
+/android/.gradle/
+/android/.cxx/
+/android/app/.cxx/
+/android/local.properties
+# Android SDK (installed outside the repo; guard against accidental copies)
+/android-sdk/
+# Oracle golden files derived from EA-owned assets — never commit
+/oracle/
+# Any accidental asset copies
+*.mix
+*.shp
+*.pal
+*.exe
+*.vxl
+*.hva
+*.csf
+*.aud
+*.bag
+*.idx
+*.wav
+# Ghidra project lives outside the repo, but guard anyway
+*.gpr
+*.rep/
+/android/keystore.properties
+*.jks
+*.keystore
+# W6-06-02 release packages (scripts/package-win.ps1)
+/dist/

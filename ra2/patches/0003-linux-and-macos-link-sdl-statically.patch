@@ -1,0 +1,53 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 667a9da..0522eb1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -379,11 +379,16 @@ if (RA2_BUILD_ENGINE)
+   # --ai-soak) under SDL's dummy video/audio drivers -- the cross-platform
+   # determinism gate (tools/xplat_gate.ps1, docs/DEVELOPMENT.md "Networking L0").
+   option(RA2_ANDROID_CLI "Android: build the CLI gate executable (static SDL)" OFF)
+-  if (ANDROID AND RA2_ANDROID_CLI)
++  # Rallypoint: Linux and macOS link SDL statically, so the engine is one
++  # executable with no rpath to get right (SDL still dlopens X11 / Wayland /
++  # ALSA / PulseAudio at run time). Windows keeps SDL2.dll beside the exe.
++  if ((ANDROID AND RA2_ANDROID_CLI) OR (NOT WIN32 AND NOT ANDROID))
+     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+     set(SDL_STATIC ON CACHE BOOL "" FORCE)
++    set(RA2_SDL_LIB SDL2::SDL2-static)
+   else()
+     set(SDL_SHARED ON CACHE BOOL "" FORCE)
++    set(RA2_SDL_LIB SDL2::SDL2)
+   endif()
+   # W2-AR-30: SDL's internal SDL_assert()s are compiled OUT of optimised
+   # builds (level 1 = SDL_assert_release only); a Debug build keeps them
+@@ -421,11 +426,7 @@ if (RA2_BUILD_ENGINE)
+   target_include_directories(ra2engine_obj SYSTEM PRIVATE third_party)
+   target_compile_options(ra2engine_obj PRIVATE -Wall -Wextra)
+   # Usage requirements (include dirs, defines) of ra2assets + SDL2 for the objects.
+-  if (ANDROID AND RA2_ANDROID_CLI)
+-    target_link_libraries(ra2engine_obj PRIVATE ra2assets SDL2::SDL2-static)
+-  else()
+-    target_link_libraries(ra2engine_obj PRIVATE ra2assets SDL2::SDL2)
+-  endif()
++  target_link_libraries(ra2engine_obj PRIVATE ra2assets ${RA2_SDL_LIB})
+   add_executable(ra2engine $<TARGET_OBJECTS:ra2engine_obj>)
+   # NOTE: link order deviates from the brief's literal listing (SDL2 then
+   # SDL2main) to (SDL2main then SDL2). Under MinGW/GNU ld, static archives
+@@ -444,7 +445,7 @@ if (RA2_BUILD_ENGINE)
+     target_compile_definitions(ra2engine_obj PRIVATE RA2_ANDROID_CLI=1)
+     target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2-static log android)
+   else()
+-    target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2main SDL2::SDL2)
++    target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2main ${RA2_SDL_LIB})
+   endif()
+   if (WIN32)
+     # W2-AR-22: registry install-path lookup + the BROWSE folder picker
+@@ -479,7 +480,7 @@ if (RA2_BUILD_ENGINE)
+   endif()
+   # SDL_SHARED=ON builds SDL2.dll; copy it next to ra2engine.exe post-build
+   # so the exe can find it at runtime (Windows has no rpath).
+-  if (NOT (ANDROID AND RA2_ANDROID_CLI))
++  if (WIN32)
+     add_custom_command(TARGET ra2engine POST_BUILD
+       COMMAND ${CMAKE_COMMAND} -E copy_if_different
+         $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:ra2engine>)

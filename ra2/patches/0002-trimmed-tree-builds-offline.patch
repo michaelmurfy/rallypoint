@@ -1,0 +1,38 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9936d03..667a9da 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -362,8 +362,6 @@ target_include_directories(ra2extract PRIVATE third_party)
+ target_link_libraries(ra2extract PRIVATE ra2assets)
+ # W3-FIX-A: the art-resolution census (developer tool, not built by default).
+ add_executable(art_census EXCLUDE_FROM_ALL tools/art_census.cpp)
+-# simdiff harness, L0 rung (docs/re/simdiff-harness.md): GameRandom draw stream.
+-add_executable(simdiff_l0 EXCLUDE_FROM_ALL tools/simdiff/l0_clone.cpp engine/crate.cpp)
+ target_link_libraries(art_census PRIVATE ra2assets)
+ 
+ option(RA2_BUILD_ENGINE "Build the SDL2 engine/app (needs SDL2)" ON)
+diff --git a/cmake/sdl2_pin.cmake b/cmake/sdl2_pin.cmake
+index 41b0089..d18aa77 100644
+--- a/cmake/sdl2_pin.cmake
++++ b/cmake/sdl2_pin.cmake
+@@ -7,3 +7,8 @@
+ set(RA2_SDL2_VERSION "2.30.9")
+ set(RA2_SDL2_URL "https://github.com/libsdl-org/SDL/releases/download/release-2.30.9/SDL2-2.30.9.tar.gz")
+ set(RA2_SDL2_SHA256 "24b574f71c87a763f50704bbb630cbe38298d544a1f890f099a4696b1d6beba4")
++# Rallypoint: the same tarball is vendored as ra2/third-party/SDL2-2.30.9.tar.gz,
++# so nothing is downloaded at configure time (the hash above is still checked).
++if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../third-party/SDL2-${RA2_SDL2_VERSION}.tar.gz")
++    get_filename_component(RA2_SDL2_URL "${CMAKE_CURRENT_LIST_DIR}/../../third-party/SDL2-${RA2_SDL2_VERSION}.tar.gz" ABSOLUTE)
++endif()
+diff --git a/tests/asset_fixture.hpp b/tests/asset_fixture.hpp
+index 6cd99e0..f04f371 100644
+--- a/tests/asset_fixture.hpp
++++ b/tests/asset_fixture.hpp
+@@ -134,6 +134,7 @@ inline const ra2assets::MixFile& ra2_mix() { return mix_by_name("ra2.mix"); }
+ // expansion mixes, cachemd.mix, conqmd.mix). Empty vector if not found in any.
+ // Not cached (callers that repeat a file get a cached accessor below).
+ inline std::vector<uint8_t> resolve_nested_bytes(const std::string& name) {
++    if (ra2md_bytes().empty()) return {};   // Rallypoint: no install -> absent, not a throw
+     const ra2assets::MixFile& top = top_mix();
+     if (const ra2assets::MixEntry* e = top.find(ra2assets::mix_id(name)))
+         return top.read(*e);
