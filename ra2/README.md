@@ -67,6 +67,8 @@ the original game would differ); every one of our builds simulates identically, 
 | `0014-skirmish-mind-control` | Skirmish/MP CaptureManager: `World::step_mind_control` arms `w_mind_control`, capacity, release on death/board/Temporal; campaign path unchanged. |
 | `0015-gattling-weapon-stages` | `IsGattling` RateUp/RateDown timer, Stage1..N / EliteStage, Weapon1..N (AG odd / AA even); YTNK and GTGCAN. |
 | `0016-yuri-cameo-mix-lookup` | `cameomd.mix` is opened from `langmd.mix` (stock YR), so Yuri sidebar icons resolve. |
+| `0017-magnetron-magnetic-beam` | Magnetron Magnetic Beam: warhead `IsLocomotor` lift/hold/drop (`magnetron.hpp`). |
+| `0018-floating-disc-drain` | Floating Disc `DrainWeapon`: foundation hover, power blackout, money drain. |
 
 ## Factions (Country=)
 
@@ -99,6 +101,8 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 - **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder/Bio Reactor fates for MC victims still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
+- **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); building toss / beam art not drawn.
+- **Floating Disc**: DrainWeapon power/money drain (patch 0018); DISKRAY anim not hooked; no live Disc-over-base check.
 
 ## Building
 
