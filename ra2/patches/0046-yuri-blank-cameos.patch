@@ -1,0 +1,257 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 6dc92f4..4ed4caf 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2163,8 +2163,8 @@ struct UnitRoster {
+ // Hoisted from load_unit_roster so the AI-2 Soviet table reuses the loop.
+ struct UnitRosterEnt { const char* id; bool vehicle; const char* prereq; };
+ 
+-// Rallypoint: a cameo the RA2 cameo.mix lacks, from the global search list
+-// (its YR tail has cameomd.mix: the Yuri side's icons).
++// Rallypoint: sidebar cameo SHP from the global search list (language/cameo
++// for RA2 icons, langmd/cameomd for the Yuri side — patches 0016 / 0046).
+ inline bool yr_cameo_shp(const std::string& cameo, ra2assets::ShpFile& out) {
+     if (cameo.empty()) return false;
+     std::string cn = cameo;
+@@ -2175,6 +2175,38 @@ inline bool yr_cameo_shp(const std::string& cameo, ra2assets::ShpFile& out) {
+     return true;
+ }
+ 
++// T3.5 / T2.4: name for the sidebar icon when artmd Cameo= is blank.
++// Order matches gamemd/ModEnc: Cameo=, AltCameo=, then Image/id + "ICON" if
++// that SHP exists in the mix list, else XXICON (the retail missing-cameo tile).
++inline std::string resolve_cameo_name(const Art& art, const std::string& image,
++                                      const std::string& id) {
++    std::string c = art.cameo(image);
++    if (c.empty()) c = art.cameo(id);
++    if (c.empty()) c = art.alt_cameo(image);
++    if (c.empty()) c = art.alt_cameo(id);
++    auto probe_icon = [](const std::string& base) -> std::string {
++        if (base.empty()) return {};
++        std::string cn = base + "ICON";
++        std::string file = cn;
++        for (char& ch : file) ch = (char)std::tolower((unsigned char)ch);
++        file += ".shp";
++        return asset_fs().has(file) ? cn : std::string();
++    };
++    if (c.empty()) c = probe_icon(image);
++    if (c.empty() && id != image) c = probe_icon(id);
++    if (c.empty()) c = "XXICON";
++    return c;
++}
++
++// Load the named cameo; if absent, the stock XXICON placeholder (retail).
++inline bool load_cameo_shp(const std::string& cameo, ra2assets::ShpFile& out) {
++    if (yr_cameo_shp(cameo, out)) return true;
++    std::string low = cameo;
++    for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
++    if (low == "xxicon") return false;
++    return yr_cameo_shp("XXICON", out);
++}
++
+ // Shared roster-loading loop [RE-GATE APPLIED: production.md §1.1/§1.6]. Loads
+ // the given (ents, n) into a UnitRoster with EVERY guard identical to the
+ // former load_unit_roster body (cost/tech/cameo drop, vehicle-asset drop,
+@@ -2227,11 +2259,14 @@ UnitRoster load_unit_roster_table(const std::string& dir, const ra2assets::MixFi
+             // Grizzly — while the legacy [MTNK] art section is the *Apocalypse*
+             // (Cameo=MTNKICON). Keying on rules.image(id) yields GTNK->GTNKICON
+             // (Grizzly), the correct cameo. Fall back to the id-keyed section if
+-            // the image section has none.
++            // the image section has none. Blank Cameo= (YACOMD/YAROCK/…) takes
++            // AltCameo, Image+ICON when the SHP exists, else XXICON (T3.5).
+             const std::string image = rules.image(e.id);
+-            d.cameo = art.cameo(image);
+-            if (d.cameo.empty()) d.cameo = art.cameo(e.id);
+-            if (d.cost <= 0 || d.tech_level <= 0 || d.cameo.empty()) continue;  // not producible
++            d.cameo = resolve_cameo_name(art, image, e.id);
++            if (d.cost <= 0 || d.tech_level <= 0) continue;  // not producible
++            // Cameo name is never empty after resolve (XXICON at least); the
++            // old `cameo.empty()` gate dropped blank-Cameo types that retail
++            // still draws with XXICON. TechLevel/cost still decide producible.
+ 
+             // Cameo SHP (guarded; absence only downgrades the sidebar icon).
+             ra2assets::ShpFile cshp;
+@@ -2244,7 +2279,7 @@ UnitRoster load_unit_roster_table(const std::string& dir, const ra2assets::MixFi
+                     catch (const std::exception&) { have_cameo = false; }
+                 }
+             }
+-            if (!have_cameo) have_cameo = yr_cameo_shp(d.cameo, cshp);   // Rallypoint: cameomd.mix
++            if (!have_cameo) have_cameo = load_cameo_shp(d.cameo, cshp);  // cameomd + XXICON
+ 
+             if (e.vehicle && !art.voxel(image) &&
+                 to_lower(rules.section_string(e.id, "Locomotor", "")).find("2bea74e1") != std::string::npos) {
+@@ -2813,7 +2848,8 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+         d.prerequisite = rules.prerequisite(id);
+         d.image = art_id;
+         d.buildup = art.buildup(art_id);
+-        d.cameo = art.cameo(art_id);
++        // T3.5: blank artmd Cameo= (YAROCK, …) → AltCameo / Image+ICON / XXICON.
++        d.cameo = resolve_cameo_name(art, art_id, id);
+         d.explosion = rules.explosion_first(id);
+         // Engineer/Spy Capture [RE: capture.md §D1]: neutral tech-structure
+         // periodic income. Absent from every non-tech section -> 0 default keeps
+@@ -2896,8 +2932,9 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+                         slot.has_cameo = true;
+                     }
+                 } catch (const std::exception&) { slot.has_cameo = false; }
+-                // Rallypoint: YR-only cameos (the Yuri side) live in cameomd.mix.
+-                if (!slot.has_cameo && rules_ini) slot.has_cameo = yr_cameo_shp(d.cameo, slot.cameo);
++                // Rallypoint: YR cameomd + XXICON via AssetFS (language/cameo
++                // is also on that list after patch 0046).
++                if (!slot.has_cameo) slot.has_cameo = load_cameo_shp(d.cameo, slot.cameo);
+             }
+         } catch (const std::exception& ex) {
+             std::cerr << "[building] " << id << " main image missing (" << ex.what() << ")\n";
+diff --git a/include/ra2assets/art.hpp b/include/ra2assets/art.hpp
+index 960ac2c..65451a7 100644
+--- a/include/ra2assets/art.hpp
++++ b/include/ra2assets/art.hpp
+@@ -73,6 +73,9 @@ public:
+     // [image] Cameo=, or "" if absent.
+     std::string cameo(const std::string& image) const;
+ 
++    // [image] AltCameo=, or "" if absent (veteran / undeployed sidebar icon).
++    std::string alt_cameo(const std::string& image) const;
++
+     // W6-04-04: [image] DamageLevels= (a wall OverlayType's damage stages,
+     // GAWALL/NAWALL 3, sandbags/fences 2); 1 if absent.
+     int damage_levels(const std::string& image) const;
+diff --git a/src/art.cpp b/src/art.cpp
+index 196ecb4..43a3604 100644
+--- a/src/art.cpp
++++ b/src/art.cpp
+@@ -139,6 +139,10 @@ std::string Art::cameo(const std::string& image) const {
+     return ini_->get(image, "Cameo", "");
+ }
+ 
++std::string Art::alt_cameo(const std::string& image) const {
++    return ini_->get(image, "AltCameo", "");
++}
++
+ int Art::damage_levels(const std::string& image) const {
+     const int v = std::atoi(ini_->get(image, "DamageLevels", "1").c_str());
+     return v > 0 ? v : 1;
+diff --git a/src/asset_fs.cpp b/src/asset_fs.cpp
+index 9f2c7ad..3b2cc3a 100644
+--- a/src/asset_fs.cpp
++++ b/src/asset_fs.cpp
+@@ -44,6 +44,11 @@ std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
+     for (const std::string& p : patch_tops)
+         if (lower(p).rfind("ecache", 0) == 0 || lower(p).rfind("elocal", 0) == 0) top(p);
+     ra2("conquer.mix");
++    // CAMEO is nested in language.mix (stock RA2), same as CAMEOMD in langmd.
++    // Without it AssetFS misses XXICON/FIXICON/GIICON and every RA2 cameo;
++    // sidebar loaders had to open language/cameo by hand, and blank-Cameo
++    // fallbacks to XXICON could not go through the global list.
++    out.push_back({"language.mix", "cameo.mix"});
+     if (!snow) ra2("generic.mix");
+     ra2(c->art_mix);                                   // TEMPERAT / SNOW / URBAN
+     ra2(std::string(c->ext) + ".mix");                 // TEM / SNO / URB
+diff --git a/tests/test_art.cpp b/tests/test_art.cpp
+index aa2f336..708f227 100644
+--- a/tests/test_art.cpp
++++ b/tests/test_art.cpp
+@@ -116,6 +116,8 @@ TEST_CASE("art: real artmd.ini pins (GISequence == ConSequence for our entries)"
+ TEST_CASE("art: building accessors (synthetic)") {
+     ra2assets::Ini ini = ra2assets::Ini::parse(
+         "[GAPOWR]\nFoundation=2x2\nBuildup=GAPOWRMK\nCameo=POWRICON\nNewTheater=yes\n"
++        "[YAREFN]\nCameo=SMINICON\nAltCameo=SMINUICO\n"
++        "[YAROCK]\nFoundation=1x1\n"
+         "[BAD]\nFoundation=huge\n");
+     ra2assets::Art a = ra2assets::Art::load(ini);
+     int fw = -1, fh = -1;
+@@ -128,6 +130,9 @@ TEST_CASE("art: building accessors (synthetic)") {
+     CHECK(a.buildup("GAPOWR") == "GAPOWRMK");
+     CHECK(a.buildup("MISSING") == "");
+     CHECK(a.cameo("GAPOWR") == "POWRICON");
++    CHECK(a.alt_cameo("YAREFN") == "SMINUICO");
++    CHECK(a.cameo("YAROCK") == "");
++    CHECK(a.alt_cameo("YAROCK") == "");
+     CHECK(a.new_theater("GAPOWR"));
+     CHECK_FALSE(a.new_theater("MISSING"));
+ }
+diff --git a/tests/test_asset_fs.cpp b/tests/test_asset_fs.cpp
+index 9cdd4ff..2bac176 100644
+--- a/tests/test_asset_fs.cpp
++++ b/tests/test_asset_fs.cpp
+@@ -70,6 +70,9 @@ TEST_CASE("asset_search_order: RA2 game.exe load order, YR tail last") {
+               e = index_of(o, "ra2.mix/urb.mix"), i = index_of(o, "ra2.mix/isourb.mix"),
+               ig = index_of(o, "ra2.mix/isogen.mix");
+     CHECK(index_of(o, "ra2.mix/conquer.mix") < g);
++    // RA2 cameos (XXICON, FIXICON, GIICON, …) live in language.mix/cameo.mix.
++    CHECK(index_of(o, "language.mix/cameo.mix") > index_of(o, "ra2.mix/conquer.mix"));
++    CHECK(index_of(o, "language.mix/cameo.mix") < g);
+     CHECK(g < t);
+     CHECK(t < e);
+     CHECK(e < i);
+@@ -152,36 +155,54 @@ TEST_CASE("AssetFS: real install -- Yuri cameos resolve from langmd/cameomd") {
+     AssetFS fs(d, theater_chain("TEMPERATE"));
+     CHECK(fs.where("yconicon.shp") == "langmd.mix/cameomd.mix");
+     CHECK(fs.where("ypwricon.shp") == "langmd.mix/cameomd.mix");
++    CHECK(fs.where("xxicon.shp") == "language.mix/cameo.mix");
++    CHECK(fs.where("fixicon.shp") == "language.mix/cameo.mix");
+     CHECK(fs.find("yconicon.shp", nullptr, nullptr, /*ra2_only=*/true) == nullptr);
+ 
+-    // Stock Yuri structures + units (Cameo= from artmd Image=/id).
++    // Same name resolve as the sidebar loaders (Cameo / AltCameo / Image+ICON /
++    // XXICON). Blank artmd Cameo= types (YAROCK, YACOMD, YAPPPT) get XXICON.
++    auto resolve = [&](const std::string& id) -> std::string {
++        std::string image = rules.get(id, "Image", id);
++        if (image.empty()) image = id;
++        std::string cameo = art.cameo(image);
++        if (cameo.empty()) cameo = art.cameo(id);
++        if (cameo.empty()) cameo = art.alt_cameo(image);
++        if (cameo.empty()) cameo = art.alt_cameo(id);
++        auto probe = [&](const std::string& base) -> std::string {
++            if (base.empty()) return {};
++            std::string cn = base + "ICON";
++            std::string file = cn;
++            for (char& c : file) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            file += ".shp";
++            return fs.has(file) ? cn : std::string();
++        };
++        if (cameo.empty()) cameo = probe(image);
++        if (cameo.empty() && id != image) cameo = probe(id);
++        if (cameo.empty()) cameo = "XXICON";
++        return cameo;
++    };
++
+     static const char* kYuriTypes[] = {
+         "YACNST", "YAPOWR", "YABRCK", "YAWEAP", "YAREFN", "YAYARD", "YADEPT",
+         "YATECH", "YAGGUN", "YAPSYT", "YAGRND", "YAGNTC", "YAPPET", "NAPSIS",
+         "NACLON", "NATBNK", "INIT", "SMIN", "PCV", "YTNK", "TELE", "DISK",
+         "MIND", "BRUTE", "VIRUS", "YURI", "LTNK",
++        // Blank Cameo= in artmd — retail draws XXICON; Image+ICON SHPs absent.
++        "YAROCK", "YACOMD", "YAPPPT",
+     };
+     std::vector<std::string> missing;
+     for (const char* id : kYuriTypes) {
+-        std::string image = rules.get(id, "Image", id);
+-        if (image.empty()) image = id;
+-        std::string cameo = art.cameo(image);
+-        if (cameo.empty()) cameo = art.cameo(id);
+-        if (cameo.empty()) {
+-            missing.push_back(std::string(id) + " (no Cameo= in artmd)");
+-            continue;
+-        }
++        std::string cameo = resolve(id);
+         for (char& c : cameo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+         cameo += ".shp";
+         if (!fs.has(cameo)) missing.push_back(std::string(id) + " -> " + cameo);
+     }
+-    // FIXICON (YADEPT) lives only in language.mix/cameo.mix, which the building
+-    // loader opens before the AssetFS fallback.
+-    missing.erase(std::remove_if(missing.begin(), missing.end(),
+-                                 [](const std::string& m) {
+-                                     return m.find("fixicon.shp") != std::string::npos;
+-                                 }),
+-                  missing.end());
+     for (const std::string& m : missing) MESSAGE("missing cameo: ", m);
+     CHECK(missing.empty());
++    CHECK(resolve("YAROCK") == "XXICON");
++    CHECK(resolve("YACOMD") == "XXICON");
++    CHECK(resolve("YAPPPT") == "XXICON");
++    CHECK(resolve("YADEPT") == "FIXICON");   // rules Image=GADEPT
++    CHECK(resolve("YAREFN") == "SMINICON");
++    CHECK(art.alt_cameo("YAREFN") == "SMINUICO");
+ }

@@ -132,7 +132,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
 - **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); enter cursors / reactor eject still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
-- Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
+- Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016); RA2 cameos (`XXICON`, `FIXICON`, …) are on the same AssetFS list via `language.mix`/`cameo.mix` (patch 0046). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) fall back to `AltCameo`, `Image`+`ICON` when that SHP exists, else retail `XXICON`.
 - **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); MagBeam art while lifting (patch 0045); building toss still open.
 - **Floating Disc**: DrainWeapon power/money drain (patch 0018); DISKRAY anim while draining (patch 0045); no live Disc-over-base check.
 
