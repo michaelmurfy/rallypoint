@@ -1,0 +1,53 @@
+diff --git a/engine/mp/mp_socket.cpp b/engine/mp/mp_socket.cpp
+index a96e8a2..d9a0cd3 100644
+--- a/engine/mp/mp_socket.cpp
++++ b/engine/mp/mp_socket.cpp
+@@ -21,6 +21,7 @@ using socklen_t = int;
+ #include <arpa/inet.h>
+ #include <cerrno>
+ #include <fcntl.h>
++#include <ifaddrs.h>
+ #include <net/if.h>
+ #include <netdb.h>
+ #include <netinet/in.h>
+@@ -152,31 +153,16 @@ std::vector<LocalIf> interfaces() {
+     }
+     ::closesocket(s);
+ #else
+-    // SIOCGIFCONF works on every Android API level (getifaddrs needs 24+).
+-    const int s = ::socket(AF_INET, SOCK_DGRAM, 0);
+-    if (s < 0) return out;
+-    char buf[4096];
+-    ifconf ifc;
+-    ifc.ifc_len = sizeof buf;
+-    ifc.ifc_buf = buf;
+-    if (ioctl(s, SIOCGIFCONF, &ifc) == 0) {
+-        for (int off = 0; off + static_cast<int>(sizeof(ifreq)) <= ifc.ifc_len; off += sizeof(ifreq)) {
+-            ifreq* r = reinterpret_cast<ifreq*>(buf + off);
+-            if (r->ifr_addr.sa_family != AF_INET) continue;
+-            const std::uint32_t ip = ntohl(reinterpret_cast<sockaddr_in*>(&r->ifr_addr)->sin_addr.s_addr);
+-            ifreq q;
+-            std::memcpy(&q, r, sizeof q);
+-            if (ioctl(s, SIOCGIFFLAGS, &q) != 0 || !(q.ifr_flags & IFF_UP)) continue;
+-            std::memcpy(&q, r, sizeof q);
+-            std::uint32_t mask = 0xFFFFFF00u;
+-            if (ioctl(s, SIOCGIFNETMASK, &q) == 0)
+-                mask = ntohl(reinterpret_cast<sockaddr_in*>(&q.ifr_netmask)->sin_addr.s_addr);
+-            char nm[IFNAMSIZ + 1] = {0};
+-            std::memcpy(nm, r->ifr_name, IFNAMSIZ);
+-            out.push_back(LocalIf{ip, mask, std::string(nm)});
+-        }
++    // getifaddrs: SIOCGIFCONF entries are variable-length on macOS/BSD and there is no ifr_netmask there.
++    ifaddrs* list = nullptr;
++    if (getifaddrs(&list) != 0) return out;
++    for (ifaddrs* i = list; i; i = i->ifa_next) {
++        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !(i->ifa_flags & IFF_UP)) continue;
++        const std::uint32_t ip = ntohl(reinterpret_cast<sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr);
++        const std::uint32_t mask = i->ifa_netmask ? ntohl(reinterpret_cast<sockaddr_in*>(i->ifa_netmask)->sin_addr.s_addr) : 0xFFFFFF00u;
++        out.push_back(LocalIf{ip, mask, std::string(i->ifa_name ? i->ifa_name : "")});
+     }
+-    ::close(s);
++    freeifaddrs(list);
+ #endif
+     return out;
+ }
