@@ -8,7 +8,7 @@
 name: Release
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', 'ra2-alpha.*'] # ra2-alpha.N: Red Alert 2 alphas, tagged on feat/ra2; published as pre-releases
     branches: [main]
     paths: # ignored for tags
       - 'Cargo.lock'
@@ -518,7 +518,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Tag matches app version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"; core="${tag%%-*}"
@@ -569,14 +569,20 @@ jobs:
         run: |
           # A tag build uses the tag (v0.1.0-beta.1 -> 0.1.0-beta.1); a manual run gets a clearly fake one.
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # Installers and packages need x.y.z[-pre]: an alpha is named <tauri.conf.json version>-ra2.alpha.N (no extra "-" for rpm).
+          PKG_VERSION="$VERSION"
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) PKG_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' launcher/src-tauri/tauri.conf.json)-ra2.alpha.${GITHUB_REF_NAME#ra2-alpha.}" ;; esac
+          echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
           # tauri.conf.json carries the base 0.1.0; this file overrides it so installers and the app are named by the real version
           # Tauri takes only a plain x.y.z for the packages on Linux (rpm rejects the '-' of 0.8.3-beta.1). The rpm carries the beta in
           # its release field (0.8.3-0.beta.1 sorts before 0.8.3-1) and package-linux.sh gives the deb 0.8.3~beta.1 afterwards.
-          BUNDLE_VERSION="$VERSION"; RPM_RELEASE=1
+          BUNDLE_VERSION="$PKG_VERSION"; RPM_RELEASE=1
           if [ "$RUNNER_OS" = Linux ]; then
-            BUNDLE_VERSION="${VERSION%%-*}"
-            [ "$BUNDLE_VERSION" = "$VERSION" ] || RPM_RELEASE="0.${VERSION#*-}"
+            BUNDLE_VERSION="${PKG_VERSION%%-*}"
+            [ "$BUNDLE_VERSION" = "$PKG_VERSION" ] || RPM_RELEASE="0.${PKG_VERSION#*-}"
           fi
           printf '{"version":"%s","bundle":{"linux":{"rpm":{"release":"%s"}}}}' "$BUNDLE_VERSION" "$RPM_RELEASE" > launcher/src-tauri/tauri.version.json
           echo "building $VERSION"
@@ -614,8 +620,8 @@ jobs:
           find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
           # The plain archive is the deb's /usr tree (see scripts/package-linux.sh), for CachyOS and anything else.
           if [ "$RUNNER_OS" = Linux ]; then
-            sh scripts/package-linux.sh debversion "$RALLYPOINT_VERSION" dist/*.deb
-            sh scripts/package-linux.sh tarball "$RALLYPOINT_VERSION" dist/*.deb dist
+            sh scripts/package-linux.sh debversion "$PKG_VERSION" dist/*.deb
+            sh scripts/package-linux.sh tarball "$PKG_VERSION" dist/*.deb dist
           fi
           ls dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -642,6 +648,8 @@ jobs:
       - name: Work out the version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Binaries for Linux (x86_64, arm64, armv7), built on Debian so they run on Raspberry Pi OS too
         run: |
@@ -672,11 +680,13 @@ jobs:
         run: |
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rallypoint-relay"
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$RALLYPOINT_VERSION"
+          # An RA2 alpha never moves `latest`: it is pushed as `ra2-alpha` (and its own version) only.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) MOVING=ra2-alpha ;; *) MOVING=latest ;; esac
           # One multi-architecture image: Docker pulls the right one for the machine (PC, Raspberry Pi, ARM server).
           # `latest` follows the newest release, prereleases included: every release so far is one, and docker-compose.yml pulls it.
           docker buildx build --builder multi -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" \
-            --platform linux/amd64,linux/arm64,linux/arm/v7 -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
+            --platform linux/amd64,linux/arm64,linux/arm/v7 -t "$IMAGE:$VERSION" -t "$IMAGE:$MOVING" --push .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-server
@@ -704,6 +714,8 @@ jobs:
         shell: bash
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           export RALLYPOINT_VERSION="$VERSION"
           cargo build --release -p generals-server
           mkdir -p dist
@@ -755,7 +767,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac   # ra2-alpha.N included
           # The release page (and the in-app "What's new") shows this release and the two before it, not the whole history.
           awk '/^## Rallypoint /{n++} n<=3' docs/release-notes.md > release-notes-short.md
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag $pre \

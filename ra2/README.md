@@ -55,6 +55,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0002-trimmed-tree-builds-offline` | Drops the `simdiff_l0` target, uses the vendored SDL tarball, and real-install tests skip (instead of throwing) when no game is installed. |
 | `0003-linux-and-macos-link-sdl-statically` | Linux and macOS link SDL statically: one executable, no rpath. Windows keeps `SDL2.dll`. |
 | `0004-launcher-interface` | `--launch`, window size/fullscreen/title, map files by path, the CnCNet V2 tunnel. |
+| `0005-crt-lround-check-only-with-ucrt` | One test compares `om::lround` with the Windows C runtime's; it now runs only against the UCRT (our MinGW build links msvcrt, which differs out of range; the sim never calls it). |
 
 ## Building
 
@@ -150,6 +151,13 @@ The engine speaks CnCNet tunnel v2 to `[Tunnel]` from one UDP socket (an ephemer
 No lobby is involved: the engine knows every peer from the file, and the match waits up to 180 s at frame 0 for
 the slower machines to load. There is no build check between machines (the engine's own lobby did that), so
 everyone must run the same engine build.
+
+## Releases
+
+RA2 work lives on `feat/ra2`. A tag `ra2-alpha.N` pushed from there runs the whole release workflow and publishes a
+GitHub pre-release; the app is built with `RALLYPOINT_VERSION=ra2-alpha.N` (what the updater looks for), the
+installers and packages are named `<tauri.conf.json version>-ra2.alpha.N`, and the relay image is pushed as
+`ra2-alpha` and `ra2-alpha.N`, never `latest`. `v*` tags are unchanged.
 
 ## Not verified
 
