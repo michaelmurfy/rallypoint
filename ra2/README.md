@@ -82,6 +82,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0028-cleg-chrono-beam` | Chrono Legionnaire: Temporal weapons use ChronoBeamColor RadBeam (not EBolt); beam held on the victim while erasing. |
 | `0029-building-health-pips` | Own buildings: art-based pick on desktop (not only touch) so left-click selects them; Legacy scheme can select non-factories; hover shows the diagonal PIPS health line when nothing is selected. Presentation only. |
 | `0030-tesla-low-power-visual` | Presentation: powered defenses (Tesla Coil, Prism Tower, etc.) stop their ActiveAnim glow and show `LowPowerAnim` when the house is low power or the building is powered down — same predicate as defense fire (`house_low_power` / `power_off`). |
+| `0031-sw-sidebar-slots` | Superweapon cameos sit in the side2 cameo sockets under the radar (clock, READY text and the click target use that rect). The build icons start on the next row. |
 | `0035-stock-ai-min-defense-rule` | Skirmish AI: `UseMinDefenseRule` / `MinimumAIDefensiveTeams` from gamemd `FUN_0041e740` — under the minimum only `IsBaseDefense` Team1 triggers fire and autocreate is held off so stock base-guard teams form; call_for_help then has guard members (save v56). Simulation change. |
 
 ## Factions (Country=)
