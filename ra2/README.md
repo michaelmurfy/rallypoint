@@ -88,6 +88,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0034-ramp-slope-level` | Ground units follow TMP ramps: the FootClass height gate (`FUN_004D9C60`) already allows a one-level step when the lower cell's SlopeIndex is set; `step_units` now adopts the cell's level as the unit walks, and the sprite blends the two cells of the step. |
 | `0035-stock-ai-min-defense-rule` | Skirmish AI: `UseMinDefenseRule` / `MinimumAIDefensiveTeams` from gamemd `FUN_0041e740` — under the minimum only `IsBaseDefense` Team1 triggers fire and autocreate is held off so stock base-guard teams form; call_for_help then has guard members (save v56). Simulation change. |
 | `0037-ai-boost-smarter` | Optional `[RP-AI-BOOST]` smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3): shorter TeamDelays/BuildDelay, lower CreditReserve, faster harvester replace, stronger base-defense response, L3 anti-tank/anti-inf mix bias + trigger success nudge. Off by default; computer houses only. |
+| `0040-country-bonuses-from-gamemd` | HouseType country bonuses from gamemd `FUN_00511850`: `Cost`/`Armor`/`ROF`/`Firepower`/`Groundspeed`/`Airspeed`/`BuildTime` and `*Mult` keys, `VeteranInfantry`/`VeteranUnits`/`VeteranAircraft`, plus `Owner`/`RequiredHouses`/`ForbiddenHouses` on start pools (TNKD/SNIPE/AMRADR/…). Stock rulesmd leaves the Mult/Veteran keys commented (identity); they apply when a mod or rules uncomment them. |
 
 ## Factions (Country=)
 
@@ -108,6 +109,12 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 `Country=9` and `Country=YuriCountry` are the same. The launcher's Yuri seat is side index 9 and writes `Country=9`.
 
+### Country bonuses (all 10)
+
+- **Ownership**: sidebar, AI catalogs and skirmish start pools honour `Owner=` / `RequiredHouses=` / `ForbiddenHouses=` (Americans `AMRADR` paradrop radar, French `GTGCAN`, British `SNIPE`, Germans `TNKD`, Korea `BEAG`, Iraq `DESO`, …; `GAAIRC` forbidden for Americans).
+- **Multipliers / veterans**: `country_bonuses.hpp` loads the HouseType keys gamemd reads (`CostUnitsMult`, `VeteranInfantry`, …). Stock YR comments them out (all 1.0 / empty lists); when present they scale production cost/build time, firepower/ROF, spawn speed/HP, and arm listed types as veterans at factory exit and at the UnitCount start force.
+- Doctests cover `CostUnitsMult` cost scaling and `VeteranInfantry` arming (synthetic INI).
+
 ### What works as Yuri
 
 - Selectable in `--launch` skirmish; human roster is rules-driven for `YuriCountry` (INIT, SMIN, YTNK, YURI, …).
@@ -116,6 +123,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 ### Partial / missing
 
+- **Country Armor=/Speed= on every combat path**: spawn bakes Armor into HP and Speed into `speed_cps`; Firepower/ROF go through `house_*_mul`. A mid-game rules reload does not refresh stored bonuses (re-arm is at skirmish setup).
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
 - **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); enter cursors / reactor eject still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
