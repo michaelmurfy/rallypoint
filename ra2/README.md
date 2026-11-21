@@ -77,6 +77,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0024-namisil-superanim-hold` | SuperWeapon buildings (Nuke Silo, Chronosphere, Iron Curtain, Weather Controller): one-shot SuperAnim open/close, then hold the last frame instead of looping SuperAnimTwo/Four (doors no longer cycle while ready/charging); skip grand-opening Active* loops when `SuperAnim` is set. Presentation only. |
 | `0025-hidpi-bitmap-font-scaling` | Nearest-neighbour present + integer shell-font glyph blits; macOS `SDL_WINDOW_ALLOW_HIGHDPI` (view only). |
 | `0026-crisp-credits-macos-cursor` | Credits tally: integer-scaled 12metfnt glyphs with nearest sampling on HiDPI; nearest logical-to-output upscale; macOS focus regained re-hides the OS cursor when the game draws its own. |
+| `0027-desktop-canvas-follows-window` | Desktop match canvas height follows the window (720..1440) so 1080p/1440p shows more map. Menus stay 1280x720. Android and `--play set canvas` are unchanged. |
 
 ## Factions (Country=)
 
@@ -136,7 +137,7 @@ Command line (any order):
 |---|---|
 | `--data <dir>` or `RA2_INSTALL_DIR` | Folder with the Yuri's Revenge files (`ra2.mix`, `ra2md.mix`, `language.mix`, `multimd.mix`, ...). |
 | `--launch <file.ini>` | Start the game described in the file (below): no menu, no lobby. When the score page is closed the process exits. |
-| `--width <w> --height <h>` | Window size. The engine draws a 720-line canvas scaled to the window (its own design); RA2.INI's size is then ignored. |
+| `--width <w> --height <h>` | Window size. Menus stay a 1280x720 canvas, letterboxed. The match canvas uses the window's height (720 minimum, 1440 maximum) so a 1080p or 1440p window shows more of the map; width is that height times the aspect, kept between 16:9 and about 21:9. Passing this ignores RA2.INI's size. |
 | `--fullscreen` / `--windowed` | Desktop fullscreen at the display's size, or a window. |
 | `RA2_LOGICAL_HEIGHT` | Optional logical canvas height (720, 900 or 1080). The launcher sets it from Settings > Display > UI scale when not default. Current engine builds still fix the canvas at 720 px and ignore this variable; a future patch will honour it so large windows show more of the map instead of only upscaling. |
 | `--title <text>` or `RA2_WINDOW_TITLE` | Window title. |
@@ -144,7 +145,8 @@ Command line (any order):
 | `--extract-maps <dir>` | Write every multiplayer map as plain INI under `<dir>` and an `index.json` (display name, source, `Map=`). No window; the process exits when done. Used by the launcher to list official and `.mmx` maps. |
 
 The log goes to stderr (`ra2game.exe`: `<pref dir>/ra2engine/RA2/ra2engine.log`). Player settings (volumes,
-scroll speed) still come from the engine's own `RA2.INI`.
+scroll speed) still come from the engine's own `RA2.INI`. `[Video] ScreenWidth` / `ScreenHeight` (the Options
+resolution list) size the window the same way when `--width` / `--height` are absent, and the match canvas follows.
 
 ### The launch file
 
