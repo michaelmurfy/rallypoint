@@ -1,0 +1,42 @@
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+index 82a8a4d..653b88e 100644
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -162,7 +162,9 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
+         if (!st.init) {   // grand opening [FUN_004476d0: Idle, then Active..ActiveFour]
+             st.init = true;
+             start(st, a, kBsIdle, now);
+-            if (!r.refinery)
++            // SuperWeapon= buildings (NAMISL, GACSPH, …) use SuperAnim..Four for
++            // door open/close; looping Active* at the opening fights that.
++            if (!r.refinery && !a.slot[kBsSuper].t)
+                 for (int s = kBsActive; s <= kBsActive4; ++s) start(st, a, s, now);
+             st.init_done = true;
+         }
+@@ -332,13 +334,20 @@ void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const
+     if (ev && ev->door_start >= 0)
+         if (const FxAnimType* d = slot_t(door)) draw_t(d, oneshot_frame(*d, ev->door_start, now), door.x, door.y);
+     if (ev && ev->super_phase >= 0) {
+-        const int open = ev->super_phase;          // 0 (ready) or 2 (fired)
+-        const PresFx::BldAnims::Slot& s1 = a.slot[kBsSuper + open];
+-        const PresFx::BldAnims::Slot& s2 = a.slot[kBsSuper + open + 1];
++        const int phase = ev->super_phase;          // 0 open/hold ready, 2 close/hold charging
++        const PresFx::BldAnims::Slot& s1 = a.slot[kBsSuper + phase];
++        const PresFx::BldAnims::Slot& s2 = a.slot[kBsSuper + phase + 1];
+         const FxAnimType* t1 = slot_t(s1);
+-        const int fr = t1 ? oneshot_frame(*t1, ev->super_start, now) : -1;
+-        if (t1 && fr >= 0) draw_t(t1, fr, s1.x, s1.y);
+-        else if (const FxAnimType* t2 = slot_t(s2)) draw_t(t2, PresFx::loop_frame(*t2, now), s2.x, s2.y);
++        auto hold_last = [](const FxAnimType& t) { return std::max(t.start, t.end - 1); };
++        if (ev->super_start >= 0 && t1) {
++            const int fr = oneshot_frame(*t1, ev->super_start, now);
++            draw_t(t1, fr >= 0 ? fr : hold_last(*t1), s1.x, s1.y);
++        } else if (phase == 0 && t1) {
++            draw_t(t1, hold_last(*t1), s1.x, s1.y);
++        } else if (phase == 2) {
++            if (const FxAnimType* t2 = slot_t(s2))
++                draw_t(t2, t2->start, s2.x, s2.y);   // charging: closed, not looping Two/Four
++        }
+     }
+     if (ev) {
+         for (int s = 0; s < PresFx::kBldSlots; ++s) {
