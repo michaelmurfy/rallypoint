@@ -64,6 +64,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0011-yuri-lobby-ai-and-economy` | `YuriCountry` as lobby index 9, ThirdSide country/AI keys, Yuri AI roster and catalog. |
 | `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
 | `0013-slave-miner-economy` | Yuri Slave Miner: `Enslaves=` / `SlavesNumber` / regen+reload rates; deployed YAREFN spawns SLAV gatherers that deliver ore into house credits. |
+| `0014-skirmish-mind-control` | Skirmish/MP CaptureManager: `World::step_mind_control` arms `w_mind_control`, capacity, release on death/board/Temporal; campaign path unchanged. |
 | `0015-gattling-weapon-stages` | `IsGattling` RateUp/RateDown timer, Stage1..N / EliteStage, Weapon1..N (AG odd / AA even); YTNK and GTGCAN. |
 | `0016-yuri-cameo-mix-lookup` | `cameomd.mix` is opened from `langmd.mix` (stock YR), so Yuri sidebar icons resolve. |
 
@@ -95,7 +96,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 ### Partial / missing
 
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
-- **Mind control**: weapons and warheads resolve; capture polling is campaign-only (`w_mind_control`), not skirmish.
+- **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder/Bio Reactor fates for MC victims still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
 
