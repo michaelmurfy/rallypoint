@@ -6,6 +6,7 @@ The player brings their own Yuri's Revenge files; nothing of the game is in here
 
 ## Layout
 
+- `docs/gamemd-parity-backlog.md`: prioritized gaps vs retail `gamemd.exe` (tiers 1–4; docs only).
 - `engine/`: a trimmed plain copy of https://github.com/omarelarab/ra2-engine at
   `a8cfdccfef8592c13a6517c3fb76d834b1534027` (2026-10-14). It is the pristine base: don't commit patched files.
   Licence: 0BSD (`engine/LICENSE`); `engine/THIRD_PARTY_NOTICES.md` lists what it carries (doctest, stb).
