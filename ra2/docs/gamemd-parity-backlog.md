@@ -212,7 +212,7 @@ skirmish CI proof.
 | Killer-house liberation on miner death | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) | — | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `[General]` SlaveMiner* / AISlaveMinerNumber | M | Yes |
 | SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
-| MC enter cursors / Bio Reactor eject | `engine` capture/MC + patch 0022 | S | No |
+| MC enter cursors / Bio Reactor eject | ~~done~~ patch `0048` (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
 | Blank cameos (YACOMD, YAPPPT, YAROCK, …) | ~~done~~ `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187) (XXICON / AltCameo / Image+ICON); AltCameo *draw* swap still T3.5 | — | No |
@@ -357,7 +357,7 @@ incomplete. Siege Chopper overlaps T3.3.
 ### T4.3 Capture / engineer / spy polish
 
 Core capture, spy cash/blackout, veterancy-on-spawn helpers are in
-`capture.hpp`. README still lists MC enter cursors and Bio Reactor eject;
+`capture.hpp`. MC enter cursors / Bio Reactor eject landed in patch `0048`.
 `EngineerCaptureLevel` appears in gamemd strings and needs a behaviour audit.
 
 | | |

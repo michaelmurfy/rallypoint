@@ -66,6 +66,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
 | `0013-slave-miner-economy` | Yuri Slave Miner: `Enslaves=` / `SlavesNumber` / regen+reload rates; deployed YAREFN spawns SLAV gatherers that deliver ore into house credits. |
 | `0047-slave-miner-undeployed` | Undeployed SMIN runs slaves (VehicleTypes `Enslaves=`; gamemd `FUN_006F3FC0` / `FUN_006AF1A0`); killer-house liberation via `killed_by`. Save v57 (Unit/UnitTypeDef fields). `sizeof(World)` unchanged. AI `AISlaveMinerNumber` scoot deferred. |
+| `0048-mc-cursors-bio-eject` | MC/own units: Enter cursor + `Mission_Enter` into Grinder/Bio Reactor (`FUN_0051E010` / `FUN_004598A0`); Deploy on a selected Bio Reactor ejects via `UnloadOccupants` (`FUN_0044D880` / `FUN_00457DD0`) without flipping the plant to neutral. |
 | `0014-skirmish-mind-control` | Skirmish/MP CaptureManager: `World::step_mind_control` arms `w_mind_control`, capacity, release on death/board/Temporal; campaign path unchanged. |
 | `0015-gattling-weapon-stages` | `IsGattling` RateUp/RateDown timer, Stage1..N / EliteStage, Weapon1..N (AG odd / AA even); YTNK and GTGCAN. |
 | `0016-yuri-cameo-mix-lookup` | `cameomd.mix` is opened from `langmd.mix` (stock YR), so Yuri sidebar icons resolve. |
@@ -131,7 +132,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 - **Country Armor=/Speed= on every combat path**: spawn bakes Armor into HP and Speed into `speed_cps`; Firepower/ROF go through `house_*_mul`. A mid-game rules reload does not refresh stored bonuses (re-arm is at skirmish setup).
 - **Slave Miner**: deployed YAREFN and undeployed SMIN both host SlaveManager (`Enslaves=SLAV`; ModEnc's BuildingTypes note means the Enslaves *type* is infantry). Killer-house liberation on master death. Remaining: AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`); SMIN↔YAREFN deploy brain-transplant; no Xvfb Yuri skirmish check in CI.
-- **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); enter cursors / reactor eject still open.
+- **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); Enter cursor / `Mission_Enter` into Grinder and Bio Reactor, and Deploy eject from a selected Bio Reactor (patch 0048).
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016); RA2 cameos (`XXICON`, `FIXICON`, …) are on the same AssetFS list via `language.mix`/`cameo.mix` (patch 0046). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) fall back to `AltCameo`, `Image`+`ICON` when that SHP exists, else retail `XXICON`.
 - **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); MagBeam art while lifting (patch 0045); building toss still open.
