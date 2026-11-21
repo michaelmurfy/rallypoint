@@ -1783,8 +1783,9 @@ function onlinePage() {
     // because typing in it changes nothing until you disconnect.
     btn.className = on ? "btn" : "btn primary";
     for (const f of [server, port, room, pw, remember]) f.disabled = on;
-    next.hidden = !connected;
-    if (connected) nextText.textContent = `${store.cfg.room ? `You are in room ${store.cfg.room}` : "You are in the server's open room"}${store.cfg.server ? ` on ${store.cfg.server}` : ""}. ${ra2 ? "Everyone in this room is in the lobby below." : "Start the game and choose Multiplayer: everyone in this room is in the lobby."}`;
+    // RA2 shows its own lobby card under this form; Generals still needs the next-step hint.
+    next.hidden = !connected || ra2;
+    if (connected && !ra2) nextText.textContent = `${store.cfg.room ? `You are in room ${store.cfg.room}` : "You are in the server's open room"}${store.cfg.server ? ` on ${store.cfg.server}` : ""}. Start the game and choose Multiplayer: everyone in this room is in the lobby.`;
     state.replaceChildren(pill(s === "Connecting..." ? "Connecting…" : s, connected ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
     // Why it is not working, in the words of what to check.
     let c = null;
@@ -1825,7 +1826,7 @@ function onlinePage() {
       next,
       problem,
       h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
-        h("p", { class: "muted small" }, ra2 ? "Join a room on a Rallypoint server: everyone in the same room with the same password meets in the lobby below. The player who joined first hosts: they pick the map and start the game. Red Alert 2 rooms are separate from Generals rooms of the same name." : "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
+        h("p", { class: "muted small" }, ra2 ? "Same room and password → same lobby. First to join hosts. RA2 rooms are separate from Generals rooms of the same name." : "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
     roomSettings.el,
     saved$,
     conn.el,
@@ -2310,8 +2311,8 @@ function ra2Skirmish(onChange) {
       const n = starts();
       if (n >= 2) newRows(n);
       const m = maps.find((x) => fileOf(x.path) === file);
-      fill(facts, [m && m.game === "yr" ? "Yuri's Revenge" : "Red Alert 2", `${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0), sizeText(v.size_kb)].map((b) => h("span", {}, b)));
-      note.textContent = !v.rgba ? "This map has no preview picture." : n >= 2 ? "Select a player, then click a start on the map." : "";
+      fill(facts, [`${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0)].map((b) => h("span", {}, b)));
+      note.textContent = !v.rgba ? "This map has no preview picture." : "";
       draw();
     } catch (e) { if (mine === token) { note.textContent = "Couldn't read this map: " + errText(e); onChange && onChange(); } }
   }
@@ -2352,7 +2353,7 @@ function ra2Skirmish(onChange) {
 }
 
 function ra2PlayPage() {
-  const status = h("span", { class: "muted small" });
+  const status = h("span", { class: "muted small", role: "status" });
   const sk = ra2Skirmish(() => update());
   const play = h("button", { class: "btn primary big", onclick: async () => {
     play.disabled = true;
@@ -2361,18 +2362,19 @@ function ra2PlayPage() {
     setTimeout(update, ok ? 5000 : 0);
   } }, icon("play"), "Play skirmish");
   function update() {
-    const why = !store.cfg.ra2_engine ? "The RA2 engine is not in this build yet." : sk.why();
+    const why = !store.cfg.ra2_engine ? "Engine not in this build yet." : sk.why();
     play.disabled = !!why;
-    status.textContent = why || "Starts straight into the game with the setup below.";
+    status.textContent = why;
+    status.hidden = !why;
   }
-  const files = store.cfg.ra2.game_dir ? h("p", { class: "muted small gamepath" }, store.cfg.ra2.game_dir)
-    : h("div", { class: "row" }, h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet."), h("button", { class: "btn", onclick: () => openWizard() }, "Find or download game files"));
+  const files = store.cfg.ra2.game_dir ? null
+    : h("div", { class: "row" }, h("p", { class: "msg bad" }, "Game files not set yet."), h("button", { class: "btn", onclick: () => openWizard() }, "Find game files"));
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Play")),
-    h("div", { class: "card hero" },
-      h("div", { class: "stack tight herotext" }, h("h2", {}, RA2_NAME), h("p", { class: "muted" }, "Skirmish against the computer, or play online from the Online page."), files),
-      h("div", { class: "row heroact" }, play, status)),
-    h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el));
+    h("div", { class: "page-head" },
+      h("div", { class: "stack tight" }, h("h1", {}, "Play"), h("p", { class: "muted small" }, RA2_NAME)),
+      h("div", { class: "row" }, play, status)),
+    files ? h("div", { class: "card" }, files) : null,
+    h("div", { class: "card" }, sk.el));
   update();
   return { el };
 }
@@ -2401,8 +2403,7 @@ function ra2MapsPage() {
   } }, "Install community packs");
   const packCard = h("div", { class: "card" },
     h("div", { class: "row between" }, h("h2", {}, "Community packs"), installPacks),
-    packStatus,
-    h("p", { class: "muted small" }, "Classic Red Alert 2 and Yuri's Revenge multiplayer packs (.mmx / .yro), shipped with Rallypoint. They are copied into your map folder and into the game folder so the engine can list them."));
+    packStatus);
   const shown = () => maps.filter((m) => filter === "all" || m.players === +filter);
   function drawChips() {
     const opts = [["all", "All"], ...counts().map((n) => [String(n), `${n} players`])];
@@ -2415,8 +2416,8 @@ function ra2MapsPage() {
     const total = (c.packs || []).reduce((n, p) => n + (p.maps || 0), 0);
     const have = c.installed_files || 0;
     packStatus.textContent = have
-      ? `${have} community map file${have === 1 ? "" : "s"} in your map folder (${(c.packs || []).length} packs, ${total} maps in the bundle). Install again to refresh.`
-      : `${(c.packs || []).length} packs (${total} maps) ready to install.`;
+      ? `${have} installed · Install again to refresh`
+      : `${(c.packs || []).length} packs · ${total} maps`;
     installPacks.disabled = false;
   }
   function draw() {
@@ -2426,7 +2427,7 @@ function ra2MapsPage() {
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
     empty.hidden = !!v.length; list.hidden = !v.length;
     fill(empty, maps.length ? [h("strong", {}, "No maps match"), h("button", { class: "btn small", onclick: () => { filter = "all"; draw(); } }, "Show all")]
-      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install the community packs below, or drop .map/.mpr/.yrm files into Rallypoint's map folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
+      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install community packs, or add .map / .mpr / .yrm files."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
     preview.hidden = !sel;
@@ -2476,8 +2477,7 @@ function ra2MapsPage() {
       chips,
       h("div", { class: "ra2maps" },
         h("div", { class: "listbox" }, h("div", { class: "listhead" }, result), list, empty),
-        preview),
-      h("p", { class: "muted small" }, "Official multiplayer maps come from your game folder; community packs and extras go in Rallypoint's map folder. Press Look again after adding files.")));
+        preview)));
   return { el };
 }
 
@@ -2562,7 +2562,7 @@ function ra2LobbyCard() {
         b.style.left = `${(sp.x / MAP_VIEW) * 100}%`; b.style.top = `${(sp.y / MAP_VIEW) * 100}%`;
         return b;
       }));
-      note.textContent = !v.rgba ? "This map has no preview picture." : d.am_host ? "Select yourself or a computer player, then click a free start." : "Click a free start to take it. Click it again to go back to random.";
+      note.textContent = !v.rgba ? "This map has no preview picture." : "";
     }
     return h("div", { class: "mapcol" }, h("div", { class: "stage" }, h("div", { class: "markwrap" }, canvas, marks)), note);
   }
@@ -2619,8 +2619,7 @@ function ra2LobbyCard() {
           h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
           h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
           h("label", { class: "field" }, h("span", {}, "Crates"), densSel),
-          flag("Superweapons", "superweapons"), flag("Allies allowed", "allies"), flag("Auto repair", "auto_repair")),
-        h("p", { class: "muted small" }, "Any change asks everyone to ready again."));
+          flag("Superweapons", "superweapons"), flag("Allies allowed", "allies"), flag("Auto repair", "auto_repair")));
     } else {
       const flags = s ? [
         ra2CrateDensityLabel(null, s.crates, s.crate_minimum),
@@ -2673,7 +2672,7 @@ function ra2LobbyCard() {
       h("div", { class: "ra2setup" }, mapPanel(d), h("div", { class: "mapside" }, options)),
       h("div", { class: "skgrid ra2 lobby", role: "group", "aria-label": "Players in the room" }, head, people, ais),
       addAi ? h("div", { class: "row" }, addAi) : null,
-      d.players.length < 2 ? h("p", { class: "muted small" }, "Nobody else is here yet. Share the server, room and password with your friends.") : null,
+      d.players.length < 2 ? h("p", { class: "muted small" }, "Waiting for others — share the server, room and password.") : null,
       foot);
     const again = key && [...card.querySelectorAll("[data-key], [aria-label]")].find((el) => (el.dataset.key || el.getAttribute("aria-label")) === key);
     if (again) again.focus();
@@ -2700,12 +2699,12 @@ function ra2SettingsCards() {
   const color = pick("Default colour", [[-1, "Any free one"], ...RA2_COLORS.map((c, i) => [i, c])], r.color, (v) => save({ color: +v }));
   return [
     h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Display"), fb.el), h("div", { class: "settings" },
-      setting("Resolution", "Screen size uses your whole display.", res),
-      setting("Windowed", "Play in a window instead of full screen.", h("label", { class: "switch" }, win)))),
+      setting("Resolution", "Fullscreen uses the whole display.", res),
+      setting("Windowed", "Play in a window.", h("label", { class: "switch" }, win)))),
     h("div", { class: "card" }, h("h2", {}, "You"), h("div", { class: "settings" },
       nameSetting(),
-      setting("Side", "What a new skirmish or lobby seat starts with.", side),
-      setting("Colour", "If someone else has it, you get the next free one.", color))),
+      setting("Side", "Default for new seats.", side),
+      setting("Colour", "Taken colours fall to the next free one.", color))),
   ];
 }
 
@@ -2936,17 +2935,17 @@ function openRa2Wizard() {
     if (step === 0) {
       return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
         h("div", { class: "stack" }, h("h1", {}, `Set up ${RA2_NAME}`),
-          h("p", { class: "muted" }, "Rallypoint can also run Red Alert 2 with Yuri's Revenge. It needs your own copy of the game. This takes about a minute and everything can be changed later."),
+          h("p", { class: "muted" }, "Needs your own copy of the game. About a minute; change anything later in Settings."),
           h("ol", { class: "checklist" },
             h("li", {}, "Find or download your game files"),
             h("li", {}, "Choose a resolution"),
-            h("li", {}, "Add community maps, if you want them"))));
+            h("li", {}, "Add community maps (optional)"))));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); }, "ra2");
       w.dispose = panel.dispose;
       return h("div", { class: "stack" }, h("h2", {}, "Your game files"),
-        h("p", { class: "muted" }, `Rallypoint needs your own copy of ${RA2_NAME} (the folder with ra2md.mix). A Steam or EA app install is found automatically; otherwise point to it or download it below.`), panel.el);
+        h("p", { class: "muted" }, "Point to the folder with ra2md.mix, or download from Steam below. Steam and EA installs are found automatically."), panel.el);
     }
     if (step === 2) {
       const r = store.cfg.ra2, nat = nativeRes();
@@ -2960,7 +2959,6 @@ function openRa2Wizard() {
         `${r.width}x${r.height}`, (v) => { const [width, height] = v.split("x").map(Number); save({ width, height }); });
       const win = h("input", { type: "checkbox", checked: r.windowed, onchange: () => save({ windowed: win.checked }) });
       return h("div", { class: "stack" }, h("h2", {}, "Display"),
-        h("p", { class: "muted" }, "Pick a size for the game window, or use your whole screen. You can change this any time in Settings."),
         h("label", { class: "field" }, h("span", {}, "Resolution"), resSel),
         h("label", { class: "switch" }, win, "Windowed"));
     }
@@ -2968,7 +2966,7 @@ function openRa2Wizard() {
       const note = h("p", { class: "muted small", role: "status" }, w.mapsNote);
       const install = h("button", { class: "btn primary", onclick: async () => {
         install.disabled = true;
-        note.textContent = "Installing community map packs…";
+        note.textContent = "Installing…";
         try {
           const [packs, files] = await invoke("ra2_install_community_packs");
           w.mapsNote = `Installed ${packs} pack${packs === 1 ? "" : "s"} (${files} maps).`;
@@ -2981,16 +2979,16 @@ function openRa2Wizard() {
         } finally { install.disabled = false; }
       } }, "Install community packs");
       invoke("ra2_community_packs").then((c) => {
-        if (!c || !c.available) { note.textContent = "No community packs are bundled with this build."; return; }
+        if (!c || !c.available) { note.textContent = "No packs in this build."; return; }
         const total = (c.packs || []).reduce((n, p) => n + (p.maps || 0), 0);
         if (!w.mapsNote) {
           note.textContent = c.installed_files
-            ? `${c.installed_files} community map file${c.installed_files === 1 ? "" : "s"} already in your map folder.`
-            : `${(c.packs || []).length} packs (${total} maps) ready to install.`;
+            ? `${c.installed_files} already installed.`
+            : `${(c.packs || []).length} packs · ${total} maps`;
         }
-      }).catch(() => { note.textContent = "Community packs are not available in this build."; });
+      }).catch(() => { note.textContent = "Packs not available in this build."; });
       return h("div", { class: "stack" }, h("h2", {}, "Maps (optional)"),
-        h("p", { class: "muted" }, "Yuri's Revenge comes with multiplayer maps. Community packs add classic Red Alert 2 and Yuri's Revenge maps used online. You can add more any time from the Maps tab."),
+        h("p", { class: "muted" }, "Extra classic multiplayer maps. Skip if you only want the ones that came with the game."),
         h("div", { class: "row" }, install), note);
     }
     const r = store.cfg.ra2, nat = nativeRes();
@@ -2999,8 +2997,7 @@ function openRa2Wizard() {
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, r.game_dir || "not set yet"),
         h("dt", {}, "Display"), h("dd", {}, resLabel + (r.windowed ? ", windowed" : ", fullscreen")),
-        h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "you can add packs from the Maps tab")),
-      h("p", { class: "muted small" }, "Set up a skirmish on the Play page, or join friends from Online."),
+        h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "add packs later from Maps")),
       h("div", { class: "row" },
         h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"),
         h("button", { class: "btn big", onclick: () => finish(() => go("maps")) }, "Browse maps")));
