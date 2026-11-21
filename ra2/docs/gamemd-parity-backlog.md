@@ -19,7 +19,7 @@ reference (never a substitute for gamemd behaviour).
 | Presentation stack (HiDPI fonts, credits/cursor, canvas zoom, CLEG ChronoBeam, building health pips, Tesla low-power visual, SW sidebar slots, smooth unit draw, SW building charge anim) | `0025`–`0033` | #162–#171 |
 | T1.1 ramp / slope Level while walking | `0034-ramp-slope-level` | [#172](https://github.com/michaelmurfy/rallypoint/pull/172) |
 | Stock AI `UseMinDefenseRule` / `MinimumAIDefensiveTeams` (base-guard teams so call-for-help has members) | `0035-stock-ai-min-defense-rule` | [#174](https://github.com/michaelmurfy/rallypoint/pull/174) |
-| Optional AIBoost smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3; engine only — launcher UI still open) | `0037-ai-boost-smarter` | [#173](https://github.com/michaelmurfy/rallypoint/pull/173) |
+| Optional AIBoost smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3; launcher Play/lobby UI in [#181](https://github.com/michaelmurfy/rallypoint/pull/181)) | `0037-ai-boost-smarter` | [#173](https://github.com/michaelmurfy/rallypoint/pull/173) |
 | T2.1 country bonuses (HouseType Cost/Armor/ROF/… Mult + Veteran*) | `0040-country-bonuses-from-gamemd` | [#178](https://github.com/michaelmurfy/rallypoint/pull/178) |
 | T3.1 / T3.2 building + infantry anims (partial) | `0041-building-infantry-anims-from-gamemd` | [#179](https://github.com/michaelmurfy/rallypoint/pull/179) |
 
@@ -364,7 +364,7 @@ Upstream known limitation.
 2. T1.3 call-for-help RE-OPEN + IQ repair/sell (MinDefense / guard teams already on main via `0035`).
 3. T3.3 Siege Chopper deploy (and remaining vehicle turret/deploy misses).
 4. Burn down T2.4 Yuri Partial list (mostly S/M).
-5. Launcher UI for AIBoost (engine `0037` / #173 is on main; Settings / Play control still missing).
+5. ~~Launcher UI for AIBoost~~ — landed in [#181](https://github.com/michaelmurfy/rallypoint/pull/181) (Play / lobby wire `AIBoost=` for engine `0037` / #173).
 6. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) only after checking `0041` — do not re-land AnimActive / Undeploy.
 7. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
 
@@ -376,4 +376,4 @@ read the cited patch — re-implementing `0034`/`0035`/`0037`/`0040`/`0041` or
 the `0025`–`0033` presentation stack is wasted work.
 
 Next priorities (open): T1.2 tilt, T1.3 call-for-help, T3.3 Siege Chopper,
-T2.4 Yuri Partial, launcher AIBoost UI.
+T2.4 Yuri Partial. (Launcher AIBoost UI landed in #181.)
