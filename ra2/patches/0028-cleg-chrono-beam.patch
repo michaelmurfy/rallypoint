@@ -1,0 +1,89 @@
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index f52604f..b363f3a 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -199,11 +199,21 @@ public:
+                               pres_lower(rget(pj, "Rotates")).rfind("t", 0) == 0;
+             fw.shrapnel = rget(pj, "ShrapnelWeapon");
+         }
++        // W7-12-06 [RE: NeutronRifle IsRadBeam + ChronoBeam Temporal]: chrono
++        // weapons are RadBeam (wavy ChronoBeamColor), never IsElectricBolt.
++        if (!fw.temporal && !fw.warhead.empty()) {
++            const std::string whl = pres_lower(fw.warhead);
++            if (whl == "chronobeam") fw.temporal = true;
++        }
++        if (fw.temporal) {
++            fw.rad_beam = true;
++            fw.bolt = false;
++        }
+     }
+     void fill_beam(FxWeapon& fw, const std::string& w) {
+         auto yes = [&](const char* k) {
+             const std::string v = pres_lower(rget(w, k));
+-            return v.rfind("y", 0) == 0 || v.rfind("t", 0) == 0;
++            return !v.empty() && (v[0] == 'y' || v[0] == 't' || v[0] == '1');
+         };
+         fw.bolt = yes("IsElectricBolt");
+         fw.laser = yes("IsLaser");
+@@ -276,13 +286,15 @@ public:
+         // W7-12-31 [RE: EBolt 0x4c1d30 / 0x4c2750 -- +0x28 = 0x10000 shifted
+         // right once per frame: a bolt lives 17 frames; drawn as 3 lines, two
+         // in PALETTE.PAL[IsAlternateColor ? 5 : 10] and one in PALETTE.PAL[15]].
+-        Beam b{x0, y0, lift0, x1, y1, lift1, l0, l1, fw.bolt, fw.bolt ? 17 : fw.laser_frames, 0,
++        const bool chrono_rad = fw.rad_beam || fw.temporal;
++        const bool bolt = fw.bolt && !chrono_rad;
++        Beam b{x0, y0, lift0, x1, y1, lift1, l0, l1, bolt, bolt ? 17 : fw.laser_frames, 0,
+                SDL_Color{252, 252, 252, 255},
+                fw.alt_color ? SDL_Color{252, 252, 84, 255} : SDL_Color{80, 80, 252, 255}, beam_seed_++ * 2654435761u};
+-        b.kind = fw.bolt ? 1 : 0;
++        b.kind = bolt ? 1 : 0;
+         b.ox0 = ox0;
+         b.len_lep = std::hypot(x1 - x0, y1 - y0) * 256.0;
+-        if (fw.rad_beam) {
++        if (chrono_rad) {
+             // W7-12-06 [RE: RadBeam 0x6fcae0 / 0x658b50.. -- kind 1 (Temporal
+             // warhead) ChronoBeamColor, else RadColor; Period 15, Amplitude 40,
+             // 10-lepton segments for chrono, 20 otherwise].
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index f1a53d4..65f5653 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -246,6 +246,7 @@ public:
+         fire_seen_ = fe.size();
+         defense_fire_tick(w, fresh);   // muzzle / beam / report on the tick of the shot
+         fragment_fx(w);                // W7-12-07 shrapnel beams
++        temporal_beam_tick(w);         // W7-12-06: chrono erase holds a RadBeam on the victim
+         pres_bld_anim_tick(w, ba, fx_, g_pres_tick, fresh, units_seen_, bld_seen_,
+                            [&](int h) { return w.credits(h); });   // L2: every house's wallet
+         (void)player_credits;
+@@ -928,6 +929,30 @@ private:
+         }
+         return false;
+     }
++    // W7-12-06 [RE: TemporalClass::Update -- RadBeam stays on the victim while
++    // WarpRemaining counts down]: refresh the chrono beam each logic tick.
++    void temporal_beam_tick(const ra2engine::World& w) {
++        const auto& us = w.units();
++        for (std::size_t i = 0; i < us.size(); ++i) {
++            const ra2engine::Unit& u = us[i];
++            if (u.cargo_of >= 0 || !u.alive || u.die_time >= 0.0) continue;
++            if (u.temporal_target < 0 && u.temporal_target_building < 0) continue;
++            if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
++            const std::string wid = fired_weapon(w, u);
++            if (wid.empty()) continue;
++            const FxWeapon& fw = fx_.weapon_fx(wid);
++            if (!fw.rad_beam && !fw.temporal) continue;
++            double ox = 0, lift = 0;
++            muzzle_point(w, u, ox, lift);
++            double tx = 0, ty = 0, tl = 0;
++            int tlev = 0;
++            const int tu = u.temporal_target;
++            const int tb = u.temporal_target_building;
++            if (!target_point(w, tu, tb, tx, ty, tlev, tl)) continue;
++            fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, 15.0), tx, ty, tlev, tl, fw,
++                         house_color(w, u.house), ox);
++        }
++    }
+     SDL_Color house_color(const ra2engine::World& w, int house) const {
+         if (!unit_pal_) return SDL_Color{255, 0, 255, 255};
+         const ra2assets::Rgba c = w.house_palette(*unit_pal_, house)[24];
