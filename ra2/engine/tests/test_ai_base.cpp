@@ -184,8 +184,9 @@ TEST_CASE("ai_base: find_build_location boxed in -> {-1,-1}") {
     CHECK(c.x == -1);
     CHECK(c.y == -1);
     // A cell OUTSIDE the scan cap is never reached:
-    auto far = [](int x, int y) { return x == kAiMaxScanRadius + 5 && y == 0; };
-    Cellxy cf = find_build_location(v, false, far);
+    // (not named `far`: Windows headers #define far)
+    auto outside = [](int x, int y) { return x == kAiMaxScanRadius + 5 && y == 0; };
+    Cellxy cf = find_build_location(v, false, outside);
     CHECK(cf.x == -1);
 }
 

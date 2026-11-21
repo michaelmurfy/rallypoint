@@ -115,8 +115,8 @@ sh ra2/patches/apply.sh
 # Linux (needs SDL's build deps: libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev
 #        libxkbcommon-dev libwayland-dev libasound2-dev libpulse-dev, plus python3)
 cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-# macOS (universal)
-cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+# macOS (Apple Silicon)
+cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 # Windows (cross, from Linux with mingw-w64)
 cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=ra2/mingw-w64-x86_64.cmake
 cmake --build ra2/build && ra2/build/ra2assets_tests

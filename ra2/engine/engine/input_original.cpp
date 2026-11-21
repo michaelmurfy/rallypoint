@@ -780,14 +780,15 @@ void Input::center_on_selection() {
     mx /= sel.size();
     my /= sel.size();
     if (sel.size() > 2) {   // [RE: FUN_004AE1A0] drop the farthest from the mean
-        std::size_t far = 0;
+        // (not named `far`: Windows headers #define far)
+        std::size_t farthest = 0;
         double best = -1;
         for (std::size_t k = 0; k < sel.size(); ++k) {
             const double d = (sel[k]->fx - mx) * (sel[k]->fx - mx) + (sel[k]->fy - my) * (sel[k]->fy - my);
-            if (d > best) { best = d; far = k; }
+            if (d > best) { best = d; farthest = k; }
         }
-        mx = (mx * sel.size() - sel[far]->fx) / (sel.size() - 1);
-        my = (my * sel.size() - sel[far]->fy) / (sel.size() - 1);
+        mx = (mx * sel.size() - sel[farthest]->fx) / (sel.size() - 1);
+        my = (my * sel.size() - sel[farthest]->fy) / (sel.size() - 1);
     }
     center_on_cell(mx, my);
 }

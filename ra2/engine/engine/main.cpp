@@ -7964,7 +7964,8 @@ private:
         }
         if (!play_parse_spec(spec, h, type, n)) return -1;
         double nx = 0, ny = 0;
-        const bool near = n < 0 && play_sel_centre(nx, ny);
+        // (not named `near`: Windows headers #define near)
+        const bool pick_nearest = n < 0 && play_sel_centre(nx, ny);
         int best = -1;
         double best_d = 0;
         for (int i = 0; i < static_cast<int>(world_.buildings().size()); ++i) {
@@ -7973,7 +7974,7 @@ private:
             if (type != "*" && (b.type < 0 || b.type >= static_cast<int>(ba_.roster.size()) ||
                                 ba_.roster[b.type].id != type))
                 continue;
-            if (near) {
+            if (pick_nearest) {
                 const double d = std::hypot(b.cx + b.fw / 2.0 - nx, b.cy + b.fh / 2.0 - ny);
                 if (best < 0 || d < best_d) { best = i; best_d = d; }
                 continue;

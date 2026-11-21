@@ -284,10 +284,11 @@ int integrate_homing(Projectile& p, const Vec3i& tgt, int frame, const HomingRul
         if (!p.level) pitch = turn_toward_rad(pitch, kPi / 4.0, lim);   // toward climb 0x2000
     } else {
         if (horiz > 0.0) yaw = turn_toward_rad(yaw, om::atan2(dy, dx), lim);
-        const int far = (p.very_high ? 6 : 3) * 256;
+        // (not named `far`: Windows headers #define far)
+        const int far_thresh = (p.very_high ? 6 : 3) * 256;
         if (p.level) {
             // Level=yes: every pitch change is skipped (torpedoes).
-        } else if (!p.target_air && (lim16 >> 8) > 1 && (p.airburst || ftol(d3) > far)) {
+        } else if (!p.target_air && (lim16 >> 8) > 1 && (p.airburst || ftol(d3) > far_thresh)) {
             // Cruise: follow the ground at min(d_cells, 5) levels (10 for
             // Airburst/VeryHigh); floor = 0 on the flat combat plane.
             int levels = ftol(d3) / 256;
