@@ -189,8 +189,8 @@ Already patched for playable YuriCountry + many uniques; remaining:
 | Killer-house liberation on miner death | combat → slave free | M | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `[General]` SlaveMiner* / AISlaveMinerNumber | M | Yes |
 | MC enter cursors / Bio Reactor eject | `engine` capture/MC + patch 0022 | S | No |
-| Magnetron building toss + beam art | patch 0017 `IsLocomotor`; presentation | M | No |
-| Floating Disc `DISKRAY` anim | patch 0018 `DrainWeapon` | S | No |
+| Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art in `0045`) | M | No |
+| Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
 | Blank cameos (YACOMD, YAPPPT, YAROCK, …) | artmd `Cameo=`; patch 0016 mix lookup | S | No |
 | Xvfb Yuri skirmish CI proof | harness | S | n/a |
 
@@ -250,17 +250,23 @@ and deploy SHPs for other vehicles may still diverge.
 
 ### T3.4 Weapon beams / lasers / prism / magnetron / disc rays
 
-Logic for prism support, magnetron lift, disc drain exists; several beams are
-not drawn (`IsLocomotor` beam art, DISKRAY, some fragment beams only via FX
-events). Chrono Legionnaire erase uses ChronoBeam (`0028`).
+Logic for prism support, magnetron lift, disc drain exists. Chrono Legionnaire
+erase uses ChronoBeam (`0028`). **Partial land:** patch
+`0045-magnetron-disc-beam-art` — Magnetron `IsMagBeam` MagnaBeamColor wave
+(`WaveClass::Draw_Magnetic` **FUN_00762070** / Update **FUN_00762af0**; Fire
+**FUN_006ff5f5**) while `IsLocomotor` holds; Floating Disc `DrainWeapon`
+loops `DrainAnimationType`/DISKRAY (**FUN_0070fd70** / AnimClass
+**FUN_00421ea0**). Remaining: some fragment beams only via FX events; prism
+support visual polish.
 
 | | |
 |---|---|
-| **Files** | `engine/building_combat.cpp` (prism), magnetron / disc patches, `frag_events` in W7 pres |
-| **gamemd** | Laser / electric / magnetic beam drawers |
-| **Rules / art** | `IsLaser`, `IsElectric`, `IsLocomotor`, `DrainWeapon`, anim names |
-| **Effort** | M |
+| **Files** | `engine/building_combat.cpp` (prism), magnetron / disc patches, `pres_fx.inc` / `pres_game.inc`, patch `0045` |
+| **gamemd** | Laser / electric / magnetic beam drawers (`FUN_00762070`, `FUN_0070fd70`) |
+| **Rules / art** | `IsLaser`, `IsElectric`, `IsLocomotor`, `IsMagBeam`, `DrainWeapon`, `DrainAnimationType`, `MagnaBeamColor` |
+| **Effort** | remaining S–M |
 | **OpenRA** | No |
+| **Status** | MagBeam + DISKRAY presentation (this PR); fragment/prism leftovers |
 
 ### T3.5 Cameo / sidebar icon gaps
 
