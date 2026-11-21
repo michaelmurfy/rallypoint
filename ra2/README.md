@@ -190,6 +190,7 @@ Crates=yes
 CrateMinimum=8       ; optional floor when Crates=yes (CnCNet Increased=8, Extreme=40); absent = rules
 AlliesAllowed=yes    ; mid-game alliances; absent = the GameMode's own AlliesAllowed
 AutoRepair=yes       ; AI auto-repair (CnCNet [IQ] RepairSell=0); absent = rules RepairSell
+AIBoost=2            ; optional 1..3 smarter skirmish AI (patch 0037); absent / 0 = stock; else RA2_AI_BOOST
 BuildOffAlly=yes
 MCVRedeploy=yes
 AITakeover=no        ; network: a player who drops is taken over by the AI instead of defeated
