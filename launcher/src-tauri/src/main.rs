@@ -1315,7 +1315,7 @@ fn ra2_lobby_seat(lobby: tauri::State<Ra2Lobby>, seat: ra2lobby::Seat) -> Result
 #[tauri::command]
 fn ra2_lobby_room(app: tauri::AppHandle, lobby: tauri::State<Ra2Lobby>, map: String, credits: u32, speed: u8, ai: Vec<ra2lobby::AiSeat>) -> Result<(), String> {
     let m = ra2_find_map(&app, &map)?;
-    let settings = ra2lobby::RoomSettings { map, map_name: m.name, starts: m.players, credits, speed, ai };
+    let settings = ra2lobby::RoomSettings { map, map_name: m.name, starts: m.players, credits, speed, ai, rev: 0 };
     lobby.0.lock().unwrap().set_settings(settings)
 }
 
