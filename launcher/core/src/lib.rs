@@ -18,7 +18,6 @@ pub mod maps;
 pub mod mods;
 pub mod proc;
 pub mod ra2maps;
-||||||| b4ca410
 pub mod ra2;
 pub mod selfupdate;
 pub mod steam;
