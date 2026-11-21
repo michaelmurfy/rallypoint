@@ -93,6 +93,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0042-unit-tilt-on-slopes` | Vehicles pitch on TMP ramps (T1.2): Drive Draw_Matrix `FUN_0055A7D0` reads `CellClass` SlopeIndex (+0x11C), copies the slope matrix via `FUN_007559B0` (table from `FUN_00754CB0` / `FUN_005AE6F0`). Presentation-only voxel pitch; sim/CRC unchanged. |
 | `0043-siege-chopper-deploy` | Siege Chopper (`SCHP`) deploy vs gamemd: `IsSimpleDeployer` arms `DeployFire` without `Deployer` (`FUN_00739AC0`); `DeployToLand` lands/lifts on deploy/undeploy (`FUN_0054BD30`); deployed draws `UnloadingClass=SCHD` and plays `DeployingAnim=SCHPDEPL`. Simulation: deploy post + weapon slot; save format unchanged. |
 | `0044-ai-call-for-help` | T1.3 call-for-help vs Steam `FUN_00708080`: building victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell + IQ `RepairSell` on ConditionRed sell. Simulation change (no `World` sizeof growth). |
+| `0045-magnetron-disc-beam-art` | Presentation: Magnetron `IsMagBeam` MagnaBeamColor wave (`WaveClass::Draw_Magnetic` FUN_00762070) while `IsLocomotor` holds; Floating Disc `DrainWeapon` loops `DrainAnimationType` (DISKRAY) via FUN_0070fd70. No sim/CRC change. |
 
 ## Factions (Country=)
 
@@ -132,8 +133,8 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 - **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); enter cursors / reactor eject still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
-- **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); building toss / beam art not drawn.
-- **Floating Disc**: DrainWeapon power/money drain (patch 0018); DISKRAY anim not hooked; no live Disc-over-base check.
+- **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); MagBeam art while lifting (patch 0045); building toss still open.
+- **Floating Disc**: DrainWeapon power/money drain (patch 0018); DISKRAY anim while draining (patch 0045); no live Disc-over-base check.
 
 ## Building
 
