@@ -1,0 +1,300 @@
+--- a/engine/world_sw.cpp
++++ b/engine/world_sw.cpp
+@@ -252,8 +252,14 @@
+             an_paradrop(house, type, cx, cy);
+             an_event(SwEvent::Activated, house, type, cx, cy);
+             break;
++        case SuperweaponType::SpyPlane:
++            // [RE: SuperClass::Launch FUN_006CC390 case 8 @0x6CD66F]:
++            // FUN_0041CAA0(SPYP) + FUN_0065EAB0(..., Mission SpyplaneApproach).
++            an_spyplane(house, cx, cy);
++            an_event(SwEvent::Activated, house, type, cx, cy);
++            break;
+         default:
+-            return false;   // YR-only types: never granted in a classic game
++            return false;   // other YR-only types (ForceShield, …) still unwired
+     }
+     rec->sw.on_fired();   // full recharge (§1)
+     an_.any = true;
+
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -2979,6 +2979,10 @@
+     void an_nuke_detonate(const SwStrike& s);
+     void an_storm_bolt(SwStrike& s, int x, int y);
+     void an_paradrop(int house, SuperweaponType type, int cx, int cy);
++    // [RE: FUN_006CD66F / FUN_004155F0 / FUN_004157C0]: SPYP Approach → Overfly
++    // camera sweep that reveals SpyCameraWeapon Damage= cells along the path.
++    void an_spyplane(int house, int cx, int cy);
++    void an_spy_camera_shot(int plane);  // one Reveal disc + Ammo--
+     bool an_para_jump(int plane);   // W8-05-07: one trooper out (FUN_00415C60)
+     void an_step_parachutes(double dt);  // W4-SQ-06: falling paratroopers
+     void an_chrono(int house, int sx, int sy, int dx, int dy);
+
+--- a/engine/world_an.cpp
++++ b/engine/world_an.cpp
+@@ -26,7 +26,17 @@
+ constexpr double kRocketDeckZ = 40.0;
+ constexpr int kRocketMaxFrames = 1800;
+ enum Sortie : int { kDocked = 0, kOutbound = 1, kMoveTo = 2, kReturn = 3, kLanding = 4, kParadrop = 5,
+-                    kLoiter = 6 };   // W7-06-03: a launched spawn gathering by its owner
++                    kLoiter = 6,   // W7-06-03: a launched spawn gathering by its owner
++                    // [RE: Mission SpyplaneApproach=30 / SpyplaneOverfly=31]
++                    kSpyplaneApproach = 7, kSpyplaneOverfly = 8 };
++// Stock YR SpyCameraWeapon / SpyPlaneCameraFrames (rulesmd). Kept out of
++// SwParams so save format / sizeof(World) stay put; mods that retune these
++// keys are a follow-up.
++constexpr int kSpyCameraReveal = 6;     // [SpyCameraWeapon] Damage=
++constexpr int kSpyCameraRange = 20;     // [SpyCameraWeapon] Range= (cells)
++constexpr int kSpyCameraFrames = 16;    // [AudioVisual] SpyPlaneCameraFrames=
++constexpr int kSpyApproachLept = 0x300; // FUN_004155F0 @0x415700
++constexpr const char* kSpyPlaneType = "SPYP";
+ bool live(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0; }
+ double cdist(double ax, double ay, double bx, double by) { return om::hypot(ax - bx, ay - by); }
+ }  // namespace
+@@ -994,6 +1004,57 @@
+                 }
+                 break;
+             }
++            case kSpyplaneApproach: {
++                // [RE: Mission_SpyplaneApproach FUN_004155F0]: fly to the
++                // target; inside SpyCameraWeapon Range= (cells) take photos;
++                // at <= 0x300 leptons switch to SpyplaneOverfly (push 0x1F).
++                goal_x = u.an.drop_x;
++                goal_y = u.an.drop_y;
++                fly = true;
++                {
++                    const double d_cells = cdist(u.fx, u.fy, goal_x, goal_y);
++                    const double d_lept = d_cells * kLept;
++                    if (d_cells <= static_cast<double>(kSpyCameraRange)) {
++                        if (u.an.para_timer > 0) --u.an.para_timer;
++                        if (u.an.para_timer <= 0 && u.an.ammo > 0) {
++                            an_spy_camera_shot(i);
++                            u.an.para_timer = kSpyCameraFrames;
++                        }
++                    }
++                    if (d_lept <= static_cast<double>(kSpyApproachLept)) {
++                        u.an.sortie = kSpyplaneOverfly;
++                        u.an.para_overfly = true;
++                    }
++                }
++                break;
++            }
++            case kSpyplaneOverfly: {
++                // [RE: Mission_SpyplaneOverfly FUN_004157C0]: keep photographing
++                // while Ammo remains and the target is still set; then leave
++                // over the far map edge (loaner Retreat), like a spent PDPLANE.
++                const bool shooting = u.an.ammo > 0 && u.an.drop_x >= 0;
++                goal_x = shooting ? u.an.drop_x : u.an.exit_x;
++                goal_y = shooting ? u.an.drop_y : u.an.exit_y;
++                fly = true;
++                if (shooting) {
++                    const double d_cells = cdist(u.fx, u.fy, goal_x, goal_y);
++                    if (d_cells <= static_cast<double>(kSpyCameraRange)) {
++                        if (u.an.para_timer > 0) --u.an.para_timer;
++                        if (u.an.para_timer <= 0 && u.an.ammo > 0) {
++                            an_spy_camera_shot(i);
++                            u.an.para_timer = kSpyCameraFrames;
++                        }
++                    }
++                    // Past the target with no ammo left: head for the exit.
++                    if (u.an.ammo <= 0) u.an.drop_x = u.an.drop_y = -1;
++                } else if (cdist(u.fx, u.fy, goal_x, goal_y) < 0.5) {
++                    units_[i].alive = false;
++                    units_[i].die_time = 1.0;
++                    units_[i].deployed_away = true;
++                    continue;
++                }
++                break;
++            }
+             case kReturn:
+                 if (!home_ok) {
+                     // AirportBound=yes with no airfield (or a spawn whose carrier
+@@ -1271,6 +1332,58 @@
+     }
+ }
+ 
++// -------------------------------------------------------------- spy plane --
++
++// [RE: SuperClass::Launch FUN_006CC390 case SpyPlane=8 @0x6CD66F]:
++// FUN_0041CAA0 finds AircraftType SPYP; FUN_0065EAB0 creates a loaner
++// (+0x3D4) on Mission SpyplaneApproach (0x1E) aimed at the clicked cell.
++void World::an_spyplane(int house, int cx, int cy) {
++    const SwParams& P = an_.sw;
++    const bool from_left = cx < grid_w_ / 2;
++    const int sx = from_left ? 0 : grid_w_ - 1;
++    const int ex = from_left ? grid_w_ - 1 : 0;
++    const int pi = an_spawn(kSpyPlaneType, house, sx, cy);
++    if (pi < 0) {
++        // No SPYP type registered (headless / missing art): still clear the
++        // shroud at the target so the SW is not a no-op.
++        if (shroud_enabled()) reveal_source(house, cx, cy, kSpyCameraReveal);
++        return;
++    }
++    Unit& p = units_[pi];
++    p.an.loaner = true;   // FUN_0065EAB0 @0x65EB10: techno +0x3D4 = 1
++    p.fx = sx;
++    p.fy = static_cast<double>(cy);
++    p.altitude = P.flight_level;
++    p.flight_state = FlightState::Cruising;
++    p.an.sortie = kSpyplaneApproach;
++    p.an.drop_x = cx;
++    p.an.drop_y = cy;
++    p.an.exit_x = ex;
++    p.an.exit_y = cy;
++    p.an.drop_left = 0;
++    p.an.drop_type.clear();
++    p.an.para_timer = 0;
++    p.an.para_overfly = false;
++    // Ammo from the type (SPYP Ammo=100); camera shots consume it.
++    if (p.an.ammo <= 0) p.an.ammo = std::max(1, p.an.t.ammo);
++    const int f = facing_from_delta(cx - sx, 0);
++    if (f >= 0) p.facing = f;
++    p.body_facing = facing_u16_from_delta(cx - sx, 0);
++}
++
++// One SpyCameraWeapon "shot": reveal Damage= cells and spend one Ammo.
++// [RE: Approach/Overfly Fire path; SpyPlaneCameraFrames paces the Report=.]
++void World::an_spy_camera_shot(int plane) {
++    if (plane < 0 || plane >= static_cast<int>(units_.size())) return;
++    Unit& u = units_[plane];
++    if (!u.alive || u.die_time >= 0.0 || u.an.ammo <= 0) return;
++    if (shroud_enabled()) reveal_source(u.house, u.cell_x, u.cell_y, kSpyCameraReveal);
++    --u.an.ammo;
++    // Presentation: reuse Dropped so the camera-click can be wired to
++    // SpyPlaneCamera / SpyPlaneSnapshot without a new SwEvent kind.
++    an_event(SwEvent::Dropped, u.house, SuperweaponType::SpyPlane, u.cell_x, u.cell_y);
++}
++
+ // ------------------------------------------------- W4-SQ-06 team paradrop --
+ 
+ int World::spawn_drop_plane(const std::string& plane_id, int house, int sx, int sy, int dx, int dy,
+
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -71,13 +71,14 @@
+ 
+ // W2-AN-19: the classic RA2 [SuperWeaponTypes] (rules.ini from ra2.mix/local.mix):
+ // MultiSpecial, IronCurtainSpecial, LightningStormSpecial, ChronoSphereSpecial,
+-// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. The engine reads
+-// YR rulesmd.ini, whose YR-only SW keys (NARADR SpyPlaneSpecial, GATECH/NATECH
+-// ForceShieldSpecial, Yuri's specials) must not leak into a classic game.
++// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. YR also grants
++// SpyPlaneSpecial from NARADR (Type=SpyPlane; Launch FUN_006CD66F). Other YR-only
++// keys (ForceShield, PsychicDominator, …) stay filtered out until wired.
+ bool rp_classic_sw_type(const std::string& type_upper) {
+     return type_upper == "MULTIMISSILE" || type_upper == "IRONCURTAIN" ||
+            type_upper == "LIGHTNINGSTORM" || type_upper == "CHRONOSPHERE" ||
+-           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP";
++           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP" ||
++           type_upper == "SPYPLANE";
+ }
+ 
+ // The classic SW section a building grants ("" when its SuperWeapon= is
+@@ -221,6 +222,7 @@
+     if (type_upper == "CHRONOSPHERE") return T::ChronoSphere;
+     if (type_upper == "PARADROP") return T::ParaDrop;
+     if (type_upper == "AMERPARADROP") return T::AmerParaDrop;
++    if (type_upper == "SPYPLANE") return T::SpyPlane;  // [SpyPlaneSpecial] NARADR
+     return T::None;
+ }
+ 
+
+--- a/engine/w2air_play.inc
++++ b/engine/w2air_play.inc
+@@ -301,7 +301,8 @@
+         // Spawned aircraft / missiles (Spawns=, V3/DMisl types) + the paradrop
+         // plane and its infantry.
+         const ra2engine::SwParams sp = world_.sw_params();
+-        std::vector<std::string> ids = {"PDPLANE", sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
++        std::vector<std::string> ids = {"PDPLANE", "SPYP",  // SpyPlaneSpecial aircraft
++                                        sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
+                                         rules_.section_string("General", "DMislType", "DMISL"),
+                                         rules_.section_string("General", "V3RocketType", "V3ROCKET"),
+                                         "HORNET", "ASW",   // any side's spawns (captured / cheat units)
+
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3069,12 +3069,25 @@
+             {ra2engine::SuperweaponType::ChronoSphere, "chroicon"},
+             {ra2engine::SuperweaponType::ChronoWarp, "chroicon"},
+             {ra2engine::SuperweaponType::ParaDrop, "paraicon"},
+-            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"}};
++            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"},
++            {ra2engine::SuperweaponType::SpyPlane, "spypicon"}};  // [SpyPlaneSpecial] SidebarImage
+         for (const auto& kv : kSwIcons)
+             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
+                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
+                 if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
+             }
++        // YR SPYPICON lives in cameomd.mix (langmd) when cameo.mix has no entry.
++        if (!ba.sw_cameos.count(static_cast<int>(ra2engine::SuperweaponType::SpyPlane))) {
++            try {
++                MixFile cmd = language.open_nested("cameomd.mix");
++                if (const MixEntry* ce = cmd.find(std::string("spypicon.shp"))) {
++                    ra2assets::ShpFile shp = ShpFile::load(cmd.read(*ce));
++                    if (shp.count() > 0)
++                        ba.sw_cameos[static_cast<int>(ra2engine::SuperweaponType::SpyPlane)] =
++                            std::move(shp);
++                }
++            } catch (const std::exception&) {}
++        }
+     } catch (const std::exception&) {}
+     std::cerr << "[sw] SW cameos loaded=" << ba.sw_cameos.size() << "\n";
+ 
+
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -567,6 +567,7 @@
+                     else if (t == T::ChronoSphere) snd_.eva("EVA_ChronosphereReady");
+                     else if (t == T::LightningStorm) snd_.eva("EVA_LightningStormReady");
+                     else if (t == T::ParaDrop || t == T::AmerParaDrop) snd_.eva("EVA_ReinforcementsReady");
++                    else if (t == T::SpyPlane) snd_.eva("EVA_SpyPlaneReady");
+                     break;
+                 case E::Launched:
+                     fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0);
+
+--- a/tests/test_superweapon.cpp
++++ b/tests/test_superweapon.cpp
+@@ -1,8 +1,11 @@
+ #include "doctest.h"
+ 
++#include <array>
+ #include <string>
+ 
++#include "ra2fixture.hpp"
+ #include "superweapon.hpp"
++#include "world.hpp"
+ using namespace ra2engine;
+ 
+ TEST_CASE("superweapon: charges to READY at exactly recharge_secs, not before") {
+@@ -117,4 +120,28 @@
+     CHECK(superweapon_type_from_id(99) == SuperweaponType::None);
+     CHECK(std::string(superweapon_type_name(SuperweaponType::Nuke)) == "Nuke");
+     CHECK(std::string(superweapon_type_name(SuperweaponType::AmerParaDrop)) == "AmerParaDrop");
++    CHECK(std::string(superweapon_type_name(SuperweaponType::SpyPlane)) == "SpyPlane");
++}
++
++TEST_CASE("superweapon: Spy Plane fire reveals shroud (camera sweep fallback)") {
++    // [RE: FUN_006CD66F]: without a registered SPYP type the fire path still
++    // clears a Camera Damage= disc at the target so the SW is not a no-op.
++    ra2assets::MapFile map = ra2fixture::mapsmd03_map();
++    World w(map);
++    REQUIRE(w.grid_w() > 30);
++    REQUIRE(w.grid_h() > 30);
++    w.enable_shroud(true);
++    REQUIRE(w.shroud_enabled());
++    const int tx = w.grid_w() / 2, ty = w.grid_h() / 2;
++    REQUIRE_FALSE(w.explored_at(0, tx, ty));
++
++    std::array<int, 11> verses{};
++    verses.fill(100);
++    w.grant_superweapon(0, SuperweaponType::SpyPlane, /*recharge_secs=*/1.0, 0, 0.0, 1.0, verses);
++    w.step_superweapon(1.0);
++    REQUIRE(w.sw_ready(0, SuperweaponType::SpyPlane));
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::SpyPlane, tx, ty));
++    CHECK(w.explored_at(0, tx, ty));
++    CHECK(w.explored_at(0, tx + 5, ty));
++    CHECK_FALSE(w.explored_at(0, tx + 8, ty));  // outside Damage=6
+ }
+

@@ -97,6 +97,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0043-siege-chopper-deploy` | Siege Chopper (`SCHP`) deploy vs gamemd: `IsSimpleDeployer` arms `DeployFire` without `Deployer` (`FUN_00739AC0`); `DeployToLand` lands/lifts on deploy/undeploy (`FUN_0054BD30`); deployed draws `UnloadingClass=SCHD` and plays `DeployingAnim=SCHPDEPL`. Simulation: deploy post + weapon slot; save format unchanged. |
 | `0044-ai-call-for-help` | T1.3 call-for-help vs Steam `FUN_00708080`: building victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell + IQ `RepairSell` on ConditionRed sell. Simulation change (no `World` sizeof growth). |
 | `0045-magnetron-disc-beam-art` | Presentation: Magnetron `IsMagBeam` MagnaBeamColor wave (`WaveClass::Draw_Magnetic` FUN_00762070) while `IsLocomotor` holds; Floating Disc `DrainWeapon` loops `DrainAnimationType` (DISKRAY) via FUN_0070fd70. No sim/CRC change. |
+| `0050-spy-plane-sw` | Spy Plane special (T2.3 / T4.2): NARADR grants `Type=SpyPlane`; Launch `FUN_006CC390` case 8 @`0x6CD66F` → loaner `SPYP` on Mission Approach (`FUN_004155F0`) → Overfly (`FUN_004157C0`) with SpyCameraWeapon Damage=6 / Range=20 / SpyPlaneCameraFrames=16 fog reveal. Sidebar `spypicon` (+ cameomd fallback), `EVA_SpyPlaneReady`. Stock constants (no `SwParams` / save growth). |
 
 ## Factions (Country=)
 
