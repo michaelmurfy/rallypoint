@@ -33,7 +33,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "engine"
+      "engine",
+      "ra2engine",
+      "ra2-mappacks"
     ],
     "category": "Game",
     "publisher": "Michael Murphy <michael@murfy.co.nz>",

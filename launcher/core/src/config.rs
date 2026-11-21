@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub const RA2_ROOM_PREFIX: &str = "ra2:";
+
 /// Longest name the game's lobby takes (`g_lanPlayerNameLength`).
 pub const PLAYER_NAME_MAX: usize = 12;
 
@@ -84,6 +86,16 @@ pub struct Config {
     /// that later answers with a different key is refused until the player chooses to trust it.
     #[serde(default)]
     pub server_keys: std::collections::BTreeMap<String, String>,
+    /// The game the launcher shows: "generals" (the default for a new install) or "ra2".
+    /// Remembered across launches so the last game you used comes back.
+    #[serde(default = "default_game")]
+    pub game: String,
+    #[serde(default)]
+    pub ra2: crate::ra2::Ra2Config,
+}
+
+fn default_game() -> String {
+    "generals".into()
 }
 
 fn default_camera() -> u32 {
@@ -113,23 +125,35 @@ impl Config {
         }
     }
 
+    pub fn is_ra2(&self) -> bool {
+        self.game == "ra2"
+    }
+
+    /// The room name sent to the relay. Red Alert 2 rooms are their own (`ra2:<name>`), so a Generals room and an RA2
+    /// room of the same name never meet; the page only ever shows the bare name.
+    pub fn relay_room(&self) -> String {
+        if self.is_ra2() { format!("{RA2_ROOM_PREFIX}{}", self.room) } else { self.room.clone() }
+    }
+
     /// The lobby name to start the game with: the one the player set, else this computer's name.
     pub fn lobby_name(&self) -> String {
         let own = clean_player_name(&self.player_name);
         if own.is_empty() { machine_name() } else { own }
     }
 
-    fn room_key(server: &str, room: &str) -> String {
-        format!("{}|{}", server.trim().to_lowercase(), room.trim().to_lowercase())
+    /// RA2 rooms are separate rooms on the relay, so their saved passwords are kept apart too.
+    fn room_key(&self, server: &str, room: &str) -> String {
+        let prefix = if self.is_ra2() { RA2_ROOM_PREFIX } else { "" };
+        format!("{}|{prefix}{}", server.trim().to_lowercase(), room.trim().to_lowercase())
     }
 
     /// The remembered password for this server and room, if the player saved one.
     pub fn room_password(&self, server: &str, room: &str) -> Option<&str> {
-        self.room_passwords.get(&Self::room_key(server, room)).map(String::as_str).filter(|p| !p.is_empty())
+        self.room_passwords.get(&self.room_key(server, room)).map(String::as_str).filter(|p| !p.is_empty())
     }
 
     pub fn set_room_password(&mut self, server: &str, room: &str, password: &str) {
-        let key = Self::room_key(server, room);
+        let key = self.room_key(server, room);
         if password.is_empty() {
             self.room_passwords.remove(&key);
         } else {
@@ -225,6 +249,24 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_before_red_alert_2_still_loads() {
+        let c: Config = serde_json::from_str(r#"{"server":"a.example:7777","game_dir":"/g"}"#).unwrap();
+        assert_eq!((c.server.as_str(), c.game.as_str(), c.ra2.side), ("a.example:7777", "generals", -1));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&Config { game: "ra2".into(), ..c }).unwrap()).unwrap();
+        assert_eq!(back.game, "ra2");
+    }
+
+    #[test]
+    fn red_alert_2_rooms_are_namespaced() {
+        let mut c = Config { room: "lan".into(), ..Default::default() };
+        assert_eq!(c.relay_room(), "lan");
+        c.game = "generals".into();
+        assert_eq!(c.relay_room(), "lan");
+        c.game = "ra2".into();
+        assert_eq!(c.relay_room(), "ra2:lan");
+    }
+
+    #[test]
     fn remembers_a_room_password_per_server_and_room_only_when_asked() {
         let mut c = Config::default();
         assert_eq!(c.room_password("play.example:7777", "lan"), None);
@@ -234,6 +276,9 @@ mod tests {
         assert_eq!(c.room_password("other.example:7777", "lan"), None, "nor between servers");
         c.set_room_password("play.example:7777", "lan", "");
         assert_eq!(c.room_password("play.example:7777", "lan"), None, "an empty password forgets it");
+        c.set_room_password("play.example:7777", "lan", "zh");
+        c.game = "ra2".into();
+        assert_eq!(c.room_password("play.example:7777", "lan"), None, "an RA2 room does not get the Generals room's password");
     }
 
     #[test]

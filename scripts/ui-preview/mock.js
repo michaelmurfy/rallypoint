@@ -1,5 +1,7 @@
 // A fake Tauri backend so the launcher UI can be opened in a plain browser:
-//   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install)
+//   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install,
+//   #ra2 for Red Alert 2 mode, #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
+//   #ra2guestchanged: the host changes the speed 2.5 s in, #ra2guestready: a guest who is ready)
 const hash = location.hash;
 const fakeMaps = () => {
   const names = ["! 1v1 ! super no money map v2", "!!! no money !!! lots of fun3", "!2v2 cxn", "Tournament Desert", "Twilight Flame", "Defcon 6", "Mountain Pass", "Arctic Convoy", "Bear Town", "Fallen Empire", "Winter Wolves", "Dust Bowl 2v2", "Golden Gate", "Oasis 3v3"];
@@ -9,7 +11,9 @@ const fakeMaps = () => {
 };
 const state = {
   orgMaps: fakeMaps(),
-  cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), check_updates: true, beta_updates: false, version_is_beta: hash.includes("onbeta"), engine_arch: "x64", renderer: "enhanced", effects: [["PostProcessing","yes"],["Bloom","yes"],["AmbientOcclusion","yes"],["AmbientOcclusionQuality","half"],["AntiAliasingFXAA","yes"],["SoftShadows","yes"],["ShadowQuality","medium"],["DynamicLights","yes"],["PixelLighting","yes"],["AnisotropicFiltering","16"],["CloudShadows","yes"],["Clouds","no"],["UpdatedWater","yes"],["WaterReflections","yes"],["Shockwaves","yes"],["ScorchRelief","yes"],["BloomStrength","normal"],["ColorLook","standard"],["Sharpen","off"],["Vignette","no"],["SoftParticles","yes"],["SmokeShading","yes"]], effect_preset: "balanced", engines_bundled: hash.includes("win"), editor_available: hash.includes("win"), renderer_available: true, player_name: "", default_player_name: "Michaels-Mac", version: "0.1.0-alpha.3", os: "macos" },
+  cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), check_updates: true, beta_updates: false, version_is_beta: hash.includes("onbeta"), engine_arch: "x64", renderer: "enhanced", effects: [["PostProcessing","yes"],["Bloom","yes"],["AmbientOcclusion","yes"],["AmbientOcclusionQuality","half"],["AntiAliasingFXAA","yes"],["SoftShadows","yes"],["ShadowQuality","medium"],["DynamicLights","yes"],["PixelLighting","yes"],["AnisotropicFiltering","16"],["CloudShadows","yes"],["Clouds","no"],["UpdatedWater","yes"],["WaterReflections","yes"],["Shockwaves","yes"],["ScorchRelief","yes"],["BloomStrength","normal"],["ColorLook","standard"],["Sharpen","off"],["Vignette","no"],["SoftParticles","yes"],["SmokeShading","yes"]], effect_preset: "balanced", engines_bundled: hash.includes("win"), editor_available: hash.includes("win"), renderer_available: true, player_name: "", default_player_name: "Michaels-Mac", version: "0.1.0-alpha.3", os: "macos",
+    game: hash.includes("ra2") ? "ra2" : "generals", ra2_engine: hash.includes("engine"),
+    ra2: { game_dir: hash.includes("ra2fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/RA2", width: 0, height: 0, windowed: false, side: -1, color: 2, setup_done: !hash.includes("ra2fresh") } },
   mods: [{ id: "shockwave", name: "C&C: Shockwave", description: "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).", homepage: "https://www.moddb.com/mods/cc-shockwave", download_page: "https://www.moddb.com/mods/cc-shockwave/downloads", path: "Shockwave", detect: ["shockwave"], pick: true, notes: "On the download page choose the full release. It arrives as a Windows installer, usually inside a .zip. Drop that file here. Rallypoint unpacks the game archives and does not start Shockwave's own launcher, so the same download works on macOS and Windows.", args: [], installed: hash.includes("modinstalled") ? { folder: "Shockwave", bigs: 12, mb: 280 } : null },
     { id: "shockwave-chaos", name: "C&C: Shockwave Chaos", description: "A deliberately over-the-top add-on for Shockwave with lots of new and reworked units, generals and abilities.", homepage: "https://www.moddb.com/mods/cc-shockwave-chaos", download_page: "https://www.moddb.com/mods/cc-shockwave-chaos/downloads", path: "ShockwaveChaos", detect: ["chaos"], addon_for: "shockwave", pick: true, notes: "An add-on: C&C: Shockwave must be installed first. Rallypoint combines it with Shockwave when you launch.", args: [], installed: null },
     { id: "cold-war-crisis", name: "Cold War Crisis", description: "A total conversion of Zero Hour (version 469), with its own movies, cursors and content.", homepage: "https://www.moddb.com/mods/cold-war-crisis", download_page: "https://www.moddb.com/mods/cold-war-crisis", path: "ColdWarCrisis", detect: ["cwc"], pick: true, notes: "Download the manual installation .zip from ModDB (about 550 MB) and choose it here; no installer is run. It replaces the game's content, so it can't be played together with Shockwave or Chaos.", args: [], conflicts: ["shockwave", "shockwave-chaos"], installed: hash.includes("modinstalled") ? { folder: "ColdWarCrisis", bigs: 1, mb: 833 } : null }],
@@ -27,7 +31,55 @@ function advance() {
   state.cfg.game_dir = "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour";
 }
 setInterval(advance, 500);
+const ra2Maps = [["Little Big Lake", 4, "yr"], ["Golden State Fwy", 6, "yr"], ["Heck Freezes Over", 8, "ra2"], ["Isle of War", 2, "yr"], ["Dune Patrol", 2, "ra2"], ["Tour of Egypt", 6, "ra2"], ["Kill Bill", 2, "yr"], ["Cold War", 4, "ra2"], ["Mission: Last Stand", 1, "yr"]]
+  .map(([name, players, game], i) => ({ path: `/Users/me/Library/Application Support/GeneralsZH/RA2Maps/${name.replace(/[^A-Za-z ]/g, "")}.${game === "yr" ? "yrm" : "mpr"}`, name, players, game, size_kb: 60 + i * 23 }));
+const lobby = { seat: { side: -1, color: -1, start: -1, team: -1, ready: false }, settings: null, changedAt: 0 };
+const guestHost = hash.includes("ra2guest");
+// what the guest sees of the host's room; any change clears the guest's ready, as in ra2lobby
+const guestRoom = { map: "Little Big Lake.yrm", map_name: "Little Big Lake", starts: 4, credits: 10000, speed: 2, ai: [{ difficulty: "brutal", side: 7, color: 6, start: 3, team: 1 }] };
+if (hash.includes("changed")) { setTimeout(() => { lobby.seat.ready = true; }, 1000); setTimeout(() => { guestRoom.speed = 0; lobby.seat.ready = false; }, 2500); }
 const handlers = {
+  set_game: ({ game }) => { state.cfg.game = game; },
+  ra2_detect: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Red Alert II" }] : []),
+  ra2_check_dir: ({ path }) => (/RA2|Red Alert/i.test(path) ? (state.cfg.ra2.game_dir = path.trim(), { ok: true, message: "Yuri's Revenge found" }) : path.trim() ? { ok: false, message: "That folder has no Red Alert 2 and Yuri's Revenge (ra2md.mix)" } : { ok: false, message: "Choose the folder that contains ra2md.mix" }),
+  ra2_set_settings: (a) => { Object.assign(state.cfg.ra2, a); },
+  ra2_maps: async () => (await new Promise((r) => setTimeout(r, 200)), hash.includes("nomaps") ? [] : ra2Maps),
+  ra2_map_view: ({ file }) => {
+    const m = ra2Maps.find((x) => x.path.endsWith("/" + file)) || ra2Maps[0];
+    const v = handlers.map_view({ name: m.name });
+    const pts = [[.2, .8], [.8, .2], [.8, .8], [.2, .2], [.5, .9], [.5, .1], [.1, .5], [.9, .5]];
+    return { ...v, game: m.game, cells_w: 120, cells_h: 100, info: { width: 1200, height: 1000, starts: pts.slice(0, m.players).map(([x, y], i) => ({ number: i + 1, x, y })) } };
+  },
+  ra2_community_packs: async () => ({
+    packs: [
+      { id: "ra2-1", name: "RA2 map pack 1", file: "ra2mappack1.zip", game: "ra2", maps: 3, sha256: "" },
+      { id: "yr-5", name: "Yuri's Revenge map pack 5", file: "yrmappack5.zip", game: "yr", maps: 13, sha256: "" },
+    ],
+    installed_files: hash.includes("nomaps") ? 0 : 6,
+    available: true,
+  }),
+  ra2_install_community_packs: async () => (await new Promise((r) => setTimeout(r, 400)), [13, 46]),
+  ra2_open_maps_folder: () => {},
+  ra2_launch: ({ setup }) => { window.__lastRa2 = setup; if (!state.cfg.ra2_engine) throw new Error("The RA2 engine is not in this build yet"); },
+  ra2_lobby_seat: ({ seat }) => {
+    const changed = ["side", "color", "start", "team"].some((k) => seat[k] !== lobby.seat[k]);
+    lobby.seat = { ...seat };
+    if (changed && !guestHost && lobby.settings) lobby.changedAt = Date.now();
+  },
+  ra2_lobby_room: ({ map, credits, speed, ai }) => {
+    const m = ra2Maps.find((x) => x.path.endsWith("/" + map)), next = { map, map_name: m.name, starts: m.players, credits, speed, ai };
+    if (JSON.stringify(next) !== JSON.stringify(lobby.settings)) { lobby.settings = next; lobby.changedAt = Date.now(); }
+  },
+  ra2_lobby_start: () => { throw new Error("Waiting for Dana to be ready"); },
+  ra2_lobby_poll: () => {
+    if (!hash.includes("online") && !guestHost) return null;
+    const me = { id: 2, name: "Michaels-Mac", host: !guestHost, me: true, ...lobby.seat, ...(hash.includes("guestready") ? { ready: true } : {}) };
+    // Sam readies again 4 s after the host's last change; Dana never does
+    const samReady = guestHost || Date.now() - lobby.changedAt > 4000;
+    const others = [{ id: 1, name: "Sam", host: guestHost, me: false, side: 8, color: 1, start: 1, team: 0, ready: samReady }, { id: 3, name: "Dana", host: false, me: false, side: 9, color: 3, start: -1, team: -1, ready: false }];
+    const settings = guestHost ? structuredClone(guestRoom) : lobby.settings;
+    return { me: 2, host: guestHost ? 1 : 2, am_host: !guestHost, players: [others[0], me, others[1]], settings, blocked: guestHost ? "" : !settings ? "Choose a map first" : `Waiting for ${samReady ? "Dana" : "Sam"} to be ready`, start: null };
+  },
   get_config: () => structuredClone(state.cfg),
   maps_info: () => ({ dir: "/Users/me/Documents/Command and Conquer Generals Zero Hour Data/Maps", count: state.mapCount || 0, packs: [
     { id: "gentool-all", name: "All ranked maps", description: "Every ranked 1v1, 2v2 and 3v3 map from GenTool's download page, in one pack.", size_mb: 56 },
@@ -81,6 +133,7 @@ const handlers = {
   save_game_dir: ({ path }) => { state.cfg.game_dir = path.trim(); },
   save_config: ({ server, room, steamUser }) => { Object.assign(state.cfg, { server, room, steam_user: steamUser }); },
   set_setup_done: ({ done }) => { state.cfg.setup_done = done; },
+  set_ra2_setup_done: ({ done }) => { state.cfg.ra2.setup_done = done; },
   assets_start: ({ user }) => { state.cfg.steam_user = user; state.job = { tick: 0, s: { phase: "LoggingIn", percent: 0, message: "Signing in to Steam…", need: null, phone: false, log: "" } }; },
   assets_status: () => (state.job ? state.job.s : { phase: "Idle", percent: 0, message: "", need: null, phone: false, log: "" }),
   assets_use_code: () => { if (state.job) state.job.codeMode = true; },
@@ -98,11 +151,11 @@ const handlers = {
   set_camera_height: () => {}, set_control_bar: async ({ choice }) => { await new Promise((r) => setTimeout(r, 400)); state.other = state.other.filter((o) => o.folder !== "Control Bar Pro"); if (choice === "pro") state.other.push({ folder: "Control Bar Pro", bigs: 5, mb: 17 }); }, set_engine_arch: () => {}, set_renderer: () => {}, set_effect: () => "custom", set_effect_preset: ({ name }) => state.cfg.effects.map(([k, v]) => [k, name === "cinematic" && k === "ColorLook" ? "cinematic" : name === "cinematic" && k === "Vignette" ? "yes" : v]), graphics_apply_high: async () => { await new Promise((r) => setTimeout(r, 600)); },
   open_mods_folder: () => {}, open_download_page: () => {}, open_homepage: () => {},
   relay_set_ai: ({ level }) => { state.roomAi = level; },
-  relay_diagnostics: () => (hash.includes("online") ? { rtt_ms: 42 + Math.round(18 * Math.sin(Date.now() / 7000) + 10 * Math.random()), avg_ms: 45, jitter_ms: 6, loss_pct: Math.random() < 0.12 ? 2 : 0, samples: 20, up_kbps: 38 + Math.round(20 * Math.random()), down_kbps: 61 + Math.round(40 * Math.random()), server_identity: "3F2A-91C0-77AB-0E15", identity_saved: true, room_master: !hash.includes("guest"), ai_level: state.roomAi || 0, desync: hash.includes("desync") ? { frame: 100, certain: false, players: [{ vip: "10.77.0.1", crc: "12C26F6A", odd: false }, { vip: "10.77.0.2", crc: "E67396AE", odd: false }] } : null, server: { version: "0.1.0-beta.4", uptime_secs: 273600, rooms: 4, players: 11, max_rooms: 256, max_players: 2048, room_players: 3, load_pct: 2 + Math.round(10 * Math.random()), pps: 420, kbps: 310 } } : null),
+  relay_diagnostics: () => (hash.includes("online") || hash.includes("ra2guest") ? { rtt_ms: 42 + Math.round(18 * Math.sin(Date.now() / 7000) + 10 * Math.random()), avg_ms: 45, jitter_ms: 6, loss_pct: Math.random() < 0.12 ? 2 : 0, samples: 20, up_kbps: 38 + Math.round(20 * Math.random()), down_kbps: 61 + Math.round(40 * Math.random()), server_identity: "3F2A-91C0-77AB-0E15", identity_saved: true, room_master: !hash.includes("guest"), ai_level: state.roomAi || 0, desync: hash.includes("desync") ? { frame: 100, certain: false, players: [{ vip: "10.77.0.1", crc: "12C26F6A", odd: false }, { vip: "10.77.0.2", crc: "E67396AE", odd: false }] } : null, server: { version: "0.1.0-beta.4", uptime_secs: 273600, rooms: 4, players: 11, max_rooms: 256, max_players: 2048, room_players: 3, load_pct: 2 + Math.round(10 * Math.random()), pps: 420, kbps: 310 } } : null),
   room_password_save: ({ server, room, password }) => { state.pw = state.pw || {}; const k = (server + "|" + room).toLowerCase(); if (password) state.pw[k] = true; else delete state.pw[k]; },
   room_passwords_saved: ({ pairs }) => pairs.map(([s, r]) => !!(state.pw || {})[(s + "|" + r).toLowerCase()]),
   relay_connection: () => (hash.includes("noanswer") ? { address: "203.0.113.5:7777", stage: "contacting the server", waited_secs: 14, replies: 0, reconnects: 0, address_changed: false, hint: "Nothing has answered from 203.0.113.5:7777 in 14 seconds. Check the server address and port, that the server is running, and that no firewall or router is blocking UDP to that port." } : { address: "203.0.113.5:7777", stage: "connected", waited_secs: 0, replies: 40, reconnects: 0, address_changed: false, hint: "" }),
-  relay_status: () => (hash.includes("noanswer") ? "Connecting..." : hash.includes("wrongpw") ? "Wrong room password" : hash.includes("online") ? "Connected as 10.77.0.2" : "Offline"), relay_connect: () => {}, relay_disconnect: () => {},
+  relay_status: () => (hash.includes("ra2online") || hash.includes("ra2guest") ? "Connected as 10.77.0.2" : hash.includes("noanswer") ? "Connecting..." : hash.includes("wrongpw") ? "Wrong room password" : hash.includes("online") ? "Connected as 10.77.0.2" : "Offline"), relay_connect: () => {}, relay_disconnect: () => {},
   icons_install: () => { const row = { folder: "Control Bar HD", bigs: 2, mb: 7 }; if (!state.other.some((o) => o.folder === row.folder)) state.other.push(row); return row; },
   launch_game: (a) => { window.__lastLaunch = a; },
   launch_editor: (a) => { window.__lastEditor = a; },
@@ -112,3 +165,6 @@ window.__TAURI__ = {
   webview: { getCurrentWebview: () => ({ onDragDropEvent: () => {} }) },
   dialog: { open: async () => "/Users/me/Downloads/ShockWave_1.201.zip" },
 };
+// #...@online opens the Online page; #ra2online...hostchange changes the credits 6 s in (Sam's ready clears for 4 s)
+if (hash.includes("@online")) { const t = setInterval(() => { if (store.page === "play") { clearInterval(t); go("online"); } }, 100); }
+if (hash.includes("hostchange")) setTimeout(() => { if (lobby.settings) { lobby.settings = { ...lobby.settings, credits: 20000 }; lobby.changedAt = Date.now(); } }, 6000);

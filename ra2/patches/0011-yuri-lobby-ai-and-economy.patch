@@ -1,0 +1,205 @@
+diff --git a/engine/ai_side_catalog.inc b/engine/ai_side_catalog.inc
+index ef426af..458708a 100644
+--- a/engine/ai_side_catalog.inc
++++ b/engine/ai_side_catalog.inc
+@@ -53,7 +53,7 @@ inline bool list_has(const std::vector<std::string>& l, const std::string& tok)
+ // 0 = Allied ("GDI"/Good), 1 = Soviet ("Nod"/Evil) -- AIBasePlanningSide's
+ // encoding (rulesmd: "0 for Good, 1 for Evil").
+ inline int planning_side(ra2engine::World::Side s) {
+-    return s == ra2engine::World::Side::Soviet ? 1 : 0;
++    return ra2engine::yuri::planning_side(s);   // Rallypoint: Yuri = 2
+ }
+ 
+ // The lobby slot's country when it belongs to the slot's side per rulesmd
+@@ -62,13 +62,16 @@ inline int planning_side(ra2engine::World::Side s) {
+ // e.g. side Allied + "Russians") the side's default country.
+ inline std::string house_country(ra2engine::World::Side side, const std::string& slot_country,
+                                  const Rules* rules = nullptr) {
+-    const bool soviet = side == ra2engine::World::Side::Soviet;
+-    const std::string def = soviet ? "Russians" : "Americans";
++    const std::string def = ra2engine::yuri::default_country(side);
+     if (slot_country.empty()) return def;
+     if (rules) {
+         const std::vector<std::string> members =
+-            csv_tokens(rules->section_string("Sides", soviet ? "Nod" : "GDI", ""));
++            csv_tokens(rules->section_string("Sides", ra2engine::yuri::sides_key(side), ""));
+         if (!members.empty() && !list_has(members, slot_country)) return def;
++        // Rallypoint: YR's [Sides] is commented out; the country's own Side= decides.
++        const ra2engine::World::Side cs =
++            ra2engine::yuri::side_of_rules_side(rules->section_string(slot_country, "Side", ""));
++        if (members.empty() && cs != ra2engine::World::Side::Neutral && cs != side) return def;
+     }
+     return slot_country;
+ }
+@@ -100,8 +103,7 @@ int pick_from_list(const Rules& rules, const char* section, const char* key,
+ // "<Side>BaseDefenseCounts=25,22,6 ;h,m,e" indexed by house+0x184 (hardest
+ // first) [ai-base.md §2; G-63]. -1 when absent.
+ inline int defense_count(const Rules& rules, ra2engine::World::Side side, int class_index) {
+-    const char* key = side == ra2engine::World::Side::Soviet ? "SovietBaseDefenseCounts"
+-                                                             : "AlliedBaseDefenseCounts";
++    const std::string key = std::string(ra2engine::yuri::key_prefix(side)) + "BaseDefenseCounts";
+     const std::vector<std::string> v = csv_tokens(rules.section_string("General", key, ""));
+     if (class_index < 0 || class_index >= (int)v.size()) return -1;
+     return std::atoi(v[(std::size_t)class_index].c_str());
+diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
+index fa2dd0d..4d6d2d3 100644
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -19,7 +19,8 @@
+ // NARADR, ...), so a house builds only what its base allows; each house's
+ // share is filtered by Owner/RequiredHouses/ForbiddenHouses (ai_side_catalog).
+ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixFile& ra2,
+-                                   const UnitAssets& ua, const Rules& rules, const Art& art) {
++                                   const UnitAssets& ua, const Rules& rules, const Art& art,
++                                   const Ini* rules_ini = nullptr) {
+     load_progress("AI ROSTER");   // W2-AR-02 loading-screen checkpoint
+     static const UnitRosterEnt kAiUnits[] = {
+         // Soviet
+@@ -60,8 +61,32 @@ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixF
+         // owns a Robot Control Center by other means, as in the original).
+         {"ROBO", true, "GAWEAP"}, {"BFRT", true, "GAWEAP"}, {"SCHP", true, "NAWEAP"},
+     };
+-    UnitRoster ur = load_unit_roster_table(dir, ra2, ua, rules, art, kAiUnits,
+-                                           sizeof(kAiUnits) / sizeof(kAiUnits[0]), /*full_parse=*/true);
++    std::vector<UnitRosterEnt> ents(std::begin(kAiUnits), std::end(kAiUnits));
++    // Rallypoint: the third side's units (yuri::is_yuri_type), appended so
++    // every curated index is unchanged. Only with the rules INI (real play).
++    std::vector<std::string> yuri_ids;   // owns the strings ents points at
++    if (rules_ini) {
++        const std::vector<std::string> yb = yuri_building_ids(rules, *rules_ini);
++        std::vector<std::string> ybu;
++        for (const std::string& b : yb) ybu.push_back(ra2engine::yuri::upper(b));
++        std::vector<char> veh;
++        for (const char* list : {"InfantryTypes", "VehicleTypes"})
++            for (const std::string& id : ra2engine::ini_list_values(*rules_ini, list)) {
++                if (id.empty() || !rules_ini->has(id) || rules.tech_level(id) <= 0) continue;
++                bool have = std::find(yuri_ids.begin(), yuri_ids.end(), id) != yuri_ids.end();
++                for (const UnitRosterEnt& e : ents) have |= id == e.id;
++                if (have || !ra2engine::yuri::is_yuri_type(rules.section_string(id, "Owner", ""),
++                                                           rules.section_string(id, "AIBasePlanningSide", ""),
++                                                           rules.section_string(id, "Prerequisite", ""), ybu))
++                    continue;
++                yuri_ids.push_back(id);
++                veh.push_back(std::string(list) == "VehicleTypes" ? 1 : 0);
++            }
++        for (std::size_t i = 0; i < yuri_ids.size(); ++i)
++            ents.push_back(UnitRosterEnt{yuri_ids[i].c_str(), veh[i] != 0, ""});
++    }
++    UnitRoster ur = load_unit_roster_table(dir, ra2, ua, rules, art, ents.data(), ents.size(),
++                                           /*full_parse=*/true);
+     for (ra2engine::UnitTypeDef& d : ur.defs) {   // same resolution as rp_load_roster
+         d.harvester = rules.harvester(d.id);
+         if (d.harvester) {
+@@ -141,7 +166,7 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
+     acfg.catalog.naval_yard_adjacency =
+         static_cast<int>(rules.general_double("AINavalYardAdjacency", 20.0));
+     acfg.team.nav_factory_types = factory_types_for(ba, id_of(acfg.catalog.naval_yard));
+-    acfg.team.trigger_side = s.side == ra2engine::World::Side::Soviet ? 2 : 1;  // [ai-trigger.md §5]
++    acfg.team.trigger_side = ra2engine::yuri::trigger_side(s.side);  // [ai-trigger.md §5]; Yuri = 3
+     acfg.team.house_name = country;
+     fill_ai_building_maps(acfg.team, ba, rules, rules_ini);
+     // W7-04-18 [RE: TechnoTypeClass ToProtect=, read by ReceiveDamage
+@@ -188,7 +213,7 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
+         const int c = ra2engine::difficulty_class_index(s.diff);
+         acfg.virtual_purifiers = c < (int)v.size() ? std::max(0, std::atoi(v[(std::size_t)c].c_str())) : 0;
+     }
+-    std::cerr << "[ai] slot side=" << (s.side == ra2engine::World::Side::Soviet ? "Soviet" : "Allied")
++    std::cerr << "[ai] slot side=" << ra2engine::yuri::side_name(s.side)
+               << " country=" << country << " diff=" << (int)s.diff
+               << " roster=" << acfg.team.unit_roster.size()
+               << " teams=" << acfg.team.aimd.teams.size()
+diff --git a/engine/gf_start.inc b/engine/gf_start.inc
+index b2499e5..e12a356 100644
+--- a/engine/gf_start.inc
++++ b/engine/gf_start.inc
+@@ -58,7 +58,7 @@ inline std::vector<std::string> gf_tokens(const std::string& v) {
+ }
+ 
+ inline std::string gf_default_country(ra2engine::World::Side side) {
+-    return side == ra2engine::World::Side::Soviet ? "Russians" : "Americans";
++    return ra2engine::yuri::default_country(side);   // Rallypoint: Yuri -> YuriCountry
+ }
+ 
+ inline bool gf_owner_has(const Rules& rules, const std::string& id, const std::string& country) {
+@@ -393,21 +393,21 @@ Scene* gf_make_restart_scene(bool no_audio, const ra2engine::SkirmishConfig& cfg
+ 
+ // gF G-17 [RE: multihouse.md §1, CONFIRMED [Countries] + per-country Side=]:
+ // the lobby picks a COUNTRY; the side follows from its rules Side= (GDI ->
+-// Allied, Nod -> Soviet). The playable list is the [Countries] order minus
+-// YuriCountry (Yuri's side is a non-goal) and the passive/civilian houses.
++// Allied, Nod -> Soviet, ThirdSide -> Yuri). The playable list is the
++// [Countries] order minus the passive/civilian houses. Rallypoint: YuriCountry
++// is appended as index 9, so 0-8 keep their meaning in launch files.
+ inline const std::vector<std::string>& gf_lobby_countries() {
+     static const std::vector<std::string> k = {"Americans", "Alliance", "French", "Germans",
+                                                "British", "Africans", "Arabs", "Confederation",
+-                                               "Russians"};
++                                               "Russians", "YuriCountry"};
+     return k;
+ }
+ inline ra2engine::World::Side gf_side_of_country(const Rules& rules, const std::string& c) {
+-    std::string side = rules.section_string(c, "Side", "");
+-    for (char& ch : side) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+-    if (side == "NOD") return ra2engine::World::Side::Soviet;
+-    if (side == "GDI") return ra2engine::World::Side::Allied;
++    const ra2engine::World::Side s = ra2engine::yuri::side_of_rules_side(rules.section_string(c, "Side", ""));
++    if (s != ra2engine::World::Side::Neutral) return s;
+     const auto& k = gf_lobby_countries();   // rules without Side=: the documented split
+     const auto it = std::find(k.begin(), k.end(), c);
++    if (it != k.end() && it - k.begin() == 9) return ra2engine::World::Side::Yuri;
+     return (it != k.end() && it - k.begin() >= 5) ? ra2engine::World::Side::Soviet
+                                                  : ra2engine::World::Side::Allied;
+ }
+diff --git a/engine/realplay_economy.inc b/engine/realplay_economy.inc
+index 60206e8..1e8b912 100644
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -104,11 +104,11 @@ bool rp_is_lobby_sw_building(const Rules& rules, const std::string& id) {
+ // default (Americans / Russians). The lobby's side button changes only the
+ // side, so a stale "Americans" on a Soviet slot must not leak through.
+ std::string rp_player_country(const Rules& rules, const ra2engine::SkirmishSlot& s) {
+-    const bool soviet = s.side == ra2engine::World::Side::Soviet;
+-    const std::string want = soviet ? "NOD" : "GDI";
+-    if (!s.country.empty() && rp_upper(rules.section_string(s.country, "Side", "")) == want)
++    // Rallypoint: ThirdSide (Yuri) like the other two.
++    if (!s.country.empty() &&
++        ra2engine::yuri::side_of_rules_side(rules.section_string(s.country, "Side", "")) == s.side)
+         return s.country;
+-    return soviet ? "Russians" : "Americans";
++    return ra2engine::yuri::default_country(s.side);
+ }
+ 
+ // One unit queue category per rules type [RE: roster2.md TL;DR 7;
+diff --git a/engine/skirmish_load.inc b/engine/skirmish_load.inc
+index 5a523de..7483644 100644
+--- a/engine/skirmish_load.inc
++++ b/engine/skirmish_load.inc
+@@ -23,7 +23,7 @@ struct SkirmishLoadArt {
+         static const std::pair<const char*, const char*> k[] = {
+             {"Americans", "ustates"}, {"British", "ukingdom"}, {"French", "france"}, {"Germans", "germany"},
+             {"Alliance", "korea"},    {"Koreans", "korea"},    {"Russians", "russia"}, {"Confederation", "cuba"},
+-            {"Africans", "libya"},    {"Arabs", "iraq"}};
++            {"Africans", "libya"},    {"Arabs", "iraq"},       {"YuriCountry", "yuri"}};
+         for (const auto& e : k)
+             if (country == e.first) return e.second;
+         return soviet ? "russia" : "ustates";   // Random: the side's first country until resolved
+diff --git a/engine/world_veterancy.cpp b/engine/world_veterancy.cpp
+index 1eaf8d8..4f7c407 100644
+--- a/engine/world_veterancy.cpp
++++ b/engine/world_veterancy.cpp
+@@ -358,12 +358,13 @@ void World::collect_crate(int slot, int unit_idx) {
+             any_mcv |= units_[i].alive && units_[i].die_time < 0.0 && units_[i].house == h && is_mcv(i);
+         const double cash = ai_enabled(h) ? econ_[(std::size_t)h].credits : house_credits_[h] + player_wallet(h);
+         if (!any_bld && !any_mcv && cash > 1500.0) {
+-            const bool soviet = house_side(h) == Side::Soviet;
++            // Rallypoint: the ConYard prefix of the side (GA / NA / YA).
++            const char* pre = house_side(h) == Side::Soviet ? "NA" : house_side(h) == Side::Yuri ? "YA" : "GA";
+             for (int k = 0; k < static_cast<int>(undeploy_units_.size()) && forced_mcv < 0; ++k) {
+                 const int bt = k < static_cast<int>(undeploy_types_.size()) ? undeploy_types_[k] : -1;
+                 if (bt < 0 || bt >= static_cast<int>(btypes().size())) continue;
+                 const std::string& id = btypes()[bt].id;
+-                if ((id.rfind("NA", 0) == 0) == soviet) forced_mcv = k;
++                if (id.rfind(pre, 0) == 0 && btypes()[bt].conyard) forced_mcv = k;
+             }
+             if (forced_mcv >= 0) p = static_cast<int>(Powerup::Unit);
+         }

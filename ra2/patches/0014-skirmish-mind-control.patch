@@ -1,0 +1,554 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fe0f124..dfefe02 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -294,7 +294,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_roster2.cpp engine/roster2.cpp
+ # the radiation field (engine/abilities.cpp, World-free) and the World-side
+ # ability pass + orders (engine/world_abilities.cpp, a World member TU split out
+ # of world.cpp), exercised by test_abilities.cpp.
+-target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp
++target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp
+                  engine/world_sw.cpp engine/world_an.cpp engine/ai_unit.cpp tests/test_ai_w7.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_w7r2.cpp)   # w7r2: wave-7 mission-script restore fixes
+ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer: deck / ground layers
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 7b93da9..7553e26 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -156,6 +156,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/roster2.cpp
+     ${RA2_ROOT}/engine/abilities.cpp
+     ${RA2_ROOT}/engine/world_abilities.cpp
++    ${RA2_ROOT}/engine/world_mind_control.cpp
+     ${RA2_ROOT}/engine/world_w5.cpp
+     ${RA2_ROOT}/engine/world_w6.cpp
+     ${RA2_ROOT}/engine/world_w7.cpp
+diff --git a/engine/campaign_runtime.inc b/engine/campaign_runtime.inc
+index beb153a..e15898b 100644
+--- a/engine/campaign_runtime.inc
++++ b/engine/campaign_runtime.inc
+@@ -355,6 +355,7 @@ public:
+         wire_economy(w_, ba_, rules);
+         w_.refresh_building_types(ba_.roster);   // G16: btypes() must see mission types
+         w_.set_repair_sell_rules(ba_.repair_sell);
++        w_.set_campaign_mind_control(true);   // W7-08-14: campaign owns poll_mind_control
+         place_objects(objs);
+         sync_tracks();       // W6 fix #2: the placed buildings' Insignificant/LegalTarget flags
+         apply_playfield();   // W6-02-08: IsInPlayfield of every placed object (Unlimbo)
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index f5025a6..14d5e45 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -179,9 +179,9 @@ void try_fire(const World& world, std::vector<Unit>& units, std::vector<Building
+         u.ability_fired_unit = victim_idx;
+         return;
+     }
+-    // Campaign mind control: the Controller shot captures (CampaignRuntime::
+-    // poll_mind_control), it never damages. Only campaign-armed units carry
+-    // the flag -> every gate / skirmish path below is unchanged.
++    // Mind control: the Controller shot captures (World::step_mind_control or
++    // CampaignRuntime::poll_mind_control), it never damages. w_mind_control is
++    // armed each frame on MindControl=yes controllers.
+     // W7-10-04 [RE: BulletClass::Detonate 0x4690A0 @0x4692C0 -> Capture]: the
+     // capture rides THIS shot (its ROF, facing and range already applied);
+     // the runtime consumes Unit::w7.mc_shot. W7-08-13: only the Controller
+@@ -344,7 +344,8 @@ bool w7_greatest_threat(const World& world, std::vector<Unit>& units, std::vecto
+                 if (j == i || !valid_target(units, world, u, j) ||
+                     (!u.detect_disguise && world.disguise_fools(u.house, units[j])) ||   // W7-01-02
+                     !units[j].seen_by_house(u.house) || !world.legal_threat_unit(u.house, units[j]) ||
+-                    (u.w_mind_control && units[j].tg.t.immune_psionics))
++                    (u.w_mind_control && (units[j].tg.t.immune_psionics ||
++                                          units[j].w7.mc_controller >= 0)))
+                     continue;
+                 const Unit& v = units[static_cast<std::size_t>(j)];
+                 const int ws = unit_weapon_for_unit(u, v);
+@@ -1668,12 +1669,13 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
+                         // order_attack on a known unit is never blocked, §6).
+                         // W6-02-07/08: the Evaluate_Object rejects (LegalTarget,
+                         // IsInPlayfield, campaign Insignificant) -- World::legal_threat_unit.
+-                        // W6-02-12: a mind-control shooter never picks an
+-                        // ImmuneToPsionics unit (map overrides merged).
++                        // W6-02-12 / W7-08-11: a mind-control shooter never picks an
++                        // ImmuneToPsionics or already-controlled unit.
+                         if (j == i || !valid_target(units, world, u, j)
+                             || (!u.detect_disguise && world.disguise_fools(u.house, units[j]))   // W7-01-02 [RE: 0x6F71D0]
+                             || !units[j].seen_by_house(u.house) || !world.legal_threat_unit(u.house, units[j])
+-                            || (u.w_mind_control && units[j].tg.t.immune_psionics))
++                            || (u.w_mind_control && (units[j].tg.t.immune_psionics ||
++                                                     units[j].w7.mc_controller >= 0)))
+                             continue;
+                         const Unit& v = units[j];
+                         const double d = dist_leptons(u.fx, u.fy, v.fx, v.fy);
+diff --git a/engine/main.cpp b/engine/main.cpp
+index d312f99..d3a1ae4 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -7145,7 +7145,7 @@ public:
+         // when there is no audio device; pumps the sink when there is one.
+         pres_.observe_selection(input_.selection(), input_);   // W7-12-26 first-selected speaker / W7-12-04 groups
+         pres_.observe_mind_control(world_, campaign_ ? campaign_->mind_control_pairs()
+-                                                     : std::vector<std::pair<int, int>>{});   // W7-10-05
++                                                     : world_.mind_control_pairs());   // W7-10-05 / W7-08-14
+         pres_.update(dt, world_, lq(), ba_, lcredits(), act, cam_, playfield_w_, kWinH,
+                      pres_vet_, net_ ? net_take(net_proj_buf_) : world_.take_projectile_events());   // (W3-B: drained per tick; normally empty)
+         pres_vet_.clear();
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 1e71a26..2b170c3 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -848,13 +848,15 @@ template <class Ar> void fields(Ar& ar, UnitTypeW7& v) {
+     io(ar, v.agent); io(ar, v.infiltrate); io(ar, v.engineer); io(ar, v.perma_disguise);
+     io(ar, v.detect_disguise); io(ar, v.selectable_combatant); io(ar, v.move_to_shroud);
+     io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
+-    io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mc_capacity); io(ar, v.mc_infinite);
++    io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mind_control);
++    io(ar, v.mc_capacity); io(ar, v.mc_infinite);
+     io(ar, v.build_time_mult);
+ }
+ template <class Ar> void fields(Ar& ar, UnitW7& v) {
+     io(ar, v.t); io(ar, v.blink_left); io(ar, v.redisguise_left); io(ar, v.flash_seen); io(ar, v.hull_aiming);
+     io(ar, v.paralysed_until); io(ar, v.host_raw_hit); io(ar, v.deploy_ready_at); io(ar, v.undeploy_at); io(ar, v.erased_by);
+     io(ar, v.depot_target); io(ar, v.mc_controller); io(ar, v.mc_victims); io(ar, v.mc_shot);
++    io(ar, v.mc_orig_house);   // v48: skirmish/MP mind-control original house
+ }
+ template <class Ar> void fields(Ar& ar, BldW7& v) {
+     io(ar, v.depot_next); io(ar, v.depot_client); io(ar, v.warp_unpowered); io(ar, v.garrison_target_building);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index ae01a4e..06736c7 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 48;   // 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 49;   // 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/unit_w7.hpp b/engine/unit_w7.hpp
+index b2e71df..7291efa 100644
+--- a/engine/unit_w7.hpp
++++ b/engine/unit_w7.hpp
+@@ -45,8 +45,10 @@ struct UnitTypeW7 {
+     // (-1 = never).
+     bool deploy_area_fire = false;
+     int undeploy_delay = -1;
+-    // W7-10-02 [RE: CaptureManager ctor 0x4716F0]: the mind-control capacity
+-    // = the primary weapon's Damage; InfiniteMindControl= lifts the cap.
++    // W7-10-02 [RE: CaptureManager ctor 0x4716F0]: primary warhead MindControl=
++    // arms the CaptureManager; capacity = the weapon's Damage; InfiniteMindControl=
++    // lifts the cap. mind_control false = no CaptureManager (mc_capacity unused).
++    bool mind_control = false;
+     int mc_capacity = 1;
+     bool mc_infinite = false;
+     // W7-04-03 [RE: Time_To_Build FUN_006F3D00 @0x6F3D4E, type +0x608]:
+@@ -86,6 +88,9 @@ struct UnitW7 {
+     int mc_controller = -1;
+     std::vector<int> mc_victims;
+     int mc_shot = -1;   // W7-10-04: the victim of this frame's Controller shot
++    // House the victim had when first captured (World skirmish/MP path; campaign
++    // keeps the same value on its Track::mc_orig for save/load).
++    int mc_orig_house = -1;
+     // (W7-04-08's per-unit missile_holds list was removed in fv7c / save v40:
+     // the PauseFrames + TiltFrames hold lives in the spawn-manager node,
+     // AnUnit::sp_state / sp_timer [RE: SpawnManagerClass::AI FUN_006B68B0 / 0x6B72E0].)
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 526c3a8..fd032d7 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -209,6 +209,7 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
+     // = InfiniteMindControl -- only for a primary whose warhead has MindControl.
+     if (tw.slot[0].valid &&
+         rules.section_flag(rules.section_string(tw.slot[0].id, "Warhead", ""), "MindControl", false)) {
++        w.mind_control = true;
+         w.mc_capacity = std::max(1, om::ftol(rules.section_double(tw.slot[0].id, "Damage", 1.0)));
+         w.mc_infinite = rules.section_flag(tw.slot[0].id, "InfiniteMindControl", false);
+     }
+diff --git a/engine/world.cpp b/engine/world.cpp
+index b8f6cd7..fd3605a 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -6012,6 +6012,11 @@ void World::step(double dt) {
+     // order [spec §Global Constraints].
+     step_repair_sell(dt);
+ 
++    // W7-08-14 skirmish/MP mind control: arm flags and consume the previous
++    // frame's Controller shots before combat stamps new ones (campaign owns
++    // its own poll and sets campaign_mind_control_).
++    step_mind_control();
++
+     // Projectile phase (P2) [RE: projectile.md §6/§7]: advance every projectile
+     // in flight one logic frame per accumulated 1/15 s, detonating through the
+     // EXISTING damage layer. A pure INSERTION before step_combat (a shell
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 88b7607..fda459e 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -119,15 +119,12 @@ struct Unit {
+     double w_cell_spread = 0.0;    // warhead CellSpread (cells) [aircraft.md §4]
+     double w_percent_at_max = 1.0; // warhead PercentAtMax (edge damage scale)
+     bool w_affects_allies = true;  // W5-B R-060: warhead AffectsAllies= (default yes)
+-    // Campaign mind control [RE: BulletClass::Detonate FUN_004690A0 -- a
+-    // warhead with MindControl (+0x155) skips the whole DamageArea
+-    // FUN_00489190 branch and only calls the owner's CaptureManager
+-    // (+0x2BC) Capture FUN_00471C80 @0x4692C0: the victim is taken, never
+-    // damaged]: set every frame by CampaignRuntime
+-    // (poll_mind_control, BEFORE World::step) on a live MindControl=yes
+-    // controller; try_fire then deals no damage and the runtime captures the
+-    // victim (same 3-D range rule). Re-armed each frame; saved (v24) only
+-    // because every Unit member is (the save tripwire).
++    // Mind control [RE: BulletClass::Detonate FUN_004690A0 -- a warhead with
++    // MindControl (+0x155) skips DamageArea and only calls CaptureManager
++    // Capture]: set every frame on a live MindControl controller (World::
++    // step_mind_control in skirmish/MP; CampaignRuntime::poll_mind_control in
++    // campaign). try_fire then deals no damage and stamps mc_shot; the same
++    // pass consumes it next frame. Re-armed each frame; saved (v24).
+     bool w_mind_control = false;
+     // W5-B R-061 infantry sub-cells [RE: FindInfantrySubposition FUN_00481090,
+     // spot coords DAT_0089D960]: the spot (2 right, 3 left, 4 down; 0 centre =
+@@ -2557,6 +2554,15 @@ public:
+     // W6-02-12: may a mind-control shot of `house` take unit j (not
+     // ImmuneToPsionics, map overrides merged into the type data)?
+     bool psionic_target_ok(int unit_idx) const;
++    // W7-08-14: skirmish/MP CaptureManager (world_mind_control.cpp). Campaign
++    // sets set_campaign_mind_control(true) and keeps its own poll (teams/fate).
++    void set_campaign_mind_control(bool on);
++    bool campaign_mind_control() const { return campaign_mind_control_; }
++    void step_mind_control();
++    void mc_release(int ctl, int vi);
++    void mc_release_all(int ctl);
++    bool mc_capture(int ctl, int vi);
++    std::vector<std::pair<int, int>> mind_control_pairs() const;
+     bool garrison_firing(int b_idx) const;                   // CanOccupyFire && occupants
+     double garrison_range(int b_idx) const;                  // cells
+     struct GarrisonEvent { enum Kind { Entered, Garrisoned, Abandoned, Unloaded } kind = Entered; int building = -1; int house = -1; };
+@@ -3139,6 +3145,8 @@ private:
+     // refund, then kill + mark sold. See world.cpp for the recovered ordering.
+     void complete_sell(int b_idx);
+ 
++    // W7-08-14: campaign owns mind control (poll_mind_control); World skips.
++    bool campaign_mind_control_ = false;
+     // --- P4 Unit special abilities [RE: abilities.md] (world_abilities.cpp) ---
+     bool abilities_any_ = false;                      // THE firewall
+     std::uint64_t ability_frame_ = 0;                 // logic frame counter
+diff --git a/engine/world_mind_control.cpp b/engine/world_mind_control.cpp
+new file mode 100644
+index 0000000..f3c59d8
+--- /dev/null
++++ b/engine/world_mind_control.cpp
+@@ -0,0 +1,132 @@
++// Skirmish / multiplayer CaptureManager (W7-08-14 / W7-10-02..04).
++// Campaign keeps its own poll_mind_control (teams, DecideUnitFate, Track::mc_orig);
++// it sets campaign_mind_control_ so this pass is a no-op there. Same rules as the
++// campaign path: MindControl primary warhead, shot via try_fire (mc_shot),
++// ImmuneToPsionics / Iron Curtain / already-controlled refused, capacity from
++// weapon Damage (InfiniteMindControl lifts it), FreeAll on death / board / Temporal.
++
++#include "world.hpp"
++
++#include <algorithm>
++
++namespace ra2engine {
++namespace {
++
++bool mc_live(const Unit& u) { return u.alive && u.die_time < 0.0; }
++
++bool mc_boarded(const Unit& u) {
++    return (u.cargo_of >= 0 && u.cargo_of != kParachuteCargo) || u.garrison_of >= 0;
++}
++
++}  // namespace
++
++void World::set_campaign_mind_control(bool on) { campaign_mind_control_ = on; }
++
++std::vector<std::pair<int, int>> World::mind_control_pairs() const {
++    std::vector<std::pair<int, int>> out;
++    for (std::size_t i = 0; i < units_.size(); ++i) {
++        for (int v : units_[i].w7.mc_victims)
++            if (v >= 0 && v < static_cast<int>(units_.size()))
++                out.push_back({static_cast<int>(i), v});
++    }
++    return out;
++}
++
++void World::mc_release(int ctl, int vi) {
++    if (ctl < 0 || ctl >= static_cast<int>(units_.size())) return;
++    if (vi < 0 || vi >= static_cast<int>(units_.size())) return;
++    Unit& cu = units_[static_cast<std::size_t>(ctl)];
++    Unit& vu = units_[static_cast<std::size_t>(vi)];
++    auto& vv = cu.w7.mc_victims;
++    vv.erase(std::remove(vv.begin(), vv.end(), vi), vv.end());
++    if (vu.w7.mc_controller != ctl) return;
++    vu.w7.mc_controller = -1;
++    const int orig = vu.w7.mc_orig_house;
++    vu.w7.mc_orig_house = -1;
++    if (orig < 0 || !mc_live(vu)) return;
++    set_unit_owner(vi, orig);
++}
++
++void World::mc_release_all(int ctl) {
++    if (ctl < 0 || ctl >= static_cast<int>(units_.size())) return;
++    const std::vector<int> vv = units_[static_cast<std::size_t>(ctl)].w7.mc_victims;
++    for (int v : vv) mc_release(ctl, v);
++    units_[static_cast<std::size_t>(ctl)].w7.mc_victims.clear();
++}
++
++bool World::mc_capture(int ctl, int vi) {
++    if (ctl < 0 || ctl >= static_cast<int>(units_.size())) return false;
++    if (vi < 0 || vi >= static_cast<int>(units_.size())) return false;
++    Unit& u = units_[static_cast<std::size_t>(ctl)];
++    Unit& v = units_[static_cast<std::size_t>(vi)];
++    if (!mc_live(u) || !mc_live(v) || mc_boarded(v) || v.house == u.house || v.is_aircraft)
++        return false;
++    if (!psionic_target_ok(vi) || v.an.iron_left_frames > 0) return false;
++    if (v.w7.mc_controller >= 0) return false;   // W7-08-11: no stealing
++    const int cap = std::max(1, u.w7.t.mc_capacity);
++    const bool infinite = u.w7.t.mc_infinite;
++    const bool full = !infinite && static_cast<int>(u.w7.mc_victims.size()) >= cap;
++    if (full) {
++        if (cap != 1 || infinite) return false;
++        mc_release(ctl, u.w7.mc_victims.front());   // Max == 1: swap
++    }
++    if (v.w7.mc_orig_house < 0) v.w7.mc_orig_house = v.house;
++    set_unit_owner(vi, u.house);
++    v.w7.mc_controller = ctl;
++    u.w7.mc_victims.push_back(vi);
++    u.target = -1;
++    u.attack_order = false;
++    return true;
++}
++
++void World::step_mind_control() {
++    if (campaign_mind_control_) return;
++    for (std::size_t i = 0; i < units_.size(); ++i) {
++        Unit& u = units_[i];
++        const int ci = static_cast<int>(i);
++        if (!u.w7.mc_victims.empty()) {
++            const std::vector<int> vv = u.w7.mc_victims;
++            for (int v : vv) {
++                if (v < 0 || v >= static_cast<int>(units_.size())) continue;
++                const Unit& vu = units_[static_cast<std::size_t>(v)];
++                if (!mc_live(vu) || vu.w7.mc_controller != ci) {
++                    auto& lst = u.w7.mc_victims;
++                    lst.erase(std::remove(lst.begin(), lst.end(), v), lst.end());
++                    if (!mc_live(vu) && v < static_cast<int>(units_.size())) {
++                        if (vu.w7.mc_controller == ci)
++                            units_[static_cast<std::size_t>(v)].w7.mc_controller = -1;
++                        units_[static_cast<std::size_t>(v)].w7.mc_orig_house = -1;
++                    }
++                } else if (mc_boarded(vu)) {
++                    mc_release(ci, v);
++                }
++            }
++        }
++        if (!mc_live(u) || u.cargo_of >= 0 || u.warp_remaining > 0) {
++            if (!u.w7.mc_victims.empty()) mc_release_all(ci);
++            u.w7.mc_shot = -1;
++            u.w_mind_control = false;
++            continue;
++        }
++        u.w_mind_control = u.w7.t.mind_control;
++        if (!u.w_mind_control) continue;
++        const int cap = std::max(1, u.w7.t.mc_capacity);
++        const bool infinite = u.w7.t.mc_infinite;
++        const bool full = !infinite && static_cast<int>(u.w7.mc_victims.size()) >= cap;
++        if (u.target >= 0 && u.target < static_cast<int>(units_.size())) {
++            const Unit& tv = units_[static_cast<std::size_t>(u.target)];
++            if (!psionic_target_ok(u.target) || tv.an.iron_left_frames > 0 ||
++                (tv.w7.mc_controller >= 0 && tv.w7.mc_controller != ci)) {
++                u.target = -1;
++                u.attack_order = false;
++            }
++        }
++        if (full && !u.attack_order && u.target >= 0) u.target = -1;
++        const int vi = u.w7.mc_shot;
++        u.w7.mc_shot = -1;
++        if (vi < 0) continue;
++        mc_capture(ci, vi);
++    }
++}
++
++}  // namespace ra2engine
+diff --git a/tests/test_mind_control.cpp b/tests/test_mind_control.cpp
+new file mode 100644
+index 0000000..97fd795
+--- /dev/null
++++ b/tests/test_mind_control.cpp
+@@ -0,0 +1,148 @@
++// W7-08-14: skirmish/MP mind control (World::step_mind_control).
++#include "doctest.h"
++
++#include "asset_fixture.hpp"
++#include "world.hpp"
++
++using namespace ra2engine;
++
++namespace {
++
++UnitCombat mk_gi() {
++    UnitCombat c;
++    c.image = "E1";
++    c.strength = 125;
++    c.armor = "none";
++    c.damage = 15;
++    c.rof = 20;
++    c.range = 4.0;
++    c.verses = std::vector<int>(11, 100);
++    return c;
++}
++
++UnitCombat mk_yuri(int capacity = 1, bool infinite = false) {
++    UnitCombat c = mk_gi();
++    c.image = "YURI";
++    c.w7.mind_control = true;
++    c.w7.mc_capacity = capacity;
++    c.w7.mc_infinite = infinite;
++    c.damage = capacity;
++    c.rof = 15;
++    c.range = 7.0;
++    return c;
++}
++
++bool open_cell(const World& w, int& x, int& y) {
++    for (int yy = 2; yy + 4 < w.grid_h() - 2; ++yy)
++        for (int xx = 2; xx + 8 < w.grid_w() - 2; ++xx)
++            if (w.walkable(xx, yy) && w.walkable(xx + 2, yy) && w.unit_at_cell(xx, yy) < 0 &&
++                w.unit_at_cell(xx + 2, yy) < 0) {
++                x = xx;
++                y = yy;
++                return true;
++            }
++    return false;
++}
++
++}  // namespace
++
++#define MC_WORLD(world, x0, y0)                                              \
++    if (!ra2fixture::mapsmd03_available()) {                                 \
++        MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR"); \
++        return;                                                              \
++    }                                                                        \
++    World world(ra2fixture::mapsmd03_map());                                 \
++    int x0 = 0, y0 = 0;                                                      \
++    REQUIRE(open_cell(world, x0, y0));
++
++TEST_CASE("mind control: Controller shot captures (no damage), ImmuneToPsionics refuses") {
++    MC_WORLD(w, x0, y0);
++    w.add_combat_unit(x0, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 2, y0, 1, mk_gi());
++    Unit& yuri = w.units()[0];
++    Unit& gi = w.units()[1];
++    const int hp = gi.hp;
++    yuri.w7.mc_shot = 1;
++    w.step_mind_control();
++    CHECK(gi.house == 0);
++    CHECK(gi.w7.mc_controller == 0);
++    CHECK(gi.w7.mc_orig_house == 1);
++    CHECK(yuri.w7.mc_victims.size() == 1);
++    CHECK(yuri.w7.mc_victims[0] == 1);
++    CHECK(gi.hp == hp);
++
++    UnitCombat dog = mk_gi();
++    dog.image = "DOG";
++    dog.tg.immune_psionics = true;
++    w.add_combat_unit(x0 + 4, y0, 1, dog);
++    CHECK_FALSE(w.mc_capture(0, 2));
++    CHECK(w.units()[2].house == 1);
++    CHECK(gi.house == 0);
++}
++
++TEST_CASE("mind control: capacity-1 swap; capacity-3 holds three; release on death") {
++    MC_WORLD(w, x0, y0);
++    w.add_combat_unit(x0, y0, 0, mk_yuri(1));
++    w.add_combat_unit(x0 + 2, y0, 1, mk_gi());
++    w.add_combat_unit(x0 + 4, y0, 1, mk_gi());
++    REQUIRE(w.mc_capture(0, 1));
++    REQUIRE(w.mc_capture(0, 2));   // frees 1, takes 2
++    CHECK(w.units()[1].house == 1);
++    CHECK(w.units()[1].w7.mc_controller < 0);
++    CHECK(w.units()[2].house == 0);
++    CHECK(w.units()[0].w7.mc_victims.size() == 1);
++
++    World w2(ra2fixture::mapsmd03_map());
++    int a = 0, b = 0;
++    REQUIRE(open_cell(w2, a, b));
++    w2.add_combat_unit(a, b, 0, mk_yuri(3));
++    w2.add_combat_unit(a + 2, b, 1, mk_gi());
++    w2.add_combat_unit(a + 4, b, 1, mk_gi());
++    w2.add_combat_unit(a + 6, b, 1, mk_gi());
++    w2.add_combat_unit(a + 8, b, 1, mk_gi());
++    CHECK(w2.mc_capture(0, 1));
++    CHECK(w2.mc_capture(0, 2));
++    CHECK(w2.mc_capture(0, 3));
++    CHECK_FALSE(w2.mc_capture(0, 4));   // full, Max > 1
++    CHECK(w2.units()[0].w7.mc_victims.size() == 3);
++
++    w2.units()[0].alive = false;
++    w2.step_mind_control();
++    CHECK(w2.units()[0].w7.mc_victims.empty());
++    CHECK(w2.units()[1].house == 1);
++    CHECK(w2.units()[2].house == 1);
++    CHECK(w2.units()[3].house == 1);
++}
++
++TEST_CASE("mind control: campaign flag skips World pass; pairs after capture") {
++    MC_WORLD(w, x0, y0);
++    w.set_campaign_mind_control(true);
++    w.add_combat_unit(x0, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 2, y0, 1, mk_gi());
++    w.units()[0].w7.mc_shot = 1;
++    w.step_mind_control();
++    CHECK(w.units()[1].house == 1);   // untouched
++
++    World w2(ra2fixture::mapsmd03_map());
++    int a = 0, b = 0;
++    REQUIRE(open_cell(w2, a, b));
++    w2.add_combat_unit(a, b, 0, mk_yuri());
++    w2.add_combat_unit(a + 2, b, 1, mk_gi());
++    w2.units()[0].w7.mc_shot = 1;
++    w2.step_mind_control();
++    CHECK(w2.units()[1].house == 0);
++    const auto pairs = w2.mind_control_pairs();
++    REQUIRE(pairs.size() == 1);
++    CHECK(pairs[0].first == 0);
++    CHECK(pairs[0].second == 1);
++}
++
++TEST_CASE("mind control: already-controlled target is refused (no steal)") {
++    MC_WORLD(w, x0, y0);
++    w.add_combat_unit(x0, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 2, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 4, y0, 1, mk_gi());
++    REQUIRE(w.mc_capture(0, 2));
++    CHECK_FALSE(w.mc_capture(1, 2));
++    CHECK(w.units()[2].w7.mc_controller == 0);
++}
+diff --git a/tests/test_saveload.cpp b/tests/test_saveload.cpp
+index c7c5722..f485105 100644
+--- a/tests/test_saveload.cpp
++++ b/tests/test_saveload.cpp
+@@ -288,7 +288,8 @@ TEST_CASE("saveload: every World / MapTriggerSystem data member is visited (sour
+         // W9-05: econ_rules_ is hashed through econ_rules_digest_ (visited).
+         {"/engine/world.hpp", "class World {", "w.",
+          {"map_", "econ_rules_", "order_issuer_", "econ_launches_",
+-          "team_flags_"}},   // fv7c: scratch, rebuilt at the head of every step_missions_w7
++          "team_flags_",   // fv7c: scratch, rebuilt at the head of every step_missions_w7
++          "campaign_mind_control_"}},   // v48: CampaignRuntime sets it on construct
+         {"/engine/map_trigger.hpp", "class MapTriggerSystem {", "s.", {"d_"}},
+         // W9-05: the other SaveAccess classes -- every member is saved AND
+         // (visited with save::io) in the sync hash.
+diff --git a/tests/test_w7_units.cpp b/tests/test_w7_units.cpp
+index 3b8ee35..2e85979 100644
+--- a/tests/test_w7_units.cpp
++++ b/tests/test_w7_units.cpp
+@@ -106,7 +106,9 @@ TEST_CASE("w7units: rulesmd type flags (Agent/Engineer, PermaDisguise, DetectDis
+     CHECK(w7("MGTK").fake_blink == 15);
+     CHECK(w7("YURI").deploy_area_fire);
+     CHECK(w7("YURI").undeploy_delay == 150);
++    CHECK(w7("YURI").mind_control);
+     CHECK(w7("YURI").mc_capacity == 1);
++    CHECK_FALSE(w7("E1").mind_control);
+     CHECK(w7("DOG").default_to_guard_area);
+     CHECK(w7("DRON").default_to_guard_area);
+     CHECK_FALSE(w7("CLEG").move_to_shroud);

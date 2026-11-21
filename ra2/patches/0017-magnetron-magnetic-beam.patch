@@ -1,0 +1,521 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -309,6 +309,8 @@
+ target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
+ # Rallypoint: IsGattling RateUp/RateDown stages (gattling.hpp).
+ target_sources(ra2assets_tests PRIVATE tests/test_gattling.cpp)
++# Rallypoint: Magnetron / Magnetic Beam (IsLocomotor lift / hold / drop).
++target_sources(ra2assets_tests PRIVATE tests/test_magnetron.cpp)
+ # Skirmish page (dialog 0x102): the pure lobby model + RA2.INI persistence +
+ # LobbyState -> SkirmishConfig converter (docs/gap/07-skirmish-page.md).
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish_lobby.cpp engine/skirmish_lobby.cpp)
+diff --git a/engine/ability_types.hpp b/engine/ability_types.hpp
+--- a/engine/ability_types.hpp
++++ b/engine/ability_types.hpp
+@@ -17,7 +17,8 @@
+ //   Temporal  <- warhead Temporal=yes      (TemporalClass::Fire, §C2)
+ //   IvanBomb  <- warhead IvanBomb=yes      (BombList::Plant, §E)
+ //   Suicide   <- weapon  Suicide=yes       (TechnoClass::Fire early-out, §F)
+-enum class AbilityKind : std::uint8_t { None = 0, Parasite, Temporal, IvanBomb, Suicide };
++//   MagBeam   <- warhead IsLocomotor=yes   (Magnetron MagneticBeam; Rallypoint)
++enum class AbilityKind : std::uint8_t { None = 0, Parasite, Temporal, IvanBomb, Suicide, MagBeam };
+ 
+ // One resolved weapon (rules id -> numbers). valid=false = "no such weapon".
+ struct WeaponSpec {
+@@ -105,6 +106,10 @@
+     int ivan_damage = 450;             // IvanDamage (+0xFCC)
+     int ivan_timed_delay = 450;        // IvanTimedDelay (+0xFD0)
+     WeaponSpec ivan_warhead = default_ivan_warhead();  // IvanWarhead=IvanWH
++    int mag_cruise_height = 500;
++    int mag_climb = 5;
++    int mag_falling_damage_milli = 1000;
++    bool mag_current_strength_damage = true;
+ };
+ 
+ }  // namespace ra2engine
+diff --git a/engine/magnetron.hpp b/engine/magnetron.hpp
+new file mode 100644
+--- /dev/null
++++ b/engine/magnetron.hpp
+@@ -0,0 +1,101 @@
++#pragma once
++// Rallypoint: Magnetron / Magnetic Beam (Yuri's Revenge).
++// Pure helpers for IsLocomotor lift-hold-drop. Key names match rulesmd
++// (IsMagBeam, IsLocomotor, FallingDamageMultiplier, CurrentStrengthDamage,
++// Weight, JumpjetControls CruiseHeight/Climb). Fixed-point leptons / milli-Weight.
++
++#include <algorithm>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "orig_math.hpp"
++#include "weapon.hpp"
++
++namespace ra2engine {
++namespace magnetron {
++
++inline std::string upper(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    return s;
++}
++
++inline bool is_magnet_locomotor_clsid(const std::string& clsid) {
++    return upper(clsid).rfind("{92612C46", 0) == 0;
++}
++
++struct MagRules {
++    int cruise_height = 500;
++    int climb = 5;
++    int drag = 64;
++    int falling_damage_milli = 1000;
++    bool current_strength_damage = true;
++};
++
++struct MagVictim {
++    bool lifted = false;
++    int altitude = 0;
++    int weight_milli = 1000;
++    int hp = 0;
++    int max_hp = 0;
++    bool is_vehicle = false;
++    bool is_aircraft = false;
++    bool is_infantry = false;
++    bool is_naval = false;
++    bool amphibious = false;
++    int armor_ix = 0;
++};
++
++inline bool can_lift(const MagVictim& v, const std::vector<int>& warhead_verses) {
++    if (!v.is_vehicle && !v.is_naval) return false;
++    if (v.is_aircraft || v.is_infantry) return false;
++    if (v.hp <= 0) return false;
++    return verses_allows(warhead_verses, v.armor_ix);
++}
++
++inline int climb_step(const MagRules& r, int weight_milli) {
++    const int w = std::max(1, weight_milli);
++    return std::max(1, static_cast<int>((static_cast<std::int64_t>(r.climb) * 1000) / w));
++}
++
++inline int rise(const MagRules& r, int altitude, int weight_milli) {
++    if (altitude >= r.cruise_height) return r.cruise_height;
++    const int next = altitude + climb_step(r, weight_milli);
++    return next > r.cruise_height ? r.cruise_height : next;
++}
++
++inline bool at_cruise(const MagRules& r, int altitude) { return altitude >= r.cruise_height; }
++
++inline bool in_beam_range(int hx, int hy, int vx, int vy, double range_cells) {
++    const int dx = hx > vx ? hx - vx : vx - hx;
++    const int dy = hy > vy ? hy - vy : vy - hy;
++    return static_cast<double>(dx > dy ? dx : dy) <= range_cells + 1e-9;
++}
++
++inline int drop_damage(const MagRules& r, const MagVictim& v) {
++    const int base = r.current_strength_damage ? std::max(0, v.hp) : std::max(0, v.max_hp);
++    return om::ftol(static_cast<double>(base) * (static_cast<double>(r.falling_damage_milli) / 1000.0));
++}
++
++inline bool drop_destroys_in_water(const MagVictim& v, bool cell_is_water) {
++    if (!cell_is_water) return false;
++    if (v.amphibious || v.is_naval) return false;
++    return v.is_vehicle;
++}
++
++inline bool drag_toward(int& fx, int& fy, int tx, int ty, int drag) {
++    const int dx = tx - fx, dy = ty - fy;
++    const int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
++    if (adx <= drag && ady <= drag) {
++        fx = tx;
++        fy = ty;
++        return true;
++    }
++    auto step = [drag](int d) { return d > drag ? drag : d < -drag ? -drag : d; };
++    fx += step(dx);
++    fy += step(dy);
++    return false;
++}
++
++}  // namespace magnetron
++}  // namespace ra2engine
+diff --git a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -1360,6 +1360,8 @@
+     else if (ability_flag(ini, wh, "Parasite", false)) s.kind = ra2engine::AbilityKind::Parasite;
+     else if (ability_flag(ini, wh, "Temporal", false)) s.kind = ra2engine::AbilityKind::Temporal;
+     else if (ability_flag(ini, wh, "IvanBomb", false)) s.kind = ra2engine::AbilityKind::IvanBomb;
++    else if (ability_flag(ini, wh, "IsLocomotor", false))
++        s.kind = ra2engine::AbilityKind::MagBeam;
+     {   // wave-5 R-048: projectile AA/AG + flight, the same resolver units use
+         const ra2engine::WeaponSlot ws = ra2engine::resolve_weapon_slot(rules, w);
+         s.slot_set = ws.valid;
+@@ -1432,6 +1434,11 @@
+     r.c4_delay_minutes = rules.section_double("CombatDamage", "C4Delay", 0.03);
+     r.ivan_damage = (int)rules.section_double("CombatDamage", "IvanDamage", 450.0);
+     r.ivan_timed_delay = (int)rules.section_double("CombatDamage", "IvanTimedDelay", 450.0);
++    r.mag_falling_damage_milli =
++        (int)(rules.section_double("CombatDamage", "FallingDamageMultiplier", 1.0) * 1000.0 + 0.5);
++    r.mag_current_strength_damage = ability_flag(ini, "CombatDamage", "CurrentStrengthDamage", true);
++    r.mag_cruise_height = (int)rules.section_double("JumpjetControls", "CruiseHeight", 500.0);
++    r.mag_climb = (int)rules.section_double("JumpjetControls", "Climb", 5.0);
+     const std::string iwh = ability_ini_str(ini, "CombatDamage", "IvanWarhead");
+     if (!iwh.empty()) {
+         r.ivan_warhead.verses = rules.verses(iwh);
+diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
+--- a/engine/unit_combat.hpp
++++ b/engine/unit_combat.hpp
+@@ -85,6 +85,7 @@
+     bool turret = false;       // has an independently-slewing turret
+     double speed_cps = 0.0;    // per-unit speed in cells/sec; 0 = World move_cps
+     bool is_vehicle = false;   // gates all vehicle-specific locomotion
++    int weight_milli = 1000;
+ 
+     // --- CB-1 Transports/Cargo [RE: transport-cargo.md §1] ---
+     // Resolved once from Rules by main.cpp like every existing stat; ALL
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -142,6 +142,10 @@
+     c.crusher = rules.section_flag(type_id, "Crusher", false);
+     c.auto_crush = rules.section_flag(type_id, "AutoCrush", false);   // W5-B R-050
+     c.is_infantry = rules.is_infantry(type_id);                         // W5-B R-061 (sub-cells)
++    {
++        const double w = rules.section_double(type_id, "Weight", 1.0);
++        c.weight_milli = std::max(1, om::ftol(w * 1000.0));
++    }
+     {   // W5-B R-062: only the Drive {4A582741} and Ship {2BEA74E1} locomotors
+         // read the GroundType speed table (FUN_004B2550 / FUN_006A1310); Hover,
+         // Walk, Mech, Jumpjet, Teleport, Rocket... do not. Absent -> Drive.
+diff --git a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1155,6 +1155,7 @@
+     // the unit on the World-wide move_cps. Infantry leave all of these at
+     // their defaults (is_vehicle=false, rot=0, speed_cps=0).
+     u.is_vehicle = c.is_vehicle;
++    u.weight_milli = c.weight_milli > 0 ? c.weight_milli : 1000;
+     u.speed_cps = c.speed_cps;
+     u.rot_u16_per_sec = c.rot * kRotU16PerRotPerSec;
+     // CB-1 [RE: transport-cargo.md §1]: cargo stats, inert unless the caller
+diff --git a/engine/world.hpp b/engine/world.hpp
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -178,6 +178,7 @@
+     // Facings live in the original's 16-bit space [0, 65536); 32768 faces
+     // screen-South like the infantry spawn (docs/re/voxel-render.md §2/§5).
+     bool is_vehicle = false;
++    int weight_milli = 1000;
+     double body_facing = 32768.0;
+     double turret_facing = 32768.0;
+     double rot_u16_per_sec = 0.0;  // ROT * kRotU16PerRotPerSec
+@@ -355,6 +356,9 @@
+     int last_hp = -1;                // host: HP at the end of the previous pass (§B3)
+     int temporal_target = -1;        // CLEG: unit being erased (§C2)
+     int temporal_target_building = -1;  // CLEG: building being erased
++    int magnet_victim = -1;
++    int magnet_holder = -1;
++    int magnet_drop_bld = -1;
+     int warp_remaining = 0;          // victim: WarpRemaining (§C2); 0 = not warped
+     std::int64_t bomb_frame = -1;    // Ivan bomb DetonationFrame on this unit (§E)
+     int bomb_owner = -1;             // the planting unit
+@@ -2259,7 +2263,7 @@
+         enum class Kind {
+             Infect, ParasiteTick, DroneExit, DroneLost, Teleport, Unfreeze, TemporalAttach,
+             Erase, BombPlant, BombBlast, C4Plant, C4Blast, Suicide, DeathWeapon, Eruption,
+-            RadDamage, IfvSwap, Deploy
++            RadDamage, IfvSwap, Deploy, MagLift, MagDrop
+         };
+         Kind kind = Kind::Infect;
+         int a = -1;          // the acting unit (or victim for damage events)
+diff --git a/engine/world_abilities.cpp b/engine/world_abilities.cpp
+--- a/engine/world_abilities.cpp
++++ b/engine/world_abilities.cpp
+@@ -10,6 +10,7 @@
+ #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
+ #include "combat.hpp"      // damage_vs
+ #include "group_move.hpp"  // nearest_free_cells
++#include "magnetron.hpp"
+ #include "weapon_unit.hpp" // secondary_view (W7-10-06)
+ #include "world.hpp"
+ 
+@@ -540,6 +541,26 @@
+         ability_events_.push_back({Ev::Kind::Suicide, i, vt, 0, 0, false});
+         ability_kill_unit(i, u.w_inf_death);   // W7-12-08: its own weapon's warhead
+         break;
++    case AbilityKind::MagBeam: {
++        const int un = static_cast<int>(units_.size());
++        magnetron::MagVictim mv;
++        mv.is_vehicle = v.is_vehicle; mv.is_aircraft = v.is_aircraft;
++        mv.is_infantry = is_infantry_unit(v); mv.is_naval = v.is_naval;
++        mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
++        mv.armor_ix = v.armor_ix; mv.hp = v.hp; mv.max_hp = v.max_hp;
++        if (!magnetron::can_lift(mv, u.w_verses) || v.an.iron_left_frames > 0) {
++            u.target = -1; u.attack_order = false; return;
++        }
++        if (u.magnet_victim >= 0 && u.magnet_victim < un && u.magnet_victim != vt) {
++            if (units_[u.magnet_victim].magnet_holder == i) units_[u.magnet_victim].magnet_holder = -1;
++        }
++        if (v.magnet_holder >= 0 && v.magnet_holder < un && v.magnet_holder != i)
++            units_[v.magnet_holder].magnet_victim = -1;
++        u.magnet_victim = vt; u.magnet_drop_bld = -1; v.magnet_holder = i;
++        v.path.clear(); v.path_idx = 0; v.target = -1; v.target_building = -1; v.attack_order = false;
++        ability_events_.push_back({Ev::Kind::MagLift, i, vt, static_cast<int>(v.altitude), 0, false});
++        break;
++    }
+     default:
+         break;
+     }
+@@ -908,6 +929,76 @@
+         }
+     }
+ 
++
++    // (7b) Magnetron MagneticBeam.
++    {
++        magnetron::MagRules mr;
++        mr.cruise_height = ability_rules_.mag_cruise_height;
++        mr.climb = std::max(1, ability_rules_.mag_climb);
++        mr.falling_damage_milli = ability_rules_.mag_falling_damage_milli;
++        mr.current_strength_damage = ability_rules_.mag_current_strength_damage;
++        auto release_drop = [&](int holder, int victim, bool into_water) {
++            Unit& h = units_[holder]; Unit& v = units_[victim];
++            magnetron::MagVictim mv;
++            mv.hp = v.hp; mv.max_hp = v.max_hp; mv.is_vehicle = v.is_vehicle;
++            mv.is_naval = v.is_naval; mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
++            const int dmg = into_water ? v.hp : magnetron::drop_damage(mr, mv);
++            ability_events_.push_back({Ev::Kind::MagDrop, holder, victim, dmg, into_water ? 1 : 0, false});
++            v.altitude = 0.0; v.magnet_holder = -1; h.magnet_victim = -1; h.magnet_drop_bld = -1;
++            if (into_water || dmg >= v.hp) { v.vet.killed_by = holder; ability_kill_unit(victim, 0); }
++            else if (dmg > 0) ability_damage_unit(victim, dmg);
++            if (!into_water && h.target_building >= 0 && h.target_building < (int)buildings_.size()) {
++                Building& b = buildings_[h.target_building];
++                if (b.alive && b.state != Building::State::Dead &&
++                    v.cell_x >= b.cx && v.cell_x < b.cx + b.fw && v.cell_y >= b.cy && v.cell_y < b.cy + b.fh)
++                    ability_damage_building(h.target_building, dmg);
++            }
++        };
++        for (int i = 0; i < n; ++i) {
++            Unit& h = units_[i];
++            if (h.magnet_victim < 0) continue;
++            const int vi = h.magnet_victim;
++            if (vi >= n || !on_map_alive(units_[vi]) || units_[vi].magnet_holder != i) {
++                if (vi >= 0 && vi < n && units_[vi].magnet_holder == i) units_[vi].magnet_holder = -1;
++                h.magnet_victim = -1; h.magnet_drop_bld = -1; continue;
++            }
++            if (!on_map_alive(h) || h.abil.fire_kind != AbilityKind::MagBeam) {
++                Unit& v = units_[vi];
++                magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
++                mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
++                release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
++                continue;
++            }
++            Unit& v = units_[vi];
++            if (h.target_building >= 0 && h.target_building < (int)buildings_.size() && buildings_[h.target_building].alive)
++                h.magnet_drop_bld = h.target_building;
++            if (!((h.target == vi || h.magnet_drop_bld >= 0) &&
++                  magnetron::in_beam_range(h.cell_x, h.cell_y, v.cell_x, v.cell_y, h.w_range > 0 ? h.w_range : 12.0))) {
++                magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
++                mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
++                release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
++                continue;
++            }
++            v.altitude = (double)magnetron::rise(mr, (int)v.altitude, v.weight_milli > 0 ? v.weight_milli : 1000);
++            v.path.clear(); v.path_idx = 0;
++            if (h.magnet_drop_bld >= 0 && magnetron::at_cruise(mr, (int)v.altitude)) {
++                Building& b = buildings_[h.magnet_drop_bld];
++                if (!b.alive || b.state == Building::State::Dead) h.magnet_drop_bld = -1;
++                else {
++                    int fx = (int)(v.fx * 256.0), fy = (int)(v.fy * 256.0);
++                    int tx = (int)((bld_cx(b) + 0.5) * 256.0), ty = (int)((bld_cy(b) + 0.5) * 256.0);
++                    bool arrived = magnetron::drag_toward(fx, fy, tx, ty, mr.drag);
++                    v.fx = fx / 256.0; v.fy = fy / 256.0; v.cell_x = (int)v.fx; v.cell_y = (int)v.fy;
++                    if (arrived) {
++                        magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
++                        mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
++                        release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
++                    }
++                }
++            }
++        }
++    }
++
+     // (8) radiation [§A3/§A4]: RadSite AI, then the 16-frame application.
+     rad_.step(ability_frame_, ability_rules_);
+     if (rad_apply_due(ability_frame_, ability_rules_)) {
+@@ -935,7 +1026,8 @@
+         // the Desolator freeze.
+         u.frozen = u.alive && ((u.deployed && !u.deploy_fire) || next < u.warp_until ||
+                                u.warp_remaining > 0 || u.w6.unpowered ||   // W6-04-18
+-                               next < u.w7.paralysed_until);               // W7-04-13
++                               next < u.w7.paralysed_until ||
++                               u.magnet_holder >= 0);
+         if (was && !u.frozen && u.warp_until >= 0 && next >= u.warp_until && u.alive &&
+             u.warp_remaining <= 0 && (!u.deployed || u.deploy_fire)) {
+             ability_events_.push_back({Ev::Kind::Unfreeze, i, -1, static_cast<int>(next), 0, false});
+diff --git a/tests/test_magnetron.cpp b/tests/test_magnetron.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/test_magnetron.cpp
+@@ -0,0 +1,159 @@
++// Rallypoint: Magnetron / Magnetic Beam. Synthetic INI only (no game data).
++#include "doctest.h"
++#include "magnetron.hpp"
++#include "orig_math.hpp"
++#include "ra2assets/ini.hpp"
++#include "ra2assets/map.hpp"
++#include "ra2assets/rules.hpp"
++#include "world.hpp"
++
++using namespace ra2engine;
++namespace m = ra2engine::magnetron;
++
++namespace {
++const char* kSynthetic = R"ini(
++[JumpjetControls]
++CruiseHeight=500
++Climb=5
++[CombatDamage]
++FallingDamageMultiplier=1.0
++CurrentStrengthDamage=yes
++[TELE]
++Primary=MagneticBeam
++Weight=1
++[MTNK]
++Strength=300
++Armor=heavy
++Weight=1
++[MAGTESTV]
++Weight=3
++[MagneticBeam]
++Damage=5000
++ROF=20
++Range=12
++Warhead=LocomotorBeam
++IsMagBeam=yes
++Projectile=InvisibleHigh
++[InvisibleHigh]
++AA=no
++AG=yes
++[LocomotorBeam]
++Verses=0%,0%,0%,100%,100%,100%,0%,0%,0%,100%,0%
++IsLocomotor=yes
++Locomotor={92612C46-F71F-11d1-AC9F-006008055BB5}
++)ini";
++
++struct SynthRules {
++    ra2assets::Ini ini = ra2assets::Ini::parse(kSynthetic);
++    ra2assets::Rules rules = ra2assets::Rules::load(ini);
++};
++
++UnitCombat mk_tank() {
++    UnitCombat c;
++    c.image = "MTNK";
++    c.strength = 300;
++    c.armor = "heavy";
++    c.is_vehicle = true;
++    c.weight_milli = 1000;
++    return c;
++}
++}  // namespace
++
++TEST_CASE("magnetron: Jumpjet CLSID is the LocomotorBeam loco") {
++    CHECK(m::is_magnet_locomotor_clsid("{92612C46-F71F-11d1-AC9F-006008055BB5}"));
++    CHECK_FALSE(m::is_magnet_locomotor_clsid("{4A582741-xxxx}"));
++}
++
++TEST_CASE("magnetron: synthetic INI IsLocomotor IsMagBeam Weight drop keys") {
++    const ra2assets::Ini ini = ra2assets::Ini::parse(kSynthetic);
++    CHECK(ini.get("LocomotorBeam", "IsLocomotor", "") == "yes");
++    const ra2assets::Rules rules = ra2assets::Rules::load(ini);
++    CHECK(rules.section_flag("LocomotorBeam", "IsLocomotor", false));
++    CHECK(rules.section_flag("MagneticBeam", "IsMagBeam", false));
++    CHECK(rules.section_double("MAGTESTV", "Weight", 0.0) == doctest::Approx(3.0));
++    CHECK(rules.section_flag("CombatDamage", "CurrentStrengthDamage", false));
++}
++
++TEST_CASE("magnetron: Verses lift eligible vehicles; infantry immune") {
++    const SynthRules synth;
++    const auto verses = synth.rules.verses("LocomotorBeam");
++    m::MagVictim tank;
++    tank.is_vehicle = true;
++    tank.armor_ix = 5;
++    tank.hp = 300;
++    CHECK(m::can_lift(tank, verses));
++    m::MagVictim gi;
++    gi.is_infantry = true;
++    gi.hp = 125;
++    CHECK_FALSE(m::can_lift(gi, verses));
++}
++
++TEST_CASE("magnetron: Weight slows climb; drop damage uses current HP") {
++    m::MagRules r;
++    CHECK(m::climb_step(r, 1000) == 5);
++    CHECK(m::climb_step(r, 3000) == 1);
++    m::MagVictim v;
++    v.hp = 120;
++    v.max_hp = 300;
++    CHECK(m::drop_damage(r, v) == 120);
++}
++
++TEST_CASE("magnetron: water drop destroys non-amphibious vehicles") {
++    m::MagVictim v;
++    v.is_vehicle = true;
++    CHECK(m::drop_destroys_in_water(v, true));
++    CHECK_FALSE(m::drop_destroys_in_water(v, false));
++}
++
++TEST_CASE("magnetron: world lift / hold / drop with MagBeam profile") {
++    const ra2assets::MapFile map =
++        ra2assets::MapFile::parse("[Map]\nSize=0,0,20,20\nTheater=TEMPERATE\n");
++    World world(map);
++    AbilityProfile tele;
++    tele.fire_kind = AbilityKind::MagBeam;
++    world.register_ability_profile("TELE", tele);
++    UnitCombat mag;
++    mag.image = "TELE";
++    mag.strength = 150;
++    mag.is_vehicle = true;
++    mag.weight_milli = 1000;
++    mag.range = 12.0;
++    mag.verses = {0, 0, 0, 100, 100, 100, 0, 0, 0, 100, 0};
++    world.add_combat_unit(4, 4, 0, mag);
++    world.add_combat_unit(6, 4, 1, mk_tank());
++    world.units()[1].hp = 80;
++    world.units()[0].target = 1;
++    world.units()[0].ability_fired_unit = 1;
++    AbilityRules ar;
++    ar.mag_cruise_height = 500;
++    ar.mag_climb = 100;
++    ar.mag_current_strength_damage = true;
++    world.set_ability_rules(ar);
++    world.step_abilities(1.0 / 15.0);
++    bool lifted = false;
++    for (const auto& e : world.take_ability_events())
++        if (e.kind == World::AbilityEvent::Kind::MagLift) lifted = true;
++    CHECK(lifted);
++    for (int i = 0; i < 20; ++i) {
++        world.units()[0].target = 1;
++        world.step_abilities(1.0 / 15.0);
++        world.take_ability_events();
++    }
++    CHECK(world.units()[1].altitude == doctest::Approx(500.0));
++    const int hp_before = world.units()[1].hp;
++    world.units()[0].target = -1;
++    world.step_abilities(1.0 / 15.0);
++    bool dropped = false;
++    for (const auto& e : world.take_ability_events())
++        if (e.kind == World::AbilityEvent::Kind::MagDrop) dropped = true;
++    CHECK(dropped);
++    CHECK(world.units()[1].hp == 0);
++    CHECK(hp_before == 80);
++}
++
++TEST_CASE("magnetron: Weight from rules into milli-units") {
++    const SynthRules synth;
++    const int milli = std::max(1, om::ftol(synth.rules.section_double("MAGTESTV", "Weight", 1.0) * 1000.0));
++    CHECK(milli == 3000);
++    CHECK(m::climb_step(m::MagRules{}, milli) == 1);
++}

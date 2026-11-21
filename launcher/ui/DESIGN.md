@@ -56,3 +56,9 @@ State colors stay off the red scale on purpose, so "installed", "waiting" and "f
 2. Build DOM with `h()`; no `innerHTML` and no inline `style` (the CSP forbids it).
 3. Check changes in the browser preview (`scripts/ui-preview/`) in both color schemes.
 4. If the icon palette changes, regenerate it with `scripts/make_icons.py` and update this file.
+
+## Red Alert 2 mode
+
+- **Same product, not a skin.** RA2 pages use the same tokens, components and type scale. No accent change, no faction colours outside the player swatches.
+- **Game switcher** (`.gamepick`): the gold brand line is the current game with a small chevron; an invisible native select over it opens the menu and takes the focus ring. Below 760px the brand text is hidden, so Settings > Game shows a `narrow-only` Game row instead.
+- **Seat tables** (`.skgrid.ra2`, `.lobby`): the Generals skirmish rows with Side and Colour columns (and Status in the lobby). The swatch is the player's RA2 colour mapped to the nearest place colour (`RA2_PC`); a hollow ring means "any colour". Other players' seats are text, never disabled selects.

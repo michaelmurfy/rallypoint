@@ -1,0 +1,145 @@
+diff --git a/src/asset_fs.cpp b/src/asset_fs.cpp
+index dce6c4f..9f2c7ad 100644
+--- a/src/asset_fs.cpp
++++ b/src/asset_fs.cpp
+@@ -23,7 +23,7 @@ std::string lower(std::string s) {
+ //   FUN_0051a2b0 (scenario start):       NEUTRAL
+ // then the YR tail [RE-FALLBACK], in gamemd's relative order (FUN_005301a0 +
+ // its Init_Theater "%sMD.MIX"): md patches, CACHEMD, LOCALMD, CONQMD, GENERMD,
+-// ISOGENMD, CAMEOMD, then the theater md overlays.
++// ISOGENMD, CAMEOMD (from langmd.mix), then the theater md overlays.
+ std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
+                                              const std::vector<std::string>& patch_tops) {
+     const TheaterChain* c = chain ? chain : theater_chain("TEMPERATE");
+@@ -65,7 +65,9 @@ std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
+     md("conqmd.mix");
+     md("genermd.mix");
+     md("isogenmd.mix");
+-    md("cameomd.mix");
++    // CAMEOMD lives in langmd.mix (stock YR), not ra2md.mix. Looking under
++    // ra2md left every Yuri sidebar icon (YCONICON, YPWRICON, ...) absent.
++    out.push_back({"langmd.mix", "cameomd.mix"});
+     // Theater md overlays: "%sMD.MIX" over the theater names.
+     const std::string an = lower(c->art_mix);          // "temperat.mix"
+     md(an.substr(0, an.size() - 4) + "md.mix");        // temperatmd.mix / snowmd.mix / urbanmd.mix
+diff --git a/tests/test_asset_fs.cpp b/tests/test_asset_fs.cpp
+index fe9d6f7..9cdd4ff 100644
+--- a/tests/test_asset_fs.cpp
++++ b/tests/test_asset_fs.cpp
+@@ -3,10 +3,13 @@
+ #include "ra2assets/asset_fs.hpp"
+ #include "asset_fixture.hpp"
+ 
++#include <algorithm>
++#include <cctype>
+ #include <cstdio>
+ #include <string>
+ #include <vector>
+ 
++using ra2assets::Art;
+ using ra2assets::AssetFS;
+ using ra2assets::AssetMixSpec;
+ using ra2assets::asset_search_order;
+@@ -25,6 +28,33 @@ bool install_present() {
+     return false;
+ }
+ std::string dir() { return ra2fixture::install_base() + "\\"; }
++// '/' join so the Yuri cameo census runs on Linux (fixture still uses '\\').
++std::string dir_posix() {
++    std::string b = ra2fixture::install_base();
++    if (!b.empty() && b.back() != '/' && b.back() != '\\') b.push_back('/');
++    return b;
++}
++bool install_present_posix() {
++    if (std::FILE* f = std::fopen((dir_posix() + "ra2.mix").c_str(), "rb")) {
++        std::fclose(f);
++        return true;
++    }
++    return false;
++}
++std::vector<uint8_t> read_ra2md_file(const std::string& d, const std::string& name) {
++    ra2assets::MixFile top = ra2assets::MixFile::open_path(d + "ra2md.mix");
++    if (const ra2assets::MixEntry* e = top.find(ra2assets::mix_id(name))) return top.read(*e);
++    for (const char* c : {"localmd.mix", "expandmd01.mix", "expandmd02.mix", "expandmd03.mix",
++                          "expandmd04.mix", "expandmd05.mix", "expandmd99.mix", "cachemd.mix",
++                          "conqmd.mix"}) {
++        try {
++            ra2assets::MixFile n = top.open_nested(c);
++            if (const ra2assets::MixEntry* e2 = n.find(ra2assets::mix_id(name))) return n.read(*e2);
++        } catch (...) {
++        }
++    }
++    return {};
++}
+ }  // namespace
+ 
+ TEST_CASE("asset_search_order: RA2 game.exe load order, YR tail last") {
+@@ -51,6 +81,9 @@ TEST_CASE("asset_search_order: RA2 game.exe load order, YR tail last") {
+     CHECK(index_of(o, "ra2md.mix/conqmd.mix") > md);
+     CHECK(index_of(o, "ra2md.mix/isourbmd.mix") > md);
+     CHECK(index_of(o, "ra2md.mix/isogenmd.mix") > md);
++    // Yuri cameos: cameomd.mix is nested in langmd.mix (not ra2md.mix).
++    CHECK(index_of(o, "langmd.mix/cameomd.mix") > md);
++    CHECK(index_of(o, "ra2md.mix/cameomd.mix") < 0);
+ }
+ 
+ TEST_CASE("asset_search_order: SNOW opens no GENERIC before the theater archives") {
+@@ -97,3 +130,58 @@ TEST_CASE("AssetFS: real install -- landmarks, snow art, patch art, YR civilians
+     for (const auto& m : sno.mixes()) has_ecache |= m.first == "ecache01.mix";
+     CHECK(has_ecache);
+ }
++
++// Yuri sidebar icons (YCONICON, YPWRICON, ...) live only in langmd.mix/cameomd.mix.
++// Lists any still-missing Cameo= for the stock Yuri structure/unit set so a
++// blank sidebar is caught here instead of in-game.
++TEST_CASE("AssetFS: real install -- Yuri cameos resolve from langmd/cameomd") {
++    if (!install_present_posix()) { MESSAGE("install absent; skipping"); return; }
++    const std::string d = dir_posix();
++    const std::vector<uint8_t> art_bytes = read_ra2md_file(d, "artmd.ini");
++    const std::vector<uint8_t> rules_bytes = read_ra2md_file(d, "rulesmd.ini");
++    if (art_bytes.empty() || rules_bytes.empty()) {
++        MESSAGE("skipped: artmd.ini/rulesmd.ini not found");
++        return;
++    }
++    const ra2assets::Ini art_ini =
++        ra2assets::Ini::parse(std::string(art_bytes.begin(), art_bytes.end()));
++    const Art art = Art::load(art_ini);
++    const ra2assets::Ini rules =
++        ra2assets::Ini::parse(std::string(rules_bytes.begin(), rules_bytes.end()));
++
++    AssetFS fs(d, theater_chain("TEMPERATE"));
++    CHECK(fs.where("yconicon.shp") == "langmd.mix/cameomd.mix");
++    CHECK(fs.where("ypwricon.shp") == "langmd.mix/cameomd.mix");
++    CHECK(fs.find("yconicon.shp", nullptr, nullptr, /*ra2_only=*/true) == nullptr);
++
++    // Stock Yuri structures + units (Cameo= from artmd Image=/id).
++    static const char* kYuriTypes[] = {
++        "YACNST", "YAPOWR", "YABRCK", "YAWEAP", "YAREFN", "YAYARD", "YADEPT",
++        "YATECH", "YAGGUN", "YAPSYT", "YAGRND", "YAGNTC", "YAPPET", "NAPSIS",
++        "NACLON", "NATBNK", "INIT", "SMIN", "PCV", "YTNK", "TELE", "DISK",
++        "MIND", "BRUTE", "VIRUS", "YURI", "LTNK",
++    };
++    std::vector<std::string> missing;
++    for (const char* id : kYuriTypes) {
++        std::string image = rules.get(id, "Image", id);
++        if (image.empty()) image = id;
++        std::string cameo = art.cameo(image);
++        if (cameo.empty()) cameo = art.cameo(id);
++        if (cameo.empty()) {
++            missing.push_back(std::string(id) + " (no Cameo= in artmd)");
++            continue;
++        }
++        for (char& c : cameo) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++        cameo += ".shp";
++        if (!fs.has(cameo)) missing.push_back(std::string(id) + " -> " + cameo);
++    }
++    // FIXICON (YADEPT) lives only in language.mix/cameo.mix, which the building
++    // loader opens before the AssetFS fallback.
++    missing.erase(std::remove_if(missing.begin(), missing.end(),
++                                 [](const std::string& m) {
++                                     return m.find("fixicon.shp") != std::string::npos;
++                                 }),
++                  missing.end());
++    for (const std::string& m : missing) MESSAGE("missing cameo: ", m);
++    CHECK(missing.empty());
++}

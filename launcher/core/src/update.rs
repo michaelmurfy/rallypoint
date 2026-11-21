@@ -168,14 +168,24 @@ pub fn installer_for(os: &str, arch: &str, assets: &[Asset]) -> Option<Asset> {
 ///   signature all uploaded) wins. A release that is still being uploaded, or has no installer for this computer, is only
 ///   offered (as a page to open) when nothing installable is newer than `current`.
 /// - An unparseable running version (a CI dry run) counts as 0.0.0.
+/// - RA2 alphas (`ra2-alpha.N`, built from the feat/ra2 branch) are a channel of their own: an alpha build is offered
+///   only newer alphas, and every other build never sees them (their tags are not versions).
 pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str, beta: bool) -> Option<UpdateInfo> {
     let cur = parse_version(current).unwrap_or(Version { core: [0, 0, 0], pre: vec![] });
-    let mut newer: Vec<(Version, &Release)> = releases
-        .iter()
-        .filter(|r| !r.draft)
-        .filter_map(|r| Some((parse_version(&r.tag_name)?, r)))
-        .filter(|(v, r)| *v > cur && (beta || !(v.is_prerelease() || r.prerelease)))
-        .collect();
+    let mut newer: Vec<(Version, &Release)> = match ra2_alpha(current) {
+        Some(n) => releases
+            .iter()
+            .filter(|r| !r.draft)
+            .filter_map(|r| Some((Version { core: [ra2_alpha(&r.tag_name)?, 0, 0], pre: vec![] }, r)))
+            .filter(|(v, _)| v.core[0] > n)
+            .collect(),
+        None => releases
+            .iter()
+            .filter(|r| !r.draft)
+            .filter_map(|r| Some((parse_version(&r.tag_name)?, r)))
+            .filter(|(v, r)| *v > cur && (beta || !(v.is_prerelease() || r.prerelease)))
+            .collect(),
+    };
     newer.sort_by(|a, b| b.0.cmp(&a.0));
     let has = |r: &Release, name: &str| r.assets.iter().any(|a| a.name == name);
     let installable = |r: &Release| installer_for(os, arch, &r.assets).is_some() && has(r, "SHA256SUMS") && has(r, "SHA256SUMS.sig");
@@ -194,6 +204,11 @@ pub fn newer(current: &str, releases: &[Release], os: &str, arch: &str, beta: bo
         beta: version.is_prerelease() || r.prerelease,
         skipped: false,
     })
+}
+
+/// `ra2-alpha.3` -> 3.
+fn ra2_alpha(tag: &str) -> Option<u64> {
+    tag.trim().strip_prefix("ra2-alpha.")?.parse().ok()
 }
 
 fn curl(url: &str, proto: &str, out: Option<&Path>) -> Result<Vec<u8>, String> {
@@ -440,6 +455,17 @@ mod tests {
         assert!(newer("0.1.0-alpha.2", &[], "macos", "aarch64", true).is_none());
         // a build whose version isn't a version (a CI dry run) is offered the newest release
         assert!(newer("main", &rels, "windows", "x86_64", true).is_some());
+    }
+
+    #[test]
+    fn ra2_alphas_are_a_channel_of_their_own() {
+        let rels = vec![release("ra2-alpha.3", false), release("ra2-alpha.2", false), release("v0.11.0-beta.1", false), release("v0.10.0", false)];
+        let u = newer("ra2-alpha.2", &rels, "windows", "x86_64", true).unwrap();
+        assert_eq!(u.latest, "ra2-alpha.3", "an alpha build gets the next alpha, not Generals releases");
+        assert!(newer("ra2-alpha.3", &rels, "windows", "x86_64", true).is_none());
+        let g = newer("0.9.0", &rels, "windows", "x86_64", true).unwrap();
+        assert_eq!(g.latest, "0.11.0-beta.1", "Generals builds never see alphas, betas on or off");
+        assert!(newer("0.10.0", &[release("ra2-alpha.9", false)], "windows", "x86_64", true).is_none());
     }
 
     #[test]

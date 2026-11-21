@@ -1,0 +1,14 @@
+--- a/tests/test_orig_math.cpp
++++ b/tests/test_orig_math.cpp
+@@ -215,8 +215,9 @@
+     CHECK(om::itrunc(-2147483649.0) == -2147483647 - 1);
+     CHECK(om::itrunc(1e30) == -2147483647 - 1);
+     CHECK(om::itrunc(std::numeric_limits<double>::quiet_NaN()) == -2147483647 - 1);
+-#if defined(_WIN32) && defined(__x86_64__)
+-    // On the Windows build the helpers ARE the platform's results.
++#if defined(_WIN32) && defined(__x86_64__) && (defined(_UCRT) || defined(_MSC_VER))
++    // On the Windows build the helpers ARE the platform's results (the UCRT's; Rallypoint's MinGW
++    // cross build links the older msvcrt, whose lround differs out of range: the sim never calls it).
+     volatile double big = 3e9, nan = std::numeric_limits<double>::quiet_NaN(), half = 2.5;
+     CHECK(om::lround(big) == static_cast<int>(std::lround(big)));
+     CHECK(om::lround(nan) == static_cast<int>(std::lround(nan)));
