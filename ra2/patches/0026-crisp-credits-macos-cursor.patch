@@ -1,0 +1,119 @@
+diff --git a/engine/game_scene_lifecycle.inc b/engine/game_scene_lifecycle.inc
+index e03cf62..dbb483d 100644
+--- a/engine/game_scene_lifecycle.inc
++++ b/engine/game_scene_lifecycle.inc
+@@ -29,8 +29,12 @@ bool lifecycle_event(const ra2engine::InputEvent& ev) {
+             return true;
+         }
+         case ra2engine::InputEvent::AppForeground:
++            os_cursor_hidden_ = false;   // macOS / Android may re-show the OS cursor
+             SDL_Log("[lifecycle] foreground: game stays paused in the options menu");
+             return true;
++        case ra2engine::InputEvent::FocusGained:
++            os_cursor_hidden_ = false;   // next frame re-hides when the software cursor draws
++            return false;
+         case ra2engine::InputEvent::AppLowMemory:
+         case ra2engine::InputEvent::RenderReset:
+             return true;   // the driver already trimmed / cleared the texture cache
+diff --git a/engine/hud_text.inc b/engine/hud_text.inc
+index a8b920f..fd8cdc4 100644
+--- a/engine/hud_text.inc
++++ b/engine/hud_text.inc
+@@ -224,10 +224,24 @@ std::string cameo_tooltip_text(const std::string& ui_name, int cost) {
+     return s;
+ }
+ 
++// Output / logical scale for crisp bitmap-font sizing (HiDPI letterboxing).
++inline int hud_present_scale(SDL_Renderer* ren) {
++    int ow = 0, oh = 0, lw = 0, lh = 0;
++    if (SDL_GetRendererOutputSize(ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return 1;
++    if (SDL_RenderGetLogicalSize(ren, &lw, &lh) != 0 || lw <= 0 || lh <= 0) {
++        lw = 1280;
++        lh = 720;
++    }
++    const double s = std::min(ow / static_cast<double>(lw), oh / static_cast<double>(lh));
++    return std::max(1, static_cast<int>(std::lround(s)));
++}
++
+ // W5-PRES: game-font text in one RGB colour (every non-zero glyph pixel white,
+-// tinted by a texture colour mod) -- the credits tally's side colour.
++// tinted by a texture colour mod) -- the credits tally's side colour. `scale`
++// enlarges glyphs with nearest-neighbour sampling (integer steps only).
+ inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
+-                        const std::string& s, int x, int y, Uint8 r, Uint8 g, Uint8 b) {
++                        const std::string& s, int x, int y, Uint8 r, Uint8 g, Uint8 b, int scale = 1) {
++    if (scale < 1) scale = 1;
+     static ra2assets::Palette white{};
+     static bool ok = false;
+     if (!ok) {
+@@ -243,14 +257,17 @@ inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra
+             if (gl.w > 0 && gl.h > 0) {
+                 const std::string key = "fntw:" + std::to_string((int)ch);
+                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
+-                if (!tex) tex = static_cast<SDL_Texture*>(tc.get(key, gl.pixels.data(), gl.w, gl.h, white));
+-                const SDL_Rect dst{cx, y, gl.w, gl.h};
++                if (!tex) {
++                    tex = static_cast<SDL_Texture*>(tc.get(key, gl.pixels.data(), gl.w, gl.h, white));
++                    if (tex) SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
++                }
++                const SDL_Rect dst{cx, y, gl.w * scale, gl.h * scale};
+                 SDL_SetTextureColorMod(tex, r, g, b);
+                 SDL_RenderCopy(ren, tex, nullptr, &dst);
+                 SDL_SetTextureColorMod(tex, 255, 255, 255);
+             }
+         }
+-        cx += w > 0 ? w : font.height() / 2;
++        cx += (w > 0 ? w : font.height() / 2) * scale;
+     }
+     return cx - x;
+ }
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 0d6ad76..604e22b 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -5377,8 +5377,14 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
+         // W5-PRES R-142 [RE: credits draw 0x4A2280, colour 0xB0E98C by side
+         // FUN_0072E520]: Allied RGB(164,210,255), Soviet/other RGB(255,255,0).
+         const bool allied = std::string(g_sidebar_mix) == "sidec01.mix";
+-        hud_text_rgb(ren, tc, *g_game_font, cs, lay.credits.x + 84 - fnt_text_width(*g_game_font, cs) / 2,
+-                     lay.credits.y + 1, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0);
++        int gscale = hud_present_scale(ren);
++        while (gscale > 1 && g_game_font->height() * gscale > ra2engine::kCreditsH - 1) --gscale;
++        const int tw = fnt_text_width(*g_game_font, cs) * gscale;
++        const int th = g_game_font->height() * gscale;
++        const int tx = lay.credits.x + 84 - tw / 2;
++        const int ty = lay.credits.y + (lay.credits.h - th) / 2;
++        hud_text_rgb(ren, tc, *g_game_font, cs, tx, ty, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0,
++                     gscale);
+     } else {
+         draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
+     }
+diff --git a/engine/platform.cpp b/engine/platform.cpp
+index 0b11c1d..a8f2e19 100644
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -324,8 +324,10 @@ bool Platform::poll(InputEvent& ev) {
+             if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                 p_->update_slop();
+                 ev.kind = InputEvent::Resize;
+                 ev.x = e.window.data1;
+                 ev.y = e.window.data2;
++            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
++                ev.kind = InputEvent::FocusGained;
+             } else {
+                 ev.kind = InputEvent::None;
+             }
+diff --git a/engine/platform.hpp b/engine/platform.hpp
+index 1e0f772..3ee9437 100644
+--- a/engine/platform.hpp
++++ b/engine/platform.hpp
+@@ -14,7 +14,8 @@ struct InputEvent {
+     // AppLowMemory (drop caches), RenderReset (GL context lost: textures gone).
+     enum Kind { None, Quit, PointerDown, PointerUp, PointerMove, Key, Text, Pan,
+                 AppBackground, AppForeground, AppLowMemory, RenderReset,
+-                Resize /* R-162: the window / panel changed size */ } kind = None;
++                Resize /* R-162: the window / panel changed size */,
++                FocusGained /* desktop: the OS may re-show the system cursor */ } kind = None;
+     int x = 0, y = 0;                       // pointer position (window pixels)
+     enum Button { Left, Right } button = Left;  // valid on PointerDown/PointerUp
+     bool shift = false;                     // Shift held at event time
