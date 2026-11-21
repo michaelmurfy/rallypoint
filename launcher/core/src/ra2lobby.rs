@@ -72,6 +72,10 @@ pub struct RoomSettings {
     pub superweapons: bool,
     #[serde(default = "default_true")]
     pub allies: bool,
+    #[serde(default = "default_true")]
+    pub auto_repair: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_minimum: Option<u32>,
     #[serde(default)]
     pub ai: Vec<AiSeat>,
     /// Changes with every change the host makes; its address is in the top byte, so a new host never reuses one.
@@ -319,6 +323,8 @@ impl Lobby {
             crates: r.crates,
             superweapons: r.superweapons,
             allies: r.allies,
+            auto_repair: r.auto_repair,
+            crate_minimum: if r.crates { r.crate_minimum } else { None },
             seed,
             tunnel: None,
         };
@@ -372,6 +378,8 @@ mod tests {
             crates: true,
             superweapons: true,
             allies: true,
+            auto_repair: true,
+            crate_minimum: None,
             ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }],
             rev: 0,
         }
@@ -382,10 +390,11 @@ mod tests {
         for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 9, color: 7, start: 8, team: 3, ready: true, rev: 7 }), Msg::State(settings())] {
             assert_eq!(decode(&blob(&m)), Some(m));
         }
-        // Older hosts omit crates / superweapons / allies: treat them as on.
+        // Older hosts omit crates / superweapons / allies / auto_repair: treat them as on.
         let old = br#"{"t":"state","map":"Lake.yrm","map_name":"Lake","starts":4,"credits":10000,"speed":2,"ai":[],"rev":1}"#;
         let Msg::State(r) = decode(old).unwrap() else { panic!("state") };
-        assert!(r.crates && r.superweapons && r.allies);
+        assert!(r.crates && r.superweapons && r.allies && r.auto_repair);
+        assert_eq!(r.crate_minimum, None);
         assert_eq!(String::from_utf8(blob(&Msg::Ready(Seat::default()))).unwrap(), r#"{"t":"ready","side":-1,"color":-1,"start":-1,"team":-1,"ready":false,"rev":0}"#);
         assert_eq!(decode(br#"{"t":"hello","name":"[x]=y;\u0007","master":false}"#), Some(Msg::Hello { name: "xy".into(), master: false }));
         for bad in [

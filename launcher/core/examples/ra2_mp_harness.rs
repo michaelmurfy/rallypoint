@@ -222,6 +222,8 @@ fn main() {
         crates: true,
         superweapons: true,
         allies: true,
+        auto_repair: true,
+        crate_minimum: None,
         ai: vec![],
         rev: 0,
     })

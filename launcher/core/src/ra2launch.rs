@@ -74,6 +74,13 @@ pub struct Ra2Setup {
     /// Mid-game alliances (engine `[Game] AlliesAllowed=`).
     #[serde(default = "default_true")]
     pub allies: bool,
+    /// AI auto-repair (engine `[Game] AutoRepair=`; CnCNet `[IQ] RepairSell=0`).
+    #[serde(default = "default_true")]
+    pub auto_repair: bool,
+    /// Floor for random crates when crates are on (engine `CrateMinimum=`; CnCNet
+    /// Increased=8, Extreme=40). `None` = the rules default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_minimum: Option<u32>,
     #[serde(default)]
     pub seed: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,14 +196,20 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
     let mut f = String::new();
     let _ = writeln!(
         f,
-        "[Game]\nMode={}\nMap={map}\nLocalPlayer={local}\nCredits={}\nGameSpeed={}\nCrates={}\nSuperWeapons={}\nAlliesAllowed={}",
+        "[Game]\nMode={}\nMap={map}\nLocalPlayer={local}\nCredits={}\nGameSpeed={}\nCrates={}\nSuperWeapons={}\nAlliesAllowed={}\nAutoRepair={}",
         if online { "network" } else { "skirmish" },
         setup.credits,
         setup.speed.min(SLOWEST),
         yn(setup.crates),
         yn(setup.superweapons),
         yn(setup.allies),
+        yn(setup.auto_repair),
     );
+    if setup.crates {
+        if let Some(n) = setup.crate_minimum {
+            let _ = writeln!(f, "CrateMinimum={n}");
+        }
+    }
     if online || setup.seed != 0 {
         let _ = writeln!(f, "Seed={}", setup.seed);
     }
@@ -254,6 +267,8 @@ mod tests {
             crates: true,
             superweapons: true,
             allies: true,
+            auto_repair: true,
+            crate_minimum: None,
             seed: 0,
             tunnel: Some(Tunnel { port: 1, id: 1, token: [0; 16] }),
         }
@@ -302,7 +317,7 @@ mod tests {
         let ini = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
         assert_eq!(
             ini,
-            "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\nCrates=yes\nSuperWeapons=yes\nAlliesAllowed=yes\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n"
+            "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\nCrates=yes\nSuperWeapons=yes\nAlliesAllowed=yes\nAutoRepair=yes\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n"
         );
         assert!(launch_ini(&s, "/a;b/x.map", 0).is_err(), "a ; would cut the value");
         assert!(launch_ini(&s, "/x.map", 1).is_err(), "the computer is not this machine");
@@ -310,10 +325,16 @@ mod tests {
         s.crates = false;
         s.superweapons = false;
         s.allies = false;
+        s.auto_repair = false;
         let off = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
-        for want in ["Crates=no\n", "SuperWeapons=no\n", "AlliesAllowed=no\n"] {
+        for want in ["Crates=no\n", "SuperWeapons=no\n", "AlliesAllowed=no\n", "AutoRepair=no\n"] {
             assert!(off.contains(want), "{want} in {off}");
         }
+        assert!(!off.contains("CrateMinimum="), "no crate floor when crates are off");
+        s.crates = true;
+        s.crate_minimum = Some(40);
+        let dense = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
+        assert!(dense.contains("Crates=yes\n") && dense.contains("CrateMinimum=40\n"), "{dense}");
         // online: network mode, the tunnel, everyone's tunnel id and the seed
         let (mut a, mut b) = (human("Host"), human("Guest"));
         a.tunnel_id = Some(1);

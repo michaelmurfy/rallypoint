@@ -71,6 +71,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0018-floating-disc-drain` | Floating Disc `DrainWeapon`: foundation hover, power blackout, money drain. |
 | `0019-magnetron-save-fields` | Save visitors for Magnetron `weight_milli` / `magnet_*` / AbilityRules mag_* (format 52). |
 | `0020-lobby-game-options` | `--launch` `AlliesAllowed=` overrides mid-game alliances (format 53). Crates/SuperWeapons already honour the launch file; Play/Online toggles write them. |
+| `0021-auto-repair-and-crate-density` | `--launch` `AutoRepair=` (`[IQ] RepairSell=0`) and `CrateMinimum=` (CnCNet Increased=8 / Extreme=40); Play/Online crate density + Auto repair (format 54). |
 
 ## Factions (Country=)
 
@@ -159,7 +160,9 @@ GameMode=1           ; MPModesMD.ini index: 1 Battle, 2 Free For All, ...
 ShortGame=yes
 SuperWeapons=yes
 Crates=yes
+CrateMinimum=8       ; optional floor when Crates=yes (CnCNet Increased=8, Extreme=40); absent = rules
 AlliesAllowed=yes    ; mid-game alliances; absent = the GameMode's own AlliesAllowed
+AutoRepair=yes       ; AI auto-repair (CnCNet [IQ] RepairSell=0); absent = rules RepairSell
 BuildOffAlly=yes
 MCVRedeploy=yes
 AITakeover=no        ; network: a player who drops is taken over by the AI instead of defeated
@@ -248,6 +251,22 @@ RA2_DATA=~/rp-steam/game/RA2 RA2ENGINE=~/rp-build/ra2engine \
 Writes `host.ini` / `guest.ini`, starts two `ra2engine --launch` processes (via `xvfb-run` when present),
 keeps the agents alive, and samples tunnel kbps. Still manual: confirming both clients stay in sync in a
 long fight, and any UI/Maps-page flow.
+
+## CnCNet Game Options (ideas only)
+
+The CnCNet YR client's `INI/Game Options/` overlays are a useful checklist of lobby toggles. We do **not**
+ship Phobos, Ares, Syringe, `gamemd-spawn.exe`, or the GPL client. What we reimplemented as plain launch-file
+keys (and Play/Online UI) so far:
+
+| CnCNet option | Our key / UI |
+|---|---|
+| Crates on/off + density (`CrateMinimum` 8 / 40) | `Crates=` + optional `CrateMinimum=`; density Off/Normal/Increased/Extreme |
+| Super Weapons on/off | `SuperWeapons=` |
+| Allies Allowed | `AlliesAllowed=` |
+| Auto Repair (`[IQ] RepairSell=0`) | `AutoRepair=` |
+
+Left for later (need more engine work or big rules overlays): SW offensive/defensive only, Brutal/Extreme AI
+INIs, No Spy / No Dog Engi Eat / Map Code modes.
 
 ## Not verified
 

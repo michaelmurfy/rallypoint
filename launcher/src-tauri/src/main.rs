@@ -1382,18 +1382,23 @@ fn ra2_lobby_room(
     crates: Option<bool>,
     superweapons: Option<bool>,
     allies: Option<bool>,
+    auto_repair: Option<bool>,
+    crate_minimum: Option<u32>,
     ai: Vec<ra2lobby::AiSeat>,
 ) -> Result<(), String> {
     let m = ra2_find_map(&app, &map)?;
+    let crates_on = crates.unwrap_or(true);
     let settings = ra2lobby::RoomSettings {
         map,
         map_name: m.name,
         starts: m.players,
         credits,
         speed,
-        crates: crates.unwrap_or(true),
+        crates: crates_on,
         superweapons: superweapons.unwrap_or(true),
         allies: allies.unwrap_or(true),
+        auto_repair: auto_repair.unwrap_or(true),
+        crate_minimum: if crates_on { crate_minimum } else { None },
         ai,
         rev: 0,
     };

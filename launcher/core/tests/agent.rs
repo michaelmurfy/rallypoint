@@ -482,6 +482,8 @@ fn red_alert_2_lobby_ready_start_then_tunnel_auth() {
             crates: true,
             superweapons: true,
             allies: true,
+            auto_repair: true,
+            crate_minimum: None,
             ai: vec![],
             rev: 0,
         })
