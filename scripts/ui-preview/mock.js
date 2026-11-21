@@ -50,6 +50,15 @@ const handlers = {
     const pts = [[.2, .8], [.8, .2], [.8, .8], [.2, .2], [.5, .9], [.5, .1], [.1, .5], [.9, .5]];
     return { ...v, game: m.game, cells_w: 120, cells_h: 100, info: { width: 1200, height: 1000, starts: pts.slice(0, m.players).map(([x, y], i) => ({ number: i + 1, x, y })) } };
   },
+  ra2_community_packs: async () => ({
+    packs: [
+      { id: "ra2-1", name: "RA2 map pack 1", file: "ra2mappack1.zip", game: "ra2", maps: 3, sha256: "" },
+      { id: "yr-5", name: "Yuri's Revenge map pack 5", file: "yrmappack5.zip", game: "yr", maps: 13, sha256: "" },
+    ],
+    installed_files: hash.includes("nomaps") ? 0 : 6,
+    available: true,
+  }),
+  ra2_install_community_packs: async () => (await new Promise((r) => setTimeout(r, 400)), [13, 46]),
   ra2_open_maps_folder: () => {},
   ra2_launch: ({ setup }) => { window.__lastRa2 = setup; if (!state.cfg.ra2_engine) throw new Error("The RA2 engine is not in this build yet"); },
   ra2_lobby_seat: ({ seat }) => {

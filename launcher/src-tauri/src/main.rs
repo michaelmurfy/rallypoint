@@ -9,6 +9,7 @@ use tauri::Manager;
 
 const MODS_JSON: &str = include_str!("../../../mods/mods.json");
 const MAP_PACKS_JSON: &str = include_str!("../../../mods/mappacks.json");
+const RA2_MAP_PACKS_JSON: &str = include_str!("../../../mods/ra2-mappacks.json");
 
 #[derive(Default)]
 struct Relay(Mutex<Option<Agent>>);
@@ -1216,19 +1217,34 @@ fn ra2_maps_cache(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base(app)?.join("ra2").join("maps-cache"))
 }
 
+/// Bundled community `.mmx`/`.yro` zips: in the app resources, or the repo `mods/ra2-mappacks` when developing.
+fn ra2_mappacks_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Ok(r) = app.path().resource_dir() {
+        for name in ["ra2-mappacks", "mods/ra2-mappacks"] {
+            let p = r.join(name);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/ra2-mappacks");
+    dev.is_dir().then_some(dev)
+}
+
 fn ra2_map_list(app: &tauri::AppHandle) -> Result<Vec<ra2maps::Ra2Entry>, String> {
     let c = Config::load(&config_path(app)?);
     let mut dirs = vec![];
     let cache_dir = ra2_maps_cache(app)?;
+    let packs = ra2_maps_dir(app)?;
     if !c.ra2.game_dir.is_empty() {
         let game = PathBuf::from(&c.ra2.game_dir);
         if let Some(eng) = ra2launch::engine(app.path().resource_dir().ok().as_deref()) {
             // Best-effort: a failed extract still leaves any previous cache and the loose maps.
-            let _ = ra2maps::refresh_extract(&eng, &game, &cache_dir);
+            let _ = ra2maps::refresh_extract_with(&eng, &game, &cache_dir, Some(&packs));
         }
         dirs.push(game);
     }
-    dirs.push(ra2_maps_dir(app)?);
+    dirs.push(packs);
     Ok(ra2maps::list_all(&dirs, &map_library(app)?.join("ra2.json"), Some(&cache_dir)))
 }
 
@@ -1256,6 +1272,39 @@ async fn ra2_map_view(app: tauri::AppHandle, file: String) -> Result<ra2maps::Ra
 #[tauri::command]
 fn ra2_open_maps_folder(app: tauri::AppHandle) -> Result<(), String> {
     open_folder(&ra2_maps_dir(&app)?)
+}
+
+#[derive(serde::Serialize)]
+struct Ra2CommunityPacks {
+    packs: Vec<ra2maps::CommunityPack>,
+    /// `.mmx`/`.yro` already in the player's RA2Maps folder.
+    installed_files: usize,
+    /// Bundled zips are present (dev tree or release resources).
+    available: bool,
+}
+
+#[tauri::command]
+fn ra2_community_packs(app: tauri::AppHandle) -> Result<Ra2CommunityPacks, String> {
+    let packs = ra2maps::load_community_packs(RA2_MAP_PACKS_JSON).map_err(|e| e.to_string())?;
+    let dest = ra2_maps_dir(&app)?;
+    Ok(Ra2CommunityPacks {
+        packs,
+        installed_files: ra2maps::community_pack_file_count(&dest),
+        available: ra2_mappacks_dir(&app).is_some(),
+    })
+}
+
+/// Unpack every bundled community map pack into Rallypoint's RA2Maps folder (and sync into the game folder on the next
+/// map list so `--extract-maps` can read them).
+#[tauri::command]
+async fn ra2_install_community_packs(app: tauri::AppHandle) -> Result<(usize, usize), String> {
+    let packs = ra2maps::load_community_packs(RA2_MAP_PACKS_JSON).map_err(|e| e.to_string())?;
+    let src = ra2_mappacks_dir(&app).ok_or("This build has no community map packs bundled")?;
+    let dest = ra2_maps_dir(&app)?;
+    let work = base(&app)?.join("tmp");
+    tauri::async_runtime::spawn_blocking(move || ra2maps::install_community_packs(&packs, &src, &dest, &work))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Start Red Alert 2 with `setup`: a skirmish, or an online game from the lobby (then through the relay's tunnel).
@@ -1365,7 +1414,7 @@ fn main() {
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game, launch_editor,
-            set_game, ra2_detect, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
+            set_game, ra2_detect, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
         ])
         .run(tauri::generate_context!())
         .expect("tauri");

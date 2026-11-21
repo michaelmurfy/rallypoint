@@ -1,0 +1,106 @@
+[
+  {
+    "id": "ra2-1",
+    "name": "RA2 map pack 1",
+    "file": "ra2mappack1.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "29fc925b187d2a489b82cc94036e87181c01e30e87cc22de0db70eac33eda85f"
+  },
+  {
+    "id": "ra2-2",
+    "name": "RA2 map pack 2",
+    "file": "ra2mappack2.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "cc5194a2f5148fe5004b3b4c8f2ac05b0105e12f8a0974c474da2b69a42fa118"
+  },
+  {
+    "id": "ra2-3",
+    "name": "RA2 map pack 3",
+    "file": "ra2mappack3.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "bcdd25b3009d7790f959cd257d8c2b89f7f9f458a1c991bb7bde0aa94a777ddb"
+  },
+  {
+    "id": "ra2-4",
+    "name": "RA2 map pack 4",
+    "file": "ra2mappack4.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "0fd0fe3bdfce69faaf1eaf62bfe90d602c29dbb194a3349dec3b2cb529caf962"
+  },
+  {
+    "id": "ra2-5",
+    "name": "RA2 map pack 5",
+    "file": "ra2mappack5.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "05a1adf56fa75ce0bafb17ad3149f4dd949edd0bf4b547bce27e47744fd787cd"
+  },
+  {
+    "id": "ra2-6",
+    "name": "RA2 map pack 6",
+    "file": "ra2mappack6.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "6610e5f2d64bff2334b7a465c73c865d037c7ac17ff3a951ee18eb9e9705d47d"
+  },
+  {
+    "id": "ra2-7",
+    "name": "RA2 map pack 7",
+    "file": "ra2mappack7.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "4f68277a3a572262ecbe9d1f6fac56e2c5b0e32d781bb656984d973c1b309aff"
+  },
+  {
+    "id": "ra2-8",
+    "name": "RA2 map pack 8",
+    "file": "ra2mappack8.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "f3332f4a9ad37d5744784d9aa11d90936cd9fbfa0922e18e8e0e698670fd884c"
+  },
+  {
+    "id": "ra2-9",
+    "name": "RA2 map pack 9",
+    "file": "ra2mappack9.zip",
+    "game": "ra2",
+    "maps": 3,
+    "sha256": "1a9c477982311e1655f57c97a52268b886ca7901770446d74f83308178310b03"
+  },
+  {
+    "id": "ra2-10",
+    "name": "RA2 map pack 10",
+    "file": "ra2mappack10.zip",
+    "game": "ra2",
+    "maps": 2,
+    "sha256": "ab19807b1287cb1b6e53cd67f0df1b4785ef60f54dec691823c364471901053e"
+  },
+  {
+    "id": "ra2-11",
+    "name": "RA2 map pack 11",
+    "file": "ra2mappack11.zip",
+    "game": "ra2",
+    "maps": 2,
+    "sha256": "1077eb3a57ce4241c31ed1da1901f3a55dd125536c17d7be06a2355e87a749fe"
+  },
+  {
+    "id": "ra2-12",
+    "name": "RA2 map pack 12",
+    "file": "ra2mappack12.zip",
+    "game": "ra2",
+    "maps": 2,
+    "sha256": "a28047b7ba10f73a7ee9d14b3a0f430a5506c6b250c051d0f6df4dac9a12cd4f"
+  },
+  {
+    "id": "yr-5",
+    "name": "Yuri's Revenge map pack 5",
+    "file": "yrmappack5.zip",
+    "game": "yr",
+    "maps": 13,
+    "sha256": "cfc4afc5c48aed2a70608315dae4bf5af3bab7309146a9367a18f00f25996015"
+  }
+]

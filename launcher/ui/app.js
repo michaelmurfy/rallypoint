@@ -2334,7 +2334,7 @@ function ra2PlayPage() {
 }
 
 function ra2MapsPage() {
-  let maps = [], filter = "all", sel = null, token = 0, spots = [];
+  let maps = [], filter = "all", sel = null, token = 0, spots = [], community = null;
   const list = h("div", { class: "maplist", role: "listbox", "aria-label": "Maps" });
   const empty = h("div", { class: "listempty" });
   const result = h("span", { class: "muted small" });
@@ -2344,18 +2344,45 @@ function ra2MapsPage() {
   const preview = h("div", { class: "mapcol ra2preview" }, h("div", { class: "stage" }, canvas), h("div", { class: "stack tight" }, title, facts, note), skirmish);
   const counts = () => [...new Set(maps.map((m) => m.players).filter((n) => n >= 2))].sort((a, b) => a - b);
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Players" });
+  const packStatus = h("p", { class: "muted small" });
+  const installPacks = h("button", { class: "btn", onclick: async () => {
+    installPacks.disabled = true;
+    packStatus.textContent = "Installing community map packs…";
+    try {
+      const [packs, files] = await invoke("ra2_install_community_packs");
+      say(`Installed ${packs} pack${packs === 1 ? "" : "s"} (${files} maps)`, "ok");
+      await reload();
+    } catch (e) { say(errText(e), "bad"); packStatus.textContent = errText(e); }
+    finally { installPacks.disabled = false; drawPacks(); }
+  } }, "Install community packs");
+  const packCard = h("div", { class: "card" },
+    h("div", { class: "row between" }, h("h2", {}, "Community packs"), installPacks),
+    packStatus,
+    h("p", { class: "muted small" }, "Classic Red Alert 2 and Yuri's Revenge multiplayer packs (.mmx / .yro), shipped with Rallypoint. They are copied into your map folder and into the game folder so the engine can list them."));
   const shown = () => maps.filter((m) => filter === "all" || m.players === +filter);
   function drawChips() {
     const opts = [["all", "All"], ...counts().map((n) => [String(n), `${n} players`])];
     fill(chips, h("span", { class: "muted small chiplabel" }, "Players"), opts.map(([v, t]) => h("button", { class: "chip", type: "button", "aria-pressed": String(filter === v), onclick: () => { filter = v; draw(); } }, t)));
   }
+  function drawPacks() {
+    const c = community;
+    if (!c || !c.available) { packCard.hidden = true; return; }
+    packCard.hidden = false;
+    const total = (c.packs || []).reduce((n, p) => n + (p.maps || 0), 0);
+    const have = c.installed_files || 0;
+    packStatus.textContent = have
+      ? `${have} community map file${have === 1 ? "" : "s"} in your map folder (${(c.packs || []).length} packs, ${total} maps in the bundle). Install again to refresh.`
+      : `${(c.packs || []).length} packs (${total} maps) ready to install.`;
+    installPacks.disabled = false;
+  }
   function draw() {
     const v = shown();
     drawChips();
+    drawPacks();
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
     empty.hidden = !!v.length; list.hidden = !v.length;
     fill(empty, maps.length ? [h("strong", {}, "No maps match"), h("button", { class: "btn small", onclick: () => { filter = "all"; draw(); } }, "Show all")]
-      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Official maps and .mmx packs come from your game folder; drop extra .map/.mpr/.yrm files into Rallypoint's map folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
+      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install the community packs below, or drop .map/.mpr/.yrm files into Rallypoint's map folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
     preview.hidden = !sel;
@@ -2392,19 +2419,21 @@ function ra2MapsPage() {
   const refresh = h("button", { class: "btn small", onclick: async () => { await reload(); say(`${maps.length} map${maps.length === 1 ? "" : "s"} found`, "ok"); } }, "Look again");
   async function reload() {
     fill(empty, h("span", { class: "muted small" }, "Reading your maps…")); empty.hidden = false; list.hidden = true;
+    try { community = await invoke("ra2_community_packs"); } catch (_) { community = null; }
     maps = await loadRa2Maps();
     draw();
   }
   reload();
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Maps"), h("button", { class: "btn", onclick: openFolder }, "Open map folder")),
+    packCard,
     h("div", { class: "card" },
       h("div", { class: "row between" }, h("h2", {}, "Your maps"), refresh),
       chips,
       h("div", { class: "ra2maps" },
         h("div", { class: "listbox" }, h("div", { class: "listhead" }, result), list, empty),
         preview),
-      h("p", { class: "muted small" }, "Official multiplayer maps and .mmx/.yro packs are read from your game folder; extras go in Rallypoint's map folder. Press Look again after adding files.")));
+      h("p", { class: "muted small" }, "Official multiplayer maps come from your game folder; community packs and extras go in Rallypoint's map folder. Press Look again after adding files.")));
   return { el };
 }
 

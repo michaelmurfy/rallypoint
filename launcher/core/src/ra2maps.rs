@@ -264,8 +264,25 @@ fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
     meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
 }
 
+fn pack_stamp_lines(dir: &Path, prefix: &str, lines: &mut Vec<String>) {
+    let mut packs: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mmx") || e.eq_ignore_ascii_case("yro")))
+        .collect();
+    packs.sort();
+    for p in packs {
+        if let Ok(m) = std::fs::metadata(&p) {
+            lines.push(format!("{prefix}{}\t{}\t{}", p.file_name().unwrap().to_string_lossy(), m.len(), mtime_secs(&m)));
+        }
+    }
+}
+
 /// A fingerprint of the game archives that `--extract-maps` reads: their names, sizes and change times.
+/// `extra` is Rallypoint's own map folder (community `.mmx`/`.yro` packs synced into the game folder before extract).
 pub fn archive_stamp(game_dir: &Path) -> String {
+    archive_stamp_with(game_dir, None)
+}
+
+pub fn archive_stamp_with(game_dir: &Path, extra: Option<&Path>) -> String {
     let mut lines = Vec::new();
     for name in ["multimd.mix", "langmd.mix"] {
         if let Some(p) = std::fs::read_dir(game_dir).ok().into_iter().flatten().flatten().map(|e| e.path())
@@ -276,14 +293,9 @@ pub fn archive_stamp(game_dir: &Path) -> String {
             }
         }
     }
-    let mut packs: Vec<_> = std::fs::read_dir(game_dir).into_iter().flatten().flatten().map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mmx") || e.eq_ignore_ascii_case("yro")))
-        .collect();
-    packs.sort();
-    for p in packs {
-        if let Ok(m) = std::fs::metadata(&p) {
-            lines.push(format!("{}\t{}\t{}", p.file_name().unwrap().to_string_lossy(), m.len(), mtime_secs(&m)));
-        }
+    pack_stamp_lines(game_dir, "", &mut lines);
+    if let Some(ex) = extra {
+        pack_stamp_lines(ex, "extra:", &mut lines);
     }
     lines.join("\n")
 }
@@ -298,9 +310,42 @@ struct IndexRow {
     players: u8,
 }
 
+/// Copy community `.mmx`/`.yro` from `from` into `game_dir` so `--extract-maps` (which only reads the data folder)
+/// sees them. Skips names that already match size; returns how many files were written.
+pub fn sync_packs_into_game(from: &Path, game_dir: &Path) -> Result<usize, String> {
+    if !from.is_dir() || !game_dir.is_dir() {
+        return Ok(0);
+    }
+    let mut n = 0;
+    for e in std::fs::read_dir(from).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let p = e.path();
+        if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mmx") || x.eq_ignore_ascii_case("yro")) {
+            continue;
+        }
+        let name = e.file_name();
+        let dest = game_dir.join(&name);
+        let src_len = e.metadata().map(|m| m.len()).unwrap_or(0);
+        if dest.is_file() && std::fs::metadata(&dest).map(|m| m.len()).ok() == Some(src_len) {
+            continue;
+        }
+        std::fs::copy(&p, &dest).map_err(|err| format!("couldn't copy {} into the game folder: {err}", name.to_string_lossy()))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Run the bundled engine's `--extract-maps` into `out` when the archive stamp changed (or the index is missing).
+/// When `packs_dir` is set, its `.mmx`/`.yro` are synced into `game_dir` first (best-effort).
 pub fn refresh_extract(engine: &Path, game_dir: &Path, out: &Path) -> Result<(), String> {
-    let stamp = archive_stamp(game_dir);
+    refresh_extract_with(engine, game_dir, out, None)
+}
+
+pub fn refresh_extract_with(engine: &Path, game_dir: &Path, out: &Path, packs_dir: Option<&Path>) -> Result<(), String> {
+    if let Some(p) = packs_dir {
+        let _ = sync_packs_into_game(p, game_dir);
+    }
+    let stamp = archive_stamp_with(game_dir, packs_dir);
     let stamp_path = out.join("stamp.txt");
     let index = out.join("index.json");
     let old = std::fs::read_to_string(&stamp_path).unwrap_or_default();
@@ -318,6 +363,80 @@ pub fn refresh_extract(engine: &Path, game_dir: &Path, out: &Path) -> Result<(),
     }
     std::fs::write(&stamp_path, stamp).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// A community map pack shipped with the launcher (`mods/ra2-mappacks.json`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CommunityPack {
+    pub id: String,
+    pub name: String,
+    pub file: String,
+    pub game: String,
+    pub maps: u32,
+    pub sha256: String,
+}
+
+pub fn load_community_packs(json: &str) -> Result<Vec<CommunityPack>, serde_json::Error> {
+    serde_json::from_str(json)
+}
+
+fn is_pack_map(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mmx") || e.eq_ignore_ascii_case("yro"))
+}
+
+/// Unpack one bundled zip into `dest`, keeping only `.mmx`/`.yro` (and overwriting same-named files). Returns how many
+/// map packs were written. Verifies `sha256` when non-empty.
+pub fn install_community_zip(zip: &Path, dest: &Path, sha256: &str, work: &Path) -> Result<usize, String> {
+    if !sha256.is_empty() {
+        let got = crate::extract::hex(&crate::extract::sha256_file(zip).map_err(|e| e.to_string())?);
+        if !got.eq_ignore_ascii_case(sha256) {
+            return Err(format!("{} failed its checksum", zip.file_name().unwrap_or_default().to_string_lossy()));
+        }
+    }
+    let stage = work.join(format!("ra2pack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    crate::extract::extract(zip, &stage)?;
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let mut n = 0;
+    let mut stack = vec![stage.clone()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let e = e.map_err(|e| e.to_string())?;
+            let p = e.path();
+            let ty = e.file_type().map_err(|e| e.to_string())?;
+            if ty.is_dir() {
+                stack.push(p);
+            } else if ty.is_file() && is_pack_map(&p) {
+                let name = e.file_name();
+                std::fs::copy(&p, dest.join(&name)).map_err(|err| format!("couldn't write {}: {err}", name.to_string_lossy()))?;
+                n += 1;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&stage);
+    Ok(n)
+}
+
+/// Install every pack whose zip is present under `packs_dir` (the bundled `ra2-mappacks` folder) into `dest`.
+/// Returns (packs installed or refreshed, map files written).
+pub fn install_community_packs(packs: &[CommunityPack], packs_dir: &Path, dest: &Path, work: &Path) -> Result<(usize, usize), String> {
+    let mut packs_done = 0;
+    let mut maps = 0;
+    for p in packs {
+        let zip = packs_dir.join(&p.file);
+        if !zip.is_file() {
+            continue;
+        }
+        maps += install_community_zip(&zip, dest, &p.sha256, work)?;
+        packs_done += 1;
+    }
+    Ok((packs_done, maps))
+}
+
+/// How many `.mmx`/`.yro` files are in `dest` (community packs after install, or copies the player dropped in).
+pub fn community_pack_file_count(dest: &Path) -> usize {
+    std::fs::read_dir(dest).into_iter().flatten().flatten().filter(|e| is_pack_map(&e.path())).count()
 }
 
 /// Maps written by `--extract-maps` (`index.json` + plain INI files under `out`).
@@ -575,6 +694,32 @@ mod tests {
         let l = list(&[t.clone()], &t.join("c.json"));
         assert_eq!(l.len(), 1);
         assert!(l[0].path.ends_with("plain.map"));
+        let _ = std::fs::remove_dir_all(t);
+    }
+
+    #[test]
+    fn community_pack_zip_installs_mmx_and_syncs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods/ra2-mappacks");
+        let zip = root.join("ra2mappack1.zip");
+        if !zip.is_file() {
+            return;
+        }
+        let packs = load_community_packs(include_str!("../../../mods/ra2-mappacks.json")).unwrap();
+        assert_eq!(packs.len(), 13);
+        let one = packs.iter().find(|p| p.file == "ra2mappack1.zip").unwrap();
+        let t = std::env::temp_dir().join(format!("ra2-community-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let dest = t.join("RA2Maps");
+        let game = t.join("game");
+        let work = t.join("tmp");
+        std::fs::create_dir_all(&game).unwrap();
+        let n = install_community_zip(&zip, &dest, &one.sha256, &work).unwrap();
+        assert_eq!(n, 3, "pack 1 has three .mmx files");
+        assert_eq!(community_pack_file_count(&dest), 3);
+        assert_eq!(sync_packs_into_game(&dest, &game).unwrap(), 3);
+        assert!(game.join("Rockets.mmx").is_file() || game.join("rockets.mmx").is_file()
+            || std::fs::read_dir(&game).unwrap().any(|e| e.unwrap().path().extension().is_some_and(|x| x.eq_ignore_ascii_case("mmx"))));
+        assert_eq!(sync_packs_into_game(&dest, &game).unwrap(), 0, "second sync is a no-op");
         let _ = std::fs::remove_dir_all(t);
     }
 }
