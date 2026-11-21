@@ -61,25 +61,27 @@ lists “units tilting on slopes” as a known miss.
 
 ### T1.3 AI call-for-help / base defense response (remaining RE-OPEN)
 
-`World::call_for_help` ports **FUN_00707500**, but several multipliers and
-reachability tests are still stand-ins. `ComputerBaseDefenseResponse` is
-read; sell-on-`PowerEmergency` and full IQ repair/sell loops are only partly
-consumed.
+`World::call_for_help` ports Steam YR **FUN_00708080** (older notes said
+`FUN_00707500` — wrong VA in this binary).
 
-**Landed (prerequisite, not a full close):** patch
-`0035-stock-ai-min-defense-rule`
+**Landed:** `0035-stock-ai-min-defense-rule`
 ([#174](https://github.com/michaelmurfy/rallypoint/pull/174)) —
 `UseMinDefenseRule` / `MinimumAIDefensiveTeams` so stock `IsBaseDefense`
-teams form and call-for-help has guard members. Optional AIBoost
-(`0037` / [#173](https://github.com/michaelmurfy/rallypoint/pull/173)) scales
-defense response when enabled; it is not stock parity.
+teams form. Optional AIBoost (`0037` / [#173](https://github.com/michaelmurfy/rallypoint/pull/173))
+scales defense response when enabled. Patch `0044-ai-call-for-help`: building
+victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and
+loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell +
+IQ `RepairSell` on ConditionRed sell.
+
+**Still open:** victim `+0x2DC` vehicle-pass gate; full `FUN_0056D100` MapZone
+ids; per-unit ArchiveTarget==self tracking.
 
 | | |
 |---|---|
-| **Files** | `engine/world_w7.cpp` (`call_for_help`), `engine/ai_base.hpp` (`kAiComputerBaseDefenseResponse`, `kAiPowerEmergency`), `engine/world.hpp` (CombatW7Rules), `engine/aimd_parse.*` (`IsBaseDefense`) |
-| **gamemd** | **FUN_00707500** (help); ReceiveDamage callers ~`0x701C74` / `0x44223C`; zone reach **FUN_0056CC30**; Rules+`0xB18` |
+| **Files** | `engine/world_w7.cpp` (`call_for_help`), `engine/ai_base.hpp` (`kAiComputerBaseDefenseResponse`, `kAiPowerEmergency`, `power_emergency_sell`), `engine/world.hpp` (CombatW7Rules), `engine/aimd_parse.*` (`IsBaseDefense`) |
+| **gamemd** | **FUN_00708080** (help); callers `0x4422BC` / `0x7027E9` / `0x4D749A`; zone **FUN_0056D100**; Rules+`0xB18` / +`0x10B0` |
 | **Rules** | `[AI] ComputerBaseDefenseResponse`, `BaseDefenseDelay`, `*BaseDefenses`, `*BaseDefenseCounts`, `PowerEmergency`, `[IQ] RepairSell` |
-| **Effort** | L (MinDefense done; help multipliers / IQ loops remain) |
+| **Effort** | M remaining after 0044 |
 | **OpenRA** | Partial — AI defense scripts are analogous, not bit-compatible |
 
 ### T1.4 Lockstep sync vs long MP / mixed builds
