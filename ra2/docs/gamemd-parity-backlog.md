@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0025`). Docs only: nothing here is implemented by this file.
+`0041`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -12,21 +12,38 @@ our copy; FUN_* cites below come from comments still in the sources.
 **OpenRA:** whether OpenRA’s RA2/YR rules or code is a useful *secondary*
 reference (never a substitute for gamemd behaviour).
 
+### Recently landed on `main` (do not re-implement)
+
+| Item | Patch | PR |
+|---|---|---|
+| Presentation stack (HiDPI fonts, credits/cursor, canvas zoom, CLEG ChronoBeam, building health pips, Tesla low-power visual, SW sidebar slots, smooth unit draw, SW building charge anim) | `0025`–`0033` | #162–#171 |
+| T1.1 ramp / slope Level while walking | `0034-ramp-slope-level` | [#172](https://github.com/michaelmurfy/rallypoint/pull/172) |
+| Stock AI `UseMinDefenseRule` / `MinimumAIDefensiveTeams` (base-guard teams so call-for-help has members) | `0035-stock-ai-min-defense-rule` | [#174](https://github.com/michaelmurfy/rallypoint/pull/174) |
+| Optional AIBoost smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3; engine only — launcher UI still open) | `0037-ai-boost-smarter` | [#173](https://github.com/michaelmurfy/rallypoint/pull/173) |
+| T2.1 country bonuses (HouseType Cost/Armor/ROF/… Mult + Veteran*) | `0040-country-bonuses-from-gamemd` | [#178](https://github.com/michaelmurfy/rallypoint/pull/178) |
+| T3.1 / T3.2 building + infantry anims (partial) | `0041-building-infantry-anims-from-gamemd` | [#179](https://github.com/michaelmurfy/rallypoint/pull/179) |
+
 ---
 
 ## Tier 1 — play-breaking (pathfind / slopes, AI defense, sync, crashes)
 
-### T1.1 Ramp / slope height while walking
+### T1.1 Ramp / slope height while walking — landed
 
 Units used to keep the Level they spawned on, so a tank ordered down a paved
 stair never left the terrace even when A* allowed the step.
+
+**Landed:** patch `0034-ramp-slope-level` ([#172](https://github.com/michaelmurfy/rallypoint/pull/172)) —
+`step_units` adopts the cell’s Level on TMP ramps (FootClass height gate
+**FUN_004D9C60** already allowed the one-level step); draw blends the step.
+Still worth a real-map sign-off on stairs / bridges; do not re-patch the Level
+adoption itself.
 
 | | |
 |---|---|
 | **Files** | `engine/pathfind.hpp`, `engine/pathfind.cpp` (`path_step_layer`, `PathTerrain`); unit step in `engine/world.cpp` / locomotion |
 | **gamemd** | FootClass height gate **FUN_004D9C60** (comments historically said `FUN_004D9B70`); `CellClass` Level `+0x11B`, SlopeIndex `+0x11C` (TMP hdr `+0x2A`); `IsClearToMove` **FUN_004833B0**; A* neighbours **FUN_00429A10** |
 | **Rules / art** | TMP ramp SlopeIndex ≠ 0; deck / bridge Level+4 |
-| **Effort** | M (logic in flight / recently patched; still needs real-map sign-off) |
+| **Effort** | done (verify S) |
 | **OpenRA** | Partial — terrain height models differ; use only for vocabulary |
 
 ### T1.2 Cliff / slope *presentation* (unit tilt)
@@ -49,12 +66,20 @@ reachability tests are still stand-ins. `ComputerBaseDefenseResponse` is
 read; sell-on-`PowerEmergency` and full IQ repair/sell loops are only partly
 consumed.
 
+**Landed (prerequisite, not a full close):** patch
+`0035-stock-ai-min-defense-rule`
+([#174](https://github.com/michaelmurfy/rallypoint/pull/174)) —
+`UseMinDefenseRule` / `MinimumAIDefensiveTeams` so stock `IsBaseDefense`
+teams form and call-for-help has guard members. Optional AIBoost
+(`0037` / [#173](https://github.com/michaelmurfy/rallypoint/pull/173)) scales
+defense response when enabled; it is not stock parity.
+
 | | |
 |---|---|
 | **Files** | `engine/world_w7.cpp` (`call_for_help`), `engine/ai_base.hpp` (`kAiComputerBaseDefenseResponse`, `kAiPowerEmergency`), `engine/world.hpp` (CombatW7Rules), `engine/aimd_parse.*` (`IsBaseDefense`) |
 | **gamemd** | **FUN_00707500** (help); ReceiveDamage callers ~`0x701C74` / `0x44223C`; zone reach **FUN_0056CC30**; Rules+`0xB18` |
 | **Rules** | `[AI] ComputerBaseDefenseResponse`, `BaseDefenseDelay`, `*BaseDefenses`, `*BaseDefenseCounts`, `PowerEmergency`, `[IQ] RepairSell` |
-| **Effort** | L |
+| **Effort** | L (MinDefense done; help multipliers / IQ loops remain) |
 | **OpenRA** | Partial — AI defense scripts are analogous, not bit-compatible |
 
 ### T1.4 Lockstep sync vs long MP / mixed builds
@@ -103,19 +128,25 @@ cases and cloaked-cell costs that need live skirmish proof on dense maps.
 
 ## Tier 2 — country / faction completeness
 
-### T2.1 Per-country cost / combat multipliers
+### T2.1 Per-country cost / combat multipliers — landed
 
 `CountryCostMult` is mentioned on the sell path; country section bonuses from
 rules (`*CostBonus`, Speed/Armor/ROF/Firepower style keys in gamemd strings)
-are not loaded as a first-class house handicap the way difficulty
-`FirePower`/`ROF` are.
+are now loaded as HouseType handicaps.
+
+**Landed:** patch `0040-country-bonuses-from-gamemd`
+([#178](https://github.com/michaelmurfy/rallypoint/pull/178)) —
+`country_bonuses.hpp` loads Cost/Armor/ROF/Firepower/Groundspeed/Airspeed/
+BuildTime Mult keys and `VeteranInfantry` / `VeteranUnits` / `VeteranAircraft`.
+Stock `rulesmd` leaves most Mult/Veteran keys commented (identity); they apply
+when a mod or rules uncomment them. Do not re-implement the loader.
 
 | | |
 |---|---|
-| **Files** | `engine/repair_sell.cpp` (comment), `engine/ai_base.hpp` (`DifficultyMods`), house setup in `engine/gf_start.inc` / `engine/main.cpp` |
+| **Files** | `engine/country_bonuses.hpp`, `engine/repair_sell.cpp`, `engine/ai_base.hpp` (`DifficultyMods`), house setup in `engine/gf_start.inc` / `engine/main.cpp` |
 | **gamemd** | HouseType / country LoadFromINI (bonus fields beside `Side=` / `Prefix=`) |
-| **Rules** | `[Americans]`…`[YuriCountry]`: `InfantryCostBonus`, `UnitsCostBonus`, `AircraftCostBonus`, `BuildingsCostBonus`, `DefensesCostBonus`, related Speed/Armor/ROF/Firepower bonuses; `VeteranInfantry` / `VeteranUnits` / `VeteranAircraft` |
-| **Effort** | M |
+| **Rules** | `[Americans]`…`[YuriCountry]`: Mult keys + `VeteranInfantry` / `VeteranUnits` / `VeteranAircraft` |
+| **Effort** | done |
 | **OpenRA** | Yes — country traits tables are a readable checklist |
 
 ### T2.2 Country unique units / buildings (RequiredHouses / ForbiddenHouses)
@@ -165,32 +196,39 @@ Already patched for playable YuriCountry + many uniques; remaining:
 
 ## Tier 3 — animation / presentation
 
-### T3.1 Building ActiveAnim / IdleAnim / damage fires / SuperAnim
+### T3.1 Building ActiveAnim / IdleAnim / damage fires / SuperAnim — partial
 
-Buildup + SuperAnim hold (patch `0024`) exist; always-on slot anims and
-damage-fire overlays are partially gated (`G-85` comments). Some SW buildings
-still look wrong if art sequences are mis-bound.
+Buildup + SuperAnim hold (`0024`) and charge-phase SuperAnim (`0033`) exist.
+**Partial land:** patch `0041-building-infantry-anims-from-gamemd`
+([#179](https://github.com/michaelmurfy/rallypoint/pull/179)) —
+art `AnimActive` cycles the main SHP with SimpleDamage (`Shape_Number`
+**FUN_0043ef90**); Tesla/Prism `IsAnimDelayedFire` SpecialAnim; Idle resumes
+after finite Active*. Damage-fire overlays and remaining mis-bound SW art
+sequences still need a pass — do not re-do the AnimActive / SpecialAnim core.
 
 | | |
 |---|---|
-| **Files** | `engine/pres_bldanim.inc`, building draw in `engine/main.cpp`, patch `0024-namisil-superanim-hold` |
+| **Files** | `engine/pres_bldanim.inc`, `engine/building.*`, building draw in `engine/main.cpp`, patches `0024` / `0033` / `0041` |
 | **gamemd** | Building anim state machine (ActiveAnim…Four, IdleAnim, SuperAnim…Four, DamageFire) |
 | **Rules / art** | artmd `ActiveAnim*`, `IdleAnim`, `SuperAnim*`, `Buildup`, `DamageFire*` |
-| **Effort** | M |
+| **Effort** | remaining M (core cycles done) |
 | **OpenRA** | No |
 
-### T3.2 Infantry sequence completeness
+### T3.2 Infantry sequence completeness — partial
 
-DoControls rows + deploy edges (GI / Guardian GI) are in `inf_anim`; prone /
-crawl / fire / idle transitions need parity proof vs SHP sequences for Yuri
-and country uniques.
+DoControls rows + deploy edges (GI / Guardian GI) are in `inf_anim`.
+**Partial land:** patch `0041`
+([#179](https://github.com/michaelmurfy/rallypoint/pull/179)) —
+Undeploy stays locked until done and can finish into Walk. Prone / crawl /
+fire / idle transitions still need parity proof vs SHP sequences for Yuri and
+country uniques — do not re-patch the Undeploy lock.
 
 | | |
 |---|---|
 | **Files** | `engine/inf_anim.*`, tests `tests/test_inf_anim.cpp` |
 | **gamemd** | Infantry DoControls / sequence table (42 rows recovered) |
 | **Rules / art** | artmd Sequence / PrimaryFire / Deployed* |
-| **Effort** | M |
+| **Effort** | remaining M |
 | **OpenRA** | Partial — sequence names only |
 
 ### T3.3 Vehicle anims / turret / deploy (Siege Chopper)
@@ -210,7 +248,7 @@ other vehicles still diverge on some types.
 
 Logic for prism support, magnetron lift, disc drain exists; several beams are
 not drawn (`IsLocomotor` beam art, DISKRAY, some fragment beams only via FX
-events).
+events). Chrono Legionnaire erase uses ChronoBeam (`0028`).
 
 | | |
 |---|---|
@@ -223,11 +261,11 @@ events).
 ### T3.5 Cameo / sidebar icon gaps
 
 Cameos load from cameo / cameomd mixes; types without `Cameo=` stay blank.
-SW cameo seating has been a recurring UI bug class.
+SW cameos sit in side2 sockets (`0031`).
 
 | | |
 |---|---|
-| **Files** | sidebar draw in `engine/main.cpp`, patch `0016-yuri-cameo-mix-lookup` |
+| **Files** | sidebar draw in `engine/main.cpp`, patches `0016-yuri-cameo-mix-lookup`, `0031-sw-sidebar-slots` |
 | **gamemd** | SidebarClass cameo strip / FlashCameo |
 | **Rules / art** | artmd `Cameo=`, `AltCameo=`; `cameo.pal` |
 | **Effort** | S–M |
@@ -322,15 +360,20 @@ Upstream known limitation.
 
 ## Suggested attack order
 
-1. Land / verify T1.1 ramp Level adoption on real stairs; then T1.2 tilt.
-2. Close T1.3 call-for-help RE-OPEN and IQ repair/sell so skirmish AI feels stock.
-3. T2.1 country bonuses + T2.2 unique roster audit (data-driven).
+1. T1.2 unit tilt on slopes (presentation; T1.1 Level adoption already on main).
+2. T1.3 call-for-help RE-OPEN + IQ repair/sell (MinDefense / guard teams already on main via `0035`).
+3. T3.3 Siege Chopper deploy (and remaining vehicle turret/deploy misses).
 4. Burn down T2.4 Yuri Partial list (mostly S/M).
-5. T3 presentation pass (buildings → infantry → beams → cameos).
-6. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
+5. Launcher UI for AIBoost (engine `0037` / #173 is on main; Settings / Play control still missing).
+6. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) only after checking `0041` — do not re-land AnimActive / Undeploy.
+7. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
 
 ## Related in-flight work (do not duplicate blindly)
 
-Sibling PRs / agents (as of this doc): ramp Level climbing, stock AI parity,
-AIBoost, country bonuses, building/infantry anims. Rebase against those before
-starting a new patch in the same area.
+No sibling parity PRs for the items above are assumed open. Before starting a
+new patch in an area listed under **Recently landed**, rebase on `main` and
+read the cited patch — re-implementing `0034`/`0035`/`0037`/`0040`/`0041` or
+the `0025`–`0033` presentation stack is wasted work.
+
+Next priorities (open): T1.2 tilt, T1.3 call-for-help, T3.3 Siege Chopper,
+T2.4 Yuri Partial, launcher AIBoost UI.
