@@ -1,0 +1,469 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 69da891..79c3d65 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -243,7 +243,9 @@
+         if (follow_unit_ >= static_cast<int>(world_.units().size())) { follow_unit_ = -1; return; }
+         const ra2engine::Unit& u = world_.units()[static_cast<std::size_t>(follow_unit_)];
+         if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) { follow_unit_ = -1; return; }
+-        input_.center_on_cell(u.fx, u.fy);
++        double fx = u.fx, fy = u.fy, sx, sy;
++        motion_.blend(u, follow_unit_, fx, fy, sx, sy);   // same glide as the sprite
++        input_.center_on_cell(fx, fy);
+     }
+     bool unit_on_screen(const ra2engine::Unit& u) const {
+         const double sx = (u.fx - u.fy) * 30.0 + cam_.x + 30.0;
+@@ -381,6 +383,7 @@
+     static constexpr double kLogicDt = 1.0 / 15.0;
+     static constexpr int kMaxLogicSteps = 4;
+     double logic_acc_ = 0.0;
++    ra2engine::PresentMotion motion_;   // previous tick's poses; draw only
+ 
+     // --- G-07: build-queue click semantics ---------------------------------------
+     // [RE: gamemd fixB hunt, StripClass cameo action FUN_006AA390; event ids
+diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
+index d79ee4e..b018c49 100644
+--- a/engine/iso_renderer.cpp
++++ b/engine/iso_renderer.cpp
+@@ -15,6 +15,7 @@
+ #include <utility>
+ 
+ #include "iso_project.hpp"
++#include "present_motion.hpp"
+ #include "texture_cache.hpp"
+ 
+ namespace ra2engine {
+@@ -495,11 +496,13 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
+     // walking. cell_to_screen is linear in (x, y), so the same shear applies
+     // to fractional coordinates (see iso_project.hpp). Idle units have
+     // fx/fy == cell_x/cell_y, so this is identical to the integer path.
++    // present_ground also blends the previous logic tick into this one when
++    // the game has bound a PresentMotion (display only; demos stay put).
+     const double hw = kTileW / 2.0;
+     const double hh = kTileH / 2.0;
+     // W5-B R-061: + the infantry sub-cell spot offset (leptons, 0 for vehicles).
+-    const double ufx = unit.fx + unit.sub_x / 256.0;
+-    const double ufy = unit.fy + unit.sub_y / 256.0;
++    double ufx, ufy;
++    present_ground(unit, ufx, ufy);
+     const int tile_screen_x =
+         static_cast<int>(std::lround((ufx - ufy) * hw)) + cam.x;
+     const int tile_screen_y =
+@@ -634,7 +637,9 @@ void draw_selection(void* sdl_renderer, const Unit& unit, const Camera& cam, int
+                     int view_h, int width_px) {
+     SDL_Renderer* renderer = static_cast<SDL_Renderer*>(sdl_renderer);
+     int cx, cy;
+-    tile_center_screen(unit.fx + unit.sub_x / 256.0, unit.fy + unit.sub_y / 256.0, unit.level, cam, cx, cy);   // W5-B sub-cell
++    double gfx, gfy;
++    present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
++    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
+ 
+     // Diamond size: default one-cell footprint (60x30, 2:1), or scaled to
+     // `width_px` for wide voxel sprites (keeping the 2:1 iso ratio).
+@@ -731,7 +736,9 @@ void draw_hp_bar(void* sdl_renderer, const Unit& unit, const Camera& cam, int vi
+     const int bar_w = width_px > 0 ? width_px : kHpBarW;
+ 
+     int cx, cy;
+-    tile_center_screen(unit.fx + unit.sub_x / 256.0, unit.fy + unit.sub_y / 256.0, unit.level, cam, cx, cy);   // W5-B sub-cell
++    double gfx, gfy;
++    present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
++    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
+     const int bar_cy = cy - kHpBarUp - kHpBarGap;
+ 
+     SDL_Rect bg{cx - bar_w / 2, bar_cy - kHpBarH / 2, bar_w, kHpBarH};
+@@ -763,7 +770,9 @@ void draw_cargo_pips(void* sdl_renderer, const Unit& unit, int pips_filled, int
+     if (pips_max <= 0) return;
+     SDL_Renderer* renderer = static_cast<SDL_Renderer*>(sdl_renderer);
+     int cx, cy;
+-    tile_center_screen(unit.fx + unit.sub_x / 256.0, unit.fy + unit.sub_y / 256.0, unit.level, cam, cx, cy);   // W5-B sub-cell
++    double gfx, gfy;
++    present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
++    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
+     // One row directly UNDER the HP bar (same anchor math as draw_hp_bar).
+     const int row_y = cy - kHpBarUp - kHpBarGap + kHpBarH + 2;
+     const int pip_w = 4, pip_h = 3, gap = 2;
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 0d6ad76..135fa30 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -116,6 +116,7 @@ static char* ra2_cli_pref_path() {
+ #include "weapon_resolve.hpp"  // Gap fix C: TechnoType weapon slots
+ #include "gamespeed.hpp"       // Gap fix C: RE-T1 logic rate per GameSpeed
+ #include "world.hpp"
++#include "present_motion.hpp"
+ #include "yuri_side.hpp"   // Rallypoint: the third side
+ #include "abil_w5_rules.hpp"   // wave-5 (agent C): requires_stolen_bits
+ 
+@@ -3769,6 +3770,9 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+ 
+     const std::string& img = va.combat.image;
+     const int bi = ra2engine::facing_to_index(u.body_facing, ra2engine::kVehicleFacings);
++    // Between-tick pose. Unbound (demos) this is the sim pose, sub-cell included.
++    double pfx, pfy;
++    ra2engine::present_ground(u, pfx, pfy);
+ 
+     // CB-2 Aircraft [RE-GATE APPLIED: aircraft.md §3]: an airborne unit is drawn RAISED
+     // by altitude_to_screen_dy, with a ground shadow at the un-raised cell.
+@@ -3786,13 +3790,13 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+         // W5-PRES [RE: Shadow_Point 0x55A550 / AircraftClass::Draw 0x4144B0 /
+         // FUN_00755680]: an airborne voxel casts its own silhouette straight
+         // down on the ground, same size at any height (live game).
+-        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *vxl_shadow(va, bi), u.fx,
+-                                     u.fy, u.level, cam, W, H, 0);
++        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *vxl_shadow(va, bi), pfx,
++                                     pfy, u.level, cam, W, H, 0);
+     } else if (extra_dy > 0)
+-        ra2engine::draw_ground_shadow(ren, u.fx, u.fy, u.level,
++        ra2engine::draw_ground_shadow(ren, pfx, pfy, u.level,
+                                       vxl_set(va, 0, u.house).sprites[bi].w, cam, W, H);
+     else if (const ra2engine::VoxelSprite* sh = vxl_shadow(va, bi))
+-        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *sh, u.fx, u.fy,
++        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *sh, pfx, pfy,
+                                      u.level, cam, W, H, 0);   // W2-GA-12 ground shadow
+ 
+     // W3-B: a multi-frame HVA (Night Hawk / Spy Plane rotors, Kirov
+@@ -3819,7 +3823,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                           s.vpl, ra2engine::house_draw_palette(s.pal, u.house), 0,
+                                           pq * 5.0 * 3.14159265358979 / 180.0)).first;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, u.fx, u.fy, u.level, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, u.level, cam, W, H, extra_dy);
+         return;
+     }
+     // W7-06-12 / W7-04-27: out of spawns -> the xxxxWO hull [RE-FALLBACK: the
+@@ -3839,15 +3843,15 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                                ra2engine::house_draw_palette(va.vsrc->pal, u.house), 0)).first;
+             spr = &it->second;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, u.fx, u.fy, u.level, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, u.level, cam, W, H, extra_dy);
+     } else
+     ra2engine::draw_voxel_sprite(
+         ren, tc, "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(bi) + fkey,
+-        part_sprite(0, bi), u.fx, u.fy, u.level, cam, W, H, extra_dy);
++        part_sprite(0, bi), pfx, pfy, u.level, cam, W, H, extra_dy);
+     if (va.has_turret) {
+         const int ti = ra2engine::facing_to_index(u.turret_facing, ra2engine::kVehicleFacings);
+         // W3-B TurretOffset: forward along the BODY facing (FLH axes, §6).
+-        double tfx = u.fx, tfy = u.fy;
++        double tfx = pfx, tfy = pfy;
+         if (va.turret_offset != 0) {
+             const double yaw = ra2engine::index_to_yaw(bi, ra2engine::kVehicleFacings);
+             const double f = va.turret_offset / 256.0;
+@@ -3902,9 +3906,9 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+         // 30 px/cell diamond half-height that applies to the F/L ground plane.
+         const int flash_dy =
+             static_cast<int>(std::lround((mx - my) * 15.0 - (va.flh[2] / 256.0) * 36.74));
+-        const int cx = static_cast<int>(std::lround((u.fx - u.fy) * 30.0)) + cam.x + 30;
++        const int cx = static_cast<int>(std::lround((pfx - pfy) * 30.0)) + cam.x + 30;
+         const int cy =
+-            static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - u.level * 15)) + cam.y + 15 -
++            static_cast<int>(std::lround((pfx + pfy) * 15.0 - u.level * 15)) + cam.y + 15 -
+             extra_dy;   // CB-2: track the raised hull when airborne
+         SDL_Rect fr{cx + flash_dx - 3, cy + flash_dy - 3, 6, 6};
+         if (!(fr.x + fr.w <= 0 || fr.y + fr.h <= 0 || fr.x >= W || fr.y >= H)) {
+@@ -4085,7 +4089,8 @@ void draw_p5_chevrons(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2e
+                                                    : (u.veteran_rank > 0 ? 1 : 0);
+         if (rank <= 0) continue;
+         const int frame = rank >= 2 ? 15 : 14;
+-        const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;   // W5-B sub-cell
++        double ufx, ufy;
++        ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
+         // W7-12-20 [RE: 0x709E10 offsets from the same draw point as the
+         // health bar]: lifted by the flight altitude and a bridge deck.
+         const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+@@ -4315,6 +4320,9 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+     // image is logged and skipped (not thrown) so one bad unit can't take
+     // down the whole frame.
+     auto draw_one_unit = [&](int idx) {
++        // A lifted copy is not an element of the unit array, so the blend
++        // looks the live unit up by index.
++        ra2engine::PresentIndex present_ix(idx);
+         // W5-PRES R-100: a unit on a high-bridge deck draws BridgeHeight up.
+         std::optional<ra2engine::Unit> lifted;
+         const ra2engine::Unit* up = &us[idx];
+@@ -4514,7 +4522,11 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+     if (ba && g_map_dressing) {
+         std::vector<DrawItem> air;
+         for (int i : uorder)
+-            if (pres_airborne(us[i])) air.push_back({us[i].fx + us[i].fy, 1, i});
++            if (pres_airborne(us[i])) {
++                double fx = us[i].fx, fy = us[i].fy;
++                ra2engine::present_cell(us[i], fx, fy);
++                air.push_back({fx + fy, 1, i});
++            }
+         std::stable_sort(air.begin(), air.end(), [](const DrawItem& x, const DrawItem& y) { return x.key < y.key; });
+         for (const DrawItem& d : air) draw_one_unit(d.idx);
+     }
+@@ -4559,8 +4571,14 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+         if (it == ua.shps.end()) continue;
+         ra2engine::Unit tmp = u;
+         const double lift = ra2engine::altitude_to_screen_dy(u.an.para_alt) / 30.0;
+-        tmp.fx -= lift;
+-        tmp.fy -= lift;
++        double gx, gy;
++        {
++            ra2engine::PresentIndex hold(i);
++            ra2engine::present_ground(u, gx, gy);
++        }
++        tmp.fx = gx - lift;
++        tmp.fy = gy - lift;
++        tmp.sub_x = tmp.sub_y = 0;   // gx/gy already include the sub-cell
+         ra2engine::draw_unit(ren, tc, tmp, it->second, ua.pal, cam, W, H);
+         pres_draw_parachute(ren, tc, i, tmp, cam, W, H);   // W5-PRES R-122
+     }
+@@ -4611,7 +4629,8 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+             const bool hovered = g_hover_unit == idx;   // W6-05-07
+             if (usel(u) || hovered) {
+                 const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+-                const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;   // W5-B
++                double ufx, ufy;
++                ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
+                 const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+                 const int lv = u.level + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
+                 const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
+@@ -7057,6 +7076,7 @@ public:
+         }
+         campaign_audio_pump();   // W2-CA-12: trigger speech/sound/music
+         campaign_visuals_pump();   // W3-FX: trigger anims/camera/radar/particles/flashes
++        motion_.capture(world_.units());   // pose before this tick, for the draw blend
+         world_.step(dt);   // L2: every human house's production runs inside the step
+         pres_.note_launches(world_, world_.take_econ_launches());   // W7-12-01: EVA_UnitReady per launch (drained per tick)
+         r210_track_steps();   // R-210 --play probes (scene-side, never saved)
+@@ -7128,6 +7148,7 @@ public:
+             credits_shown_ = static_cast<double>(cur + (d > 0 ? step : -step));
+             pres_.credit_tick(d > 0);   // W5-E CreditTicks up / down (FUN_004A2280)
+         }
++        motion_.alpha = ra2engine::present_alpha(logic_acc_, kLogicDt);
+         follow_tick();   // W5-E Follow hotkey
+         input_.touch_tick(dt);   // W6-01-05: a deferred touch deploy
+         // Consume input actions ONCE per frame.
+@@ -7369,8 +7390,11 @@ public:
+         // W6-05-07: the hovered unit's health pips (a real mouse over the
+         // tactical view; a touch has no hover).
+         g_hover_unit = (mouse_present_ && mx_ < playfield_w_ && !input_locked_) ? input_.pick_unit_at(mx_, my_) : -1;
+-        render_world(ren, tc, a_, ua_, world_, cam_, kWinW, kWinH, &input_,
+-                     &vlist_, ba_.ok ? &ba_ : nullptr, ore_art_.any ? &ore_art_ : nullptr);
++        {
++            ra2engine::PresentScope present_scope(motion_, world_.units());
++            render_world(ren, tc, a_, ua_, world_, cam_, kWinW, kWinH, &input_,
++                         &vlist_, ba_.ok ? &ba_ : nullptr, ore_art_.any ? &ore_art_ : nullptr);
++        }
+         hidden_.rules = &rules_ini_;   // W5-E2 R-146: the Behind= marker over occluded objects
+         hidden_.draw(ren, tc, world_, ba_, cam_, playfield_w_, kWinH, g_user_settings && g_user_settings->show_hidden);
+         if (!(sidebar_up_ && lay_.contains(mx_, my_))) {
+diff --git a/engine/pres_layers.inc b/engine/pres_layers.inc
+index 016b7dc..9abd21f 100644
+--- a/engine/pres_layers.inc
++++ b/engine/pres_layers.inc
+@@ -1,3 +1,5 @@
++#include "present_motion.hpp"
++
+ // pres_layers.inc -- W5-PRES R-100 / R-101: render layers for the real game.
+ // Included by main.cpp after pres_map.inc (needs g_map_dressing).
+ //
+@@ -37,7 +39,9 @@ inline bool pres_on_high_deck(const ra2engine::World& w, const ra2engine::Unit&
+ 
+ // The unit's ground-layer sort key.
+ inline double pres_unit_key(const ra2engine::World& w, const ra2engine::Unit& u) {
+-    return u.fx + u.fy + (pres_on_high_deck(w, u) ? kPresOnDeckBias : 0.0);
++    double fx = u.fx, fy = u.fy;
++    ra2engine::present_cell(u, fx, fy);   // draw-only; unbound leaves fx/fy
++    return fx + fy + (pres_on_high_deck(w, u) ? kPresOnDeckBias : 0.0);
+ }
+ 
+ // Levels the draw position is raised by (bridge deck).
+diff --git a/engine/present_motion.hpp b/engine/present_motion.hpp
+new file mode 100644
+index 0000000..c18e83a
+--- /dev/null
++++ b/engine/present_motion.hpp
+@@ -0,0 +1,126 @@
++#pragma once
++
++// Draw-only blend between the previous logic tick and the current one.
++// The simulation stays at 15 Hz (kLogicDt). A display faster than that was
++// holding the post-tick pose and then jumping. Nothing here is saved or
++// checksummed; step_units is not touched.
++
++#include "world.hpp"
++
++#include <vector>
++
++namespace ra2engine {
++
++// Fraction of the way from the previous tick to the current one.
++// logic_acc is the time already accumulated toward the next tick.
++inline double present_alpha(double logic_acc, double logic_dt) {
++    if (!(logic_dt > 0.0)) return 1.0;
++    const double a = logic_acc / logic_dt;
++    if (!(a > 0.0)) return 0.0;
++    if (a >= 1.0) return 1.0;
++    return a;
++}
++
++// Previous poses, captured at the start of the last logic tick that ran.
++struct PresentMotion {
++    struct Sample {
++        double fx = 0, fy = 0, sub_x = 0, sub_y = 0;
++    };
++    std::vector<Sample> prev;
++    double alpha = 1.0;
++    bool armed = false;
++
++    void capture(const std::vector<Unit>& units) {
++        prev.resize(units.size());
++        for (std::size_t i = 0; i < units.size(); ++i)
++            prev[i] = {units[i].fx, units[i].fy, units[i].sub_x, units[i].sub_y};
++        armed = true;
++    }
++
++    // Writes the pose to draw. A step longer than 2 cells is a teleport
++    // (chronosphere, spawn, cargo): show the new pose, do not slide.
++    void blend(const Unit& u, int index, double& fx, double& fy, double& sx, double& sy) const {
++        fx = u.fx;
++        fy = u.fy;
++        sx = u.sub_x;
++        sy = u.sub_y;
++        if (!armed || !(alpha < 1.0) || index < 0 ||
++            static_cast<std::size_t>(index) >= prev.size())
++            return;
++        const Sample& p = prev[static_cast<std::size_t>(index)];
++        const double dx = u.fx - p.fx, dy = u.fy - p.fy;
++        if (dx * dx + dy * dy > 4.0) return;
++        fx = p.fx + dx * alpha;
++        fy = p.fy + dy * alpha;
++        sx = p.sub_x + (u.sub_x - p.sub_x) * alpha;
++        sy = p.sub_y + (u.sub_y - p.sub_y) * alpha;
++    }
++};
++
++struct PresentBind {
++    const PresentMotion* motion = nullptr;
++    const Unit* units = nullptr;
++    int n = 0;
++};
++
++inline PresentBind& present_bind_slot() {
++    static PresentBind b;
++    return b;
++}
++
++inline int& present_draw_index() {
++    static int i = -1;
++    return i;
++}
++
++// Active for one world draw. The unit vector must not grow while it is up.
++struct PresentScope {
++    explicit PresentScope(const PresentMotion& m, const std::vector<Unit>& units) {
++        PresentBind& s = present_bind_slot();
++        s.motion = &m;
++        s.units = units.data();
++        s.n = static_cast<int>(units.size());
++    }
++    ~PresentScope() { present_bind_slot() = {}; }
++    PresentScope(const PresentScope&) = delete;
++    PresentScope& operator=(const PresentScope&) = delete;
++};
++
++// Forces the draw index for a copied Unit (a bridge lift) that is not itself
++// an element of the bound array. Restores the previous index.
++struct PresentIndex {
++    int prev;
++    explicit PresentIndex(int i) : prev(present_draw_index()) { present_draw_index() = i; }
++    ~PresentIndex() { present_draw_index() = prev; }
++    PresentIndex(const PresentIndex&) = delete;
++    PresentIndex& operator=(const PresentIndex&) = delete;
++};
++
++// Ground point in cells, including the infantry sub-cell. With no bind this
++// is fx + sub/256, the same value the draw path used before.
++inline void present_ground(const Unit& u, double& gx, double& gy) {
++    const PresentBind& b = present_bind_slot();
++    int index = present_draw_index();
++    const Unit* src = &u;
++    if (index < 0 && b.units) {
++        const int i = static_cast<int>(&u - b.units);
++        if (i >= 0 && i < b.n && &b.units[i] == &u) index = i;
++    }
++    if (b.units && index >= 0 && index < b.n) src = &b.units[index];
++    double fx = src->fx, fy = src->fy, sx = src->sub_x, sy = src->sub_y;
++    if (b.motion && index >= 0) b.motion->blend(*src, index, fx, fy, sx, sy);
++    gx = fx + sx / 256.0;
++    gy = fy + sy / 256.0;
++}
++
++// Cell fx/fy for depth sort. Unbound, leaves fx/fy alone (no sub-cell term).
++inline void present_cell(const Unit& u, double& fx, double& fy) {
++    const PresentBind& b = present_bind_slot();
++    if (!b.motion || !b.units) return;
++    const int i = static_cast<int>(&u - b.units);
++    if (i < 0 || i >= b.n || &b.units[i] != &u) return;
++    double sx, sy;
++    b.motion->blend(u, i, fx, fy, sx, sy);
++}
++
++}  // namespace ra2engine
+diff --git a/tests/test_movement.cpp b/tests/test_movement.cpp
+index e6b3f11..39df7d7 100644
+--- a/tests/test_movement.cpp
++++ b/tests/test_movement.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "occupancy.hpp"
+ #include "pathfind.hpp"
++#include "present_motion.hpp"
+ #include "world.hpp"
+ 
+ using ra2engine::Cellxy;
+@@ -202,3 +203,49 @@ TEST_CASE("W4-MC-01: Amphibious* MovementZones and SpeedType=Amphibious are amph
+     CHECK_FALSE(is_amphibious_zone("WaterBeach", "Float"));
+     CHECK_FALSE(is_amphibious_zone("", "Hover"));                      // hover alone is not enough
+ }
++
++// Display blend between 15 Hz logic ticks. Does not write the unit.
++TEST_CASE("present motion: the drawn pose lerps, and a long step snaps") {
++    using ra2engine::PresentMotion;
++    using ra2engine::present_alpha;
++    CHECK(present_alpha(0.0, 1.0 / 15.0) == doctest::Approx(0.0));
++    CHECK(present_alpha(1.0 / 60.0, 1.0 / 15.0) == doctest::Approx(0.25));
++    CHECK(present_alpha(1.0, 1.0 / 15.0) == doctest::Approx(1.0));
++
++    Unit u;
++    u.fx = 1.0;
++    u.fy = 2.0;
++    u.sub_x = 0.0;
++    u.sub_y = 0.0;
++    std::vector<Unit> us{u};
++    PresentMotion m;
++    m.capture(us);   // previous pose
++    us[0].fx = 1.4;
++    us[0].sub_x = 128.0;
++    const double sim_fx = us[0].fx;
++
++    double fx, fy, sx, sy;
++    m.alpha = 0.0;
++    m.blend(us[0], 0, fx, fy, sx, sy);
++    CHECK(fx == doctest::Approx(1.0));
++    CHECK(fy == doctest::Approx(2.0));
++    CHECK(sx == doctest::Approx(0.0));
++
++    m.alpha = 0.5;
++    m.blend(us[0], 0, fx, fy, sx, sy);
++    CHECK(fx == doctest::Approx(1.2));
++    CHECK(fy == doctest::Approx(2.0));
++    CHECK(sx == doctest::Approx(64.0));
++    CHECK(us[0].fx == doctest::Approx(sim_fx));   // the sim pose is untouched
++
++    m.alpha = 1.0;
++    m.blend(us[0], 0, fx, fy, sx, sy);
++    CHECK(fx == doctest::Approx(1.4));
++    CHECK(sx == doctest::Approx(128.0));
++
++    us[0].fx = 5.0;   // three cells away: a teleport, not a walk
++    m.alpha = 0.5;
++    m.blend(us[0], 0, fx, fy, sx, sy);
++    CHECK(fx == doctest::Approx(5.0));
++    CHECK(sx == doctest::Approx(128.0));
++}
