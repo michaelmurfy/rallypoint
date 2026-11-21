@@ -64,6 +64,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0011-yuri-lobby-ai-and-economy` | `YuriCountry` as lobby index 9, ThirdSide country/AI keys, Yuri AI roster and catalog. |
 | `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
 | `0013-slave-miner-economy` | Yuri Slave Miner: `Enslaves=` / `SlavesNumber` / regen+reload rates; deployed YAREFN spawns SLAV gatherers that deliver ore into house credits. |
+| `0015-gattling-weapon-stages` | `IsGattling` RateUp/RateDown timer, Stage1..N / EliteStage, Weapon1..N (AG odd / AA even); YTNK and GTGCAN. |
 
 ## Factions (Country=)
 
@@ -94,7 +95,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
 - **Mind control**: weapons and warheads resolve; capture polling is campaign-only (`w_mind_control`), not skirmish.
-- **Gattling** (`IsGattling` / YTNK): unit loads and fires its primary; rate-up weapon stages are not implemented.
+- **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Many Yuri structure cameos still miss art (`cameomd`) until the search chain finds them.
 
 ## Building
@@ -242,8 +243,9 @@ long fight, and any UI/Maps-page flow.
 ## Not verified
 
 - A Linux Xvfb `--launch` skirmish as `Country=9` / `YuriCountry` (map `xmp31s2.map`, real YR data) loads the
-  Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner gather (deployed YAREFN), skirmish mind control and Gattling
-  stages were not proven in play. Network play end-to-end with two real engines is covered optionally by the
-  harness above (`--real`); the V2 tunnel path is also covered by a unit test (`mp: lobby through a CnCNet V2
+  Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner gather (deployed YAREFN) and skirmish mind
+  control were not proven in play. Gattling stage math is covered by `test_gattling` (synthetic rules); a live
+  YTNK spool-up in Xvfb is still optional. Network play end-to-end with two real engines is covered optionally by
+  the harness above (`--real`); the V2 tunnel path is also covered by a unit test (`mp: lobby through a CnCNet V2
   tunnel`) against a minimal forwarder.
 - macOS is built only by CI.
