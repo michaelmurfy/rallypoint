@@ -77,6 +77,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0024-namisil-superanim-hold` | SuperWeapon buildings (Nuke Silo, Chronosphere, Iron Curtain, Weather Controller): one-shot SuperAnim open/close, then hold the last frame instead of looping SuperAnimTwo/Four (doors no longer cycle while ready/charging); skip grand-opening Active* loops when `SuperAnim` is set. Presentation only. |
 | `0025-hidpi-bitmap-font-scaling` | Nearest-neighbour present + integer shell-font glyph blits; macOS `SDL_WINDOW_ALLOW_HIGHDPI` (view only). |
 | `0026-crisp-credits-macos-cursor` | Credits tally: integer-scaled 12metfnt glyphs with nearest sampling on HiDPI; nearest logical-to-output upscale; macOS focus regained re-hides the OS cursor when the game draws its own. |
+| `0027-ramp-slope-level` | Ground units follow TMP ramps: the FootClass height gate (`FUN_004D9C60`) already allows a one-level step when the lower cell's SlopeIndex is set; `step_units` now adopts the cell's level as the unit walks, and the sprite blends the two cells of the step. |
 
 ## Factions (Country=)
 
