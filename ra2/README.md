@@ -56,7 +56,9 @@ the original game would differ); every one of our builds simulates identically, 
 | `0003-linux-and-macos-link-sdl-statically` | Linux and macOS link SDL statically: one executable, no rpath. Windows keeps `SDL2.dll`. |
 | `0004-launcher-interface` | `--launch`, window size/fullscreen/title, map files by path, the CnCNet V2 tunnel. |
 | `0005-crt-lround-check-only-with-ucrt` | One test compares `om::lround` with the Windows C runtime's; it now runs only against the UCRT (our MinGW build links msvcrt, which differs out of range; the sim never calls it). |
-| `0005a-macos-interfaces-with-getifaddrs` | macOS lists interfaces with `getifaddrs` (no `ifr_netmask`). |
+| `0005a-macos-interfaces-with-getifaddrs` | macOS (and other BSDs): list local interfaces with `getifaddrs` (no `ifr_netmask` on `SIOCGIFCONF` there). |
+| `0005b-extract-maps` | `--extract-maps <outdir>`: no window; writes every multiplayer map (multimd.mix, loose `.map`/`.mpr`/`.yrm`, and `.mmx`/`.yro` MIX packs) as plain INI plus `index.json` (`name`, `source`, exact `Map=` for `--launch`). |
+| `0005c-ra2fixture-linux-paths` | Real-asset tests join install paths with `/` and resolve file names case-insensitively so `RA2_INSTALL_DIR=… ./ra2assets_tests` finds Steam's mixed-case files on Linux. |
 | `0006-tunnel-token-auth` | `[Tunnel] Token=` (32 hex digits): the engine proves itself to the Rallypoint agent before any tunnel traffic (`0xFFFF`/`0xFFFF` + `RPAU` + token); keep-alives wait for the 8-byte answer. |
 | `0010-yuri-side-helpers` | Pure helpers for the third side (`yuri_side.hpp`) and `tests/test_yuri.cpp`. |
 | `0011-yuri-lobby-ai-and-economy` | `YuriCountry` as lobby index 9, ThirdSide country/AI keys, Yuri AI roster and catalog. |
@@ -122,6 +124,7 @@ Command line (any order):
 | `--fullscreen` / `--windowed` | Desktop fullscreen at the display's size, or a window. |
 | `--title <text>` or `RA2_WINDOW_TITLE` | Window title. |
 | `--no-audio` | Silent. |
+| `--extract-maps <dir>` | Write every multiplayer map as plain INI under `<dir>` and an `index.json` (display name, source, `Map=`). No window; the process exits when done. Used by the launcher to list official and `.mmx` maps. |
 
 The log goes to stderr (`ra2game.exe`: `<pref dir>/ra2engine/RA2/ra2engine.log`). Player settings (volumes,
 scroll speed) still come from the engine's own `RA2.INI`.

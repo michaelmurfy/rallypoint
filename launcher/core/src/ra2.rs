@@ -15,7 +15,17 @@ pub struct Ra2Install {
 
 /// A file in `dir` whatever the case of its name (Steam on Linux keeps `RA2MD.MIX` as it was shipped).
 fn has_file(dir: &Path, name: &str) -> bool {
-    std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| e.path().is_file() && e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+    resolve_file(dir, name).is_some()
+}
+
+/// The path of `name` in `dir` whatever the case of its spelling, or `None` if it is missing.
+pub fn resolve_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_file() && p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name)))
+}
+
+/// `<app data>/GeneralsZH/ra2/maps-cache`: plain INI maps written by the engine's `--extract-maps`.
+pub fn maps_cache_dir(app_data: &Path) -> PathBuf {
+    app_data.join("ra2").join("maps-cache")
 }
 
 /// A folder with all of `DATA_FILES`.

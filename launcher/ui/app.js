@@ -2293,7 +2293,7 @@ function ra2Skirmish(onChange) {
     : !maps.length ? "Add a map first." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
     : !rows.some((r) => r.kind === "ai") ? "Give the computer at least one place." : "";
   const empty = h("div", { class: "listempty" }, h("strong", {}, "No skirmish maps yet"),
-    h("span", { class: "muted small" }, "Red Alert 2 maps in your game folder or in Rallypoint's map folder show up here."),
+    h("span", { class: "muted small" }, "Official maps from your game install show up here once the game folder is set."),
     h("button", { class: "btn small", onclick: () => go("maps") }, "Go to Maps"));
   const body = h("div", { class: "ra2setup" },
     h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts),
@@ -2355,7 +2355,7 @@ function ra2MapsPage() {
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
     empty.hidden = !!v.length; list.hidden = !v.length;
     fill(empty, maps.length ? [h("strong", {}, "No maps match"), h("button", { class: "btn small", onclick: () => { filter = "all"; draw(); } }, "Show all")]
-      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Put Red Alert 2 maps (.map, .mpr, .yrm) in Rallypoint's map folder, or in the game folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
+      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Official maps and .mmx packs come from your game folder; drop extra .map/.mpr/.yrm files into Rallypoint's map folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
     preview.hidden = !sel;
@@ -2404,7 +2404,7 @@ function ra2MapsPage() {
       h("div", { class: "ra2maps" },
         h("div", { class: "listbox" }, h("div", { class: "listhead" }, result), list, empty),
         preview),
-      h("p", { class: "muted small" }, "Maps are read from your game folder and from Rallypoint's own map folder. Drop new maps into the map folder, then press Look again.")));
+      h("p", { class: "muted small" }, "Official multiplayer maps and .mmx/.yro packs are read from your game folder; extras go in Rallypoint's map folder. Press Look again after adding files.")));
   return { el };
 }
 

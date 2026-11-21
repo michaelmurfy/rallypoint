@@ -13,6 +13,9 @@
 use crate::mapview::{base64, Image, MapInfo, MapView, Start};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 /// Map files larger than this are not read. Real ones are a few hundred kB to a few MB.
 const MAX_FILE: u64 = 16 << 20;
@@ -63,6 +66,8 @@ pub struct Ra2Entry {
     pub players: u8,
     pub game: Game,
     pub size_kb: u64,
+    /// Exact `Map=` value for the engine (`xmp01t4.map`, or a path to a plain INI).
+    pub map: String,
 }
 
 /// The sections asked for, by lower-case name, each as (lower-case key, value) in file order. Comments (`;`) are cut.
@@ -255,18 +260,118 @@ struct Known {
     game: Game,
 }
 
-/// The maps directly in each of `dirs` (the game folder, where RA2 and YR keep user maps, and the launcher's own
-/// folder). Name, players and game are kept in `cache` (JSON) against each file's size and change time, so only new or
-/// changed files are read. Files that are not maps are left out.
+fn mtime_secs(meta: &std::fs::Metadata) -> u64 {
+    meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+}
+
+/// A fingerprint of the game archives that `--extract-maps` reads: their names, sizes and change times.
+pub fn archive_stamp(game_dir: &Path) -> String {
+    let mut lines = Vec::new();
+    for name in ["multimd.mix", "langmd.mix"] {
+        if let Some(p) = std::fs::read_dir(game_dir).ok().into_iter().flatten().flatten().map(|e| e.path())
+            .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name)))
+        {
+            if let Ok(m) = std::fs::metadata(&p) {
+                lines.push(format!("{}\t{}\t{}", p.file_name().unwrap().to_string_lossy(), m.len(), mtime_secs(&m)));
+            }
+        }
+    }
+    let mut packs: Vec<_> = std::fs::read_dir(game_dir).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("mmx") || e.eq_ignore_ascii_case("yro")))
+        .collect();
+    packs.sort();
+    for p in packs {
+        if let Ok(m) = std::fs::metadata(&p) {
+            lines.push(format!("{}\t{}\t{}", p.file_name().unwrap().to_string_lossy(), m.len(), mtime_secs(&m)));
+        }
+    }
+    lines.join("\n")
+}
+
+#[derive(serde::Deserialize)]
+struct IndexRow {
+    file: String,
+    name: String,
+    #[allow(dead_code)]
+    source: String,
+    map: String,
+    players: u8,
+}
+
+/// Run the bundled engine's `--extract-maps` into `out` when the archive stamp changed (or the index is missing).
+pub fn refresh_extract(engine: &Path, game_dir: &Path, out: &Path) -> Result<(), String> {
+    let stamp = archive_stamp(game_dir);
+    let stamp_path = out.join("stamp.txt");
+    let index = out.join("index.json");
+    let old = std::fs::read_to_string(&stamp_path).unwrap_or_default();
+    if old == stamp && index.is_file() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let status = Command::new(engine)
+        .arg("--data").arg(game_dir)
+        .arg("--extract-maps").arg(out)
+        .status()
+        .map_err(|e| format!("could not run {}: {e}", engine.display()))?;
+    if !status.success() {
+        return Err(format!("--extract-maps failed ({status})"));
+    }
+    std::fs::write(&stamp_path, stamp).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Maps written by `--extract-maps` (`index.json` + plain INI files under `out`).
+pub fn list_extracted(out: &Path) -> Vec<Ra2Entry> {
+    let text = match std::fs::read_to_string(out.join("index.json")) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let rows: Vec<IndexRow> = match serde_json::from_str(&text) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out_list = Vec::new();
+    for r in rows {
+        if r.players < 2 {
+            continue;
+        }
+        let path = out.join(&r.file);
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let game = read_file(&path).ok().and_then(|b| read(&b, &r.file, false).ok()).map(|m| m.game).unwrap_or(Game::Yr);
+        out_list.push(Ra2Entry {
+            path,
+            name: r.name,
+            players: r.players,
+            game,
+            size_kb: size / 1024,
+            map: r.map,
+        });
+    }
+    out_list
+}
+
+/// Loose plain map files in each of `dirs`, plus (when `extract` is set) the engine's extracted catalog. Name, players
+/// and game for loose files are kept in `cache` (JSON). Extracted maps win a name clash with an official multimd entry
+/// only when the loose folder has the same file name; loose maps always win over the extract cache.
 pub fn list(dirs: &[PathBuf], cache: &Path) -> Vec<Ra2Entry> {
+    list_all(dirs, cache, None)
+}
+
+/// Like `list`, then merges `list_extracted(extract)` (skipping names already present from loose dirs).
+pub fn list_all(dirs: &[PathBuf], cache: &Path, extract: Option<&Path>) -> Vec<Ra2Entry> {
     let old: BTreeMap<String, Known> = std::fs::read_to_string(cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let mut new = BTreeMap::new();
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for dir in dirs {
         for path in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
             let is_map = path.extension().is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)));
+            // Plain INI only: .mmx/.yro packs are opened by --extract-maps (.yro can be either).
             let Some(meta) = is_map.then(|| std::fs::metadata(&path).ok()).flatten().filter(|m| m.is_file()) else { continue };
-            let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            if b_looks_like_mix(&path) {
+                continue;
+            }
+            let mtime = mtime_secs(&meta);
             let key = path.to_string_lossy().into_owned();
             let known = match old.get(&key) {
                 Some(k) if k.size == meta.len() && k.mtime == mtime => Some(k.clone()),
@@ -279,7 +384,10 @@ pub fn list(dirs: &[PathBuf], cache: &Path) -> Vec<Ra2Entry> {
                 }),
             };
             if let Some(k) = known {
-                out.push(Ra2Entry { path: path.clone(), name: k.name.clone(), players: k.players, game: k.game, size_kb: k.size / 1024 });
+                let file = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+                seen.insert(file);
+                let map = path.to_string_lossy().replace('\\', "/");
+                out.push(Ra2Entry { path: path.clone(), name: k.name.clone(), players: k.players, game: k.game, size_kb: k.size / 1024, map });
                 new.insert(key, k);
             }
         }
@@ -290,8 +398,26 @@ pub fn list(dirs: &[PathBuf], cache: &Path) -> Vec<Ra2Entry> {
         }
         let _ = serde_json::to_vec(&new).map(|b| std::fs::write(cache, b));
     }
+    if let Some(ex) = extract {
+        for e in list_extracted(ex) {
+            let file = e.path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+            if seen.insert(file) {
+                out.push(e);
+            }
+        }
+    }
     out.sort_by_key(|e| e.name.to_lowercase());
     out
+}
+
+fn b_looks_like_mix(path: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 4];
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    // New MIX: flags dword with low 16 bits zero. Plain maps start with printable/`[`.
+    head[0] == 0 && head[1] == 0 && head[2] != b'[' && head[3] != b'['
 }
 
 #[cfg(test)]
@@ -393,6 +519,7 @@ mod tests {
         let dirs = [t.join("game"), t.join("mine")];
         let l = list(&dirs, &cache);
         assert_eq!(l.iter().map(|e| (e.name.as_str(), e.players, e.game)).collect::<Vec<_>>(), [("Moon", 2, Game::Yr), ("Two Rivers", 2, Game::Ra2)]);
+        assert!(l.iter().any(|e| e.map.ends_with("rivers.mpr")), "loose Map= is the file path: {:?}", l[1].map);
         assert!(cache.is_file());
         // answered from the cache while size and time are unchanged, even if the file could no longer be read
         let before = std::fs::metadata(t.join("mine").join("moon.yrm")).unwrap().modified().unwrap();
@@ -400,6 +527,54 @@ mod tests {
         std::fs::write(t.join("mine").join("moon.yrm"), same).unwrap();
         std::fs::File::options().write(true).open(t.join("mine").join("moon.yrm")).unwrap().set_modified(before).unwrap();
         assert_eq!(list(&dirs, &cache).len(), 2);
+
+        // extracted catalog: index.json + a plain INI; list_all merges it
+        let ex = t.join("extract");
+        std::fs::create_dir_all(&ex).unwrap();
+        std::fs::write(ex.join("xmp01t4.map"), sample(false).replace("Two Rivers", "South Pacific")).unwrap();
+        std::fs::write(
+            ex.join("index.json"),
+            r#"[{"file":"xmp01t4.map","name":"South Pacific (2-4)","source":"multimd.mix/xmp01t4.map","map":"xmp01t4.map","players":2}]"#,
+        ).unwrap();
+        let all = list_all(&dirs, &cache, Some(&ex));
+        assert_eq!(all.len(), 3);
+        let off = all.iter().find(|e| e.map == "xmp01t4.map").expect("official Map=");
+        assert_eq!((off.name.as_str(), off.players), ("South Pacific (2-4)", 2));
+        assert_eq!(archive_stamp(&t.join("empty_missing")), "");
+        let _ = std::fs::remove_dir_all(t);
+    }
+
+    #[test]
+    fn parse_every_extracted_map_when_asked() {
+        // `RA2_MAPS_EXTRACT=/tmp/ra2-maps-extract cargo test -p generals-core parse_every_extracted -- --exact`
+        let Some(dir) = std::env::var_os("RA2_MAPS_EXTRACT").map(PathBuf::from) else { return };
+        let rows = list_extracted(&dir);
+        assert!(!rows.is_empty(), "no maps in {}", dir.display());
+        let mut ok = 0usize;
+        let mut err = Vec::new();
+        for e in &rows {
+            match view(&e.path) {
+                Ok(v) => {
+                    assert!(v.map.info.as_ref().map(|i| i.starts.len()).unwrap_or(0) as u8 >= e.players.min(2) || e.players >= 2);
+                    ok += 1;
+                }
+                Err(m) => err.push(format!("{}: {m}", e.path.display())),
+            }
+        }
+        assert!(err.is_empty(), "{ok} ok, {} failed: {}", err.len(), err.join("; "));
+    }
+
+    #[test]
+    fn mix_pack_files_are_not_listed_as_loose_maps() {
+        let t = std::env::temp_dir().join(format!("ra2maps-mix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(&t).unwrap();
+        // New-format MIX header (flags=0): must not be parsed as INI.
+        std::fs::write(t.join("Arena.yro"), [0u8, 0, 3, 0, 1, 2, 3, 4]).unwrap();
+        std::fs::write(t.join("plain.map"), sample(false)).unwrap();
+        let l = list(&[t.clone()], &t.join("c.json"));
+        assert_eq!(l.len(), 1);
+        assert!(l[0].path.ends_with("plain.map"));
         let _ = std::fs::remove_dir_all(t);
     }
 }
