@@ -79,6 +79,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0026-crisp-credits-macos-cursor` | Credits tally: integer-scaled 12metfnt glyphs with nearest sampling on HiDPI; nearest logical-to-output upscale; macOS focus regained re-hides the OS cursor when the game draws its own. |
 | `0027-desktop-canvas-follows-window` | Desktop match canvas height follows the window (720..1440) so 1080p/1440p shows more map. Menus stay 1280x720. Android and `--play set canvas` are unchanged. |
 | `0028-cleg-chrono-beam` | Chrono Legionnaire: Temporal weapons use ChronoBeamColor RadBeam (not EBolt); beam held on the victim while erasing. |
+| `0034-ramp-slope-level` | Ground units follow TMP ramps: the FootClass height gate (`FUN_004D9C60`) already allows a one-level step when the lower cell's SlopeIndex is set; `step_units` now adopts the cell's level as the unit walks, and the sprite blends the two cells of the step. |
 
 ## Factions (Country=)
 
