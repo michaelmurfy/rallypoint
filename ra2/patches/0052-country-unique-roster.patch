@@ -1,0 +1,203 @@
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3169,8 +3169,12 @@
+     cfg.catalog.barracks = pick("BuildBarracks");
+     cfg.catalog.war_factory = pick("BuildWeapons");
+     cfg.catalog.radar = pick("BuildRadar");
++    // <Side>BaseDefenses, country-filtered (Owner / RequiredHouses /
++    // ForbiddenHouses). Stock lists have no country gates; a modded entry
++    // must not leak to the wrong house.
+     for (const std::string& d : aiside::csv_tokens(rules.section_string(
+              "AI", std::string(ra2engine::yuri::key_prefix(side)) + "BaseDefenses", ""))) {
++        if (!aiside::owned_by(rules, d, side, country)) continue;
+         const int t = ok_index(d.c_str());
+         if (t >= 0) cfg.catalog.defenses.push_back(t);
+     }
+@@ -3187,6 +3191,28 @@
+         if (t >= 0 && t != cfg.catalog.tech && t != cfg.catalog.radar)   // NARADR: SpyPlane
+             cfg.catalog.superweapons.push_back(t);
+     }
++    // T2.2: AIBuildThis=yes Combat buildings the BaseDefenses list omits
++    // (French GTGCAN; also GAGAP / NACLON when stock lists skip them).
++    // SuperWeapon ones stay on `superweapons` above.
++    auto in_catalog = [&](int t) {
++        if (t < 0) return true;
++        if (t == cfg.catalog.tech || t == cfg.catalog.radar || t == cfg.catalog.wall) return true;
++        for (int x : cfg.catalog.defenses)
++            if (x == t) return true;
++        for (int x : cfg.catalog.superweapons)
++            if (x == t) return true;
++        return false;
++    };
++    for (const ra2engine::BuildingTypeDef& d : ba.roster) {
++        if (!rules.section_flag(d.id, "AIBuildThis", false)) continue;
++        if (!rules.section_string(d.id, "SuperWeapon", "").empty()) continue;
++        std::string cat = rules.section_string(d.id, "BuildCat", "");
++        for (char& c : cat) c = (char)std::toupper((unsigned char)c);
++        if (cat != "COMBAT") continue;
++        if (!aiside::owned_by(rules, d.id, side, country)) continue;
++        const int t = ok_index(d.id.c_str());
++        if (!in_catalog(t)) cfg.catalog.defenses.push_back(t);
++    }
+     // [AI] knobs from the real rulesmd [RE: ai-base.md §2] (constants are the
+     // committed pins; the file read keeps us honest if a mod changes them).
+     cfg.ai.power_surplus =
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -34,6 +34,9 @@
+         {"SNIPE", false, "GAPILE"},{"TANY", false, "GAPILE"}, {"CLEG", false, "GAPILE"},
+         {"GHOST", false, "GAPILE"},{"MTNK", true, "GAWEAP"},  {"FV", true, "GAWEAP"},
+         {"SREF", true, "GAWEAP"},  {"MGTK", true, "GAWEAP"},  {"TNKD", true, "GAWEAP"},
++        // T2.2: Yuri dogs (RequiredHouses=YuriCountry). Not yuri::is_yuri_type
++        // (Owner lists every side); filtered per house by owned_by.
++        {"YADOG", false, "YABRCK"}, {"YDOG", false, "YABRCK"},
+         // W2-AN-16: the navies and jumpjets the stock aimd TaskForces name
+         // (ships start only once a Naval Yard stands: Prerequisite=NAYARD/GAYARD)
+         {"SUB", true, "NAYARD"},   {"DRED", true, "NAYARD"},  {"HYD", true, "NAYARD"},
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -55,18 +55,10 @@
+     return !v.empty() && (v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T' || v[0] == '1');
+ }
+ 
+-// [RE: roster.md §1 "Side is from Owner="; RE-FALLBACK RE-E8: the
+-// HouseTypeClass Owner bitmask + RequiredHouses/ForbiddenHouses binary checks
+-// were not hunted -- the semantics below are the documented rules meaning]
+-// May `country` build rules type `id`? Owner= must list the country (an
+-// absent Owner= list allows everyone); RequiredHouses=, when present, must
+-// list it; ForbiddenHouses= must not.
++// [RE: roster.md §1 "Side is from Owner="; same Owner / RequiredHouses /
++// ForbiddenHouses rules as country::country_allows (start pools, AI catalogs).
+ bool rp_country_allows(const Rules& rules, const std::string& id, const std::string& country) {
+-    const std::vector<std::string> owner = rp_list(rules, id, "Owner");
+-    if (!owner.empty() && !rp_has(owner, country)) return false;
+-    const std::vector<std::string> req = rp_list(rules, id, "RequiredHouses");
+-    if (!req.empty() && !rp_has(req, country)) return false;
+-    return !rp_has(rp_list(rules, id, "ForbiddenHouses"), country);
++    return ra2engine::country::country_allows(rules, id, country);
+ }
+ 
+ // W2-AN-19: the classic RA2 [SuperWeaponTypes] (rules.ini from ra2.mix/local.mix):
+--- a/engine/realplay_probe.inc
++++ b/engine/realplay_probe.inc
+@@ -308,6 +308,59 @@
+         p.check(tnkd, "row 18 Germans get the Tank Destroyer (RequiredHouses=Germans)");
+     }
+ 
++    // ---- T2.2: country uniques for every stock RequiredHouses country ----
++    {
++        auto has_unit = [](GameScene& g, const char* id) {
++            for (const ra2engine::UnitTypeDef& d : P::ur(g).defs)
++                if (d.id == id) return true;
++            return false;
++        };
++        struct Expect {
++            const char* country;
++            ra2engine::World::Side side;
++            const char* unit;  // nullptr = building-only check below
++        };
++        const Expect kExp[] = {
++            {"Alliance", ra2engine::World::Side::Allied, "BEAG"},
++            {"British", ra2engine::World::Side::Allied, "SNIPE"},
++            {"Germans", ra2engine::World::Side::Allied, "TNKD"},
++            {"Americans", ra2engine::World::Side::Allied, "ORCA"},
++            {"Arabs", ra2engine::World::Side::Soviet, "DESO"},
++            {"Africans", ra2engine::World::Side::Soviet, "DTRUCK"},
++            {"Confederation", ra2engine::World::Side::Soviet, "TERROR"},
++            {"Russians", ra2engine::World::Side::Soviet, "TTNK"},
++            {"YuriCountry", ra2engine::World::Side::Yuri, "YADOG"},
++        };
++        for (const Expect& e : kExp) {
++            ra2engine::SkirmishConfig cfg = P::menu_config(rules);
++            cfg.tech_level = 10;
++            cfg.slots[0].side = e.side;
++            cfg.slots[0].country = e.country;
++            GameScene g(/*no_audio=*/true, cfg);
++            P::deploy_start(g);
++            p.check(has_unit(g, e.unit),
++                    std::string("T2.2 ") + e.country + " roster has " + e.unit);
++            if (std::string(e.country) == "Americans") {
++                for (const char* id : {"GAPOWR", "GAREFN"}) P::add_instant(g, id);
++                P::run(g, 2);
++                p.check(P::has(P::tab_ids(g, 0), "AMRADR") && !P::has(P::tab_ids(g, 0), "GAAIRC"),
++                        "T2.2 Americans get AMRADR, not GAAIRC");
++            }
++        }
++        {
++            ra2engine::SkirmishConfig cfg = P::menu_config(rules);
++            cfg.tech_level = 10;
++            cfg.slots[0].country = "French";
++            GameScene g(/*no_audio=*/true, cfg);
++            P::deploy_start(g);
++            for (const char* id : {"GAPOWR", "GAREFN", "GAPILE", "GAWEAP", "GAAIRC"})
++                P::add_instant(g, id);
++            P::run(g, 2);
++            p.check(P::has(P::tab_ids(g, 1), "GTGCAN"),
++                    "T2.2 French sidebar offers Grand Cannon after radar");
++        }
++    }
++
+     // ---- G-24 Naval Yard on water + ship production; G-30 walls ----
+     {
+         ra2engine::SkirmishConfig cfg = P::menu_config(rules);
+--- a/tests/test_country_bonuses.cpp
++++ b/tests/test_country_bonuses.cpp
+@@ -79,3 +79,58 @@
+     CHECK(c::country_allows(rules, "AMRADR", "Americans"));
+     CHECK_FALSE(c::country_allows(rules, "AMRADR", "French"));
+ }
++
++// T2.2: stock rulesmd RequiredHouses / ForbiddenHouses for all 10 countries
++// (keys copied from a live YR rulesmd.ini; Owner lists truncated to the side).
++TEST_CASE("country: stock rulesmd uniques for all 10 countries") {
++    const char* kAllied = "British,French,Germans,Americans,Alliance";
++    const char* kSoviet = "Russians,Confederation,Africans,Arabs";
++    const char* kDogs =
++        "Russians,Confederation,Africans,Arabs,YuriCountry,British,French,Germans,Americans,Alliance";
++    ra2assets::Ini ini = ra2assets::Ini::parse(std::string() +
++        "[AMRADR]\nOwner=" + kAllied + "\nRequiredHouses=Americans\n"
++        "[GAAIRC]\nOwner=" + kAllied + "\nForbiddenHouses=Americans\n"
++        "[ORCA]\nOwner=British,French,Germans,Americans\nForbiddenHouses=Alliance\n"
++        "[BEAG]\nOwner=" + kAllied + "\nRequiredHouses=Alliance\n"
++        "[GTGCAN]\nOwner=" + kAllied + "\nRequiredHouses=French\n"
++        "[SNIPE]\nOwner=" + kAllied + "\nRequiredHouses=British\n"
++        "[TNKD]\nOwner=" + kAllied + "\nRequiredHouses=Germans\n"
++        "[DESO]\nOwner=" + kSoviet + "\nRequiredHouses=Arabs\n"
++        "[DTRUCK]\nOwner=" + kSoviet + "\nRequiredHouses=Africans\n"
++        "[TERROR]\nOwner=" + kSoviet + "\nRequiredHouses=Confederation\n"
++        "[TTNK]\nOwner=" + kSoviet + "\nRequiredHouses=Russians\n"
++        "[YADOG]\nOwner=" + kDogs + "\nRequiredHouses=YuriCountry\n"
++        "[YDOG]\nOwner=" + kDogs + "\nRequiredHouses=YuriCountry\n"
++        "[ADOG]\nOwner=" + kDogs + "\nForbiddenHouses=Russians,Confederation,Africans,Arabs,YuriCountry\n"
++        "[DOG]\nOwner=" + kDogs +
++        "\nForbiddenHouses=British,French,Germans,Americans,Alliance,YuriCountry\n");
++    auto rules = ra2assets::Rules::load(ini);
++
++    struct Row {
++        const char* id;
++        const char* only;
++    };
++    const Row kMust[] = {
++        {"AMRADR", "Americans"}, {"BEAG", "Alliance"}, {"GTGCAN", "French"},
++        {"SNIPE", "British"},    {"TNKD", "Germans"},  {"DESO", "Arabs"},
++        {"DTRUCK", "Africans"},  {"TERROR", "Confederation"},
++        {"TTNK", "Russians"},    {"YADOG", "YuriCountry"}, {"YDOG", "YuriCountry"},
++    };
++    const char* kAll10[] = {"Americans", "Alliance", "French", "Germans", "British",
++                            "Africans", "Arabs", "Confederation", "Russians", "YuriCountry"};
++    for (const Row& r : kMust) {
++        for (const char* c : kAll10) {
++            const bool want = std::string(c) == r.only;
++            CHECK(c::country_allows(rules, r.id, c) == want);
++        }
++    }
++    CHECK(c::country_allows(rules, "GAAIRC", "French"));
++    CHECK_FALSE(c::country_allows(rules, "GAAIRC", "Americans"));
++    CHECK(c::country_allows(rules, "ORCA", "Americans"));
++    CHECK_FALSE(c::country_allows(rules, "ORCA", "Alliance"));
++    CHECK(c::country_allows(rules, "ADOG", "Americans"));
++    CHECK_FALSE(c::country_allows(rules, "ADOG", "Russians"));
++    CHECK(c::country_allows(rules, "DOG", "Russians"));
++    CHECK_FALSE(c::country_allows(rules, "DOG", "Americans"));
++    CHECK_FALSE(c::country_allows(rules, "DOG", "YuriCountry"));
++}

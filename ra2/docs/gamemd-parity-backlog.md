@@ -171,17 +171,19 @@ when a mod or rules uncomment them. Do not re-implement the loader.
 
 ### T2.2 Country unique units / buildings (RequiredHouses / ForbiddenHouses)
 
-Roster filtering exists (probes cover Americans vs GAAIRC, Germans Tank
-Destroyer, British Sniper, etc.). Full unique kit + AI catalogs for every
-country (French Grand Cannon, Korea Black Eagle, Iraq Desolator, Libya
-Demolition Truck, Cuba Terrorist, …) needs a pass against live `rulesmd`.
+Audited against live YR `rulesmd.ini` (all 10 countries). Sidebar /
+`country_allows` / AI unit filter already honoured Owner/Required/Forbidden.
+Gaps closed in patch `0052-country-unique-roster`: AI `*BaseDefenses`
+country-filtered; `AIBuildThis` Combat buildings (French `GTGCAN`, …) join
+the AI defense catalog; Yuri dogs `YADOG`/`YDOG` on the AI roster; doctest
+matrix + realplay probe for every unique.
 
 | | |
 |---|---|
 | **Files** | `engine/ai_side_catalog.inc`, `engine/realplay_probe.inc`, `engine/realplay_economy.inc`, production sidebar filters |
 | **gamemd** | Owner / RequiredHouses / ForbiddenHouses checks in build/AI catalog build |
 | **Rules** | those keys on unit/building types; `[AI] Build*` lists |
-| **Effort** | M |
+| **Effort** | ~~M~~ done (`0052`) |
 | **OpenRA** | Yes — faction production lists |
 
 ### T2.3 Country superweapons / para drops
