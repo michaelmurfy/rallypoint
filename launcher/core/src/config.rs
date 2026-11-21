@@ -140,17 +140,19 @@ impl Config {
         if own.is_empty() { machine_name() } else { own }
     }
 
-    fn room_key(server: &str, room: &str) -> String {
-        format!("{}|{}", server.trim().to_lowercase(), room.trim().to_lowercase())
+    /// RA2 rooms are separate rooms on the relay, so their saved passwords are kept apart too.
+    fn room_key(&self, server: &str, room: &str) -> String {
+        let prefix = if self.is_ra2() { RA2_ROOM_PREFIX } else { "" };
+        format!("{}|{prefix}{}", server.trim().to_lowercase(), room.trim().to_lowercase())
     }
 
     /// The remembered password for this server and room, if the player saved one.
     pub fn room_password(&self, server: &str, room: &str) -> Option<&str> {
-        self.room_passwords.get(&Self::room_key(server, room)).map(String::as_str).filter(|p| !p.is_empty())
+        self.room_passwords.get(&self.room_key(server, room)).map(String::as_str).filter(|p| !p.is_empty())
     }
 
     pub fn set_room_password(&mut self, server: &str, room: &str, password: &str) {
-        let key = Self::room_key(server, room);
+        let key = self.room_key(server, room);
         if password.is_empty() {
             self.room_passwords.remove(&key);
         } else {
@@ -273,6 +275,9 @@ mod tests {
         assert_eq!(c.room_password("other.example:7777", "lan"), None, "nor between servers");
         c.set_room_password("play.example:7777", "lan", "");
         assert_eq!(c.room_password("play.example:7777", "lan"), None, "an empty password forgets it");
+        c.set_room_password("play.example:7777", "lan", "zh");
+        c.game = "ra2".into();
+        assert_eq!(c.room_password("play.example:7777", "lan"), None, "an RA2 room does not get the Generals room's password");
     }
 
     #[test]
