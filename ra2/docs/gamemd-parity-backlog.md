@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0049`). Docs only: nothing here is implemented by this file.
+`0050`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -28,7 +28,9 @@ reference (never a substitute for gamemd behaviour).
 | T3.4 MagBeam + Floating Disc DISKRAY (presentation) | `0045-magnetron-disc-beam-art` | [#186](https://github.com/michaelmurfy/rallypoint/pull/186) |
 | T3.5 blank `Cameo=` → XXICON / Image+ICON (Yuri sidebar) | `0046-yuri-blank-cameos` | [#187](https://github.com/michaelmurfy/rallypoint/pull/187) |
 | T2.4 undeployed SMIN slaves + killer-house liberation | `0047-slave-miner-undeployed` | [#188](https://github.com/michaelmurfy/rallypoint/pull/188) |
+| T2.4 / T4.3 MC enter cursors + Bio Reactor eject | `0048-mc-cursors-bio-eject` | [#190](https://github.com/michaelmurfy/rallypoint/pull/190) |
 | T2.4 AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `0049-ai-slave-miner-scoot` | [#192](https://github.com/michaelmurfy/rallypoint/pull/192) |
+| T2.3 / T4.2 Spy Plane SW Approach→Overfly fog reveal | `0050-spy-plane-sw` | [#191](https://github.com/michaelmurfy/rallypoint/pull/191) |
 
 ---
 
@@ -184,10 +186,12 @@ Demolition Truck, Cuba Terrorist, …) needs a pass against live `rulesmd`.
 ### T2.3 Country superweapons / para drops
 
 Amer/Ally/Sov/Yuri para-drop infantry counts are wired. Spy Plane SW path
-landed in patch `0050-spy-plane-sw` (grant from NARADR, Approach→Overfly
-camera reveal per `FUN_006CD66F` / `FUN_004155F0` / `FUN_004157C0`). Remaining
-feel polish (rules-driven Camera* keys into `SwParams`, snapshot SFX/art) is
-optional follow-up.
+landed in patch `0050-spy-plane-sw`
+([#191](https://github.com/michaelmurfy/rallypoint/pull/191)) — grant from
+NARADR, Approach→Overfly camera reveal per `FUN_006CD66F` / `FUN_004155F0` /
+`FUN_004157C0`. Remaining feel polish (rules-driven Camera* keys into
+`SwParams`, snapshot SFX/art) is optional follow-up. Do not re-implement the
+Approach→Overfly core.
 
 | | |
 |---|---|
@@ -202,12 +206,14 @@ optional follow-up.
 Already patched for playable YuriCountry + many uniques. **Landed on
 `main`:** undeployed SMIN slaves + killer-house liberation
 (`0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188));
+MC enter cursors + Bio Reactor eject (`0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190));
+AI Slave Miner scoot (`0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192));
 MagBeam + DISKRAY presentation (`0045` / [#186](https://github.com/michaelmurfy/rallypoint/pull/186));
 blank `Cameo=` XXICON / Image+ICON (`0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187)).
-AI Slave Miner scoot is `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192).
 Do not re-land those.
 
-**Still open (Slave Miner):** SMIN↔YAREFN deploy SlaveManager brain-transplant;
+**Still open (Slave Miner / Yuri):** SMIN↔YAREFN deploy SlaveManager
+brain-transplant; Magnetron building toss; Floating Disc Disc-over-base;
 Xvfb Yuri skirmish CI proof.
 
 | Item | Files / keys | Effort | OpenRA |
@@ -216,7 +222,7 @@ Xvfb Yuri skirmish CI proof.
 | Killer-house liberation on miner death | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) | — | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | ~~done~~ `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192) (`FUN_0066D530` / `FUN_006AFD60` / `FUN_006B1020` / `FUN_004FEACA`) | — | Yes |
 | SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
-| MC enter cursors / Bio Reactor eject | ~~done~~ patch `0048` (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
+| MC enter cursors / Bio Reactor eject | ~~done~~ `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190) (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
 | Blank cameos (YACOMD, YAPPPT, YAROCK, …) | ~~done~~ `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187) (XXICON / AltCameo / Image+ICON); AltCameo *draw* swap still T3.5 | — | No |
@@ -347,8 +353,10 @@ naval attack teams vs water maps need a dedicated pass.
 ### T4.2 Aircraft recruit / airport-bound / Spy Plane feel
 
 AirportBound crash-if-no-dock, spawner (Carrier/Dreadnought/V3), paradrop
-planes exist. Spy Plane SW fog-reveal sweep is patch `0050` (loaner SPYP
+planes exist. Spy Plane SW fog-reveal sweep is patch `0050` /
+[#191](https://github.com/michaelmurfy/rallypoint/pull/191) (loaner SPYP
 Approach/Overfly). Remaining: recruit/idle polish; Siege Chopper overlaps T3.3.
+Do not re-land the Spy Plane SW core.
 
 | | |
 |---|---|
@@ -361,8 +369,10 @@ Approach/Overfly). Remaining: recruit/idle polish; Siege Chopper overlaps T3.3.
 ### T4.3 Capture / engineer / spy polish
 
 Core capture, spy cash/blackout, veterancy-on-spawn helpers are in
-`capture.hpp`. MC enter cursors / Bio Reactor eject landed in patch `0048`.
-`EngineerCaptureLevel` appears in gamemd strings and needs a behaviour audit.
+`capture.hpp`. MC enter cursors / Bio Reactor eject landed in patch `0048` /
+[#190](https://github.com/michaelmurfy/rallypoint/pull/190). Do not re-land
+those cursors / eject. `EngineerCaptureLevel` appears in gamemd strings and
+needs a behaviour audit.
 
 | | |
 |---|---|
@@ -416,20 +426,27 @@ Upstream known limitation.
 ## Suggested attack order
 
 1. Burn down remaining T2.4 Yuri Partial: SMIN↔YAREFN SlaveManager transplant;
-   MC cursors / Bio Reactor eject; Magnetron building toss; Disc-over-base;
-   Xvfb Yuri skirmish CI — do not re-land `0045`–`0047` / `0049`.
+   Magnetron building toss; Disc-over-base; Xvfb Yuri skirmish CI — do not
+   re-land `0045`–`0050` (MC cursors / Bio eject `0048`, AI scoot `0049`,
+   Spy Plane SW `0050` are done).
 2. T1.3 remaining RE only (victim `+0x2DC`, MapZone ids, ArchiveTarget==self)
    — do not re-land `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183).
-3. T3.3 leftovers: non-SCHP vehicle turret / deploy SHPs (SCHP done in `0043`).
-4. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) — do not
+3. T2.2 country unique roster completeness (`RequiredHouses` /
+   `ForbiddenHouses` kit gaps).
+4. T3.3 leftovers: non-SCHP vehicle turret / deploy SHPs (SCHP done in `0043`).
+5. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) — do not
    re-land AnimActive / Undeploy from `0041`.
-5. T3.4 leftovers (fragment beams, prism polish) and T3.5 AltCameo draw swap
+6. T3.4 leftovers (fragment beams, prism polish) and T3.5 AltCameo draw swap
    — MagBeam/DISKRAY and blank Cameo= are done (`0045`/`0046`).
-6. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
+7. T4 systems as product priorities (naval AI, campaign Yuri, aircraft
+   recruit polish, net gates) — Spy Plane SW core is done in `0050`.
 
 Landed recently (skip): MagBeam/DISKRAY `0045` / [#186](https://github.com/michaelmurfy/rallypoint/pull/186);
 blank cameos `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187);
 undeployed SMIN `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188);
+MC cursors / Bio eject `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190);
+AI Slave Miner scoot `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192);
+Spy Plane SW `0050` / [#191](https://github.com/michaelmurfy/rallypoint/pull/191);
 T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
 T3.3 SCHP `0043` / [#182](https://github.com/michaelmurfy/rallypoint/pull/182);
 T1.3 bulk `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183);
@@ -439,14 +456,15 @@ launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
 
 Before starting a new patch in an area listed under **Recently landed**,
 rebase on `main` and read the cited patch — re-implementing
-`0034`/`0035`/`0037`/`0040`–`0047`/`0049` or the `0025`–`0033` presentation
+`0034`/`0035`/`0037`/`0040`–`0050` or the `0025`–`0033` presentation
 stack is wasted work.
 
 No open sibling parity PRs assumed for MagBeam / blank cameos / undeployed
-SMIN (those landed in #186–#188) or AI Slave Miner scoot (`0049`). Check open
-PRs before starting another patch in T2.4 leftovers (SMIN↔YAREFN transplant,
-Xvfb CI) or T3.4/T3.5 polish.
+SMIN / MC cursors / Bio eject / AI Slave Miner scoot / Spy Plane SW (those
+landed in #186–#192). Check open PRs before starting another patch in T2.4
+leftovers (SMIN↔YAREFN transplant, Magnetron toss, Disc-over-base, Xvfb CI),
+T2.2 roster, T1.3 RE leftovers, or T3.4/T3.5 polish.
 
-Next priorities (open): T2.4 SMIN↔YAREFN transplant / Xvfb CI + other Yuri
-Partial; T1.3 RE leftovers; non-SCHP T3.3; T3.1/T3.2 leftovers; T3.4/T3.5
-polish; T4.
+Next priorities (open): T2.4 SMIN↔YAREFN transplant / Magnetron toss /
+Disc-over-base / Xvfb CI; T1.3 RE leftovers; T2.2 roster; non-SCHP T3.3;
+T3.1/T3.2 leftovers; T3.4/T3.5 polish; T4 (naval AI, campaign Yuri, net).
