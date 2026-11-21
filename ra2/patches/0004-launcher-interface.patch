@@ -1,0 +1,508 @@
+diff --git a/engine/launch_file.inc b/engine/launch_file.inc
+new file mode 100644
+index 0000000..c33e71c
+--- /dev/null
++++ b/engine/launch_file.inc
+@@ -0,0 +1,182 @@
++// Rallypoint: --launch <file.ini> starts a skirmish or a network game directly,
++// with no menu and no lobby (in the spirit of CnCNet's spawn.ini). Every
++// machine of a network game is given the same file except [Game] LocalPlayer
++// and its own tunnel id. Keys: see ra2/README.md in the Rallypoint repository.
++// Included by main.cpp after mp_pages.inc.
++namespace launchfile {
++
++inline std::string low(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return mpui::trim(s);
++}
++inline bool flag(const Ini& ini, const char* key, bool def) {
++    const std::string v = low(ini.get("Game", key, def ? "yes" : "no"));
++    return v == "yes" || v == "true" || v == "1" || v == "on";
++}
++inline int num(const std::string& v, int def) {
++    char* end = nullptr;
++    const long n = std::strtol(v.c_str(), &end, 0);
++    return (end == v.c_str() || *end) ? def : static_cast<int>(n);
++}
++inline int country_of(const std::string& v) {
++    const std::string l = low(v);
++    if (l.empty() || l == "random") return ra2mp::kRandom;
++    const auto& k = gf_lobby_countries();
++    for (std::size_t i = 0; i < k.size(); ++i)
++        if (low(k[i]) == l) return static_cast<int>(i);
++    const int n = num(l, -100);
++    if (n >= 0 && n < static_cast<int>(k.size())) return n;
++    throw std::runtime_error("unknown Country=" + v);
++}
++inline int ai_of(const std::string& v) {
++    const std::string l = low(v);
++    if (l == "easy") return ra2engine::kLobbyAiEasy;
++    if (l == "brutal" || l == "hard") return ra2engine::kLobbyAiBrutal;
++    return ra2engine::kLobbyAiMedium;
++}
++inline int team_of(const std::string& v) {
++    const std::string l = low(v);
++    if (l.size() == 1 && l[0] >= 'a' && l[0] <= 'd') return l[0] - 'a';
++    const int n = num(l, -1);
++    return n >= 1 && n <= 4 ? n - 1 : ra2mp::kNoTeam;   // Team=1..4 = A..D
++}
++
++}  // namespace launchfile
++
++int run_launch_file(const std::string& path, bool no_audio) {
++    using namespace launchfile;
++    std::ifstream f(path, std::ios::binary);
++    if (!f) throw std::runtime_error("cannot read launch file " + path);
++    const Ini ini = Ini::parse(std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()));
++
++    ra2engine::Platform plat = ra2engine::Platform::create(kWindowTitle, 1280, 720);
++    if (!ensure_data_files(plat)) return 0;
++    const std::string dir = env_install_dir();
++    Ini rules_ini = load_ini_from_ra2md(dir, "rulesmd.ini");
++    Rules rules = Rules::load(rules_ini);
++    ra2engine::Settings user = load_user_settings();
++    g_user_settings = &user;   // sound volumes, scroll rate (never written back here)
++    ra2engine::TextureCache tc(plat.renderer());
++
++    const std::string mode = low(ini.get("Game", "Mode", "skirmish"));
++    const bool network = mode == "network" || mode == "online" || mode == "lan";
++    ra2mp::MpSessionConfig s;
++    ra2mp::MpLobbyModel& m = s.lobby;
++
++    // Map: a multimd.mix entry ("xmp01t4.map") or a file path.
++    m.map.file = ini.get("Game", "Map", "");
++    if (m.map.file.empty()) throw std::runtime_error("[Game] Map= is missing");
++    {
++        const auto raw = read_map_bytes(dir, mp_map_selection(m.map.file));
++        if (raw.empty()) throw std::runtime_error("map not found: " + m.map.file);
++        const std::string text(raw.begin(), raw.end());
++        m.map.digest = ra2mp::map_digest_of(text);
++        m.map.size = static_cast<std::uint32_t>(raw.size());
++        m.map.official = mp_map_selection(m.map.file).mix == "multimd.mix";
++        const int starts = static_cast<int>(ra2assets::MapFile::parse(text).start_waypoints().size());
++        m.map.max_players = std::max(1, std::min(8, starts));
++    }
++    m.mode = num(ini.get("Game", "GameMode", "1"), 1);
++    ra2mp::MpOptions& o = m.opt;
++    o.game_speed = std::max(0, std::min(6, num(ini.get("Game", "GameSpeed", "1"), 1)));
++    o.credits = std::max(0, num(ini.get("Game", "Credits", "10000"), 10000));
++    o.unit_count = std::max(0, std::min(10, num(ini.get("Game", "UnitCount", "10"), 10)));
++    o.tech_level = std::max(1, std::min(10, num(ini.get("Game", "TechLevel", "10"), 10)));
++    o.short_game = flag(ini, "ShortGame", true);
++    o.superweapons = flag(ini, "SuperWeapons", true);
++    o.build_off_ally = flag(ini, "BuildOffAlly", true);
++    o.mcv_repacks = flag(ini, "MCVRedeploy", true);
++    o.crates = flag(ini, "Crates", true);
++    o.ai_takeover = flag(ini, "AITakeover", false);
++
++    const std::string seed_text = ini.get("Game", "Seed", "");
++    if (network && seed_text.empty()) throw std::runtime_error("[Game] Seed= is required for a network game");
++    s.seed = seed_text.empty() ? static_cast<std::uint32_t>(SDL_GetTicks() * 2654435761u) ^ gf_seed_of(m.map.file)
++                               : static_cast<std::uint32_t>(std::strtoul(seed_text.c_str(), nullptr, 0));
++    m.seed = s.seed;
++
++    // [Player0]..[Player7]: the lobby slots. Player0 is the host (the lockstep master).
++    std::vector<std::uint32_t> tunnel_ids(ra2mp::kSlots, 0);
++    int first_human = -1;
++    for (int i = 0; i < ra2mp::kSlots; ++i) {
++        const std::string sec = "Player" + std::to_string(i);
++        ra2mp::MpSlot& sl = m.slots[i];
++        if (!ini.has(sec)) { sl.kind = ra2mp::SlotKind::Closed; continue; }
++        const std::string type = low(ini.get(sec, "Type", "human"));
++        if (type == "closed" || type == "open") { sl.kind = ra2mp::SlotKind::Closed; continue; }
++        sl.kind = type == "ai" || type == "computer" ? ra2mp::SlotKind::AI : ra2mp::SlotKind::Human;
++        sl.name = ra2mp::sanitize_name(ini.get(sec, "Name", sl.kind == ra2mp::SlotKind::AI ? "" : "Player"));
++        sl.ai = ai_of(ini.get(sec, "AI", "medium"));
++        sl.country = country_of(ini.get(sec, "Country", "random"));
++        const int color = num(low(ini.get(sec, "Color", "random")), -1);
++        sl.color = color >= 0 && color < 8 ? color : ra2mp::kRandom;
++        const int start = num(low(ini.get(sec, "Start", "random")), 0);   // 1..8, else random
++        sl.start = start >= 1 && start <= m.map.max_players ? start - 1 : ra2mp::kRandomStart;
++        sl.team = team_of(ini.get(sec, "Team", "none"));
++        sl.ready = true;
++        sl.host = i == 0;
++        sl.pid_lo = static_cast<std::uint32_t>(i + 1);
++        if (sl.kind == ra2mp::SlotKind::Human) {
++            if (first_human < 0) first_human = i;
++            tunnel_ids[(std::size_t)i] = static_cast<std::uint32_t>(num(ini.get(sec, "TunnelId", "0"), 0));
++        }
++    }
++    s.local_slot = num(ini.get("Game", "LocalPlayer", std::to_string(first_human)), first_human);
++    if (s.local_slot < 0 || s.local_slot >= ra2mp::kSlots || m.slots[s.local_slot].kind != ra2mp::SlotKind::Human)
++        throw std::runtime_error("[Game] LocalPlayer= must name a human [PlayerN]");
++    s.is_host = s.local_slot == 0;
++    s.options = ra2mp::encode_options(m);
++
++    Scene* first = nullptr;
++    std::shared_ptr<ra2mp::MpNet> transport;
++    if (network) {
++        if (m.slots[0].kind != ra2mp::SlotKind::Human) throw std::runtime_error("[Player0] must be a human (the host)");
++        // [Tunnel]: a CnCNet tunnel (Version=2: u16 BE ids; 3: u32 LE ids); ids are nonzero.
++        ra2mp::Addr tunnel;
++        const std::string host = ini.get("Tunnel", "Address", "127.0.0.1");
++        const int port = num(ini.get("Tunnel", "Port", "0"), 0);
++        if (port <= 0 || port > 65535 || !ra2mp::resolve(host, static_cast<std::uint16_t>(port), tunnel))
++            throw std::runtime_error("[Tunnel] Address= / Port= is not a usable address");
++        const bool v2 = num(ini.get("Tunnel", "Version", "2"), 2) == 2;
++        for (int i = 0; i < ra2mp::kSlots; ++i)
++            if (m.slots[i].kind == ra2mp::SlotKind::Human && (tunnel_ids[(std::size_t)i] == 0 ||
++                                                              (v2 && tunnel_ids[(std::size_t)i] > 0xFFFF)))
++                throw std::runtime_error("[Player" + std::to_string(i) + "] needs a TunnelId=");
++        transport = std::make_shared<ra2mp::MpNet>();
++        if (!transport->open_tunnel(tunnel, tunnel_ids[(std::size_t)s.local_slot],
++                                    v2 ? ra2::net::TunnelMode::V2 : ra2::net::TunnelMode::V3))
++            throw std::runtime_error("cannot open the game socket");
++        s.transport = ra2mp::MpTransportKind::Tunnel;
++        s.host_addr = tunnel.str();
++        s.local_v3 = tunnel_ids[(std::size_t)s.local_slot];
++        s.host_v3 = tunnel_ids[0];
++        for (int i = 0; i < ra2mp::kSlots; ++i)
++            if (i != s.local_slot && m.slots[i].kind == ra2mp::SlotKind::Human)
++                s.slot_peers.emplace_back(i, ra2mp::peer_of_v3(tunnel_ids[(std::size_t)i]));
++        ra2mp::resolve_session(s, static_cast<int>(gf_lobby_countries().size()));
++        static const MenuArt kNoArt{};
++        first = mp_start_session(rules, no_audio, kNoArt, s, transport);
++    } else {
++        for (int i = 0; i < ra2mp::kSlots; ++i)
++            if (i != s.local_slot && m.slots[i].kind == ra2mp::SlotKind::Human)
++                throw std::runtime_error("a skirmish has one human player; use Mode=network for more");
++        ra2mp::resolve_session(s, static_cast<int>(gf_lobby_countries().size()));
++        std::cerr << ra2mp::describe_session(s);
++        ra2mp::MpConvertCtx ctx;
++        ctx.countries = gf_lobby_countries();
++        const Rules* r = &rules;
++        ctx.side_of = [r](const std::string& k) { return gf_side_of_country(*r, k); };
++        ra2engine::SkirmishConfig cfg = ra2mp::session_to_skirmish(s, ctx);
++        const mpui::GameMode& gm = mpui::game_mode(m.mode);
++        if (gm.index != 1 && !gm.rules.empty()) cfg.mode_rules = gm.rules;
++        cfg.session_seed = s.seed;
++        g_net_local_house = s.local_house;   // the house this machine plays
++        g_simdiff_starts.clear();            // the resolved start of each combatant
++        for (const ra2mp::MpPlayer& p : s.players) g_simdiff_starts.push_back(p.start);
++        first = defer_game_scene(no_audio, cfg);
++    }
++    // No main menu behind the game: its score page's Continue ends the process.
++    const int rc = run_scene_driver(plat, tc, new BootScene(first));
++    g_user_settings = nullptr;
++    return rc;
++}
+diff --git a/engine/main.cpp b/engine/main.cpp
+index efe63d7..ee54e9b 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -48,6 +48,7 @@ static char* ra2_cli_pref_path() {
+ #include <deque>         // G-80 EVA queue
+ #include <set>           // G-81 registered sound keys
+ #include <fstream>
++#include <iterator>
+ #include <iostream>
+ #include <deque>
+ #include <map>
+@@ -302,16 +303,31 @@ void place_load_overlay_rules(const std::string& dir, Assets& a) {
+     }
+ }
+ 
++// Rallypoint (--launch Map=<path>): a skirmish map named by a path ('/' or
++// '\\' in it) is read from that file; any other name is a multimd.mix entry.
++MapSelection mp_map_selection(const std::string& file) {
++    if (file.find('/') != std::string::npos || file.find('\\') != std::string::npos) return MapSelection{"", 0u, file};
++    return MapSelection{"multimd.mix", 0u, file};
++}
++// The selected map's bytes; empty when the entry or file is missing.
++std::vector<uint8_t> read_map_bytes(const std::string& dir, const MapSelection& sel) {
++    if (sel.mix.empty()) {
++        std::ifstream f(sel.name, std::ios::binary);
++        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++    }
++    MixFile maps = MixFile::open_path(dir + sel.mix);
++    const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
++    return me ? maps.read(*me) : std::vector<uint8_t>{};
++}
++
+ Assets load_assets(const std::string& dir, const ra2assets::MixFile& ra2,
+                    const MapSelection& sel = MapSelection{}) {
+     load_progress("MAP + THEATER");   // W2-AR-02 loading-screen checkpoint
+     // Map: read the selected map INI. The default selection is byte-for-byte
+     // the old hardcoded one (mapsmd03.mix / 0x133a0cb2).
+-    MixFile maps = MixFile::open_path(dir + sel.mix);
+-    const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
+-    if (!me) throw std::runtime_error("map entry not found in " + sel.mix + ": " +
+-                                      (sel.name.empty() ? "id 0x133a0cb2" : sel.name));
+-    auto map_raw = maps.read(*me);
++    auto map_raw = read_map_bytes(dir, sel);
++    if (map_raw.empty()) throw std::runtime_error("map entry not found in " + (sel.mix.empty() ? std::string("file") : sel.mix) + ": " +
++                                                  (sel.name.empty() ? "id 0x133a0cb2" : sel.name));
+     MapFile map = MapFile::parse(std::string(map_raw.begin(), map_raw.end()));
+ 
+     // Theater chain [RE: maps.md §6 + §9.4]. Replaces the old TEMPERATE-only
+@@ -6477,7 +6493,7 @@ public:
+                              ? MapSelection{camp::mix_for_map(cfg.campaign_map), 0u,
+                                             camp::lower(cfg.campaign_map)}   // P10
+                          : cfg.map_file.empty() ? MapSelection{}
+-                                                : MapSelection{"multimd.mix", 0u, cfg.map_file})),
++                                                : mp_map_selection(cfg.map_file))),
+           // G-86: the art loaders below follow this map's theater.
+           ua_((g_art_chain = a_.chain,
+                g_sidebar_mix = (soviet_campaign(cfg) || (cfg.campaign_map.empty() && !cfg.slots.empty() &&
+@@ -7127,11 +7143,9 @@ public:
+             const MapSelection sel =
+                 !cfg_.campaign_map.empty()
+                     ? MapSelection{camp::mix_for_map(cfg_.campaign_map), 0u, camp::lower(cfg_.campaign_map)}
+-                    : cfg_.map_file.empty() ? MapSelection{} : MapSelection{"multimd.mix", 0u, cfg_.map_file};
+-            MixFile maps = MixFile::open_path(dir_ + sel.mix);
+-            const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
+-            if (!me) return;
+-            const auto raw = maps.read(*me);
++                    : cfg_.map_file.empty() ? MapSelection{} : mp_map_selection(cfg_.map_file);
++            const auto raw = read_map_bytes(dir_, sel);
++            if (raw.empty()) return;
+             const Ini map_ini = Ini::parse(std::string(raw.begin(), raw.end()));
+             // W2-GA-05: the map's [Lighting] (tiles baked per height + ambient).
+             light_.load(map_ini, a_.pal);
+@@ -9631,7 +9645,8 @@ int run_menu(bool no_audio) {
+     ra2engine::Settings user = load_user_settings();
+     g_user_settings = &user;
+     // G-89: honour RA2.INI [Video] ScreenWidth/ScreenHeight for the window.
+-    if (user.screen_width > 0 && user.screen_height > 0 && !plat.set_window_size(user.screen_width, user.screen_height)) {
++    if (!ra2engine::Platform::launch_window_sized() && user.screen_width > 0 && user.screen_height > 0 &&
++        !plat.set_window_size(user.screen_width, user.screen_height)) {
+         user.screen_width = 1280;   // W6-06-12: rewrite [Video] so the next start is clean too
+         user.screen_height = 720;
+         save_user_settings(user);
+@@ -18705,6 +18720,8 @@ int run_demo_saveload() {
+ #include "ai_soak.inc"   // gap owner D: --ai-soak (real GameScene AI acceptance harness)
+ #include "realplay_combat_probe.inc"   // gap owner C: --probe-combat (real GameScene harness)
+ 
++#include "launch_file.inc"   // Rallypoint: --launch <file.ini>
++
+ int main(int argc, char** argv) {
+     // W2-AR-30: SDL-internal assertions log and continue; they never block on
+     // a console prompt (desktop) or a modal dialog (Android).
+@@ -18744,6 +18761,24 @@ int main(int argc, char** argv) {
+                 std::fprintf(stderr, "Red Alert 2 engine %s (log: %s)\n", RA2_VERSION, log.c_str());
+             }
+         }
++        // Rallypoint launcher: --launch <file.ini>, the window (--title, --width,
++        // --height, --fullscreen / --windowed; RA2_WINDOW_TITLE).
++        std::string launch_file;
++        {
++            const char* t = std::getenv("RA2_WINDOW_TITLE");
++            std::string title = t ? t : "";
++            int ww = 0, wh = 0, fs = -1;
++            for (int i = 1; i < argc; ++i) {
++                const std::string a = argv[i];
++                if (a == "--launch" && i + 1 < argc) launch_file = argv[++i];
++                else if (a == "--title" && i + 1 < argc) title = argv[++i];
++                else if (a == "--width" && i + 1 < argc) ww = std::atoi(argv[++i]);
++                else if (a == "--height" && i + 1 < argc) wh = std::atoi(argv[++i]);
++                else if (a == "--fullscreen") fs = 1;
++                else if (a == "--windowed") fs = 0;
++            }
++            ra2engine::Platform::set_launch_window(title, ww, wh, fs);
++        }
+         // W2-AR-22/-23: --version, --help, --data <dir> (any position).
+         for (int i = 1; i < argc; ++i) {
+             const std::string a = argv[i];
+@@ -18765,6 +18800,8 @@ int main(int argc, char** argv) {
+                             "  --record-input <f>  record the raw input events to <f>\n"
+                             "  --replay <f>   replay a command log or an input recording (--hidden: no window)\n"
+                             "  --version      print the version\n"
++                            "  --launch <f>   start the skirmish or network game described in <f> (Rallypoint)\n"
++                            "  --width <w> --height <h>  window size; --fullscreen / --windowed; --title <t>\n"
+                             "developer modes: --play <script> [--out <dir>], --ai-soak, --demo-*\n",
+                             RA2_VERSION);
+                 return 0;
+@@ -18963,6 +19000,7 @@ int main(int argc, char** argv) {
+         if (!screenshot.empty()) return run_screenshot(screenshot);
+         if (!campaign_map.empty()) return run_campaign_direct(campaign_map, no_audio);
+         if (quick_skirmish) return run_interactive(no_audio);
++        if (!launch_file.empty()) return run_launch_file(launch_file, no_audio);
+         return run_menu(no_audio);
+ #endif
+     } catch (const std::exception& ex) {
+diff --git a/engine/mp/mp_net.cpp b/engine/mp/mp_net.cpp
+index e0b3e06..03b273b 100644
+--- a/engine/mp/mp_net.cpp
++++ b/engine/mp/mp_net.cpp
+@@ -19,9 +19,14 @@ bool MpNet::open_direct(std::uint16_t port) {
+ }
+ 
+ bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3) {
++    return open_tunnel(tunnel, my_v3, ra2::net::TunnelMode::V3);
++}
++
++bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3, ra2::net::TunnelMode mode) {
+     auto io = std::make_unique<ra2::net::UdpDatagramIO>();
+     if (!io->open(0)) return false;
+-    io->set_tunnel(ra2::net::TunnelMode::V3, tunnel, my_v3);
++    io->set_tunnel(mode, tunnel, my_v3);
++    wire_mode_ = mode;
+     io->on_foreign = [this](const ra2::net::NetAddr& from, const std::uint8_t* d, std::size_t n) {
+         if (ping_sent_ && from == tunnel_ && ra2::net::is_tunnel_ping_reply(d, n, ping_nonce_)) {
+             rtt_ = static_cast<int>(now_ms() - ping_sent_);
+@@ -67,7 +72,10 @@ void MpNet::tick(std::uint64_t now) {
+     // tunnel then just drops the payload). 0xFFFFFFFE is never a real id.
+     if (last_keep_ == 0 || now - last_keep_ >= 5000) {
+         std::vector<std::uint8_t> out;
+-        ra2::net::tunnel_wrap(ra2::net::TunnelMode::V3, me_, 0xFFFFFFFEu, nullptr, 0, out);
++        // V2 forwarders drop datagrams under 5 bytes, so its keep-alive carries one zero byte.
++        static const std::uint8_t kZero = 0;
++        const bool v2 = wire_mode_ == ra2::net::TunnelMode::V2;
++        ra2::net::tunnel_wrap(wire_mode_, me_, 0xFFFFFFFEu, v2 ? &kZero : nullptr, v2 ? 1 : 0, out);
+         udp_->socket().send_to(tunnel_, out.data(), out.size());
+         if (ping_sent_ == 0 || now - ping_sent_ > 4000) {
+             ping_nonce_ = static_cast<std::uint32_t>(now * 2654435761u) | 1u;
+diff --git a/engine/mp/mp_net.hpp b/engine/mp/mp_net.hpp
+index c5b118d..70d740c 100644
+--- a/engine/mp/mp_net.hpp
++++ b/engine/mp/mp_net.hpp
+@@ -38,6 +38,9 @@ public:
+     // Online: the CnCNet V3 tunnel (8-byte LE [from][to] header); peers are
+     // V3 ids. tick() keeps our id registered and measures the tunnel RTT.
+     bool open_tunnel(const Addr& tunnel, std::uint32_t my_v3);
++    // Rallypoint: the same over a CnCNet V2 tunnel (4-byte BE [from][to]
++    // header, 16-bit ids), e.g. the Rallypoint agent on 127.0.0.1.
++    bool open_tunnel(const Addr& tunnel, std::uint32_t my_id, ra2::net::TunnelMode mode);
+     // Tests: an endpoint of an in-process LoopbackHub, with the test's clock.
+     void open_loopback(ra2::net::LoopbackHub& hub, const Addr& self, std::function<std::uint32_t()> clock_ms);
+ 
+@@ -60,6 +63,7 @@ private:
+     std::unique_ptr<ra2::net::UdpDatagramIO> udp_;
+     std::unique_ptr<ra2::net::NetManager> net_;
+     bool tunnel_mode_ = false;
++    ra2::net::TunnelMode wire_mode_ = ra2::net::TunnelMode::V3;
+     Addr tunnel_;
+     std::uint32_t me_ = 0;
+     std::uint64_t last_keep_ = 0, ping_sent_ = 0;
+diff --git a/engine/platform.cpp b/engine/platform.cpp
+index a5fc506..5194fe9 100644
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -46,7 +46,21 @@ struct Platform::Impl {
+     }
+ };
+ 
++namespace {
++std::string g_launch_title;
++int g_launch_w = 0, g_launch_h = 0, g_launch_fs = -1;
++}  // namespace
++
++void Platform::set_launch_window(const std::string& title, int w, int h, int fullscreen) {
++    g_launch_title = title;
++    g_launch_w = w > 0 && h > 0 ? w : 0;
++    g_launch_h = w > 0 && h > 0 ? h : 0;
++    g_launch_fs = fullscreen;
++}
++bool Platform::launch_window_sized() { return g_launch_w > 0 || g_launch_fs >= 0; }
++
+ Platform Platform::create(const char* title, int w, int h, bool hidden) {
++    if (!hidden && !g_launch_title.empty()) title = g_launch_title.c_str();
+     // G-71: SDL must not synthesise mouse events from touches (every tap would
+     // arrive twice = a double-click); fingers go through TouchGestures. The
+     // SDL_TOUCH_MOUSEID filter in poll() backs this up.
+@@ -62,10 +76,12 @@ Platform Platform::create(const char* title, int w, int h, bool hidden) {
+     // got 1794x1017 of a 1920x1080 phone with both bars visible.
+     flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+ #endif
++    if (!hidden && g_launch_fs == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
++    if (!hidden && g_launch_w > 0) flags |= SDL_WINDOW_RESIZABLE;
+     SDL_Window* window = SDL_CreateWindow(
+         title,
+         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+-        w, h,
++        !hidden && g_launch_w > 0 ? g_launch_w : w, !hidden && g_launch_h > 0 ? g_launch_h : h,
+         flags);
+     if (!window) {
+         std::string err = SDL_GetError();
+diff --git a/engine/platform.hpp b/engine/platform.hpp
+index 8af8b56..1e0f772 100644
+--- a/engine/platform.hpp
++++ b/engine/platform.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ #include <cstdint>
++#include <string>
++
+ namespace ra2engine {
+ struct InputEvent {
+     // P7: Key (a key the UI consumes; `key` = one of the kKey* codes below, or 0
+@@ -56,6 +58,11 @@ public:
+     // hidden = true creates an invisible window with the software renderer (the
+     // --play harness: deterministic pixels, no visible desktop needed).
+     static Platform create(const char* title, int w, int h, bool hidden = false);
++    // Rallypoint launcher (--title / --width / --height / --fullscreen /
++    // --windowed, RA2_WINDOW_TITLE): applied by every later visible create().
++    // w/h are the window size (0 = keep), fullscreen -1 = keep, 0 / 1.
++    static void set_launch_window(const std::string& title, int w, int h, int fullscreen);
++    static bool launch_window_sized();
+     Platform(Platform&&) noexcept; Platform& operator=(Platform&&) noexcept;
+     ~Platform() override;
+     bool poll(InputEvent& ev) override;
+diff --git a/tests/test_mp.cpp b/tests/test_mp.cpp
+index 0fa542b..a484085 100644
+--- a/tests/test_mp.cpp
++++ b/tests/test_mp.cpp
+@@ -497,6 +497,63 @@ TEST_CASE("mp: lobby through a CnCNet V3 tunnel (8-byte LE header)") {
+     CHECK(th.rtt_ms() >= 0);
+ }
+ 
++TEST_CASE("mp: lobby through a CnCNet V2 tunnel (Rallypoint agent: 4-byte BE header)") {
++    // A minimal V2 forwarder (what the Rallypoint agent emulates): register sender -> endpoint, forward verbatim.
++    UdpSocket relay;
++    REQUIRE(relay.open(0));
++    const Addr ra{kLoopback, relay.local_port()};
++    std::map<std::uint32_t, Addr> reg;
++    std::size_t largest = 0;
++    int forwarded = 0;
++    auto run_relay = [&]() {
++        std::uint8_t buf[2048];
++        Addr from;
++        for (int n; (n = relay.recv_from(from, buf, sizeof buf)) > 0;) {
++            std::uint32_t s, r;
++            const std::uint8_t* pl;
++            std::size_t pn;
++            if (n == 50 && buf[0] == 0 && buf[4] == 0) { relay.send_to(from, buf, 12); continue; }
++            if (!ra2::net::tunnel_unwrap(ra2::net::TunnelMode::V2, buf, static_cast<std::size_t>(n), &s, &r, &pl, &pn) ||
++                s == 0)
++                continue;
++            reg[s] = from;
++            largest = std::max(largest, static_cast<std::size_t>(n));
++            const auto it = reg.find(r);
++            if (it != reg.end()) { relay.send_to(it->second, buf, static_cast<std::size_t>(n)); ++forwarded; }
++        }
++    };
++    MpNet th, tc;
++    REQUIRE(th.open_tunnel(ra, 3, ra2::net::TunnelMode::V2));
++    REQUIRE(tc.open_tunnel(ra, 7, ra2::net::TunnelMode::V2));
++    LobbyHost host(th, ident("Host", 1), host_model());
++    LobbyClient c(tc, peer_of_v3(3), ident("Tunnel", 2));
++    bool ok = false;
++    for (int i = 0; i < 600 && !ok; ++i) {
++        const std::uint64_t t = now_ms();
++        host.update(t);
++        run_relay();
++        c.update(t);
++        run_relay();
++        ok = c.state() == LobbyClient::State::Joined && c.rev() == host.rev();
++        if (!ok) {
++            const std::uint64_t until = now_ms() + 5;
++            while (now_ms() < until) {}
++        }
++    }
++    REQUIRE(ok);
++    CHECK(forwarded > 2);
++    CHECK(largest <= 4 + 1020);   // the agent carries up to 1020 payload bytes
++    CHECK(host.peer_of_slot(1) == peer_of_v3(7));
++    // The tunnel answered our 50-byte ping (seen through UdpDatagramIO::on_foreign).
++    for (int i = 0; i < 200 && th.rtt_ms() < 0; ++i) {
++        run_relay();
++        th.net().service();
++        const std::uint64_t until = now_ms() + 2;
++        while (now_ms() < until) {}
++    }
++    CHECK(th.rtt_ms() >= 0);
++}
++
+ TEST_CASE("mp: NET-PLAY platform tag -- mixed platforms need the cross-platform option") {
+     std::uint64_t t = 0;
+     MemNet hub(t);
