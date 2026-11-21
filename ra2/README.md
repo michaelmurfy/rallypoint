@@ -201,11 +201,45 @@ GitHub pre-release; the app is built with `RALLYPOINT_VERSION=ra2-alpha.N` (what
 installers and packages are named `<tauri.conf.json version>-ra2.alpha.N`, and the relay image is pushed as
 `ra2-alpha` and `ra2-alpha.N`, never `latest`. `v*` tags are unchanged.
 
+## Multiplayer harness
+
+Automated two-client proof of the Rallypoint RA2 path (relay room → launcher lobby → tunnel token → game
+packets), without the Maps UI.
+
+**Layer A (CI):** always runs as part of `cargo test -p generals-core --test agent` (`red_alert_2_*` tests) and
+as the default example:
+
+```sh
+cargo test -p generals-core --test agent red_alert_2_
+cargo run -p generals-core --example ra2_mp_harness
+# or: sh scripts/ra2-mp-harness.sh
+```
+
+That spins an in-process relay, two agents in `ra2:harness`, drives `ra2lobby` (map + ready + start),
+`arm_tunnel`, token auth (`RPAU` + 16 bytes), proves a spoofed local peer is ignored, and that only
+`is_ra2_game_packet` payloads cross. Logs under `/tmp/ra2-mp-harness` (`RA2_MP_LOG`).
+
+**Layer B (optional, real engines):**
+
+```sh
+# engine must include patch 0006 (Token=). Rebuild if ~/rp-build/ra2engine is older:
+sh ra2/patches/apply.sh
+cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build ra2/build && mkdir -p ~/rp-build && cp -f ra2/build/ra2engine ~/rp-build/ra2engine
+
+RA2_DATA=~/rp-steam/game/RA2 RA2ENGINE=~/rp-build/ra2engine \
+  sh scripts/ra2-mp-harness.sh --real --secs 25
+```
+
+Writes `host.ini` / `guest.ini`, starts two `ra2engine --launch` processes (via `xvfb-run` when present),
+keeps the agents alive, and samples tunnel kbps. Still manual: confirming both clients stay in sync in a
+long fight, and any UI/Maps-page flow.
+
 ## Not verified
 
 - A Linux Xvfb `--launch` skirmish as `Country=9` / `YuriCountry` (map `xmp31s2.map`, real YR data) loads the
   Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner slaves, skirmish mind control and Gattling
-  stages were not proven in play. Network play and the window options are still compile/review only aside from
-  that smoke. The V2 tunnel path is covered by a test (`mp: lobby through a CnCNet V2 tunnel`) against a
-  minimal forwarder.
+  stages were not proven in play. Network play end-to-end with two real engines is covered optionally by the
+  harness above (`--real`); the V2 tunnel path is also covered by a unit test (`mp: lobby through a CnCNet V2
+  tunnel`) against a minimal forwarder.
 - macOS is built only by CI.

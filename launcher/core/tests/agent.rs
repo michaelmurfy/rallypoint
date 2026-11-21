@@ -1,5 +1,6 @@
 //! Two agents against the real relay state machine over loopback UDP, with fake engine sockets.
 use generals_core::agent::{Agent, Status};
+use generals_core::ra2lobby::{Lobby, RoomSettings, Seat};
 use generals_proto::secure::{self, Key};
 use generals_proto::{game_packet, Packet, Reason};
 use generals_server::{Serials, Server};
@@ -414,5 +415,154 @@ fn red_alert_2_tunnel_and_lobby_between_two_players() {
     };
     assert_eq!(got, vec![(ia as u8, b"ready".to_vec())]);
     assert!(a.take_lobby().is_empty());
+    stop.store(true, Ordering::Relaxed);
+}
+
+fn room_master(a: &Agent) -> Option<bool> {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        if let Some(m) = a.diagnostics().and_then(|d| d.room_master) {
+            return Some(m);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// One lobby poll like the launcher's `ra2_lobby_poll`: ingest, prune, emit.
+fn pump(lobby: &mut Lobby, agent: &Agent, vip: u8, name: &str, master: Option<bool>, now_ms: u64) {
+    lobby.set_self(vip, name, master);
+    for (from, blob) in agent.take_lobby() {
+        lobby.receive(now_ms, from, &blob);
+    }
+    lobby.prune(now_ms);
+    for blob in lobby.outgoing() {
+        assert!(agent.send_lobby(&blob), "lobby blob");
+    }
+}
+
+/// Full RA2 path used by CI: `ra2:` room → lobby (map + ready + start) → `arm_tunnel` → token auth →
+/// filtered game packets; a spoofed local peer is ignored.
+#[test]
+fn red_alert_2_lobby_ready_start_then_tunnel_auth() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = Agent::start(&server, "AAA", "ra2:harness", "pw", None).unwrap();
+    let b = Agent::start(&server, "BBB", "ra2:harness", "pw", None).unwrap();
+    let (va, vb) = (vip_of(&a), vip_of(&b));
+    let (ia, ib) = (va[3], vb[3]);
+    let (ma, mb) = (room_master(&a).expect("a master"), room_master(&b).expect("b master"));
+    assert_ne!(ma, mb, "exactly one room master");
+    // host_agent is always the room master; pass Some(true)/Some(false) into the lobby
+    let (host, guest, host_agent, guest_agent, host_vip, guest_vip) = if ma {
+        ("Ann", "Bob", &a, &b, ia, ib)
+    } else {
+        ("Ann", "Bob", &b, &a, ib, ia)
+    };
+
+    let (mut host_lobby, mut guest_lobby) = (Lobby::default(), Lobby::default());
+    let t0 = Instant::now();
+    let now = || t0.elapsed().as_millis() as u64;
+    // hear each other
+    for _ in 0..8 {
+        pump(&mut host_lobby, host_agent, host_vip, host, Some(true), now());
+        pump(&mut guest_lobby, guest_agent, guest_vip, guest, Some(false), now());
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(host_lobby.is_host());
+    assert!(!guest_lobby.is_host());
+    // seat first, then settings (host seat changes bump rev; ready after the final rev)
+    host_lobby.set_seat(Seat { side: 0, color: 0, start: 1, team: -1, ready: false, rev: 0 }).unwrap();
+    host_lobby
+        .set_settings(RoomSettings {
+            map: "xmp01t4.map".into(),
+            map_name: "Coastal Interference".into(),
+            starts: 4,
+            credits: 10000,
+            speed: 1,
+            ai: vec![],
+            rev: 0,
+        })
+        .unwrap();
+    let t = Instant::now();
+    let mut guest_rev = None;
+    while t.elapsed() < Duration::from_secs(3) {
+        pump(&mut host_lobby, host_agent, host_vip, host, Some(true), now());
+        pump(&mut guest_lobby, guest_agent, guest_vip, guest, Some(false), now());
+        if let Some(s) = guest_lobby.view().settings {
+            guest_rev = Some(s.rev);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let rev = guest_rev.expect("guest has map");
+    guest_lobby.set_seat(Seat { side: 8, color: 1, start: 2, team: -1, ready: true, rev }).unwrap();
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        // guest emits Ready first so the host can ingest it this tick
+        pump(&mut guest_lobby, guest_agent, guest_vip, guest, Some(false), now());
+        std::thread::sleep(Duration::from_millis(30));
+        pump(&mut host_lobby, host_agent, host_vip, host, Some(true), now());
+        if host_lobby.view().blocked.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(host_lobby.view().blocked, "", "{:?}", host_lobby.view());
+    let setup = host_lobby.start(0xC0FFEE).unwrap();
+    assert_eq!(setup.map, "xmp01t4.map");
+    assert_eq!(setup.players.len(), 2);
+    assert!(setup.players.iter().all(|p| p.tunnel_id.is_some()));
+    let mut guest_start = None;
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        pump(&mut host_lobby, host_agent, host_vip, host, Some(true), now());
+        std::thread::sleep(Duration::from_millis(30));
+        pump(&mut guest_lobby, guest_agent, guest_vip, guest, Some(false), now());
+        if let Some(s) = guest_lobby.view().start {
+            guest_start = Some(s);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let guest_start = guest_start.expect("guest received Start");
+    assert_eq!(guest_start.seed, 0xC0FFEE);
+    assert_eq!(guest_start.players[0].tunnel_id, Some(host_vip));
+    assert_eq!(guest_start.players[1].tunnel_id, Some(guest_vip));
+
+    // launch tokens (post-0006): only the authed endpoint may speak; spoof ignored; non-game payload dropped
+    let prefix = [0xFF, 0xFF, 0xFF, 0xFF, b'R', b'P', b'A', b'U'];
+    let (ta, tb) = (host_agent.arm_tunnel(), guest_agent.arm_tunnel());
+    let (gh, gg, spoof) = (spawner(host_agent), spawner(guest_agent), spawner(host_agent));
+    let recv = |s: &UdpSocket| {
+        let mut buf = [0u8; 2048];
+        let n = s.recv(&mut buf).unwrap();
+        buf[..n].to_vec()
+    };
+    let quiet = |s: &UdpSocket| {
+        let mut buf = [0u8; 2048];
+        s.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        s.recv(&mut buf).is_err()
+    };
+    spoof.send(&generals_proto::ra2_game_packet(b"early")).unwrap();
+    assert!(quiet(&spoof), "no traffic before token");
+    gh.send(&[&prefix[..], &ta].concat()).unwrap();
+    assert_eq!(recv(&gh), prefix);
+    gg.send(&[&prefix[..], &tb].concat()).unwrap();
+    assert_eq!(recv(&gg), prefix);
+    let hdr = |from: u16, to: u16, p: &[u8]| [&from.to_be_bytes()[..], &to.to_be_bytes(), p].concat();
+    let frame = generals_proto::ra2_game_packet(b"frame1");
+    gg.send(&hdr(guest_vip as u16, host_vip as u16, &frame)).unwrap();
+    assert_eq!(recv(&gh), hdr(guest_vip as u16, host_vip as u16, &frame));
+    gh.send(&hdr(host_vip as u16, guest_vip as u16, &frame)).unwrap();
+    assert_eq!(recv(&gg), hdr(host_vip as u16, guest_vip as u16, &frame));
+    spoof.send(&[&prefix[..], &ta].concat()).unwrap();
+    spoof.send(&hdr(host_vip as u16, guest_vip as u16, &frame)).unwrap();
+    gh.send(&hdr(host_vip as u16, guest_vip as u16, b"not-a-game-packet")).unwrap();
+    assert!(quiet(&spoof) && quiet(&gg), "spoof and non-game dropped");
+    // launch_ini shape the engines would get
+    let mut for_host = setup.clone();
+    for_host.tunnel = Some(generals_core::ra2launch::Tunnel { port: host_agent.tunnel_port(), id: host_vip, token: ta });
+    let ini = generals_core::ra2launch::launch_ini(&for_host, std::path::Path::new("xmp01t4.map"), 0).unwrap();
+    assert!(ini.contains("Mode=network") && ini.contains("Token=") && ini.contains(&format!("TunnelId={host_vip}")));
     stop.store(true, Ordering::Relaxed);
 }
