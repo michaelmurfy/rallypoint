@@ -87,6 +87,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0033-superweapon-building-charge-anim` | Artmd-accurate SuperAnim..Four phases for superweapon buildings: charge hold (SuperAnim), `ChargedAnimTime` ready sting (Two then Three), fire one-shot (Four) then back to charge; stops Weather Control's green fire crescents for the whole recharge. Requires 0024 for grand-opening Active* skip. Presentation only. |
 | `0034-ramp-slope-level` | Ground units follow TMP ramps: the FootClass height gate (`FUN_004D9C60`) already allows a one-level step when the lower cell's SlopeIndex is set; `step_units` now adopts the cell's level as the unit walks, and the sprite blends the two cells of the step. |
 | `0035-stock-ai-min-defense-rule` | Skirmish AI: `UseMinDefenseRule` / `MinimumAIDefensiveTeams` from gamemd `FUN_0041e740` — under the minimum only `IsBaseDefense` Team1 triggers fire and autocreate is held off so stock base-guard teams form; call_for_help then has guard members (save v56). Simulation change. |
+| `0037-ai-boost-smarter` | Optional `[RP-AI-BOOST]` smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3): shorter TeamDelays/BuildDelay, lower CreditReserve, faster harvester replace, stronger base-defense response, L3 anti-tank/anti-inf mix bias + trigger success nudge. Off by default; computer houses only. |
 
 ## Factions (Country=)
 
