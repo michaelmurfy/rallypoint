@@ -1,0 +1,68 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 69da891..5ff83e9 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -20,7 +20,17 @@
+     // Colour thresholds = [General] ConditionYellow / ConditionRed.
+     mutable ra2engine::TextureCache* pip_tc_ = nullptr;   // W2-UI-11 (set by render)
+     void draw_selected_building(SDL_Renderer* ren) const {
+-        const int sb = input_.selected_building();
++        int sb = input_.selected_building();
++        // W6-05-07 parity: hovered own buildings show pips when none is selected.
++        if (sb < 0 && mouse_present_ && mx_ < playfield_w_ && !input_locked_) {
++            const int hb = input_.building_under(mx_, my_);
++            if (hb >= 0 && hb < static_cast<int>(world_.buildings().size())) {
++                const ra2engine::Building& hbld = world_.buildings()[hb];
++                if (hbld.alive && hbld.state != ra2engine::Building::State::Dead &&
++                    hbld.house == local_house_)
++                    sb = hb;
++            }
++        }
+         if (sb < 0 || sb >= static_cast<int>(world_.buildings().size())) return;
+         const ra2engine::Building& b = world_.buildings()[sb];
+         if (!b.alive || b.state == ra2engine::Building::State::Dead) return;
+diff --git a/engine/input.cpp b/engine/input.cpp
+index 4b5c7d6..2993a76 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -284,7 +284,9 @@ int Input::building_art_at(int px, int py) const {
+ }
+ 
+ int Input::pick_building(int px, int py, bool touch) const {
+-    if (touch) {   // W6-01-01 [engine deviation]: a finger picks by the drawn art
++    // W6-01-01: when the renderer wires art_hit_ (live game), pick the drawn
++    // building sprite first -- the original's object list, not only touch.
++    if (touch || art_hit_) {
+         const int b = building_art_at(px, py);
+         if (b >= 0) return b;
+     }
+@@ -978,7 +980,28 @@ void Input::handle(const InputEvent& ev) {
+                         (ev.t_ms - last_click_t_) <= kDblMs &&
+                         std::abs(ev.x - last_click_x_) <= kDblSlop &&
+                         std::abs(ev.y - last_click_y_) <= kDblSlop;
+-                    if (is_double) {
++                    // G-10: Legacy path matches Original -- an own building
++                    // click selects it (pips / rally) instead of only factories.
++                    const int ui = unit_under(ev.x, ev.y);
++                    const bool hostile = ui >= 0 && !world_.controllable(world_.units()[ui].house);
++                    if (!is_double && !down_shift_ && ui < 0 && !hostile) {
++                        const int b = pick_building(ev.x, ev.y, ev_touch_);
++                        if (b >= 0 && world_.buildings()[b].house == world_.order_issuer() &&
++                            world_.buildings()[b].alive &&
++                            world_.buildings()[b].state != Building::State::Dead) {
++                            selected_building_ = b;
++                            sel_.clear();
++                            last_click_t_ = 0;
++                        } else if (is_double) {
++                            commit_double(ev.x, ev.y);
++                            last_click_t_ = 0;
++                        } else {
++                            commit_click(ev.x, ev.y, down_shift_);
++                            last_click_t_ = ev.t_ms;
++                            last_click_x_ = ev.x;
++                            last_click_y_ = ev.y;
++                        }
++                    } else if (is_double) {
+                         commit_double(ev.x, ev.y);
+                         last_click_t_ = 0;  // consume, so a triple-click isn't a 2nd double
+                     } else {
