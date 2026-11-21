@@ -92,6 +92,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0041-building-infantry-anims-from-gamemd` | Building/infantry anim parity from `gamemd.exe`: art `AnimActive` cycles the main SHP (ConYard/Depot) with SimpleDamage (`Shape_Number` FUN_0043ef90); Tesla/Prism `IsAnimDelayedFire` stops Active/Idle for SpecialAnim then restores them (FUN_0044c565 / FUN_00451b30); Idle resumes after finite Active*; infantry Undeploy stays locked until done and can finish into Walk. Presentation only (sim/hash unchanged). |
 | `0042-unit-tilt-on-slopes` | Vehicles pitch on TMP ramps (T1.2): Drive Draw_Matrix `FUN_0055A7D0` reads `CellClass` SlopeIndex (+0x11C), copies the slope matrix via `FUN_007559B0` (table from `FUN_00754CB0` / `FUN_005AE6F0`). Presentation-only voxel pitch; sim/CRC unchanged. |
 | `0043-siege-chopper-deploy` | Siege Chopper (`SCHP`) deploy vs gamemd: `IsSimpleDeployer` arms `DeployFire` without `Deployer` (`FUN_00739AC0`); `DeployToLand` lands/lifts on deploy/undeploy (`FUN_0054BD30`); deployed draws `UnloadingClass=SCHD` and plays `DeployingAnim=SCHPDEPL`. Simulation: deploy post + weapon slot; save format unchanged. |
+| `0044-ai-call-for-help` | T1.3 call-for-help vs Steam `FUN_00708080`: building victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell + IQ `RepairSell` on ConditionRed sell. Simulation change (no `World` sizeof growth). |
 
 ## Factions (Country=)
 
