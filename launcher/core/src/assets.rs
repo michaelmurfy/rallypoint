@@ -15,6 +15,32 @@ use std::time::{Duration, SystemTime};
 
 pub const GENERALS_APP: u32 = 2229870;
 pub const ZERO_HOUR_APP: u32 = 2732960;
+/// "Command & Conquer Red Alert 2 and Yuri's Revenge": one app holds both games.
+pub const RA2_APP: u32 = 2229850;
+
+/// Which game a download job fetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Title {
+    /// Generals, then Zero Hour (two apps).
+    #[default]
+    Generals,
+    /// Red Alert 2 and Yuri's Revenge (one app).
+    Ra2,
+}
+
+/// One Steam app of a title: app id, folder, label for the page, and the check that it arrived.
+pub type App = (u32, PathBuf, &'static str, fn(&Path) -> bool);
+
+/// The Steam apps of a title in download order.
+pub fn apps(title: Title, root: &Path) -> Vec<App> {
+    match title {
+        Title::Generals => vec![
+            (GENERALS_APP, generals_dir(root), "Generals", |d| d.join("INI.big").is_file()),
+            (ZERO_HOUR_APP, zero_hour_dir(root), "Zero Hour", |d| d.join("INIZH.big").is_file()),
+        ],
+        Title::Ra2 => vec![(RA2_APP, ra2_dir(root), "Red Alert 2", |d| crate::ra2::find_under(d).is_some())],
+    }
+}
 
 const DD_VERSION: &str = "DepotDownloader_3.4.0";
 
@@ -80,6 +106,9 @@ pub fn generals_dir(root: &Path) -> PathBuf {
 }
 pub fn zero_hour_dir(root: &Path) -> PathBuf {
     root.join("game/ZeroHour")
+}
+pub fn ra2_dir(root: &Path) -> PathBuf {
+    root.join("game/RA2")
 }
 /// The folder the tool believes is the user's data folder. DepotDownloader keeps the sign-in it was told to remember
 /// (`-remember-password`: a long-lived login token, not the password) in .NET isolated storage under the user's data
@@ -341,7 +370,7 @@ enum Run {
 
 /// One DepotDownloader run for one app. Handles its prompts: the password from `password` (once), otherwise the
 /// user is asked through the job state and the answer arrives on `inbox`.
-fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32, no_mobile: bool) -> Result<(Run, Option<String>), String> {
+fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password: &mut Option<String>, code: &mut String, inbox: &Receiver<String>, label: &str, base: f32, share: f32, no_mobile: bool) -> Result<(Run, Option<String>), String> {
     let mut cmd = Command::new(exe);
     quiet(&mut cmd).args(dd_args(user, app, dir, no_mobile));
     if !cfg!(windows) {
@@ -395,7 +424,7 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
                         Seen::Progress(p) => {
                             saw_progress = true;
                             phone = false;
-                            ctx.set(Phase::Downloading, base + p / 2.0, &format!("Downloading {label}…"), None)
+                            ctx.set(Phase::Downloading, base + p * share / 100.0, &format!("Downloading {label}…"), None)
                         }
                         Seen::Approve if !no_mobile => {
                             phone = true;
@@ -486,30 +515,31 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
     Ok((Run::Finished(matches!(status, Some(Ok(s)) if s.success())), failure))
 }
 
-fn worker(root: PathBuf, user: String, password: String, rx: Receiver<String>, ctx: Ctx) {
+fn worker(root: PathBuf, title: Title, user: String, password: String, rx: Receiver<String>, ctx: Ctx) {
     let began = SystemTime::now();
-    worker_inner(root.clone(), user, password, rx, ctx);
+    worker_inner(root.clone(), title, user, password, rx, ctx);
     // however it ended (done, failed, cancelled): the remembered sign-in is not kept
     wipe_login(&root, began);
 }
 
-fn worker_inner(root: PathBuf, user: String, password: String, rx: Receiver<String>, mut ctx: Ctx) {
+fn worker_inner(root: PathBuf, title: Title, user: String, password: String, rx: Receiver<String>, mut ctx: Ctx) {
     ctx.set(Phase::Preparing, 0.0, "Getting Steam's downloader…", None);
     let exe = match ensure_tool(&root) {
         Ok(e) => e,
         Err(m) => return ctx.fail(&m),
     };
-    let (gen, zh) = (generals_dir(&root), zero_hour_dir(&root));
-    if std::fs::create_dir_all(&gen).and(std::fs::create_dir_all(&zh)).is_err() {
+    let apps = apps(title, &root);
+    if apps.iter().any(|(_, dir, _, _)| std::fs::create_dir_all(dir).is_err()) {
         return ctx.fail("Couldn't create the game folder");
     }
+    let share = 100.0 / apps.len() as f32;
     let original = Some(password).filter(|p| !p.is_empty()); // kept in memory so switching to a code can sign in again
     let mut password = original.clone();
     let mut code = String::new();
     let mut no_mobile = false;
-    for (i, (app, dir, label, marker)) in [(GENERALS_APP, &gen, "Generals", "INI.big"), (ZERO_HOUR_APP, &zh, "Zero Hour", "INIZH.big")].into_iter().enumerate() {
+    for (i, (app, dir, label, arrived)) in apps.into_iter().enumerate() {
         loop {
-            match run_app(&mut ctx, &exe, &user, app, dir, &mut password, &mut code, &rx, label, i as f32 * 50.0, no_mobile) {
+            match run_app(&mut ctx, &exe, &user, app, &dir, &mut password, &mut code, &rx, label, i as f32 * share, share, no_mobile) {
                 Err(m) => return ctx.fail(&m),
                 Ok((Run::Stopped, _)) => return,
                 Ok((Run::SwitchToCode, _)) => {
@@ -518,7 +548,7 @@ fn worker_inner(root: PathBuf, user: String, password: String, rx: Receiver<Stri
                     continue;
                 }
                 Ok((Run::Finished(ok), failure)) => {
-                    if !(ok && dir.join(marker).is_file()) {
+                    if !(ok && arrived(&dir)) {
                         return ctx.fail(&failure.unwrap_or_else(|| format!("Steam didn't finish downloading {label}")));
                     }
                     break;
@@ -532,6 +562,11 @@ fn worker_inner(root: PathBuf, user: String, password: String, rx: Receiver<Stri
 impl AssetJob {
     /// Starts the download in the background. `password` may be empty if a remembered login exists.
     pub fn start(root: &Path, user: &str, password: String) -> io::Result<AssetJob> {
+        Self::start_title(root, Title::Generals, user, password)
+    }
+
+    /// The same for another game (see `apps`).
+    pub fn start_title(root: &Path, title: Title, user: &str, password: String) -> io::Result<AssetJob> {
         if !valid_user(user) {
             return Err(io::Error::other("enter your Steam account name"));
         }
@@ -539,7 +574,7 @@ impl AssetJob {
         let (tx, rx) = mpsc::channel();
         let ctx = Ctx { state: state.clone(), child: child.clone(), cancelled: cancelled.clone(), use_code: use_code.clone(), log: vec![], home: steam_home(root) };
         let (root, user) = (root.to_path_buf(), user.to_string());
-        std::thread::spawn(move || worker(root, user, password, rx, ctx));
+        std::thread::spawn(move || worker(root, title, user, password, rx, ctx));
         Ok(AssetJob { state, input: Mutex::new(Some(tx)), child, cancelled, use_code })
     }
 
@@ -579,6 +614,26 @@ impl Drop for AssetJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn red_alert_2_is_one_app_in_its_own_folder() {
+        let root = Path::new("/data");
+        let gen = apps(Title::Generals, root);
+        assert_eq!(gen.iter().map(|a| (a.0, a.1.clone())).collect::<Vec<_>>(), [(GENERALS_APP, generals_dir(root)), (ZERO_HOUR_APP, zero_hour_dir(root))]);
+        let ra2 = apps(Title::Ra2, root);
+        assert_eq!((ra2.len(), ra2[0].0, ra2[0].1.clone()), (1, 2229850, root.join("game/RA2")));
+        assert!(dd_args("alice", RA2_APP, &ra2_dir(root), false).join(" ").contains("-app 2229850 -os windows -dir /data/game/RA2"));
+        // arrived only when Yuri's Revenge's data is there, also one folder down
+        let t = std::env::temp_dir().join(format!("gen-ra2-dl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        assert!(!(ra2[0].3)(&t));
+        for f in crate::ra2::DATA_FILES {
+            std::fs::create_dir_all(t.join("RA2")).unwrap();
+            std::fs::write(t.join("RA2").join(f), "x").unwrap();
+        }
+        assert!((ra2[0].3)(&t));
+        std::fs::remove_dir_all(t).unwrap();
+    }
 
     #[test]
     fn args_never_carry_a_password() {

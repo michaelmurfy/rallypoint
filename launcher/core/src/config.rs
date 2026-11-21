@@ -84,6 +84,15 @@ pub struct Config {
     /// that later answers with a different key is refused until the player chooses to trust it.
     #[serde(default)]
     pub server_keys: std::collections::BTreeMap<String, String>,
+    /// The game the launcher is set up for: "generals" (also when empty) or "ra2".
+    #[serde(default = "default_game")]
+    pub game: String,
+    #[serde(default)]
+    pub ra2: crate::ra2::Ra2Config,
+}
+
+fn default_game() -> String {
+    "generals".into()
 }
 
 fn default_camera() -> u32 {
@@ -222,6 +231,14 @@ mod tests {
         let c = Config::load(&p);
         assert_eq!((c.serial_for("b.example:7777"), c.serial.as_str()), ("", ""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_from_before_red_alert_2_still_loads() {
+        let c: Config = serde_json::from_str(r#"{"server":"a.example:7777","game_dir":"/g"}"#).unwrap();
+        assert_eq!((c.server.as_str(), c.game.as_str(), c.ra2.side), ("a.example:7777", "generals", -1));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&Config { game: "ra2".into(), ..c }).unwrap()).unwrap();
+        assert_eq!(back.game, "ra2");
     }
 
     #[test]
