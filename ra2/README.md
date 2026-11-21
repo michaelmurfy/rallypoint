@@ -63,6 +63,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0010-yuri-side-helpers` | Pure helpers for the third side (`yuri_side.hpp`) and `tests/test_yuri.cpp`. |
 | `0011-yuri-lobby-ai-and-economy` | `YuriCountry` as lobby index 9, ThirdSide country/AI keys, Yuri AI roster and catalog. |
 | `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
+| `0013-slave-miner-economy` | Yuri Slave Miner: `Enslaves=` / `SlavesNumber` / regen+reload rates; deployed YAREFN spawns SLAV gatherers that deliver ore into house credits. |
 
 ## Factions (Country=)
 
@@ -91,7 +92,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 ### Partial / missing
 
-- **Slave Miner**: SMIN / YAREFN are buildable and deployable; `Enslaves=` / slave gather AI is not implemented (no classic `Harvester=` path).
+- **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
 - **Mind control**: weapons and warheads resolve; capture polling is campaign-only (`w_mind_control`), not skirmish.
 - **Gattling** (`IsGattling` / YTNK): unit loads and fires its primary; rate-up weapon stages are not implemented.
 - Many Yuri structure cameos still miss art (`cameomd`) until the search chain finds them.
@@ -241,7 +242,7 @@ long fight, and any UI/Maps-page flow.
 ## Not verified
 
 - A Linux Xvfb `--launch` skirmish as `Country=9` / `YuriCountry` (map `xmp31s2.map`, real YR data) loads the
-  Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner slaves, skirmish mind control and Gattling
+  Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner gather (deployed YAREFN), skirmish mind control and Gattling
   stages were not proven in play. Network play end-to-end with two real engines is covered optionally by the
   harness above (`--real`); the V2 tunnel path is also covered by a unit test (`mp: lobby through a CnCNet V2
   tunnel`) against a minimal forwarder.
