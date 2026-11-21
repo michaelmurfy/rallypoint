@@ -8,6 +8,30 @@ pub const STEAM_APP: u32 = crate::assets::RA2_APP;
 /// The archives the engine loads. `ra2md.mix` and `multimd.mix` are Yuri's Revenge's.
 pub const DATA_FILES: [&str; 4] = ["ra2.mix", "ra2md.mix", "language.mix", "multimd.mix"];
 
+/// Window sizes listed in the engine Options combobox (`main.cpp`).
+pub const WINDOW_PRESETS: &[(u32, u32)] =
+    &[(640, 480), (800, 600), (1024, 768), (1280, 720), (1600, 900), (1920, 1080)];
+
+/// Environment variable for a future logical canvas height (see `ra2/README.md`). Ignored until an engine build reads it.
+pub const LOGICAL_HEIGHT_ENV: &str = "RA2_LOGICAL_HEIGHT";
+
+/// Values the launcher may store for `logical_height` (0 = the engine's 720-line canvas).
+pub const LOGICAL_HEIGHT_CHOICES: &[u32] = &[720, 900, 1080];
+
+/// Checks width/height (0×0 = the display's own size) and an optional UI scale.
+pub fn validate_display(width: u32, height: u32, logical_height: u32) -> Result<(), String> {
+    if width > 16_384 || height > 16_384 {
+        return Err("That resolution is too large".into());
+    }
+    if width > 0 && height > 0 && (width < 640 || height < 480) {
+        return Err("Resolution must be at least 640×480".into());
+    }
+    if logical_height != 0 && !LOGICAL_HEIGHT_CHOICES.contains(&logical_height) {
+        return Err("Unknown UI scale".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ra2Install {
     pub dir: PathBuf,
@@ -87,6 +111,9 @@ pub struct Ra2Config {
     pub width: u32,
     pub height: u32,
     pub windowed: bool,
+    /// Logical canvas height for `RA2_LOGICAL_HEIGHT` (0 = engine default 720). Future engine builds only.
+    #[serde(default)]
+    pub logical_height: u32,
     /// Country 0..9 (America .. Russia, then Yuri: `ra2launch::SIDES`), -1 random.
     pub side: i32,
     /// Colour 0..7, -1 any free one.
@@ -98,7 +125,7 @@ pub struct Ra2Config {
 
 impl Default for Ra2Config {
     fn default() -> Self {
-        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, side: -1, color: -1, setup_done: false }
+        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, logical_height: 0, side: -1, color: -1, setup_done: false }
     }
 }
 
@@ -133,6 +160,14 @@ mod tests {
     fn settings_fill_in_what_an_older_file_lacks() {
         let c: Ra2Config = serde_json::from_str(r#"{"windowed":true,"renderer":"gdi"}"#).unwrap();
         assert_eq!(c, Ra2Config { windowed: true, ..Default::default() });
-        assert_eq!((c.side, c.color, c.setup_done), (-1, -1, false));
+        assert_eq!((c.side, c.color, c.setup_done, c.logical_height), (-1, -1, false, 0));
+    }
+
+    #[test]
+    fn display_limits() {
+        assert!(validate_display(0, 0, 0).is_ok());
+        assert!(validate_display(1920, 1080, 900).is_ok());
+        assert!(validate_display(100, 100, 0).is_err());
+        assert!(validate_display(0, 0, 960).is_err());
     }
 }

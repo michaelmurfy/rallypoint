@@ -2145,6 +2145,9 @@ const RA2_SPEEDS = [[0, "Fastest"], [1, "Faster"], [2, "Fast"], [3, "Medium"], [
 const RA2_CREDITS = [2500, 5000, 7500, 10000, 20000, 50000];
 const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]];
 const RA2_TEAMS = [[-1, "No team"], [0, "Team A"], [1, "Team B"], [2, "Team C"], [3, "Team D"]];
+// Engine Options combobox (main.cpp) plus common desktop sizes; filter against the screen in ra2ResolutionPick.
+const RA2_WINDOW_PRESETS = [[640, 480], [800, 600], [1024, 768], [1280, 720], [1600, 900], [1920, 1080], [2560, 1440], [3840, 2160]];
+const RA2_UI_SCALES = [[0, "Default (720p canvas)"], [900, "900p canvas (future)"], [1080, "1080p canvas (future)"]];
 const ra2Speed = () => (RA2_SPEEDS.some(([v]) => v === prefs.get().ra2Speed) ? prefs.get().ra2Speed : 2);
 const ra2Credits = () => (RA2_CREDITS.includes(prefs.get().ra2Credits) ? prefs.get().ra2Credits : 10000);
 const ra2Flag = (key, fallback = true) => (typeof prefs.get()[key] === "boolean" ? prefs.get()[key] : fallback);
@@ -2369,14 +2372,21 @@ function ra2PlayPage() {
   }
   const files = store.cfg.ra2.game_dir ? null
     : h("div", { class: "row" }, h("p", { class: "msg bad" }, "Game files not set yet."), h("button", { class: "btn", onclick: () => openWizard() }, "Find game files"));
+  const disp = h("p", { class: "muted small" });
+  const redrawDisp = () => {
+    const change = h("button", { class: "btn small ghost", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change");
+    fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()), " — ", change);
+  };
+  redrawDisp();
+  window.addEventListener("ra2display", redrawDisp);
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" },
-      h("div", { class: "stack tight" }, h("h1", {}, "Play"), h("p", { class: "muted small" }, RA2_NAME)),
+      h("div", { class: "stack tight" }, h("h1", {}, "Play"), h("p", { class: "muted small" }, RA2_NAME), disp),
       h("div", { class: "row" }, play, status)),
     files ? h("div", { class: "card" }, files) : null,
     h("div", { class: "card" }, sk.el));
   update();
-  return { el };
+  return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
 
 function ra2MapsPage() {
@@ -2682,30 +2692,68 @@ function ra2LobbyCard() {
   return { el: card, dispose: () => window.removeEventListener("lobby", draw) };
 }
 
-/** Display, side and colour defaults: one call saves all five. */
-function ra2SettingsCards() {
+function ra2DisplayLabel(r, nat) {
+  const res = !r.width ? `Screen size ${nat.w} × ${nat.h}` : `${r.width} × ${r.height}`;
+  const scale = r.logical_height ? ` · ${r.logical_height}p UI` : "";
+  return `${res}${scale}, ${r.windowed ? "windowed" : "fullscreen"}`;
+}
+
+async function ra2SaveSettings(patch, fb) {
+  Object.assign(store.cfg.ra2, patch);
+  const c = store.cfg.ra2;
+  try {
+    await invoke("ra2_set_settings", {
+      width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color,
+      logical_height: c.logical_height || 0,
+    });
+    if (fb) fb.ok("Saved");
+    window.dispatchEvent(new CustomEvent("ra2display"));
+  } catch (e) {
+    if (fb) fb.bad(errText(e));
+    else say(errText(e), "bad");
+  }
+}
+
+function ra2ResolutionPick(onSave) {
   const r = store.cfg.ra2, nat = nativeRes();
-  const save = async (patch) => {
-    Object.assign(store.cfg.ra2, patch);
-    const c = store.cfg.ra2;
-    try { await invoke("ra2_set_settings", { width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color }); fb.ok("Saved"); } catch (e) { fb.bad(errText(e)); }
-  };
+  const sizes = RA2_WINDOW_PRESETS.filter(([w, hh]) => w <= nat.w && hh <= nat.h);
+  const extra = r.width && !sizes.some(([w, hh]) => w === r.width && hh === r.height)
+    ? [[`${r.width}x${r.height}`, `${r.width} × ${r.height}`]] : [];
+  return pick("Resolution",
+    [["0x0", `Screen size (${nat.w} × ${nat.h})`], ...sizes.map(([w, hh]) => [`${w}x${hh}`, `${w} × ${hh}`]), ...extra],
+    `${r.width}x${r.height}`,
+    (v) => { const [w, hh] = v.split("x").map(Number); onSave({ width: w, height: hh }); });
+}
+
+/** Resolution, windowed and UI-scale rows for Settings or the setup wizard. */
+function ra2DisplayFields(fb) {
+  const r = store.cfg.ra2;
+  const save = (patch) => ra2SaveSettings(patch, fb);
+  const res = ra2ResolutionPick(save);
+  const win = h("input", { type: "checkbox", checked: r.windowed, "aria-label": "Windowed", onchange: () => save({ windowed: win.checked }) });
+  const ui = pick("UI scale", RA2_UI_SCALES, r.logical_height || 0, (v) => save({ logical_height: +v }));
+  return h("div", { class: "settings" },
+    setting("Resolution", "Window size passed as --width and --height. 0×0 uses the display.", res),
+    setting("Windowed", "Unchecked = fullscreen at the chosen size.", h("label", { class: "switch" }, win)),
+    setting("UI scale", "Sets RA2_LOGICAL_HEIGHT for a future engine build. Today the canvas stays 720p.", ui));
+}
+
+function ra2DisplayCard(fb) {
+  fb = fb || liveStatus();
+  return h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Display"), fb.el), ra2DisplayFields(fb));
+}
+
+/** Side and colour defaults for skirmish / lobby seats. */
+function ra2PlayerDefaultsCard() {
+  const r = store.cfg.ra2;
   const fb = liveStatus();
-  const sizes = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720], [1024, 768], [800, 600]].filter(([w]) => w < nat.w);
-  const res = pick("Resolution", [["0x0", `Screen size (${nat.w} × ${nat.h})`], ...sizes.map(([w, hh]) => [`${w}x${hh}`, `${w} × ${hh}`]), ...(r.width && !sizes.some(([w, hh]) => w === r.width && hh === r.height) ? [[`${r.width}x${r.height}`, `${r.width} × ${r.height}`]] : [])],
-    `${r.width}x${r.height}`, (v) => { const [w, hh] = v.split("x").map(Number); save({ width: w, height: hh }); });
-  const win = h("input", { type: "checkbox", checked: r.windowed, onchange: () => save({ windowed: win.checked }) });
+  const save = (patch) => ra2SaveSettings(patch, fb);
   const side = pick("Default side", [[-1, "Random"], ...RA2_SIDES.map((s, i) => [i, s])], r.side, (v) => save({ side: +v }));
   const color = pick("Default colour", [[-1, "Any free one"], ...RA2_COLORS.map((c, i) => [i, c])], r.color, (v) => save({ color: +v }));
-  return [
-    h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Display"), fb.el), h("div", { class: "settings" },
-      setting("Resolution", "Fullscreen uses the whole display.", res),
-      setting("Windowed", "Play in a window.", h("label", { class: "switch" }, win)))),
-    h("div", { class: "card" }, h("h2", {}, "You"), h("div", { class: "settings" },
-      nameSetting(),
-      setting("Side", "Default for new seats.", side),
-      setting("Colour", "Taken colours fall to the next free one.", color))),
-  ];
+  return h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "You"), fb.el), h("div", { class: "settings" },
+    nameSetting(),
+    setting("Side", "Default for new seats.", side),
+    setting("Colour", "Taken colours fall to the next free one.", color)));
 }
 
 /** The lobby name, shared by both games. */
@@ -2732,13 +2780,16 @@ function gameSetting() {
 
 function ra2SettingsPage() {
   const files = gameFilesPanel(() => updateSidebar(), "ra2");
+  const displayFb = liveStatus();
+  const tab = store.settingsTab === "rallypoint" ? "rallypoint" : (store.settingsTab === "display" ? "display" : "game");
   const t = tabbed("Settings", [
-    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ...ra2SettingsCards()]],
+    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ra2PlayerDefaultsCard()]],
+    ["display", "Display", () => [ra2DisplayCard(displayFb)]],
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
       h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
-  ], store.settingsTab === "rallypoint" ? "rallypoint" : "game", (id) => { store.settingsTab = id; });
+  ], tab, (id) => { store.settingsTab = id; });
   const el = h("div", { class: "page" }, h("div", { class: "page-head" }, h("h1", {}, "Settings")), t.bar, t.body);
   return { el, dispose: files.dispose };
 }
@@ -2948,19 +2999,7 @@ function openRa2Wizard() {
         h("p", { class: "muted" }, "Point to the folder with ra2md.mix, or download from Steam below. Steam and EA installs are found automatically."), panel.el);
     }
     if (step === 2) {
-      const r = store.cfg.ra2, nat = nativeRes();
-      const sizes = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720], [1024, 768]].filter(([x]) => x < nat.w);
-      const save = async (patch) => {
-        Object.assign(store.cfg.ra2, patch);
-        const c = store.cfg.ra2;
-        try { await invoke("ra2_set_settings", { width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color }); } catch (e) { say(errText(e), "bad"); }
-      };
-      const resSel = pick("Resolution", [["0x0", `Screen size (${nat.w} × ${nat.h})`], ...sizes.map(([x, y]) => [`${x}x${y}`, `${x} × ${y}`])],
-        `${r.width}x${r.height}`, (v) => { const [width, height] = v.split("x").map(Number); save({ width, height }); });
-      const win = h("input", { type: "checkbox", checked: r.windowed, onchange: () => save({ windowed: win.checked }) });
-      return h("div", { class: "stack" }, h("h2", {}, "Display"),
-        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel),
-        h("label", { class: "switch" }, win, "Windowed"));
+      return h("div", { class: "stack" }, h("h2", {}, "Display"), ra2DisplayFields(null));
     }
     if (step === 3) {
       const note = h("p", { class: "muted small", role: "status" }, w.mapsNote);
@@ -2991,12 +3030,11 @@ function openRa2Wizard() {
         h("p", { class: "muted" }, "Extra classic multiplayer maps. Skip if you only want the ones that came with the game."),
         h("div", { class: "row" }, install), note);
     }
-    const r = store.cfg.ra2, nat = nativeRes();
-    const resLabel = !r.width ? `Screen size ${nat.w} × ${nat.h}` : `${r.width} × ${r.height}`;
+    const r = store.cfg.ra2;
     return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, r.game_dir || "not set yet"),
-        h("dt", {}, "Display"), h("dd", {}, resLabel + (r.windowed ? ", windowed" : ", fullscreen")),
+        h("dt", {}, "Display"), h("dd", {}, ra2DisplayLabel(r, nativeRes())),
         h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "add packs later from Maps")),
       h("div", { class: "row" },
         h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"),

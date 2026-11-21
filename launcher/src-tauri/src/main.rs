@@ -1203,13 +1203,31 @@ fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, Strin
 
 /// Screen size (0 x 0: the screen's own), window, and the default side and colour.
 #[tauri::command]
-fn ra2_set_settings(app: tauri::AppHandle, width: u32, height: u32, windowed: bool, side: i32, color: i32) -> Result<(), String> {
-    if !(-1..ra2launch::SIDES).contains(&side) || !(-1..ra2launch::COLORS).contains(&color) || width > 16384 || height > 16384 {
+fn ra2_set_settings(
+    app: tauri::AppHandle,
+    width: u32,
+    height: u32,
+    windowed: bool,
+    side: i32,
+    color: i32,
+    logical_height: Option<u32>,
+) -> Result<(), String> {
+    let logical_height = logical_height.unwrap_or(0);
+    if !(-1..ra2launch::SIDES).contains(&side) || !(-1..ra2launch::COLORS).contains(&color) {
         return Err("That setting is out of range".into());
     }
+    ra2::validate_display(width, height, logical_height)?;
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
-    c.ra2 = ra2::Ra2Config { width, height, windowed, side, color, ..c.ra2 };
+    c.ra2 = ra2::Ra2Config {
+        width,
+        height,
+        windowed,
+        logical_height,
+        side,
+        color,
+        ..c.ra2
+    };
     c.save(&path).map_err(|e| e.to_string())
 }
 
