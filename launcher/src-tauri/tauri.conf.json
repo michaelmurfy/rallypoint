@@ -33,7 +33,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "engine"
+      "engine",
+      "ra2engine"
     ],
     "category": "Game",
     "publisher": "Michael Murphy <michael@murfy.co.nz>",

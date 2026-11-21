@@ -8,7 +8,7 @@
 name: Release
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', 'ra2-alpha.*'] # ra2-alpha.N: Red Alert 2 alphas, tagged on feat/ra2; published as pre-releases
     branches: [main]
     paths: # ignored for tags
       - 'Cargo.lock'
@@ -16,6 +16,7 @@ on:
       - 'patches/**'
       - 'third-party/**'
       - 'scripts/package-linux.sh'
+      - 'ra2/**'
       - '.github/workflows/release.yml'
   schedule:
     - cron: '17 3 * * 1' # caches unused for a week are deleted; this also notices a runner image that breaks the build
@@ -345,17 +346,171 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
+  # ---- Red Alert 2 engine (ra2/patches applied on top of ra2/engine/, see ra2/README.md) ------------------------
+  # Each job runs the engine's doctest suite on the binary it ships (Windows under Wine).
+  ra2-engine-linux:
+    name: RA2 engine (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      - id: key
+        shell: bash
+        run: echo "key=ra2-engine-out-linux-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: |
+          sudo apt-get update
+          # SDL is built from the vendored tarball; these are the backends it compiles in (loaded at run time).
+          sudo apt-get install -y clang cmake ninja-build python3 libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxss-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
+            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libgl1-mesa-dev libegl1-mesa-dev
+          sh ra2/patches/apply.sh
+      - name: Configure, build and test
+        if: env.BUILD == '1'
+        run: |
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build ra2/build
+          ra2/build/ra2assets_tests
+      - name: Collect
+        if: env.BUILD == '1'
+        run: |
+          mkdir -p out/ra2engine
+          strip -o out/ra2engine/ra2engine ra2/build/ra2engine
+          cp ra2/engine/LICENSE ra2/engine/THIRD_PARTY_NOTICES.md out/ra2engine/
+          ls -la out/ra2engine
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ra2-engine-linux
+          path: out/ra2engine
+          if-no-files-found: error
+
+  ra2-engine-windows:
+    name: RA2 engine (Windows x64, MinGW)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      - id: key
+        shell: bash
+        run: echo "key=ra2-engine-out-windows-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3 mingw-w64 wine64
+          sh ra2/patches/apply.sh
+      - name: Configure, build and test
+        if: env.BUILD == '1'
+        run: |
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/ra2/mingw-w64-x86_64.cmake"
+          cmake --build ra2/build
+          WINEDEBUG=-all wine ra2/build/ra2assets_tests.exe
+      - name: Collect
+        if: env.BUILD == '1'
+        run: |
+          mkdir -p out/ra2engine
+          for f in ra2engine.exe ra2game.exe SDL2.dll; do x86_64-w64-mingw32-strip -o "out/ra2engine/$f" "ra2/build/$f"; done
+          cp ra2/engine/LICENSE ra2/engine/THIRD_PARTY_NOTICES.md out/ra2engine/
+          ls -la out/ra2engine
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ra2-engine-windows
+          path: out/ra2engine
+          if-no-files-found: error
+
+  ra2-engine-macos:
+    name: RA2 engine (macOS universal)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      - id: key
+        shell: bash
+        run: echo "key=ra2-engine-out-macos-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+      - id: built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - if: steps.built.outputs.cache-hit != 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
+      - if: env.BUILD == '1'
+        run: |
+          brew install ninja
+          sh ra2/patches/apply.sh
+      - name: Configure, build and test
+        if: env.BUILD == '1'
+        run: |
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build ra2/build
+          ra2/build/ra2assets_tests
+          # The Intel half too, where Rosetta is installed: the maths golden hash must match on both.
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then arch -x86_64 ra2/build/ra2assets_tests; fi
+      - name: Collect (ad-hoc signed)
+        if: env.BUILD == '1'
+        run: |
+          mkdir -p out/ra2engine
+          strip -x -o out/ra2engine/ra2engine ra2/build/ra2engine
+          codesign --force --sign - out/ra2engine/ra2engine
+          lipo -info out/ra2engine/ra2engine
+          cp ra2/engine/LICENSE ra2/engine/THIRD_PARTY_NOTICES.md out/ra2engine/
+      - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ra2-engine-macos
+          path: out/ra2engine
+          if-no-files-found: error
+
   # ---- launcher app (engine bundled in as a resource) ----------------------------------------
   launcher:
     name: Launcher (${{ matrix.os }})
-    needs: [engine-macos, engine-windows, engine-windows-x64, engine-linux]
+    needs: [engine-macos, engine-windows, engine-windows-x64, engine-linux, ra2-engine-macos, ra2-engine-windows, ra2-engine-linux]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15, engine: engine-macos, engine64: '', bundles: "" }
-          - { os: windows-latest, engine: engine-windows, engine64: engine-windows-x64, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
-          - { os: ubuntu-24.04, engine: engine-linux, engine64: '', bundles: "--bundles deb,rpm" }
+          - { os: macos-15, engine: engine-macos, engine64: '', ra2: ra2-engine-macos, bundles: "" }
+          - { os: windows-latest, engine: engine-windows, engine64: engine-windows-x64, ra2: ra2-engine-windows, bundles: "--bundles nsis" } # MSI rejects 'alpha' style versions
+          - { os: ubuntu-24.04, engine: engine-linux, engine64: '', ra2: ra2-engine-linux, bundles: "--bundles deb,rpm" }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -363,7 +518,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Tag matches app version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"; core="${tag%%-*}"
@@ -380,6 +535,13 @@ jobs:
         with:
           name: ${{ matrix.engine64 }}
           path: launcher/src-tauri/engine/x64
+      # The Red Alert 2 engine (ra2/), its own resource folder.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.ra2 }}
+          path: launcher/src-tauri/ra2engine
+      - if: runner.os != 'Windows'
+        run: chmod 755 launcher/src-tauri/ra2engine/ra2engine
       # Artifacts lose the executable bit; the deb and rpm take the file mode from here.
       - if: runner.os == 'Linux'
         run: |
@@ -407,14 +569,20 @@ jobs:
         run: |
           # A tag build uses the tag (v0.1.0-beta.1 -> 0.1.0-beta.1); a manual run gets a clearly fake one.
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          # Installers and packages need x.y.z[-pre]: an alpha is named <tauri.conf.json version>-ra2.alpha.N (no extra "-" for rpm).
+          PKG_VERSION="$VERSION"
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) PKG_VERSION="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' launcher/src-tauri/tauri.conf.json)-ra2.alpha.${GITHUB_REF_NAME#ra2-alpha.}" ;; esac
+          echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
           # tauri.conf.json carries the base 0.1.0; this file overrides it so installers and the app are named by the real version
           # Tauri takes only a plain x.y.z for the packages on Linux (rpm rejects the '-' of 0.8.3-beta.1). The rpm carries the beta in
           # its release field (0.8.3-0.beta.1 sorts before 0.8.3-1) and package-linux.sh gives the deb 0.8.3~beta.1 afterwards.
-          BUNDLE_VERSION="$VERSION"; RPM_RELEASE=1
+          BUNDLE_VERSION="$PKG_VERSION"; RPM_RELEASE=1
           if [ "$RUNNER_OS" = Linux ]; then
-            BUNDLE_VERSION="${VERSION%%-*}"
-            [ "$BUNDLE_VERSION" = "$VERSION" ] || RPM_RELEASE="0.${VERSION#*-}"
+            BUNDLE_VERSION="${PKG_VERSION%%-*}"
+            [ "$BUNDLE_VERSION" = "$PKG_VERSION" ] || RPM_RELEASE="0.${PKG_VERSION#*-}"
           fi
           printf '{"version":"%s","bundle":{"linux":{"rpm":{"release":"%s"}}}}' "$BUNDLE_VERSION" "$RPM_RELEASE" > launcher/src-tauri/tauri.version.json
           echo "building $VERSION"
@@ -443,6 +611,8 @@ jobs:
           fi
           [ -f "$res/assets/Art/Textures/exscorch01.dds" ] || { echo "::error::the Enhanced renderer's assets folder is not among the bundled resources"; exit 1; }
           [ "$RUNNER_OS" != Linux ] || [ -f "$res/fonts/DejaVuSans.ttf" ] || { echo "::error::the menu font is not among the bundled resources"; exit 1; }
+          ra2=target/release/ra2engine/ra2engine; [ "$RUNNER_OS" != Windows ] || ra2="$ra2.exe"
+          [ -f "$ra2" ] || { echo "::error::the Red Alert 2 engine (ra2engine) is not among the bundled resources"; exit 1; }
       - name: Collect installers
         shell: bash
         run: |
@@ -450,8 +620,8 @@ jobs:
           find target/release/bundle -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*-setup.exe' \) -exec cp -v {} dist/ \;
           # The plain archive is the deb's /usr tree (see scripts/package-linux.sh), for CachyOS and anything else.
           if [ "$RUNNER_OS" = Linux ]; then
-            sh scripts/package-linux.sh debversion "$RALLYPOINT_VERSION" dist/*.deb
-            sh scripts/package-linux.sh tarball "$RALLYPOINT_VERSION" dist/*.deb dist
+            sh scripts/package-linux.sh debversion "$PKG_VERSION" dist/*.deb
+            sh scripts/package-linux.sh tarball "$PKG_VERSION" dist/*.deb dist
           fi
           ls dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -478,6 +648,8 @@ jobs:
       - name: Work out the version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           echo "RALLYPOINT_VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Binaries for Linux (x86_64, arm64, armv7), built on Debian so they run on Raspberry Pi OS too
         run: |
@@ -508,11 +680,13 @@ jobs:
         run: |
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rallypoint-relay"
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="$RALLYPOINT_VERSION"
+          # An RA2 alpha never moves `latest`: it is pushed as `ra2-alpha` (and its own version) only.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) MOVING=ra2-alpha ;; *) MOVING=latest ;; esac
           # One multi-architecture image: Docker pulls the right one for the machine (PC, Raspberry Pi, ARM server).
           # `latest` follows the newest release, prereleases included: every release so far is one, and docker-compose.yml pulls it.
           docker buildx build --builder multi -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" \
-            --platform linux/amd64,linux/arm64,linux/arm/v7 -t "$IMAGE:$VERSION" -t "$IMAGE:latest" --push .
+            --platform linux/amd64,linux/arm64,linux/arm/v7 -t "$IMAGE:$VERSION" -t "$IMAGE:$MOVING" --push .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-server
@@ -540,6 +714,8 @@ jobs:
         shell: bash
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"; fi
+          # ra2-alpha.N (an RA2 alpha from feat/ra2): the version compiled in is the tag itself; the updater recognises it.
+          case "$GITHUB_REF_NAME" in ra2-alpha.*) VERSION="$GITHUB_REF_NAME" ;; esac
           export RALLYPOINT_VERSION="$VERSION"
           cargo build --release -p generals-server
           mkdir -p dist
@@ -591,7 +767,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac   # ra2-alpha.N included
           # The release page (and the in-app "What's new") shows this release and the two before it, not the whole history.
           awk '/^## Rallypoint /{n++} n<=3' docs/release-notes.md > release-notes-short.md
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag $pre \
