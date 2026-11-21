@@ -1,3 +1,14 @@
+## Rallypoint 0.10.0-beta.2
+
+**Red Alert 2 and Yuri's Revenge join the launcher.** Pick Generals or RA2 from the sidebar, find or download a Yuri's Revenge install, and play skirmish or online through the same relay.
+
+- **Play, Maps and Online for RA2**, with official and `.mmx` maps, classic map packs, a clickable lobby map, Ready, and Yuri as a side.
+- **Yuri units that matter in multiplayer:** Slave Miner economy, Gattling stages, Magnetron beam, Floating Disc drain, mind control, Grinder and Bio Reactor fates.
+- **Lobby options from CnCNet** (crates, superweapons, allies, AutoRepair, crate density) and a first-start wizard that remembers the last game.
+- **macOS is Apple Silicon only** for the RA2 engine (no Intel half). Generals was already arm64-only on Mac.
+- **Windows build fixed** so the RA2 engine compiles under MinGW again (`far` / `near` names clash with Windows headers).
+- **This is a beta, not an `ra2-alpha` tag.** Same updater channel as other 0.10.0 betas. Generals multiplayer stays compatible with 0.10.0-beta.1.
+
 ## Rallypoint 0.10.0-beta.1
 
 **Make your own maps.** EA's World Builder now opens from the Maps page on Windows, with your mods loaded.
