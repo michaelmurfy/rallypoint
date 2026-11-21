@@ -235,22 +235,23 @@ void try_fire(const World& world, std::vector<Unit>& units, std::vector<Building
     // hostiles within the fragment weapon's Range of the impact, ascending
     // distance then index]. No-op for every weapon without shrapnel.
     if (u.shrapnel_count > 0 && u.shrapnel_damage > 0) {
-        std::vector<std::pair<double, int>> near;
+        // (not named `near`: Windows headers #define near)
+        std::vector<std::pair<double, int>> nearby;
         const double r2 = u.shrapnel_range * u.shrapnel_range;
         for (int j = 0; j < static_cast<int>(units.size()); ++j) {
             if (j == victim_idx || j == attacker_idx) continue;
             const Unit& w = units[j];
             if (!w.alive || w.die_time >= 0.0 || w.cargo_of >= 0 || w.house == u.house || w.is_aircraft) continue;
             const double dx = w.fx - v.fx, dy = w.fy - v.fy;
-            if (dx * dx + dy * dy <= r2) near.push_back({dx * dx + dy * dy, j});
+            if (dx * dx + dy * dy <= r2) nearby.push_back({dx * dx + dy * dy, j});
         }
-        std::sort(near.begin(), near.end());
+        std::sort(nearby.begin(), nearby.end());
         Unit frag = u;
         frag.w_damage = u.shrapnel_damage;
         frag.w_verses = u.shrapnel_verses;
-        for (int k = 0; k < static_cast<int>(near.size()) && k < u.shrapnel_count; ++k) {
-            world.note_fragment(attacker_idx, v.fx, v.fy, v.level, near[static_cast<std::size_t>(k)].second);   // W7-12-07
-            deliver_hit_from(units, occ, frag, attacker_idx, -1, near[static_cast<std::size_t>(k)].second);
+        for (int k = 0; k < static_cast<int>(nearby.size()) && k < u.shrapnel_count; ++k) {
+            world.note_fragment(attacker_idx, v.fx, v.fy, v.level, nearby[static_cast<std::size_t>(k)].second);   // W7-12-07
+            deliver_hit_from(units, occ, frag, attacker_idx, -1, nearby[static_cast<std::size_t>(k)].second);
         }
     }
 }

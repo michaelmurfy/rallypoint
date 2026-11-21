@@ -450,7 +450,7 @@ jobs:
           if-no-files-found: error
 
   ra2-engine-macos:
-    name: RA2 engine (macOS universal)
+    name: RA2 engine (macOS arm64)
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -476,18 +476,15 @@ jobs:
       - name: Configure, build and test
         if: env.BUILD == '1'
         run: |
-          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           cmake --build ra2/build
           ra2/build/ra2assets_tests
-          # The Intel half too, where Rosetta is installed: the maths golden hash must match on both.
-          if arch -x86_64 /usr/bin/true 2>/dev/null; then arch -x86_64 ra2/build/ra2assets_tests; fi
       - name: Collect (ad-hoc signed)
         if: env.BUILD == '1'
         run: |
           mkdir -p out/ra2engine
           strip -x -o out/ra2engine/ra2engine ra2/build/ra2engine
           codesign --force --sign - out/ra2engine/ra2engine
-          lipo -info out/ra2engine/ra2engine
           cp ra2/engine/LICENSE ra2/engine/THIRD_PARTY_NOTICES.md out/ra2engine/
       - if: env.BUILD == '1' && steps.built.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

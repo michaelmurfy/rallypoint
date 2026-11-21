@@ -4722,7 +4722,8 @@ int World::ai_find_typed_building(int house, const HouseAiRec& rec, int arg, boo
     const int type = tc.building_type_roster[bt];
     if (type < 0) return -1;
     const int sel = script_building_selector(arg);
-    const bool far = sel == kBldSelFarthest || sel == kBldSelHighestThreat;
+    // (not named `far`: Windows headers #define far)
+    const bool prefer_far = sel == kBldSelFarthest || sel == kBldSelHighestThreat;
     int best = -1;
     long long bestd = 0;
     for (int i = 0; i < (int)buildings_.size(); ++i) {
@@ -4741,8 +4742,8 @@ int World::ai_find_typed_building(int house, const HouseAiRec& rec, int arg, boo
         // pickers (W2-SK-08)].
         const bool other = enemy && rec.enemy_house >= 0 && b.house != rec.enemy_house &&
                            b.house != neutral_house();
-        if (other) d = far ? d - 1000000000000LL : d + 1000000000000LL;
-        if (best < 0 || (far ? d > bestd : d < bestd)) { best = i; bestd = d; }
+        if (other) d = prefer_far ? d - 1000000000000LL : d + 1000000000000LL;
+        if (best < 0 || (prefer_far ? d > bestd : d < bestd)) { best = i; bestd = d; }
     }
     return best;
 }

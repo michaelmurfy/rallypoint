@@ -60,9 +60,10 @@ TEST_CASE("placement_check: adjacency [RE: construction.md §9]") {
     // gap exactly Adjacent (2): candidate at x=8 -> gap = 8-5-1 = 2 -> OK
     CHECK(placement_check(8, 2, 2, 2, 0, 2, pass, 30, 30, occ, bs, false).adjacency);
     // gap 3 -> fails
-    auto far = placement_check(9, 2, 2, 2, 0, 2, pass, 30, 30, occ, bs, false);
-    CHECK_FALSE(far.adjacency); CHECK_FALSE(far.ok);
-    CHECK(far.cell_ok[0]);   // cells individually fine; adjacency is the failure
+    // (not named `far`: Windows headers #define far)
+    auto too_far = placement_check(9, 2, 2, 2, 0, 2, pass, 30, 30, occ, bs, false);
+    CHECK_FALSE(too_far.adjacency); CHECK_FALSE(too_far.ok);
+    CHECK(too_far.cell_ok[0]);   // cells individually fine; adjacency is the failure
     // enemy building doesn't grant adjacency
     std::vector<Building> enemy = {mk(2, 2, 4, 4, /*house*/ 1)};
     CHECK_FALSE(placement_check(8, 2, 2, 2, 0, 2, pass, 30, 30, occ, enemy, false).adjacency);

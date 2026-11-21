@@ -868,16 +868,17 @@ TEST_CASE("map_trigger: W5-A events 23/34/53/54 and actions 35/40/61/70") {
     CHECK(s.raise_logic(23, none, h));
     CHECK(s.local(1));
     // 34 ComesNearWaypoint: within 5 cells (0x500 leptons) of waypoint 4 (50,60).
-    RaiseContext near;
-    near.has_object = true;
-    near.object_house_type = 3;
-    near.obj_x = 56; near.obj_y = 60;
-    CHECK_FALSE(s.raise_tag(d.find_tag("TAGNEA01"), 34, near, h));
-    near.obj_x = 54; near.obj_y = 63;
-    CHECK(s.raise_tag(d.find_tag("TAGNEA01"), 34, near, h));
+    // (not named `near`: Windows headers #define near)
+    RaiseContext nearby;
+    nearby.has_object = true;
+    nearby.object_house_type = 3;
+    nearby.obj_x = 56; nearby.obj_y = 60;
+    CHECK_FALSE(s.raise_tag(d.find_tag("TAGNEA01"), 34, nearby, h));
+    nearby.obj_x = 54; nearby.obj_y = 63;
+    CHECK(s.raise_tag(d.find_tag("TAGNEA01"), 34, nearby, h));
     CHECK(s.local(2));
     // 53 SpyAsHouse (Russians = 2) / 54 SpyAsInfantry (InfantryTypes[7] = E1).
-    RaiseContext spy = near;
+    RaiseContext spy = nearby;
     spy.disguise_house_type = 3;
     CHECK_FALSE(s.raise_cell(105, 30, 53, spy, h));
     spy.disguise_house_type = 2;
