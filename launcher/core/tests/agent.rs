@@ -368,21 +368,39 @@ fn red_alert_2_tunnel_and_lobby_between_two_players() {
     let a = Agent::start(&server, "AAA", "ra2:room", "pw", None).unwrap();
     let b = Agent::start(&server, "BBB", "ra2:room", "pw", None).unwrap();
     let (ia, ib) = (vip_of(&a)[3] as u16, vip_of(&b)[3] as u16);
-    let (ga, gb) = (spawner(&a), spawner(&b));
+    let (ga, gb, spoof) = (spawner(&a), spawner(&b), spawner(&a));
     let recv = |s: &UdpSocket| { let mut buf = [0u8; 2048]; let n = s.recv(&mut buf).unwrap(); buf[..n].to_vec() };
-    // a ping is answered locally with its first 12 bytes
+    let quiet = |s: &UdpSocket| { let mut buf = [0u8; 2048]; s.set_read_timeout(Some(Duration::from_millis(300))).unwrap(); s.recv(&mut buf).is_err() };
+    // each game presents its launch's token (ra2 patch 0006) and gets the 8-byte answer
+    let prefix = [0xFF, 0xFF, 0xFF, 0xFF, b'R', b'P', b'A', b'U'];
+    let (ta, tb) = (a.arm_tunnel(), b.arm_tunnel());
     let mut ping = vec![0u8; 50];
     ping[4..12].copy_from_slice(b"pingpong");
+    spoof.send(&ping).unwrap();
+    assert!(quiet(&spoof), "nothing answers before the token");
+    ga.send(&[&prefix[..], &ta].concat()).unwrap();
+    assert_eq!(recv(&ga), prefix);
+    gb.send(&[&prefix[..], &tb].concat()).unwrap();
+    assert_eq!(recv(&gb), prefix);
+    // a ping is answered locally with its first 12 bytes
     ga.send(&ping).unwrap();
     assert_eq!(recv(&ga), &ping[..12]);
     let hdr = |from: u16, to: u16, p: &[u8]| [&from.to_be_bytes()[..], &to.to_be_bytes(), p].concat();
-    // A speaks first (binding its tunnel), then B answers: A sees it from B's id
-    ga.send(&hdr(ia, ib, b"orders")).unwrap();
-    std::thread::sleep(Duration::from_millis(100));
-    gb.send(&hdr(ib, ia, b"hello")).unwrap();
-    assert_eq!(recv(&ga), &hdr(ib, ia, b"hello")[..]);
-    ga.send(&hdr(ia, ib, b"orders")).unwrap();
-    assert_eq!(recv(&gb), &hdr(ia, ib, b"orders")[..]);
+    let (orders, hello) = (generals_proto::ra2_game_packet(b"orders"), generals_proto::ra2_game_packet(b"hello"));
+    gb.send(&hdr(ib, ia, &hello)).unwrap();
+    assert_eq!(recv(&ga), &hdr(ib, ia, &hello)[..]);
+    ga.send(&hdr(ia, ib, &orders)).unwrap();
+    assert_eq!(recv(&gb), &hdr(ia, ib, &orders)[..]);
+    // another local endpoint speaking as A, with A's token too, and a datagram the game did not make: dropped
+    spoof.send(&[&prefix[..], &ta].concat()).unwrap();
+    spoof.send(&hdr(ia, ib, &orders)).unwrap();
+    ga.send(&hdr(ia, ib, b"not the game")).unwrap();
+    assert!(quiet(&spoof) && quiet(&gb));
+    // the next launch's token: the old game is no longer heard
+    let _ = a.arm_tunnel();
+    ga.send(&[&prefix[..], &ta].concat()).unwrap();
+    ga.send(&hdr(ia, ib, &orders)).unwrap();
+    assert!(quiet(&ga) && quiet(&gb), "a replayed old token");
     // lobby blobs reach the other player only
     assert!(a.send_lobby(b"ready"));
     assert!(!a.send_lobby(&[0; 1025]));

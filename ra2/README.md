@@ -56,6 +56,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0003-linux-and-macos-link-sdl-statically` | Linux and macOS link SDL statically: one executable, no rpath. Windows keeps `SDL2.dll`. |
 | `0004-launcher-interface` | `--launch`, window size/fullscreen/title, map files by path, the CnCNet V2 tunnel. |
 | `0005-crt-lround-check-only-with-ucrt` | One test compares `om::lround` with the Windows C runtime's; it now runs only against the UCRT (our MinGW build links msvcrt, which differs out of range; the sim never calls it). |
+| `0006-tunnel-token-auth` | `[Tunnel] Token=` (32 hex digits): the engine proves itself to the Rallypoint agent before any tunnel traffic (`0xFFFF`/`0xFFFF` + `RPAU` + token); keep-alives wait for the 8-byte answer. |
 
 ## Building
 
@@ -117,6 +118,7 @@ AITakeover=no        ; network: a player who drops is taken over by the AI inste
 Address=127.0.0.1
 Port=50000
 Version=2            ; 2 = CnCNet tunnel v2 header (the Rallypoint agent), 3 = v3
+Token=a1b2...        ; 32 hex digits from the agent (`arm_tunnel`); required for the Rallypoint agent
 
 [Player0]            ; up to [Player7]; slot 0 must be human in a network game: it is the host (lockstep master)
 Type=human           ; human, ai, or closed (a missing section is closed)
@@ -139,8 +141,12 @@ Random countries, colours and starts are resolved from `Seed`, the same on every
 
 The engine speaks CnCNet tunnel v2 to `[Tunnel]` from one UDP socket (an ephemeral local port):
 
-- Every datagram is `[u16 BE sender id][u16 BE receiver id][payload]`. The payload is the engine's own
-  `[u32 LE checksum][packet]`, at most 640 bytes (636 + 4), so well under the agent's 1020.
+- With `Token=` (Rallypoint): before anything else it sends `[u16 BE 0xFFFF][u16 BE 0xFFFF]RPAU` + the 16-byte
+  token. That is not a valid v2 header (sender equals receiver). The agent answers with the 8-byte prefix alone
+  and then only hears this endpoint; keep-alives wait for that answer.
+- Every game datagram is `[u16 BE sender id][u16 BE receiver id][payload]`. The payload is the engine's own
+  `[u32 LE checksum][packet]`, at most 640 bytes (636 + 4), so well under the agent's 1020. The agent and relay
+  drop anything that is not such a packet (`is_ra2_game_packet`).
 - Ids are the players' `TunnelId`s, 1..65535; 0 is never a player.
 - Keep-alive every 5 s: sender = own id, receiver `0xFFFE`, one zero byte of payload. Drop it (it lets a real
   tunnel learn the sender's address).

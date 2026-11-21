@@ -1,0 +1,285 @@
+diff --git a/engine/launch_file.inc b/engine/launch_file.inc
+index c33e71c..8969c78 100644
+--- a/engine/launch_file.inc
++++ b/engine/launch_file.inc
+@@ -40,6 +40,22 @@ inline int team_of(const std::string& v) {
+     const int n = num(l, -1);
+     return n >= 1 && n <= 4 ? n - 1 : ra2mp::kNoTeam;   // Team=1..4 = A..D
+ }
++// `[Tunnel] Token=` for the Rallypoint agent: 32 hex digits -> 16 bytes.
++inline bool parse_token(const std::string& hex, std::uint8_t out[16]) {
++    if (hex.size() != 32) return false;
++    auto nib = [](char c) -> int {
++        if (c >= '0' && c <= '9') return c - '0';
++        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++        return -1;
++    };
++    for (std::size_t i = 0; i < 16; ++i) {
++        const int hi = nib(hex[2 * i]), lo = nib(hex[2 * i + 1]);
++        if (hi < 0 || lo < 0) return false;
++        out[i] = static_cast<std::uint8_t>((hi << 4) | lo);
++    }
++    return true;
++}
+ 
+ }  // namespace launchfile
+ 
+@@ -142,9 +158,17 @@ int run_launch_file(const std::string& path, bool no_audio) {
+             if (m.slots[i].kind == ra2mp::SlotKind::Human && (tunnel_ids[(std::size_t)i] == 0 ||
+                                                               (v2 && tunnel_ids[(std::size_t)i] > 0xFFFF)))
+                 throw std::runtime_error("[Player" + std::to_string(i) + "] needs a TunnelId=");
++        std::uint8_t token[16];
++        const std::uint8_t* token_ptr = nullptr;
++        const std::string token_hex = ini.get("Tunnel", "Token", "");
++        if (!token_hex.empty()) {
++            if (!parse_token(token_hex, token))
++                throw std::runtime_error("[Tunnel] Token= must be 32 hex digits");
++            token_ptr = token;
++        }
+         transport = std::make_shared<ra2mp::MpNet>();
+         if (!transport->open_tunnel(tunnel, tunnel_ids[(std::size_t)s.local_slot],
+-                                    v2 ? ra2::net::TunnelMode::V2 : ra2::net::TunnelMode::V3))
++                                    v2 ? ra2::net::TunnelMode::V2 : ra2::net::TunnelMode::V3, token_ptr))
+             throw std::runtime_error("cannot open the game socket");
+         s.transport = ra2mp::MpTransportKind::Tunnel;
+         s.host_addr = tunnel.str();
+diff --git a/engine/mp/mp_net.cpp b/engine/mp/mp_net.cpp
+index 03b273b..8cf64b7 100644
+--- a/engine/mp/mp_net.cpp
++++ b/engine/mp/mp_net.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "net/wire.hpp"
+ 
++#include <cstring>
++
+ namespace ra2mp {
+ 
+ namespace {
+@@ -19,16 +21,26 @@ bool MpNet::open_direct(std::uint16_t port) {
+ }
+ 
+ bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3) {
+-    return open_tunnel(tunnel, my_v3, ra2::net::TunnelMode::V3);
++    return open_tunnel(tunnel, my_v3, ra2::net::TunnelMode::V3, nullptr);
+ }
+ 
+-bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3, ra2::net::TunnelMode mode) {
++bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3, ra2::net::TunnelMode mode,
++                        const std::uint8_t* token) {
+     auto io = std::make_unique<ra2::net::UdpDatagramIO>();
+     if (!io->open(0)) return false;
+     io->set_tunnel(mode, tunnel, my_v3);
+     wire_mode_ = mode;
++    need_auth_ = token != nullptr;
++    authed_ = !need_auth_;
++    last_auth_ = 0;
++    if (token) std::memcpy(token_, token, ra2::net::kTunnelAuthTokenSize);
+     io->on_foreign = [this](const ra2::net::NetAddr& from, const std::uint8_t* d, std::size_t n) {
+-        if (ping_sent_ && from == tunnel_ && ra2::net::is_tunnel_ping_reply(d, n, ping_nonce_)) {
++        if (from != tunnel_) return;
++        if (need_auth_ && !authed_ && ra2::net::is_tunnel_auth_reply(d, n)) {
++            authed_ = true;
++            return;
++        }
++        if (ping_sent_ && ra2::net::is_tunnel_ping_reply(d, n, ping_nonce_)) {
+             rtt_ = static_cast<int>(now_ms() - ping_sent_);
+             ping_sent_ = 0;
+         }
+@@ -39,9 +51,17 @@ bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3, ra2::net::Tunne
+     me_ = my_v3;
+     last_keep_ = 0;
+     net_ = std::make_unique<ra2::net::NetManager>(*udp_, wall_ms);
++    if (need_auth_) send_tunnel_auth();
+     return true;
+ }
+ 
++void MpNet::send_tunnel_auth() {
++    if (!udp_ || !need_auth_) return;
++    const std::vector<std::uint8_t> auth = ra2::net::make_tunnel_auth(token_);
++    udp_->socket().send_to(tunnel_, auth.data(), auth.size());
++    last_auth_ = now_ms();
++}
++
+ void MpNet::open_loopback(ra2::net::LoopbackHub& hub, const Addr& self, std::function<std::uint32_t()> clock_ms) {
+     udp_.reset();
+     tunnel_mode_ = false;
+@@ -67,6 +87,11 @@ std::string MpNet::describe(PeerId p) const {
+ 
+ void MpNet::tick(std::uint64_t now) {
+     if (!tunnel_mode_ || !udp_) return;
++    // Rallypoint agent: prove the launch token before any tunnel traffic.
++    if (need_auth_ && !authed_) {
++        if (last_auth_ == 0 || now - last_auth_ >= 250) send_tunnel_auth();
++        return;
++    }
+     // Register / refresh our id at the tunnel (V3 learns the sender's
+     // endpoint from its first packet; the receiver may not exist yet, the
+     // tunnel then just drops the payload). 0xFFFFFFFE is never a real id.
+diff --git a/engine/mp/mp_net.hpp b/engine/mp/mp_net.hpp
+index 70d740c..2c569df 100644
+--- a/engine/mp/mp_net.hpp
++++ b/engine/mp/mp_net.hpp
+@@ -40,7 +40,10 @@ public:
+     bool open_tunnel(const Addr& tunnel, std::uint32_t my_v3);
+     // Rallypoint: the same over a CnCNet V2 tunnel (4-byte BE [from][to]
+     // header, 16-bit ids), e.g. the Rallypoint agent on 127.0.0.1.
+-    bool open_tunnel(const Addr& tunnel, std::uint32_t my_id, ra2::net::TunnelMode mode);
++    // `token` (16 bytes from `[Tunnel] Token=`) proves this process to the agent
++    // before any tunnel traffic; null skips the proof (plain CnCNet tunnels).
++    bool open_tunnel(const Addr& tunnel, std::uint32_t my_id, ra2::net::TunnelMode mode,
++                     const std::uint8_t* token = nullptr);
+     // Tests: an endpoint of an in-process LoopbackHub, with the test's clock.
+     void open_loopback(ra2::net::LoopbackHub& hub, const Addr& self, std::function<std::uint32_t()> clock_ms);
+ 
+@@ -60,15 +63,20 @@ public:
+     void tick(std::uint64_t now);
+ 
+ private:
++    void send_tunnel_auth();
++
+     std::unique_ptr<ra2::net::UdpDatagramIO> udp_;
+     std::unique_ptr<ra2::net::NetManager> net_;
+     bool tunnel_mode_ = false;
+     ra2::net::TunnelMode wire_mode_ = ra2::net::TunnelMode::V3;
+     Addr tunnel_;
+     std::uint32_t me_ = 0;
+-    std::uint64_t last_keep_ = 0, ping_sent_ = 0;
++    std::uint64_t last_keep_ = 0, ping_sent_ = 0, last_auth_ = 0;
+     std::uint32_t ping_nonce_ = 0;
+     int rtt_ = -1;
++    bool need_auth_ = false;
++    bool authed_ = true;
++    std::uint8_t token_[ra2::net::kTunnelAuthTokenSize]{};
+ };
+ 
+ // The lobby's reliable messaging over MpNet's 0x1236 global channel: DATA_ACK
+diff --git a/engine/net/wire.cpp b/engine/net/wire.cpp
+index 7cd87be..da8945b 100644
+--- a/engine/net/wire.cpp
++++ b/engine/net/wire.cpp
+@@ -94,4 +94,15 @@ bool is_tunnel_ping_reply(const uint8_t* data, size_t len, uint32_t cookie) {
+     return get_u32le(data + 8) == cookie;
+ }
+ 
++std::vector<uint8_t> make_tunnel_auth(const uint8_t token[kTunnelAuthTokenSize]) {
++    std::vector<uint8_t> p(kTunnelAuthSize);
++    std::memcpy(p.data(), kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix));
++    std::memcpy(p.data() + sizeof(kTunnelAuthPrefix), token, kTunnelAuthTokenSize);
++    return p;
++}
++
++bool is_tunnel_auth_reply(const uint8_t* data, size_t len) {
++    return len == sizeof(kTunnelAuthPrefix) && std::memcmp(data, kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix)) == 0;
++}
++
+ }  // namespace ra2::net
+diff --git a/engine/net/wire.hpp b/engine/net/wire.hpp
+index 86ed5fe..ab07621 100644
+--- a/engine/net/wire.hpp
++++ b/engine/net/wire.hpp
+@@ -72,4 +72,12 @@ constexpr size_t kTunnelPingReplySize = 12;
+ std::vector<uint8_t> make_tunnel_ping(uint32_t cookie);
+ bool is_tunnel_ping_reply(const uint8_t* data, size_t len, uint32_t cookie);
+ 
++// Rallypoint agent token proof (not a CnCNet v2 header: sender = receiver = 0xFFFF).
++// Datagram = kTunnelAuthPrefix (8) + 16-byte token; the agent answers with the prefix alone.
++constexpr uint8_t kTunnelAuthPrefix[8] = {0xFF, 0xFF, 0xFF, 0xFF, 'R', 'P', 'A', 'U'};
++constexpr size_t kTunnelAuthTokenSize = 16;
++constexpr size_t kTunnelAuthSize = sizeof(kTunnelAuthPrefix) + kTunnelAuthTokenSize;
++std::vector<uint8_t> make_tunnel_auth(const uint8_t token[kTunnelAuthTokenSize]);
++bool is_tunnel_auth_reply(const uint8_t* data, size_t len);
++
+ }  // namespace ra2::net
+diff --git a/tests/test_mp.cpp b/tests/test_mp.cpp
+index a484085..4d87ef3 100644
+--- a/tests/test_mp.cpp
++++ b/tests/test_mp.cpp
+@@ -13,6 +13,8 @@
+ #include "mp/mp_net.hpp"
+ #include "net/wire.hpp"
+ 
++#include <array>
++#include <cstring>
+ #include <map>
+ #include <memory>
+ #include <set>
+@@ -498,17 +500,33 @@ TEST_CASE("mp: lobby through a CnCNet V3 tunnel (8-byte LE header)") {
+ }
+ 
+ TEST_CASE("mp: lobby through a CnCNet V2 tunnel (Rallypoint agent: 4-byte BE header)") {
+-    // A minimal V2 forwarder (what the Rallypoint agent emulates): register sender -> endpoint, forward verbatim.
++    // A minimal V2 forwarder (what the Rallypoint agent emulates): token first, then register sender -> endpoint.
+     UdpSocket relay;
+     REQUIRE(relay.open(0));
+     const Addr ra{kLoopback, relay.local_port()};
+     std::map<std::uint32_t, Addr> reg;
++    std::map<Addr, std::array<std::uint8_t, 16>> tokens;
+     std::size_t largest = 0;
+     int forwarded = 0;
+     auto run_relay = [&]() {
+         std::uint8_t buf[2048];
+         Addr from;
+         for (int n; (n = relay.recv_from(from, buf, sizeof buf)) > 0;) {
++            if (static_cast<std::size_t>(n) == ra2::net::kTunnelAuthSize &&
++                std::memcmp(buf, ra2::net::kTunnelAuthPrefix, sizeof(ra2::net::kTunnelAuthPrefix)) == 0) {
++                std::array<std::uint8_t, 16> tok{};
++                std::memcpy(tok.data(), buf + sizeof(ra2::net::kTunnelAuthPrefix), 16);
++                // First endpoint with this token owns it; others are ignored (as the agent does).
++                bool taken = false;
++                for (const auto& e : tokens)
++                    if (e.second == tok && e.first != from) { taken = true; break; }
++                if (!taken) {
++                    tokens[from] = tok;
++                    relay.send_to(from, ra2::net::kTunnelAuthPrefix, sizeof(ra2::net::kTunnelAuthPrefix));
++                }
++                continue;
++            }
++            if (tokens.count(from) == 0) continue;  // drop until the token is presented
+             std::uint32_t s, r;
+             const std::uint8_t* pl;
+             std::size_t pn;
+@@ -522,9 +540,11 @@ TEST_CASE("mp: lobby through a CnCNet V2 tunnel (Rallypoint agent: 4-byte BE hea
+             if (it != reg.end()) { relay.send_to(it->second, buf, static_cast<std::size_t>(n)); ++forwarded; }
+         }
+     };
++    std::uint8_t tok_h[16], tok_c[16];
++    for (int i = 0; i < 16; ++i) { tok_h[i] = static_cast<std::uint8_t>(0x10 + i); tok_c[i] = static_cast<std::uint8_t>(0x40 + i); }
+     MpNet th, tc;
+-    REQUIRE(th.open_tunnel(ra, 3, ra2::net::TunnelMode::V2));
+-    REQUIRE(tc.open_tunnel(ra, 7, ra2::net::TunnelMode::V2));
++    REQUIRE(th.open_tunnel(ra, 3, ra2::net::TunnelMode::V2, tok_h));
++    REQUIRE(tc.open_tunnel(ra, 7, ra2::net::TunnelMode::V2, tok_c));
+     LobbyHost host(th, ident("Host", 1), host_model());
+     LobbyClient c(tc, peer_of_v3(3), ident("Tunnel", 2));
+     bool ok = false;
+diff --git a/tests/test_net_wire.cpp b/tests/test_net_wire.cpp
+index 6940374..edac18a 100644
+--- a/tests/test_net_wire.cpp
++++ b/tests/test_net_wire.cpp
+@@ -9,6 +9,7 @@
+ #include "net/udp_socket.hpp"
+ #include "net/wire.hpp"
+ 
++#include <cstring>
+ #include <map>
+ #include <string>
+ #include <vector>
+@@ -82,6 +83,16 @@ TEST_CASE("net wire: tunnel V2 (BE u16) and V3 (LE u32) headers") {
+     auto ping = make_tunnel_ping(0xCAFEu);
+     CHECK(ping.size() == 50);
+     CHECK(is_tunnel_ping_reply(ping.data(), 12, 0xCAFEu));
++    // Rallypoint agent token: sender=receiver=0xFFFF + "RPAU" + 16 bytes; reply is the 8-byte prefix.
++    uint8_t tok[16];
++    for (int i = 0; i < 16; ++i) tok[i] = static_cast<uint8_t>(0xA0 + i);
++    auto auth = make_tunnel_auth(tok);
++    REQUIRE(auth.size() == kTunnelAuthSize);
++    CHECK(std::memcmp(auth.data(), kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix)) == 0);
++    CHECK(std::memcmp(auth.data() + 8, tok, 16) == 0);
++    CHECK(is_tunnel_auth_reply(auth.data(), 8));
++    CHECK_FALSE(is_tunnel_auth_reply(auth.data(), auth.size()));
++    CHECK_FALSE(tunnel_unwrap(TunnelMode::V2, auth.data(), auth.size(), &f, &t, &q, &n, 3));
+ }
+ 
+ TEST_CASE("net channel: private header golden bytes and PacketID counters") {

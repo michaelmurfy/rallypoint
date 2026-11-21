@@ -85,7 +85,7 @@ pub enum Packet {
     /// `ai` is the level every player's game must start with.
     Room { master: bool, ai: u8 },
     /// Red Alert 2 game traffic (CnCNet tunnel v2, see `MAX_TUNNEL_PAYLOAD`). Agent -> server: `vip` is the destination.
-    /// Server -> agent: the source. Opaque bytes, carried only between players of the same room.
+    /// Server -> agent: the source. Carried only between players of the same room, and only if `is_ra2_game_packet`.
     Tunnel { vip: Vip, payload: Vec<u8> },
     /// The launcher's own Red Alert 2 pre-game lobby: an opaque blob. Agent -> server: `vip` ignored; the server hands it
     /// to every other player in the room with `vip` set to the sender's.
@@ -356,7 +356,7 @@ pub fn is_game_packet(p: &[u8]) -> bool {
     }
     let mut plain = p.to_vec();
     let mut mask: u32 = 0xFADE;
-    for w in plain.chunks_exact_mut(4) {
+    for w in plain.as_chunks_mut::<4>().0 {
         let v = u32::from_be_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
         w.copy_from_slice(&v.to_le_bytes());
         mask = mask.wrapping_add(0x321);
@@ -365,6 +365,46 @@ pub fn is_game_packet(p: &[u8]) -> bool {
     let magic = u16::from_le_bytes([plain[4], plain[5]]);
     let sum = plain[4..].iter().fold(0u32, |c, &b| (c << 1).wrapping_add(b as u32).wrapping_add(c >> 31));
     magic == 0xF00D && sum == crc
+}
+
+/// Largest Red Alert 2 game datagram: the engine's `build_datagram` refuses a packet over 636 bytes (`kMaxDatagramPayload`,
+/// the original's 0x280 receive buffer less the checksum), plus its 4-byte checksum.
+pub const MAX_RA2_DATAGRAM: usize = 640;
+
+/// Does `p` (a `Packet::Tunnel` payload: what follows the CnCNet v2 header) look like a datagram the Red Alert 2 engine
+/// made? Its layout (`ra2/engine/engine/net/wire.hpp`, `channel.hpp`, byte-exact with gamemd's UDPInterfaceClass and
+/// ConnectionClass) is `[u32 LE checksum][channel packet]`; the checksum is `crc = rotl1(crc) + word` over the packet's
+/// little-endian 32-bit words, a 1..3 byte tail read as a zero-padded word. The packet is a private channel packet (magic
+/// 0xAA04, Yuri's Revenge's product id, 14-byte header) or a global one (magic 0x1236, 16-byte header), both with code 0
+/// to 2 (data with ack, data without, ack) and a zero router byte. Like `is_game_packet` for Generals, the relay carries
+/// nothing else.
+pub fn is_ra2_game_packet(p: &[u8]) -> bool {
+    if p.len() < 6 || p.len() > MAX_RA2_DATAGRAM {
+        return false;
+    }
+    let (sum, pkt) = (u32::from_le_bytes([p[0], p[1], p[2], p[3]]), &p[4..]);
+    let header = match u16::from_le_bytes([pkt[0], pkt[1]]) {
+        0xAA04 => 14,
+        0x1236 => 16,
+        _ => return false,
+    };
+    pkt.len() >= header && pkt[2] <= 2 && pkt[3] == 0 && ra2_checksum(pkt) == sum
+}
+
+/// The Red Alert 2 engine's datagram checksum (`packet_crc` in `ra2/engine/engine/net/wire.cpp`).
+fn ra2_checksum(pkt: &[u8]) -> u32 {
+    pkt.chunks(4).fold(0u32, |c, w| {
+        let mut b = [0u8; 4];
+        b[..w.len()].copy_from_slice(w);
+        c.rotate_left(1).wrapping_add(u32::from_le_bytes(b))
+    })
+}
+
+/// A Red Alert 2 datagram the way its engine builds one: a global channel packet (magic 0x1236, code 1, 16-byte
+/// header) around `body`, checksum in front. For tests and tools; the game does this itself.
+pub fn ra2_game_packet(body: &[u8]) -> Vec<u8> {
+    let pkt = [&[0x36, 0x12, 1, 0][..], &[0; 12], body].concat();
+    [&ra2_checksum(&pkt).to_le_bytes()[..], &pkt].concat()
 }
 
 /// A datagram the way the engine builds it: CRC and magic in front of `payload`, then obfuscated. For tests and
@@ -376,7 +416,7 @@ pub fn game_packet(payload: &[u8]) -> Vec<u8> {
     let crc = p[4..].iter().fold(0u32, |c, &b| (c << 1).wrapping_add(b as u32).wrapping_add(c >> 31));
     p[..4].copy_from_slice(&crc.to_le_bytes());
     let mut mask: u32 = 0xFADE;
-    for w in p.chunks_exact_mut(4) {
+    for w in p.as_chunks_mut::<4>().0 {
         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
         w.copy_from_slice(&v.to_be_bytes());
         mask = mask.wrapping_add(0x321);
@@ -535,6 +575,49 @@ mod tests {
         assert!(!is_game_packet(&a[..6]) && !is_game_packet(&[]) && !is_game_packet(&[0; 1101]));
         assert!(!is_game_packet(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"));
         assert!(!is_game_packet(&[0u8; 64]));
+    }
+
+    /// Datagrams the Red Alert 2 engine's own NetManager sent through a V2 tunnel socket (captured with a small C++
+    /// program linking `engine/net` and `engine/mp/mp_net.cpp`), tunnel header removed.
+    #[test]
+    fn recognises_real_ra2_game_packets_and_nothing_else() {
+        let hex = |s: &str| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let real = [
+            hex("ac40990004aa0100000000000000000000001900010000002a"),   // private, no ack wanted (a frame)
+            hex("41a03c0004aa000000000000000000000000190001"),           // private, ack wanted
+            hex("2050150004aa020000000000000000000000"),                 // private ack
+            hex("0212eb80361200000000000000000000000004aa68656c6c6f"),   // global (lobby), ack wanted
+            hex("b09114aa361202000000000000000000000004aa"),             // global ack
+        ];
+        for (n, a) in real.iter().enumerate() {
+            assert!(is_ra2_game_packet(a), "packet {n}");
+            for i in 0..a.len() {
+                for bit in [1u8, 0x80] {
+                    let mut bad = a.clone();
+                    bad[i] ^= bit;
+                    assert!(!is_ra2_game_packet(&bad), "packet {n}, flipped byte {i}");
+                }
+            }
+        }
+        // shorter than its header (checksum fixed up), the tunnel's keep-alive and ping, the token datagram, other things
+        let mut short = real[2][..17].to_vec();
+        let sum = ra2_checksum(&short[4..]);
+        short[..4].copy_from_slice(&sum.to_le_bytes());
+        assert!(!is_ra2_game_packet(&short));
+        assert!(!is_ra2_game_packet(&[]) && !is_ra2_game_packet(&[0]) && !is_ra2_game_packet(&[0; 46]));
+        assert!(!is_ra2_game_packet(&hex("ffffffff5250415500112233445566778899aabbccddeeff")));
+        assert!(!is_ra2_game_packet(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+        assert!(is_ra2_game_packet(&ra2_game_packet(b"x")) && ra2_game_packet(&[]).len() == 20);
+        // 640 bytes is the most the engine sends
+        let mut big = [&[0u8; 4][..], &[0x36, 0x12, 1, 0]].concat();
+        big.resize(MAX_RA2_DATAGRAM, 7);
+        let sum = ra2_checksum(&big[4..]);
+        big[..4].copy_from_slice(&sum.to_le_bytes());
+        assert!(is_ra2_game_packet(&big));
+        big.push(7);
+        let sum = ra2_checksum(&big[4..]);
+        big[..4].copy_from_slice(&sum.to_le_bytes());
+        assert!(!is_ra2_game_packet(&big));
     }
 
     #[test]
