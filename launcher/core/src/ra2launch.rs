@@ -49,6 +49,9 @@ pub struct Tunnel {
     pub port: u16,
     /// This player's own tunnel id.
     pub id: u8,
+    /// What the engine must present to the agent (`Agent::arm_tunnel`); never sent to or taken from the page.
+    #[serde(skip)]
+    pub token: [u8; 16],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,7 +178,8 @@ pub fn launch_ini(setup: &Ra2Setup, map_path: &Path, local: usize) -> Result<Str
         let _ = writeln!(f, "Seed={}", setup.seed);
     }
     if let Some(t) = setup.tunnel {
-        let _ = writeln!(f, "\n[Tunnel]\nAddress=127.0.0.1\nPort={}\nVersion=2", t.port);
+        let token: String = t.token.iter().map(|b| format!("{b:02x}")).collect();
+        let _ = writeln!(f, "\n[Tunnel]\nAddress=127.0.0.1\nPort={}\nVersion=2\nToken={token}", t.port);
     }
     for (n, p) in setup.players.iter().take(MAX_PLAYERS).enumerate() {
         let _ = writeln!(f, "\n[Player{n}]");
@@ -219,7 +223,7 @@ mod tests {
         Ra2Player { ai: Some(Difficulty::Brutal), name: "x".into(), ..human("") }
     }
     fn setup(players: Vec<Ra2Player>) -> Ra2Setup {
-        Ra2Setup { map: "Little Big Lake.yrm".into(), players, credits: 10000, speed: 2, seed: 0, tunnel: Some(Tunnel { port: 1, id: 1 }) }
+        Ra2Setup { map: "Little Big Lake.yrm".into(), players, credits: 10000, speed: 2, seed: 0, tunnel: Some(Tunnel { port: 1, id: 1, token: [0; 16] }) }
     }
 
     #[test]
@@ -272,9 +276,9 @@ mod tests {
         b.tunnel_id = Some(7);
         let mut s = validate(setup(vec![a, b, ai()]), 4, true).unwrap();
         s.seed = 99;
-        s.tunnel = Some(Tunnel { port: 50000, id: 7 });
+        s.tunnel = Some(Tunnel { port: 50000, id: 7, token: [0xAB; 16] });
         let ini = launch_ini(&s, Path::new("C:\\RA2\\x.map"), 1).unwrap();
-        for want in ["Mode=network\n", "LocalPlayer=1\n", "Seed=99\n", "[Tunnel]\nAddress=127.0.0.1\nPort=50000\nVersion=2\n", "Name=Host\nTunnelId=1\n", "Name=Guest\nTunnelId=7\n"] {
+        for want in ["Mode=network\n", "LocalPlayer=1\n", "Seed=99\n", "[Tunnel]\nAddress=127.0.0.1\nPort=50000\nVersion=2\nToken=abababababababababababababababab\n", "Name=Host\nTunnelId=1\n", "Name=Guest\nTunnelId=7\n"] {
             assert!(ini.contains(want), "{want} in {ini}");
         }
         s.players.swap(0, 2);

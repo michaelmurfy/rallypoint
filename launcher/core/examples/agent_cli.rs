@@ -14,6 +14,9 @@ fn main() {
         match agent.status() {
             Status::Connected(v) => {
                 println!("ready {} {}.{}.{}.{}", agent.local, v[0], v[1], v[2], v[3]);
+                // for a Red Alert 2 engine: `[Tunnel] Port=` and `Token=`
+                let token: String = agent.arm_tunnel().iter().map(|b| format!("{b:02x}")).collect();
+                println!("ra2-tunnel {} {token}", agent.tunnel_port());
                 if a.get(4).map(String::as_str) == Some("once") {
                     return;
                 }
@@ -24,5 +27,9 @@ fn main() {
             Status::Connecting => std::thread::sleep(Duration::from_millis(50)),
         }
     }
-    std::thread::sleep(Duration::from_secs(60));
+    let secs = std::env::var("AGENT_CLI_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    std::thread::sleep(Duration::from_secs(secs));
+    if let Some(d) = agent.diagnostics() {
+        println!("diagnostics {d:?}");
+    }
 }

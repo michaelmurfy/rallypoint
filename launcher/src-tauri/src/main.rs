@@ -1262,8 +1262,8 @@ fn ra2_launch(app: tauri::AppHandle, relay: tauri::State<Relay>, setup: ra2launc
         let guard = relay.0.lock().unwrap();
         let agent = guard.as_ref().ok_or("You are not connected to a server")?;
         let Status::Connected(vip) = agent.status() else { return Err("You are not connected to a server".into()) };
-        agent.arm_tunnel();
-        setup.tunnel = Some(ra2launch::Tunnel { port: agent.tunnel_port(), id: vip[3] });
+        let token = agent.arm_tunnel();
+        setup.tunnel = Some(ra2launch::Tunnel { port: agent.tunnel_port(), id: vip[3], token });
     }
     // this machine's seat: the player with our tunnel id online, the one human in a skirmish
     let local = match setup.tunnel {

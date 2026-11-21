@@ -1,7 +1,7 @@
 //! Relay state machine. No sockets or clocks in here: `handle` takes the sender and the time and returns
 //! the datagrams to send, so it is testable without a network.
 use generals_proto::secure::{self, Key, Session as Crypto};
-use generals_proto::{ct_eq, is_game_packet, sha256, Cookie, Packet, Reason, ServerStats, SyncEntry, SyncVerdict, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_SYNC_PLAYERS};
+use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, sha256, Cookie, Packet, Reason, ServerStats, SyncEntry, SyncVerdict, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_SYNC_PLAYERS};
 pub mod geo;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -512,9 +512,9 @@ impl Server {
                 .filter(|(a, s)| **a != from && same_room(s) && s.vip == vip)
                 .map(|(a, _)| (*a, Packet::Data { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
-            // Red Alert 2 (CnCNet tunnel v2 behind the agent): opaque, but only to one player of the same room, who learns
-            // the sender's address. Sizes are checked by `Packet::decode`.
-            Packet::Tunnel { vip, payload } => self
+            // Red Alert 2 (CnCNet tunnel v2 behind the agent): only the engine's own datagrams, only to one player of the same
+            // room, who learns the sender's address.
+            Packet::Tunnel { vip, payload } if is_ra2_game_packet(&payload) => self
                 .sessions
                 .iter()
                 .filter(|(a, s)| **a != from && same_room(s) && s.vip == vip)
@@ -1094,13 +1094,21 @@ mod tests {
         let vb = w.quick(addr(2), "BBB", "ra2:r", 0);
         let vd = w.quick(addr(3), "DDD", "ra2:other", 0);
         let t = |vip: Vip, payload: Vec<u8>| Packet::Tunnel { vip, payload };
-        assert_eq!(w.send(addr(1), t(vb, vec![7; 3]), 1), vec![(addr(2), t(va, vec![7; 3]))], "the receiver learns who sent it");
-        assert_eq!(w.send(addr(2), t(va, vec![generals_proto::MAX_TUNNEL_PAYLOAD as u8; generals_proto::MAX_TUNNEL_PAYLOAD]), 1).len(), 1, "a full-size datagram passes");
+        let g = generals_proto::ra2_game_packet(b"frame");
+        assert_eq!(w.send(addr(1), t(vb, g.clone()), 1), vec![(addr(2), t(va, g.clone()))], "the receiver learns who sent it");
+        let full = generals_proto::ra2_game_packet(&[7; generals_proto::MAX_RA2_DATAGRAM - 20]);
+        assert_eq!(w.send(addr(2), t(va, full), 1).len(), 1, "a full-size datagram passes");
         // the same address in another room, an address nobody has, and oneself: nothing goes anywhere
         assert_eq!(vd, va);
-        assert!(w.send(addr(3), t(vb, vec![1]), 1).is_empty(), "rooms never cross");
-        assert!(w.send(addr(1), t([10, 77, 0, 99], vec![1]), 1).is_empty(), "unknown address");
-        assert!(w.send(addr(1), t(va, vec![1]), 1).is_empty(), "not back to the sender");
+        assert!(w.send(addr(3), t(vb, g.clone()), 1).is_empty(), "rooms never cross");
+        assert!(w.send(addr(1), t([10, 77, 0, 99], g.clone()), 1).is_empty(), "unknown address");
+        assert!(w.send(addr(1), t(va, g.clone()), 1).is_empty(), "not back to the sender");
+        // not something the game made: a bad checksum, anything else, or a Generals packet
+        let mut bad = g.clone();
+        bad[20] ^= 1;
+        for p in [bad, vec![7; 3], b"GET / HTTP/1.1\r\n\r\n".to_vec(), generals_proto::game_packet(b"Generals"), vec![0; generals_proto::MAX_TUNNEL_PAYLOAD]] {
+            assert!(w.send(addr(1), t(vb, p.clone()), 1).is_empty(), "{p:?}");
+        }
         // too big or empty does not decode, so it is dropped without an answer (what an old server does with the new tags too)
         assert!(w.send(addr(1), t(vb, vec![0; generals_proto::MAX_TUNNEL_PAYLOAD + 1]), 2).is_empty());
         assert!(w.send(addr(1), t(vb, vec![]), 2).is_empty());

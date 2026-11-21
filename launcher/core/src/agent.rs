@@ -4,7 +4,7 @@
 //! Engine sockets register with `Bind{port}` (or by sending), keyed by logical port (8086 lobby, 8088 game).
 //! Red Alert 2 uses a second loopback socket that looks like a CnCNet tunnel to the game (see `from_spawner`).
 use generals_proto::secure::{self, ClientPending, Key, Session as Crypto};
-use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_LOBBY_PAYLOAD, MAX_TUNNEL_PAYLOAD};
+use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_LOBBY_PAYLOAD};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -37,6 +37,8 @@ const VIP_PREFIX: [u8; 3] = [10, 77, 0];
 /// What a datagram from the local Red Alert 2 game (yrpp-spawner in tunnel mode) asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum FromSpawner<'a> {
+    /// The game presented the token: answer with `AUTH_PREFIX`.
+    Authed,
     /// A tunnel ping: answer with these bytes.
     Pong(&'a [u8]),
     /// Game traffic for the player at this virtual address.
@@ -44,20 +46,38 @@ enum FromSpawner<'a> {
     Ignore,
 }
 
-/// CnCNet tunnel v2 as yrpp-spawner speaks it. Checked against CnCNet/yrpp-spawner `src/Spawner/NetHack.cpp`
+/// The first 8 bytes of the engine's token datagram (`[Tunnel] Token=`, ra2 patch 0006), followed by the token; the agent
+/// answers with these 8 bytes alone. Sender = receiver = 0xFFFF, which no tunnel v2 header has (they must differ).
+const AUTH_PREFIX: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, b'R', b'P', b'A', b'U'];
+
+/// Who may use the Red Alert 2 tunnel: the endpoint that presented this launch's token (`Agent::arm_tunnel`).
+struct TunnelTrust {
+    token: [u8; 16],
+    peer: Option<SocketAddr>,
+}
+
+/// CnCNet tunnel v2 as our engine (and yrpp-spawner) speaks it. Checked against CnCNet/yrpp-spawner `src/Spawner/NetHack.cpp`
 /// (`Tunnel::SendTo`/`RecvFrom`: header `u16 sender, u16 receiver`, both `htons`, so big-endian, then at most 1024 bytes
 /// of payload; a received datagram needs at least 5 bytes and `receiver == own id`, and `sender` becomes the peer's
 /// "port", matched against `[OtherN] Port`) and CnCNet/cncnet-server `TunnelV2.cs` (`OnReceive`: sender 0 and receiver 0
-/// with exactly 50 bytes is a ping, answered with its first 12 bytes; sender == receiver otherwise is refused; the first
-/// datagram from a sender id binds its endpoint and others claiming that id are dropped; its 1024-byte buffer leaves
-/// 1020 bytes of payload). Here a player's tunnel id is the last octet of its room address.
+/// with exactly 50 bytes is a ping, answered with its first 12 bytes; sender == receiver otherwise is refused; its
+/// 1024-byte buffer leaves 1020 bytes of payload). Here a player's tunnel id is the last octet of its room address.
 ///
-/// shortcut: the game cannot present the engine token (`Packet::Auth`), so the first loopback endpoint that sends a valid
-/// header with our own id as sender owns the tunnel until `Agent::arm_tunnel`. Another local process that wins that race
-/// (it would have to know the port and our id) can speak for the player in the room; upgrade by teaching the spawner to
-/// send the token, or by checking the endpoint belongs to the game process we started.
-fn from_spawner<'a>(own: Option<u8>, bound: &mut Option<SocketAddr>, from: SocketAddr, d: &'a [u8]) -> FromSpawner<'a> {
+/// Only the loopback endpoint that sent the token datagram (`AUTH_PREFIX` + the current token, compared in constant time)
+/// is heard, the way Generals engines present `Packet::Auth`; everything from any other endpoint is dropped. Its
+/// payloads must be the engine's own datagrams (`is_ra2_game_packet`).
+fn from_spawner<'a>(own: Option<u8>, trust: &mut TunnelTrust, from: SocketAddr, d: &'a [u8]) -> FromSpawner<'a> {
     if from.ip() != std::net::Ipv4Addr::LOCALHOST || d.len() < 4 {
+        return FromSpawner::Ignore;
+    }
+    if d.starts_with(&AUTH_PREFIX) {
+        if ct_eq(&d[AUTH_PREFIX.len()..], &trust.token) && trust.peer.is_none_or(|p| p == from) {
+            trust.peer = Some(from);
+            return FromSpawner::Authed;
+        }
+        return FromSpawner::Ignore;
+    }
+    if trust.peer != Some(from) {
         return FromSpawner::Ignore;
     }
     let (sender, receiver) = (u16::from_be_bytes([d[0], d[1]]), u16::from_be_bytes([d[2], d[3]]));
@@ -66,20 +86,15 @@ fn from_spawner<'a>(own: Option<u8>, bound: &mut Option<SocketAddr>, from: Socke
     }
     let payload = &d[4..];
     let Some(own) = own else { return FromSpawner::Ignore };
-    if sender != own as u16 || receiver == sender || !(1..=255).contains(&receiver) || payload.is_empty() || payload.len() > MAX_TUNNEL_PAYLOAD {
+    if sender != own as u16 || receiver == sender || !(1..=255).contains(&receiver) || !is_ra2_game_packet(payload) {
         return FromSpawner::Ignore;
-    }
-    match bound {
-        Some(b) if *b != from => return FromSpawner::Ignore,
-        Some(_) => {}
-        None => *bound = Some(from),
     }
     FromSpawner::Forward { to: [VIP_PREFIX[0], VIP_PREFIX[1], VIP_PREFIX[2], receiver as u8], payload }
 }
 
 /// A relayed Red Alert 2 datagram as the spawner expects it from its tunnel: `sender` is the source's id.
 fn to_spawner(src: Vip, own: u8, payload: &[u8]) -> Option<Vec<u8>> {
-    (src[..3] == VIP_PREFIX && src[3] != own && (1..=MAX_TUNNEL_PAYLOAD).contains(&payload.len()))
+    (src[..3] == VIP_PREFIX && src[3] != own && is_ra2_game_packet(payload))
         .then(|| [&(src[3] as u16).to_be_bytes()[..], &(own as u16).to_be_bytes(), payload].concat())
 }
 
@@ -261,8 +276,8 @@ pub struct Agent {
     crypto: Arc<Mutex<Option<Arc<Crypto>>>>,
     relay: UdpSocket,
     tunnel_port: u16,
-    /// The Red Alert 2 game's endpoint on the tunnel socket, once it has spoken (see `from_spawner`).
-    tunnel_peer: Arc<Mutex<Option<SocketAddr>>>,
+    /// This launch's Red Alert 2 token and the game endpoint that presented it (see `from_spawner`).
+    tunnel_trust: Arc<Mutex<TunnelTrust>>,
     lobby: LobbyQueue,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
@@ -322,7 +337,8 @@ impl Agent {
         let tunnel = UdpSocket::bind("127.0.0.1:0")?;
         tunnel.set_read_timeout(Some(TICK))?;
         let tunnel_port = tunnel.local_addr()?.port();
-        let tunnel_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::default();
+        // nobody knows this one: nothing binds before `arm_tunnel`
+        let tunnel_trust = Arc::new(Mutex::new(TunnelTrust { token: secure::random_token(), peer: None }));
         let lobby: LobbyQueue = Arc::default();
 
         let status = Arc::new(Mutex::new(Status::Connecting));
@@ -397,7 +413,7 @@ impl Agent {
 
         // Red Alert 2 game -> relay
         let t2r = {
-            let (relay, tunnel, status, stop, crypto, bytes, peer) = (relay.try_clone()?, tunnel.try_clone()?, status.clone(), stop.clone(), crypto.clone(), bytes.clone(), tunnel_peer.clone());
+            let (relay, tunnel, status, stop, crypto, bytes, peer) = (relay.try_clone()?, tunnel.try_clone()?, status.clone(), stop.clone(), crypto.clone(), bytes.clone(), tunnel_trust.clone());
             std::thread::spawn(move || {
                 let mut buf = [0u8; 2048];
                 while !stop.load(Ordering::Relaxed) {
@@ -408,6 +424,9 @@ impl Agent {
                     };
                     let what = from_spawner(own, &mut peer.lock().unwrap(), from, &buf[..n]);
                     match what {
+                        FromSpawner::Authed => {
+                            let _ = tunnel.send_to(&AUTH_PREFIX, from);
+                        }
                         FromSpawner::Pong(echo) => {
                             let _ = tunnel.send_to(echo, from);
                         }
@@ -426,7 +445,7 @@ impl Agent {
         let r2l = {
             let (relay, status, stop, issued, health, bytes, server_key, learned, crypto, progress) =
                 (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone(), progress.clone());
-            let (tunnel, tunnel_peer, lobby) = (tunnel, tunnel_peer.clone(), lobby.clone());
+            let (tunnel, tunnel_trust, lobby) = (tunnel, tunnel_trust.clone(), lobby.clone());
             std::thread::spawn(move || {
                 let mut serial = serial;
                 let mut cookie: Cookie = [0; 16];
@@ -551,7 +570,7 @@ impl Agent {
                                             Status::Connected(v) => Some(v[3]),
                                             _ => None,
                                         };
-                                        let to = *tunnel_peer.lock().unwrap();
+                                        let to = tunnel_trust.lock().unwrap().peer;
                                         if let (Some(own), Some(to)) = (own, to) {
                                             if let Some(d) = to_spawner(vip, own, &payload) {
                                                 bytes[1].fetch_add(n as u64, Ordering::Relaxed);
@@ -639,7 +658,7 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, tunnel_port, tunnel_peer, lobby, stop, threads: vec![l2r, t2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, tunnel_port, tunnel_trust, lobby, stop, threads: vec![l2r, t2r, r2l] })
     }
 
     /// Where the connection is and what to check, for the Online page.
@@ -663,7 +682,6 @@ impl Agent {
     /// the lobby worked (its sockets came first) and the game never loaded.
     pub fn new_engine(&self) {
         self.engine_epoch.fetch_add(1, Ordering::Relaxed);
-        self.arm_tunnel();
     }
 
     /// The loopback port of the Red Alert 2 tunnel: the spawn.ini `[Tunnel] Ip=127.0.0.1 Port=` value. The player's own
@@ -672,9 +690,12 @@ impl Agent {
         self.tunnel_port
     }
 
-    /// A Red Alert 2 game is about to start: forget the endpoint of the last one; the next to speak as us takes the tunnel.
-    pub fn arm_tunnel(&self) {
-        *self.tunnel_peer.lock().unwrap() = None;
+    /// A Red Alert 2 game is about to start: forget the last one and make a new token, returned for the launch file
+    /// (`[Tunnel] Token=`). The tunnel then belongs to the first local endpoint that presents it.
+    pub fn arm_tunnel(&self) -> [u8; 16] {
+        let token = secure::random_token();
+        *self.tunnel_trust.lock().unwrap() = TunnelTrust { token, peer: None };
+        token
     }
 
     /// Hand a blob (at most 1024 bytes) to every other player in the room, for the launcher's Red Alert 2 lobby.
@@ -768,46 +789,81 @@ mod tests {
         assert!(e.addrs.len() <= 16);
     }
 
+    fn authed(game: SocketAddr) -> TunnelTrust {
+        let mut t = TunnelTrust { token: [9; 16], peer: None };
+        assert_eq!(from_spawner(None, &mut t, game, &[&AUTH_PREFIX[..], &[9; 16]].concat()), FromSpawner::Authed);
+        t
+    }
+
     #[test]
     fn spawner_header_becomes_a_tunnel_packet_and_back() {
         let game: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        let mut bound = None;
+        let mut trust = authed(game);
+        let g = generals_proto::ra2_game_packet(b"frame");
         // our id is 3: to id 2 goes to 10.77.0.2 (header big-endian, as htons writes it)
-        assert_eq!(from_spawner(Some(3), &mut bound, game, &[0, 3, 0, 2, 0xAA, 0xBB]), FromSpawner::Forward { to: [10, 77, 0, 2], payload: &[0xAA, 0xBB] });
-        assert_eq!(bound, Some(game));
+        let d = [&[0, 3, 0, 2][..], &g].concat();
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &d), FromSpawner::Forward { to: [10, 77, 0, 2], payload: &g });
         // what arrives from 10.77.0.2 for us
-        assert_eq!(to_spawner([10, 77, 0, 2], 3, &[0xCC]), Some(vec![0, 2, 0, 3, 0xCC]));
-        assert_eq!(to_spawner([192, 168, 0, 2], 3, &[0xCC]), None, "not a room address");
+        assert_eq!(to_spawner([10, 77, 0, 2], 3, &g), Some([&[0, 2, 0, 3][..], &g].concat()));
+        assert_eq!(to_spawner([192, 168, 0, 2], 3, &g), None, "not a room address");
         assert_eq!(to_spawner([10, 77, 0, 2], 3, &[]), None);
         // a ping: 50 bytes of sender 0, receiver 0, answered with its first 12, even before connecting
         let mut ping = vec![0u8; 50];
         ping[4..12].copy_from_slice(b"pingpong");
-        assert_eq!(from_spawner(None, &mut None, game, &ping), FromSpawner::Pong(&ping[..12]));
-        assert_eq!(from_spawner(None, &mut None, game, &ping[..49]), FromSpawner::Ignore);
+        assert_eq!(from_spawner(None, &mut trust, game, &ping), FromSpawner::Pong(&ping[..12]));
+        assert_eq!(from_spawner(None, &mut trust, game, &ping[..49]), FromSpawner::Ignore);
     }
 
     #[test]
-    fn the_tunnel_belongs_to_the_first_local_game_that_speaks_as_us() {
-        let (game, other): (SocketAddr, SocketAddr) = ("127.0.0.1:5000".parse().unwrap(), "127.0.0.1:5001".parse().unwrap());
-        let ok = [0, 3, 0, 2, 1];
-        let mut bound = None;
-        // not connected yet (no id), someone else's id, our own id as receiver, id 0, id above 255, no payload, too much,
-        // not loopback: ignored and nothing bound
-        assert_eq!(from_spawner(None, &mut bound, game, &ok), FromSpawner::Ignore);
-        for bad in [&[0, 4, 0, 2, 1][..], &[0, 3, 0, 3, 1], &[0, 3, 0, 0, 1], &[0, 3, 1, 0, 1], &[0, 3, 0, 2]] {
-            assert_eq!(from_spawner(Some(3), &mut bound, game, bad), FromSpawner::Ignore, "{bad:?}");
+    fn only_game_datagrams_pass_the_tunnel_either_way() {
+        let game: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let mut trust = authed(game);
+        let g = generals_proto::ra2_game_packet(b"frame");
+        let mut bad = g.clone();
+        bad[0] ^= 1;
+        let mut big = vec![0u8; generals_proto::MAX_TUNNEL_PAYLOAD];
+        big[..g.len()].copy_from_slice(&g);
+        for p in [bad, big, vec![1], b"GET / HTTP/1.1\r\n\r\n".to_vec(), generals_proto::game_packet(b"Generals")] {
+            assert_eq!(from_spawner(Some(3), &mut trust, game, &[&[0, 3, 0, 2][..], &p].concat()), FromSpawner::Ignore, "{p:?}");
+            assert_eq!(to_spawner([10, 77, 0, 2], 3, &p), None, "{p:?}");
         }
-        assert_eq!(from_spawner(Some(3), &mut bound, game, &[&[0, 3, 0, 2][..], &[0; MAX_TUNNEL_PAYLOAD + 1]].concat()), FromSpawner::Ignore);
-        assert_eq!(from_spawner(Some(3), &mut bound, "192.168.1.9:5000".parse().unwrap(), &ok), FromSpawner::Ignore);
-        assert_eq!(bound, None);
-        // the first good one owns it; another local endpoint is then ignored
-        assert!(matches!(from_spawner(Some(3), &mut bound, game, &ok), FromSpawner::Forward { .. }));
-        assert_eq!(from_spawner(Some(3), &mut bound, other, &ok), FromSpawner::Ignore);
-        assert!(matches!(from_spawner(Some(3), &mut bound, game, &ok), FromSpawner::Forward { .. }));
-        // re-armed (`arm_tunnel`): the next game takes it
-        bound = None;
-        assert!(matches!(from_spawner(Some(3), &mut bound, other, &ok), FromSpawner::Forward { .. }));
-        assert_eq!(bound, Some(other));
+        // the engine's keep-alive (receiver 0xFFFE, one zero byte) stays here too
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &[0, 3, 0xFF, 0xFE, 0]), FromSpawner::Ignore);
+    }
+
+    #[test]
+    fn the_tunnel_belongs_to_the_endpoint_with_the_token() {
+        let (game, other): (SocketAddr, SocketAddr) = ("127.0.0.1:5000".parse().unwrap(), "127.0.0.1:5001".parse().unwrap());
+        let ok = [&[0, 3, 0, 2][..], &generals_proto::ra2_game_packet(b"x")].concat();
+        let auth = |t: &[u8]| [&AUTH_PREFIX[..], t].concat();
+        let mut trust = TunnelTrust { token: [9; 16], peer: None };
+        // before the token nothing is heard, not even a ping; a wrong, short or long token, or one from elsewhere, binds nothing
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &ok), FromSpawner::Ignore);
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &[0; 50]), FromSpawner::Ignore);
+        for bad in [auth(&[8; 16]), auth(&[9; 15]), auth(&[9; 17]), AUTH_PREFIX.to_vec()] {
+            assert_eq!(from_spawner(Some(3), &mut trust, game, &bad), FromSpawner::Ignore, "{bad:?}");
+        }
+        assert_eq!(from_spawner(Some(3), &mut trust, "192.168.1.9:5000".parse().unwrap(), &auth(&[9; 16])), FromSpawner::Ignore);
+        assert_eq!(trust.peer, None);
+        // the game presents it (again: its resends are answered too); a spoofing local endpoint is then ignored, token or not
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &auth(&[9; 16])), FromSpawner::Authed);
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &auth(&[9; 16])), FromSpawner::Authed);
+        assert!(matches!(from_spawner(Some(3), &mut trust, game, &ok), FromSpawner::Forward { .. }));
+        assert_eq!(from_spawner(Some(3), &mut trust, other, &auth(&[9; 16])), FromSpawner::Ignore);
+        assert_eq!(from_spawner(Some(3), &mut trust, other, &ok), FromSpawner::Ignore);
+        assert_eq!(from_spawner(Some(3), &mut trust, other, &[0; 50]), FromSpawner::Ignore);
+        // checks after the token: not connected (no id), someone else's id, our own id as receiver, id 0, id above 255
+        assert_eq!(from_spawner(None, &mut trust, game, &ok), FromSpawner::Ignore);
+        for hdr in [[0, 4, 0, 2], [0, 3, 0, 3], [0, 3, 0, 0], [0, 3, 1, 0]] {
+            let d = [&hdr[..], &ok[4..]].concat();
+            assert_eq!(from_spawner(Some(3), &mut trust, game, &d), FromSpawner::Ignore, "{hdr:?}");
+        }
+        // re-armed (`arm_tunnel`: a new token, no endpoint): the old game and the old token are both refused now
+        trust = TunnelTrust { token: [7; 16], peer: None };
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &ok), FromSpawner::Ignore);
+        assert_eq!(from_spawner(Some(3), &mut trust, game, &auth(&[9; 16])), FromSpawner::Ignore, "replayed old token");
+        assert_eq!(from_spawner(Some(3), &mut trust, other, &auth(&[7; 16])), FromSpawner::Authed);
+        assert!(matches!(from_spawner(Some(3), &mut trust, other, &ok), FromSpawner::Forward { .. }));
     }
 
     #[test]
