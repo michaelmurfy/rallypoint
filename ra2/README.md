@@ -75,6 +75,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0022-grinder-bio-reactor-mc` | Yuri Grinder (`Grinding=` / Soylent) and Bio Reactor (`InfantryAbsorb=` / ExtraPower); MC victims can be ground or absorbed (format 55). |
 | `0023-world-sizeof-pin` | Pin `World` layout size for save-format stability. |
 | `0024-namisil-superanim-hold` | SuperWeapon buildings (Nuke Silo, Chronosphere, Iron Curtain, Weather Controller): one-shot SuperAnim open/close, then hold the last frame instead of looping SuperAnimTwo/Four (doors no longer cycle while ready/charging); skip grand-opening Active* loops when `SuperAnim` is set. Presentation only. |
+| `0025-hidpi-bitmap-font-scaling` | Nearest-neighbour present + integer shell-font glyph blits; macOS `SDL_WINDOW_ALLOW_HIGHDPI` (view only). |
 
 ## Factions (Country=)
 
