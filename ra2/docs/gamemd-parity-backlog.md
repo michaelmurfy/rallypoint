@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0041`). Docs only: nothing here is implemented by this file.
+`0044`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -19,9 +19,12 @@ reference (never a substitute for gamemd behaviour).
 | Presentation stack (HiDPI fonts, credits/cursor, canvas zoom, CLEG ChronoBeam, building health pips, Tesla low-power visual, SW sidebar slots, smooth unit draw, SW building charge anim) | `0025`–`0033` | #162–#171 |
 | T1.1 ramp / slope Level while walking | `0034-ramp-slope-level` | [#172](https://github.com/michaelmurfy/rallypoint/pull/172) |
 | Stock AI `UseMinDefenseRule` / `MinimumAIDefensiveTeams` (base-guard teams so call-for-help has members) | `0035-stock-ai-min-defense-rule` | [#174](https://github.com/michaelmurfy/rallypoint/pull/174) |
-| Optional AIBoost smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3; launcher Play/lobby UI in [#181](https://github.com/michaelmurfy/rallypoint/pull/181)) | `0037-ai-boost-smarter` | [#173](https://github.com/michaelmurfy/rallypoint/pull/173) |
+| Optional AIBoost smarter skirmish AI (`AIBoost=` / `RA2_AI_BOOST` 1..3) + launcher Play/lobby UI | `0037-ai-boost-smarter` | [#173](https://github.com/michaelmurfy/rallypoint/pull/173) / [#181](https://github.com/michaelmurfy/rallypoint/pull/181) |
 | T2.1 country bonuses (HouseType Cost/Armor/ROF/… Mult + Veteran*) | `0040-country-bonuses-from-gamemd` | [#178](https://github.com/michaelmurfy/rallypoint/pull/178) |
 | T3.1 / T3.2 building + infantry anims (partial) | `0041-building-infantry-anims-from-gamemd` | [#179](https://github.com/michaelmurfy/rallypoint/pull/179) |
+| T1.2 unit tilt on TMP slopes (presentation) | `0042-unit-tilt-on-slopes` | [#184](https://github.com/michaelmurfy/rallypoint/pull/184) |
+| T3.3 Siege Chopper deploy / Undeploy (`IsSimpleDeployer` / SCHD) | `0043-siege-chopper-deploy` | [#182](https://github.com/michaelmurfy/rallypoint/pull/182) |
+| T1.3 call-for-help (partial; RE leftovers below) | `0044-ai-call-for-help` | [#183](https://github.com/michaelmurfy/rallypoint/pull/183) |
 
 ---
 
@@ -46,20 +49,26 @@ adoption itself.
 | **Effort** | done (verify S) |
 | **OpenRA** | Partial — terrain height models differ; use only for vocabulary |
 
-### T1.2 Cliff / slope *presentation* (unit tilt)
+### T1.2 Cliff / slope *presentation* (unit tilt) — landed
 
 Pathing can be correct while vehicles stay flat on ramps. Upstream README
 lists “units tilting on slopes” as a known miss.
 
+**Landed:** patch `0042-unit-tilt-on-slopes`
+([#184](https://github.com/michaelmurfy/rallypoint/pull/184)) —
+`slope_tilt` pitches drive-track vehicles from the cell SlopeIndex at draw
+time (presentation only; rockets keep their own pitch). Do not re-implement
+the tilt helper.
+
 | | |
 |---|---|
-| **Files** | Voxel / facing draw in `engine/main.cpp`, `engine/facing_cache.*`, `engine/locomotion.*`; iso project `engine/iso_project.*` |
-| **gamemd** | Drive-track / Facing pitch from cell SlopeIndex (same cells as T1.1); rocket pitch already special-cased |
+| **Files** | `engine/slope_tilt.*`, voxel / facing draw in `engine/main.cpp`, `engine/facing_cache.*`; tests `tests/test_slope_tilt.cpp` |
+| **gamemd** | Drive-track / Facing pitch from cell SlopeIndex (**FUN_0055A7D0** / **FUN_007559B0**); rocket pitch already special-cased |
 | **Rules / art** | artmd Facing / voxel sections; TMP slope types |
-| **Effort** | M |
+| **Effort** | done (verify S on real ramps) |
 | **OpenRA** | No — different render stack |
 
-### T1.3 AI call-for-help / base defense response (remaining RE-OPEN)
+### T1.3 AI call-for-help / base defense response — partial
 
 `World::call_for_help` ports Steam YR **FUN_00708080** (older notes said
 `FUN_00707500` — wrong VA in this binary).
@@ -67,14 +76,16 @@ lists “units tilting on slopes” as a known miss.
 **Landed:** `0035-stock-ai-min-defense-rule`
 ([#174](https://github.com/michaelmurfy/rallypoint/pull/174)) —
 `UseMinDefenseRule` / `MinimumAIDefensiveTeams` so stock `IsBaseDefense`
-teams form. Optional AIBoost (`0037` / [#173](https://github.com/michaelmurfy/rallypoint/pull/173))
-scales defense response when enabled. Patch `0044-ai-call-for-help`: building
+teams form. Optional AIBoost (`0037` / [#173](https://github.com/michaelmurfy/rallypoint/pull/173);
+launcher UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181))
+scales defense response when enabled. Patch `0044-ai-call-for-help`
+([#183](https://github.com/michaelmurfy/rallypoint/pull/183)): building
 victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and
 loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell +
-IQ `RepairSell` on ConditionRed sell.
+IQ `RepairSell` on ConditionRed sell. Do not re-land those pieces.
 
-**Still open:** victim `+0x2DC` vehicle-pass gate; full `FUN_0056D100` MapZone
-ids; per-unit ArchiveTarget==self tracking.
+**Still open (RE):** victim `+0x2DC` vehicle-pass gate; full `FUN_0056D100`
+MapZone ids; per-unit ArchiveTarget==self tracking.
 
 | | |
 |---|---|
@@ -233,20 +244,24 @@ country uniques — do not re-patch the Undeploy lock.
 | **Effort** | remaining M |
 | **OpenRA** | Partial — sequence names only |
 
-### T3.3 Vehicle anims / turret / deploy (Siege Chopper)
+### T3.3 Vehicle anims / turret / deploy (Siege Chopper) — SCHP landed
 
-Siege Chopper (`SCHP`) deploy/undeploy: `IsSimpleDeployer` + `DeployToLand` +
-`UnloadingClass=SCHD` + `DeployingAnim=SCHPDEPL` (patch `0043`). Turret facings
-and deploy SHPs for other vehicles may still diverge.
+**Landed (SCHP):** patch `0043-siege-chopper-deploy`
+([#182](https://github.com/michaelmurfy/rallypoint/pull/182)) —
+`IsSimpleDeployer` + `DeployToLand` + `UnloadingClass=SCHD` +
+`DeployingAnim=SCHPDEPL` (deploy mission, landed-body draw, anim). Do not
+re-implement Siege Chopper deploy.
+
+**Still open:** turret facings and deploy SHPs for other vehicles may still
+diverge.
 
 | | |
 |---|---|
 | **Files** | `weapon_resolve`, `world_abilities` / `world` / `world_an`, draw + `pres_audio_events`, tests |
 | **gamemd** | `FUN_00739AC0` / `FUN_00739CD0` (IsSimpleDeployer), `FUN_0054BD30` (DeployToLand) |
 | **Rules / art** | `SCHP`/`SCHD`; `IsSimpleDeployer`, `DeployToLand`, `UnloadingClass`, `DeployingAnim` |
-| **Effort** | M |
+| **Effort** | SCHP done; remaining vehicle turret/deploy M |
 | **OpenRA** | Partial |
-| **Status** | SCHP deploy mission + UnloadingClass draw + DeployingAnim (this PR) |
 
 ### T3.4 Weapon beams / lasers / prism / magnetron / disc rays
 
@@ -364,20 +379,32 @@ Upstream known limitation.
 
 ## Suggested attack order
 
-1. T1.2 unit tilt on slopes (presentation; T1.1 Level adoption already on main).
-2. T1.3 call-for-help RE-OPEN + IQ repair/sell (MinDefense / guard teams already on main via `0035`).
-3. T3.3 Siege Chopper deploy (and remaining vehicle turret/deploy misses).
-4. Burn down T2.4 Yuri Partial list (mostly S/M).
-5. ~~Launcher UI for AIBoost~~ — landed in [#181](https://github.com/michaelmurfy/rallypoint/pull/181) (Play / lobby wire `AIBoost=` for engine `0037` / #173).
-6. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) only after checking `0041` — do not re-land AnimActive / Undeploy.
-7. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
+1. Burn down T2.4 Yuri Partial list (mostly S/M: undeployed SMIN slaves,
+   Magnetron/Disc beam art, blank cameos, MC cursors, …).
+2. T1.3 remaining RE only (victim `+0x2DC`, MapZone ids, ArchiveTarget==self)
+   — do not re-land `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183).
+3. T3.3 leftovers: non-SCHP vehicle turret / deploy SHPs (SCHP done in `0043`).
+4. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) — do not
+   re-land AnimActive / Undeploy from `0041`.
+5. T3.4 weapon beams / lasers (Magnetron toss beam, `DISKRAY`, fragment beams)
+   where not already covered by a T2.4 item.
+6. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
+
+Landed recently (skip): T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
+T3.3 SCHP `0043` / [#182](https://github.com/michaelmurfy/rallypoint/pull/182);
+T1.3 bulk `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183);
+launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
 
 ## Related in-flight work (do not duplicate blindly)
 
-No sibling parity PRs for the items above are assumed open. Before starting a
-new patch in an area listed under **Recently landed**, rebase on `main` and
-read the cited patch — re-implementing `0034`/`0035`/`0037`/`0040`/`0041` or
-the `0025`–`0033` presentation stack is wasted work.
+Before starting a new patch in an area listed under **Recently landed**,
+rebase on `main` and read the cited patch — re-implementing
+`0034`/`0035`/`0037`/`0040`–`0044` or the `0025`–`0033` presentation stack is
+wasted work.
 
-Next priorities (open): T1.2 tilt, T1.3 call-for-help, T3.3 Siege Chopper,
-T2.4 Yuri Partial. (Launcher AIBoost UI landed in #181.)
+Sibling work often in flight on T2.4 / T3.4 / T3.5 (undeployed Slave Miner,
+Magnetron + Disc beam art, blank Yuri cameos): check open PRs before starting
+another patch in those areas.
+
+Next priorities (open): T2.4 Yuri Partial; T1.3 RE leftovers; non-SCHP T3.3;
+T3.1/T3.2 leftovers; T4.
