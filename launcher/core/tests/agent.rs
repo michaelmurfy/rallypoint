@@ -479,6 +479,9 @@ fn red_alert_2_lobby_ready_start_then_tunnel_auth() {
             starts: 4,
             credits: 10000,
             speed: 1,
+            crates: true,
+            superweapons: true,
+            allies: true,
             ai: vec![],
             rev: 0,
         })

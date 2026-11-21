@@ -2142,6 +2142,12 @@ const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]]
 const RA2_TEAMS = [[-1, "No team"], [0, "Team A"], [1, "Team B"], [2, "Team C"], [3, "Team D"]];
 const ra2Speed = () => (RA2_SPEEDS.some(([v]) => v === prefs.get().ra2Speed) ? prefs.get().ra2Speed : 2);
 const ra2Credits = () => (RA2_CREDITS.includes(prefs.get().ra2Credits) ? prefs.get().ra2Credits : 10000);
+const ra2Flag = (key, fallback = true) => (typeof prefs.get()[key] === "boolean" ? prefs.get()[key] : fallback);
+/** A remembered yes/no match option for RA2 skirmish / lobby. */
+function ra2OptCheck(label, key, fallback = true) {
+  const box = h("input", { type: "checkbox", checked: ra2Flag(key, fallback), "aria-label": label, onchange: () => prefs.set({ [key]: box.checked }) });
+  return h("label", { class: "field check" }, box, h("span", {}, label));
+}
 const fileOf = (path) => String(path).split(/[\\/]/).pop();
 const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
 const playersText = (n) => (n >= 2 ? `${n} players` : "No start positions");
@@ -2195,6 +2201,9 @@ function ra2Skirmish(onChange) {
   const summary = h("span", { class: "muted small" });
   const credits = pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), ra2Credits(), (v) => prefs.set({ ra2Credits: +v }));
   const speed = pick("Game speed", RA2_SPEEDS, ra2Speed(), (v) => prefs.set({ ra2Speed: +v }));
+  const crates = ra2OptCheck("Crates", "ra2Crates");
+  const superweapons = ra2OptCheck("Superweapons", "ra2Superweapons");
+  const allies = ra2OptCheck("Allies allowed", "ra2Allies");
   const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
 
   function newRows(n) {
@@ -2286,6 +2295,7 @@ function ra2Skirmish(onChange) {
   }
   const setup = () => ({
     map: mapSel.value, credits: +credits.value, speed: +speed.value, seed: 0,
+    crates: ra2Flag("ra2Crates"), superweapons: ra2Flag("ra2Superweapons"), allies: ra2Flag("ra2Allies"),
     players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
   });
   /** Why Play cannot start this setup yet ("" when it can). */
@@ -2300,7 +2310,10 @@ function ra2Skirmish(onChange) {
     h("div", { class: "mapside" },
       h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
       h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note,
-      h("div", { class: "ra2opts" }, h("label", { class: "field" }, h("span", {}, "Starting credits"), credits), h("label", { class: "field" }, h("span", {}, "Game speed"), speed))));
+      h("div", { class: "ra2opts" },
+        h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
+        h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
+        crates, superweapons, allies)));
   const el = h("div", { class: "stack" }, empty, body);
   const show = () => { empty.hidden = !!maps.length || !store.ra2Maps; body.hidden = !maps.length; };
   reload();
@@ -2446,7 +2459,13 @@ function ra2LobbyCard() {
   const fb = liveStatus();
   const sendSeat = () => invoke("ra2_lobby_seat", { seat: mySeat }).catch((e) => fb.bad(errText(e)));
   async function sendRoom(settings) {
-    try { await invoke("ra2_lobby_room", { map: settings.map, credits: settings.credits, speed: settings.speed, ai: hostAi }); } catch (e) { fb.bad(errText(e)); }
+    try {
+      await invoke("ra2_lobby_room", {
+        map: settings.map, credits: settings.credits, speed: settings.speed,
+        crates: settings.crates !== false, superweapons: settings.superweapons !== false, allies: settings.allies !== false,
+        ai: hostAi,
+      });
+    } catch (e) { fb.bad(errText(e)); }
   }
   async function loadView(file) {
     views[file] = null;
@@ -2469,7 +2488,7 @@ function ra2LobbyCard() {
     if (d.am_host && !d.settings && !hostSeeded && maps && maps.length) {
       hostSeeded = true;
       const want = prefs.get().ra2Map, m = maps.find((x) => fileOf(x.path) === want) || maps[0];
-      sendRoom({ map: fileOf(m.path), credits: ra2Credits(), speed: ra2Speed() });
+      sendRoom({ map: fileOf(m.path), credits: ra2Credits(), speed: ra2Speed(), crates: ra2Flag("ra2Crates"), superweapons: ra2Flag("ra2Superweapons"), allies: ra2Flag("ra2Allies") });
     }
     if (d.settings && !(d.settings.map in views)) loadView(d.settings.map);
     if (!d.am_host || (active >= 0 && !(d.settings && d.settings.ai[active]))) active = -1;
@@ -2531,17 +2550,33 @@ function ra2LobbyCard() {
     let options;
     if (d.am_host) {
       const all = maps || [];
-      const cur = s || { map: "", credits: ra2Credits(), speed: ra2Speed() };
-      const set = (patch) => { const n = { ...cur, ...patch }; if ("map" in patch) prefs.set({ ra2Map: n.map }); if ("credits" in patch) prefs.set({ ra2Credits: n.credits }); if ("speed" in patch) prefs.set({ ra2Speed: n.speed }); sendRoom(n); };
+      const cur = s || { map: "", credits: ra2Credits(), speed: ra2Speed(), crates: ra2Flag("ra2Crates"), superweapons: ra2Flag("ra2Superweapons"), allies: ra2Flag("ra2Allies") };
+      const set = (patch) => {
+        const n = { ...cur, ...patch };
+        if ("map" in patch) prefs.set({ ra2Map: n.map });
+        if ("credits" in patch) prefs.set({ ra2Credits: n.credits });
+        if ("speed" in patch) prefs.set({ ra2Speed: n.speed });
+        if ("crates" in patch) prefs.set({ ra2Crates: n.crates });
+        if ("superweapons" in patch) prefs.set({ ra2Superweapons: n.superweapons });
+        if ("allies" in patch) prefs.set({ ra2Allies: n.allies });
+        sendRoom(n);
+      };
       const mapSel = pick("Map", all.map((m) => [fileOf(m.path), `${m.name} (${m.players})`]), cur.map, (v) => set({ map: v }));
       mapSel.disabled = !all.length;
+      const flag = (label, key) => {
+        const box = h("input", { type: "checkbox", checked: cur[key] !== false, "aria-label": label, onchange: () => set({ [key]: box.checked }) });
+        return h("label", { class: "field check" }, box, h("span", {}, label));
+      };
       options = h("div", { class: "stack tight" },
         h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps. Add some on the Maps page.")),
-        h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
-        h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
+        h("div", { class: "ra2opts" },
+          h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
+          h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
+          flag("Crates", "crates"), flag("Superweapons", "superweapons"), flag("Allies allowed", "allies")),
         h("p", { class: "muted small" }, "Any change asks everyone to ready again."));
     } else {
-      options = s ? h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "factline" }, [`$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`].map((b) => h("span", {}, b))))
+      const flags = s ? [s.crates !== false ? "Crates" : "No crates", s.superweapons !== false ? "Superweapons" : "No superweapons", s.allies !== false ? "Allies" : "No allies"] : [];
+      options = s ? h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "factline" }, [`$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`, ...flags].map((b) => h("span", {}, b))))
         : h("p", { class: "muted small" }, "Waiting for the host to choose a map.");
     }
     const select = (k) => () => { if (d.am_host && active !== k) { active = k; render(store.lobby); } };

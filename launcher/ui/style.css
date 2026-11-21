@@ -639,6 +639,8 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ra2setup .mapside { display: grid; gap: 10px; align-content: start; }
 .ra2setup .mapcol { display: grid; gap: 8px; }
 .ra2setup .ra2opts .field { gap: 4px; }
+.ra2opts .field.check { flex-direction: row; align-items: center; gap: 8px; padding-top: 18px; }
+.ra2opts .field.check input { width: 16px; height: 16px; margin: 0; }
 .page:has(.ra2maps) > .card, .page:has(.ra2setup) > .card { gap: 10px; padding: 14px 16px; }
 @media (max-width: 1080px) { .ra2setup, .ra2maps { grid-template-columns: 1fr; } .ra2setup .mapcol { justify-items: start; } .ra2maps .listbox .maplist { max-height: 42vh; } }
 @media (max-width: 760px) {

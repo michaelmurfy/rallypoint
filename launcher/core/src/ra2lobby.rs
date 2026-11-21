@@ -52,6 +52,10 @@ pub struct AiSeat {
     pub team: i32,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// What the host chose for the room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomSettings {
@@ -62,6 +66,12 @@ pub struct RoomSettings {
     pub starts: u8,
     pub credits: u32,
     pub speed: u8,
+    #[serde(default = "default_true")]
+    pub crates: bool,
+    #[serde(default = "default_true")]
+    pub superweapons: bool,
+    #[serde(default = "default_true")]
+    pub allies: bool,
     #[serde(default)]
     pub ai: Vec<AiSeat>,
     /// Changes with every change the host makes; its address is in the top byte, so a new host never reuses one.
@@ -301,7 +311,17 @@ impl Lobby {
         let human = |id: u8, name: &str, s: Seat| Ra2Player { name: name.into(), ai: None, side: s.side, color: s.color, start: s.start, team: s.team, tunnel_id: Some(id) };
         let mut players: Vec<Ra2Player> = std::iter::once(human(self.me, &self.name, self.seat)).chain(self.peers.iter().map(|(id, p)| human(*id, &p.name, p.seat))).collect();
         players.extend(r.ai.iter().map(|a| Ra2Player { name: String::new(), ai: Some(a.difficulty), side: a.side, color: a.color, start: a.start, team: a.team, tunnel_id: None }));
-        let setup = Ra2Setup { map: r.map.clone(), players, credits: r.credits, speed: r.speed, seed, tunnel: None };
+        let setup = Ra2Setup {
+            map: r.map.clone(),
+            players,
+            credits: r.credits,
+            speed: r.speed,
+            crates: r.crates,
+            superweapons: r.superweapons,
+            allies: r.allies,
+            seed,
+            tunnel: None,
+        };
         let setup = ra2launch::validate(setup, r.starts as usize, true)?;
         encode(&Msg::Start(setup.clone()))?;
         Ok(setup)
@@ -343,7 +363,18 @@ mod tests {
         encode(m).unwrap()
     }
     fn settings() -> RoomSettings {
-        RoomSettings { map: "Lake.yrm".into(), map_name: "Lake".into(), starts: 4, credits: 10000, speed: 2, ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }], rev: 0 }
+        RoomSettings {
+            map: "Lake.yrm".into(),
+            map_name: "Lake".into(),
+            starts: 4,
+            credits: 10000,
+            speed: 2,
+            crates: true,
+            superweapons: true,
+            allies: true,
+            ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }],
+            rev: 0,
+        }
     }
 
     #[test]
@@ -351,6 +382,10 @@ mod tests {
         for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 9, color: 7, start: 8, team: 3, ready: true, rev: 7 }), Msg::State(settings())] {
             assert_eq!(decode(&blob(&m)), Some(m));
         }
+        // Older hosts omit crates / superweapons / allies: treat them as on.
+        let old = br#"{"t":"state","map":"Lake.yrm","map_name":"Lake","starts":4,"credits":10000,"speed":2,"ai":[],"rev":1}"#;
+        let Msg::State(r) = decode(old).unwrap() else { panic!("state") };
+        assert!(r.crates && r.superweapons && r.allies);
         assert_eq!(String::from_utf8(blob(&Msg::Ready(Seat::default()))).unwrap(), r#"{"t":"ready","side":-1,"color":-1,"start":-1,"team":-1,"ready":false,"rev":0}"#);
         assert_eq!(decode(br#"{"t":"hello","name":"[x]=y;\u0007","master":false}"#), Some(Msg::Hello { name: "xy".into(), master: false }));
         for bad in [

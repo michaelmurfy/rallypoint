@@ -219,6 +219,9 @@ fn main() {
         starts: 4,
         credits: 10000,
         speed: 1,
+        crates: true,
+        superweapons: true,
+        allies: true,
         ai: vec![],
         rev: 0,
     })

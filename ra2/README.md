@@ -70,6 +70,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0017-magnetron-magnetic-beam` | Magnetron Magnetic Beam: warhead `IsLocomotor` lift/hold/drop (`magnetron.hpp`). |
 | `0018-floating-disc-drain` | Floating Disc `DrainWeapon`: foundation hover, power blackout, money drain. |
 | `0019-magnetron-save-fields` | Save visitors for Magnetron `weight_milli` / `magnet_*` / AbilityRules mag_* (format 52). |
+| `0020-lobby-game-options` | `--launch` `AlliesAllowed=` overrides mid-game alliances (format 53). Crates/SuperWeapons already honour the launch file; Play/Online toggles write them. |
 
 ## Factions (Country=)
 
@@ -158,6 +159,7 @@ GameMode=1           ; MPModesMD.ini index: 1 Battle, 2 Free For All, ...
 ShortGame=yes
 SuperWeapons=yes
 Crates=yes
+AlliesAllowed=yes    ; mid-game alliances; absent = the GameMode's own AlliesAllowed
 BuildOffAlly=yes
 MCVRedeploy=yes
 AITakeover=no        ; network: a player who drops is taken over by the AI instead of defeated

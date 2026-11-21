@@ -1373,9 +1373,30 @@ fn ra2_lobby_seat(lobby: tauri::State<Ra2Lobby>, seat: ra2lobby::Seat) -> Result
 /// The host picks the map (by file name, from its own list) and the options; the starts and the map's name come from
 /// the file, not the page.
 #[tauri::command]
-fn ra2_lobby_room(app: tauri::AppHandle, lobby: tauri::State<Ra2Lobby>, map: String, credits: u32, speed: u8, ai: Vec<ra2lobby::AiSeat>) -> Result<(), String> {
+fn ra2_lobby_room(
+    app: tauri::AppHandle,
+    lobby: tauri::State<Ra2Lobby>,
+    map: String,
+    credits: u32,
+    speed: u8,
+    crates: Option<bool>,
+    superweapons: Option<bool>,
+    allies: Option<bool>,
+    ai: Vec<ra2lobby::AiSeat>,
+) -> Result<(), String> {
     let m = ra2_find_map(&app, &map)?;
-    let settings = ra2lobby::RoomSettings { map, map_name: m.name, starts: m.players, credits, speed, ai, rev: 0 };
+    let settings = ra2lobby::RoomSettings {
+        map,
+        map_name: m.name,
+        starts: m.players,
+        credits,
+        speed,
+        crates: crates.unwrap_or(true),
+        superweapons: superweapons.unwrap_or(true),
+        allies: allies.unwrap_or(true),
+        ai,
+        rev: 0,
+    };
     lobby.0.lock().unwrap().set_settings(settings)
 }
 

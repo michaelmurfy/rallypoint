@@ -54,6 +54,10 @@ pub struct Tunnel {
     pub token: [u8; 16],
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ra2Setup {
     /// The map's file name, looked up in the player's own map folders (never a path).
@@ -61,6 +65,15 @@ pub struct Ra2Setup {
     pub players: Vec<Ra2Player>,
     pub credits: u32,
     pub speed: u8,
+    /// Random crates (engine `[Game] Crates=`).
+    #[serde(default = "default_true")]
+    pub crates: bool,
+    /// Superweapons (engine `[Game] SuperWeapons=`).
+    #[serde(default = "default_true")]
+    pub superweapons: bool,
+    /// Mid-game alliances (engine `[Game] AlliesAllowed=`).
+    #[serde(default = "default_true")]
+    pub allies: bool,
     #[serde(default)]
     pub seed: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,8 +185,18 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
         return Err("The host must be the first player".into());
     }
     let pick = |v: i32, max: i32| if (0..max).contains(&v) { v.to_string() } else { "random".to_string() };
+    let yn = |b: bool| if b { "yes" } else { "no" };
     let mut f = String::new();
-    let _ = writeln!(f, "[Game]\nMode={}\nMap={map}\nLocalPlayer={local}\nCredits={}\nGameSpeed={}", if online { "network" } else { "skirmish" }, setup.credits, setup.speed.min(SLOWEST));
+    let _ = writeln!(
+        f,
+        "[Game]\nMode={}\nMap={map}\nLocalPlayer={local}\nCredits={}\nGameSpeed={}\nCrates={}\nSuperWeapons={}\nAlliesAllowed={}",
+        if online { "network" } else { "skirmish" },
+        setup.credits,
+        setup.speed.min(SLOWEST),
+        yn(setup.crates),
+        yn(setup.superweapons),
+        yn(setup.allies),
+    );
     if online || setup.seed != 0 {
         let _ = writeln!(f, "Seed={}", setup.seed);
     }
@@ -223,7 +246,17 @@ mod tests {
         Ra2Player { ai: Some(Difficulty::Brutal), name: "x".into(), ..human("") }
     }
     fn setup(players: Vec<Ra2Player>) -> Ra2Setup {
-        Ra2Setup { map: "Little Big Lake.yrm".into(), players, credits: 10000, speed: 2, seed: 0, tunnel: Some(Tunnel { port: 1, id: 1, token: [0; 16] }) }
+        Ra2Setup {
+            map: "Little Big Lake.yrm".into(),
+            players,
+            credits: 10000,
+            speed: 2,
+            crates: true,
+            superweapons: true,
+            allies: true,
+            seed: 0,
+            tunnel: Some(Tunnel { port: 1, id: 1, token: [0; 16] }),
+        }
     }
 
     #[test]
@@ -267,10 +300,20 @@ mod tests {
         let mut s = validate(setup(vec![human("Me"), ai()]), 4, false).unwrap();
         s.players[0] = Ra2Player { side: 8, color: 2, start: 3, team: 1, ..s.players[0].clone() };
         let ini = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
-        assert_eq!(ini, "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n");
+        assert_eq!(
+            ini,
+            "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\nCrates=yes\nSuperWeapons=yes\nAlliesAllowed=yes\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n"
+        );
         assert!(launch_ini(&s, "/a;b/x.map", 0).is_err(), "a ; would cut the value");
         assert!(launch_ini(&s, "/x.map", 1).is_err(), "the computer is not this machine");
         assert!(launch_ini(&s, "xmp01t4.map", 0).unwrap().contains("Map=xmp01t4.map\n"), "a multimd entry is Map= as-is");
+        s.crates = false;
+        s.superweapons = false;
+        s.allies = false;
+        let off = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
+        for want in ["Crates=no\n", "SuperWeapons=no\n", "AlliesAllowed=no\n"] {
+            assert!(off.contains(want), "{want} in {off}");
+        }
         // online: network mode, the tunnel, everyone's tunnel id and the seed
         let (mut a, mut b) = (human("Host"), human("Guest"));
         a.tunnel_id = Some(1);
