@@ -69,6 +69,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0016-yuri-cameo-mix-lookup` | `cameomd.mix` is opened from `langmd.mix` (stock YR), so Yuri sidebar icons resolve. |
 | `0017-magnetron-magnetic-beam` | Magnetron Magnetic Beam: warhead `IsLocomotor` lift/hold/drop (`magnetron.hpp`). |
 | `0018-floating-disc-drain` | Floating Disc `DrainWeapon`: foundation hover, power blackout, money drain. |
+| `0019-magnetron-save-fields` | Save visitors for Magnetron `weight_milli` / `magnet_*` / AbilityRules mag_* (format 52). |
 
 ## Factions (Country=)
 
