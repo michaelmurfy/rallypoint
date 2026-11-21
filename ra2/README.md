@@ -65,6 +65,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
 | `0013-slave-miner-economy` | Yuri Slave Miner: `Enslaves=` / `SlavesNumber` / regen+reload rates; deployed YAREFN spawns SLAV gatherers that deliver ore into house credits. |
 | `0015-gattling-weapon-stages` | `IsGattling` RateUp/RateDown timer, Stage1..N / EliteStage, Weapon1..N (AG odd / AA even); YTNK and GTGCAN. |
+| `0016-yuri-cameo-mix-lookup` | `cameomd.mix` is opened from `langmd.mix` (stock YR), so Yuri sidebar icons resolve. |
 
 ## Factions (Country=)
 
@@ -96,7 +97,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
 - **Mind control**: weapons and warheads resolve; capture polling is campaign-only (`w_mind_control`), not skirmish.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
-- Many Yuri structure cameos still miss art (`cameomd`) until the search chain finds them.
+- Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
 
 ## Building
 
