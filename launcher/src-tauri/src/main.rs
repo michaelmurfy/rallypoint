@@ -1265,10 +1265,19 @@ fn ra2_launch(app: tauri::AppHandle, relay: tauri::State<Relay>, setup: ra2launc
         agent.arm_tunnel();
         setup.tunnel = Some(ra2launch::Tunnel { port: agent.tunnel_port(), id: vip[3] });
     }
-    let file = base(&app)?.join("ra2").join("setup.json");
+    // this machine's seat: the player with our tunnel id online, the one human in a skirmish
+    let local = match setup.tunnel {
+        Some(t) => setup.players.iter().position(|p| p.tunnel_id == Some(t.id)).ok_or("You are not in this game")?,
+        None => setup.players.iter().position(|p| p.ai.is_none()).ok_or("A skirmish needs you in it")?,
+    };
+    if setup.tunnel.is_none() {
+        setup.players[local].name = c.lobby_name(); // the page sends a placeholder; the saved name wins
+    }
+    let ini = ra2launch::launch_ini(&setup, &map.path, local)?;
+    let file = base(&app)?.join("ra2").join("launch.ini");
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
-    ra2launch::write_launch(&file, &ra2launch::Launch { setup, player_name: c.lobby_name(), display: c.ra2.clone(), map_path: map.path })?;
-    ra2launch::command(&engine, Path::new(&c.ra2.game_dir), &file).spawn().map_err(|e| format!("{}: {e}", engine.display()))?;
+    std::fs::write(&file, ini).map_err(|e| e.to_string())?;
+    ra2launch::command(&engine, Path::new(&c.ra2.game_dir), &file, &c.ra2).spawn().map_err(|e| format!("{}: {e}", engine.display()))?;
     Ok(())
 }
 

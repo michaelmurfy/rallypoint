@@ -55,7 +55,7 @@ const handlers = {
     if (!hash.includes("online") && !guestHost) return null;
     const me = { id: 2, name: "Michaels-Mac", host: !guestHost, me: true, ...lobby.seat };
     const others = [{ id: 1, name: "Sam", host: guestHost, me: false, side: 8, color: 1, start: 1, team: 0, ready: true }, { id: 3, name: "Dana", host: false, me: false, side: -1, color: 3, start: -1, team: -1, ready: false }];
-    const settings = guestHost ? { map: "Little Big Lake.yrm", map_name: "Little Big Lake", starts: 4, credits: 10000, speed: 2, ai: [{ difficulty: "hard", side: 9, color: 6, start: -1, team: 1 }] } : lobby.settings;
+    const settings = guestHost ? { map: "Little Big Lake.yrm", map_name: "Little Big Lake", starts: 4, credits: 10000, speed: 2, ai: [{ difficulty: "brutal", side: 7, color: 6, start: -1, team: 1 }] } : lobby.settings;
     return { me: 2, host: guestHost ? 1 : 2, am_host: !guestHost, players: [others[0], me, others[1]], settings, blocked: guestHost ? "" : !settings ? "Choose a map first" : "Waiting for Dana to be ready", start: null };
   },
   get_config: () => structuredClone(state.cfg),

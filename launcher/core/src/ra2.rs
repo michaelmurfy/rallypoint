@@ -77,7 +77,7 @@ pub struct Ra2Config {
     pub width: u32,
     pub height: u32,
     pub windowed: bool,
-    /// Country 0..9 (America .. Yuri), -1 random.
+    /// Country 0..8 (America .. Russia; the engine has no Yuri side), -1 random.
     pub side: i32,
     /// Colour 0..7, -1 any free one.
     pub color: i32,

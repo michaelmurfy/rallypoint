@@ -239,7 +239,8 @@ impl Lobby {
         out.iter().filter_map(|m| encode(m).ok()).collect()
     }
 
-    /// The host's game, everyone seated by address order, or why it cannot start yet.
+    /// The host's game, or why it cannot start yet. The host is player 0 (the engine's lockstep master), then the
+    /// others by address, then the computer players.
     pub fn build_start(&self, seed: u32) -> Result<Ra2Setup, String> {
         if !self.is_host() {
             return Err("Only the host can start the game".into());
@@ -253,7 +254,6 @@ impl Lobby {
         }
         let human = |id: u8, name: &str, s: Seat| Ra2Player { name: name.into(), ai: None, side: s.side, color: s.color, start: s.start, team: s.team, tunnel_id: Some(id) };
         let mut players: Vec<Ra2Player> = std::iter::once(human(self.me, &self.name, self.seat)).chain(self.peers.iter().map(|(id, p)| human(*id, &p.name, p.seat))).collect();
-        players.sort_by_key(|p| p.tunnel_id);
         players.extend(r.ai.iter().map(|a| Ra2Player { name: String::new(), ai: Some(a.difficulty), side: a.side, color: a.color, start: a.start, team: a.team, tunnel_id: None }));
         let setup = Ra2Setup { map: r.map.clone(), players, credits: r.credits, speed: r.speed, seed, tunnel: None };
         let setup = ra2launch::validate(setup, r.starts as usize, true)?;
@@ -299,13 +299,13 @@ mod tests {
 
     #[test]
     fn messages_round_trip_and_bad_ones_are_dropped() {
-        for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 9, color: 7, start: 8, team: 3, ready: true }), Msg::State(settings())] {
+        for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 8, color: 7, start: 8, team: 3, ready: true }), Msg::State(settings())] {
             assert_eq!(decode(&blob(&m)), Some(m));
         }
         assert_eq!(String::from_utf8(blob(&Msg::Ready(Seat::default()))).unwrap(), r#"{"t":"ready","side":-1,"color":-1,"start":-1,"team":-1,"ready":false}"#);
         assert_eq!(decode(br#"{"t":"hello","name":"[x]=y;\u0007","master":false}"#), Some(Msg::Hello { name: "xy".into(), master: false }));
         for bad in [
-            &br#"{"t":"ready","side":10,"color":0,"start":1,"team":0}"#[..],
+            &br#"{"t":"ready","side":9,"color":0,"start":1,"team":0}"#[..],
             br#"{"t":"ready","side":0,"color":0,"start":0,"team":0}"#,
             br#"{"t":"state","map":"../x.map","map_name":"x","starts":2,"credits":5000,"speed":1}"#,
             br#"{"t":"state","map":"x.map","map_name":"x","starts":9,"credits":5000,"speed":1}"#,

@@ -2133,12 +2133,12 @@ function settingsPage() {
 const isRa2 = () => store.cfg.game === "ra2";
 const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
 const RA2_NAME = "Red Alert 2: Yuri's Revenge";
-const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia", "Yuri"];
+const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia"]; // the engine has no Yuri side
 const RA2_COLORS = ["Yellow", "Red", "Blue", "Green", "Orange", "Teal", "Purple", "Pink"];
 const RA2_PC = [3, 1, 0, 2, 4, 6, 5, 7]; // each RA2 colour's nearest place colour (style.css .pcN, PLACE_COLORS)
 const RA2_SPEEDS = [[0, "Fastest"], [1, "Faster"], [2, "Fast"], [3, "Medium"], [4, "Slow"], [5, "Slower"], [6, "Slowest"]];
 const RA2_CREDITS = [2500, 5000, 7500, 10000, 20000, 50000];
-const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["hard", "Hard"]];
+const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]];
 const RA2_TEAMS = [[-1, "No team"], [0, "Team A"], [1, "Team B"], [2, "Team C"], [3, "Team D"]];
 const ra2Speed = () => (RA2_SPEEDS.some(([v]) => v === prefs.get().ra2Speed) ? prefs.get().ra2Speed : 2);
 const ra2Credits = () => (RA2_CREDITS.includes(prefs.get().ra2Credits) ? prefs.get().ra2Credits : 10000);

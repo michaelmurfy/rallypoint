@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const MAX_PLAYERS: usize = 8;
-/// Yuri's Revenge countries 0..9 (America, Korea, France, Germany, Great Britain, Libya, Iraq, Cuba, Russia, Yuri); -1 random.
-pub const SIDES: i32 = 10;
+/// The engine's countries 0..8 (America, Korea, France, Germany, Great Britain, Libya, Iraq, Cuba, Russia); -1 random.
+pub const SIDES: i32 = 9;
 /// Multiplayer colours 0..7 (yellow, red, blue, green, orange, teal, purple, pink); -1 any free one.
 pub const COLORS: i32 = 8;
 /// Teams A..D; -1 none.
 pub const TEAMS: i32 = 4;
 pub const CREDITS: std::ops::RangeInclusive<u32> = 1000..=100_000;
-/// spawn.ini `GameSpeed`: 0 is the fastest, 6 the slowest.
+/// The launch file's `GameSpeed`: 0 is the fastest, 6 the slowest.
 pub const SLOWEST: u8 = 6;
 pub const MAP_EXTENSIONS: [&str; 4] = ["map", "mpr", "yrm", "yro"];
 
@@ -21,7 +21,7 @@ pub const MAP_EXTENSIONS: [&str; 4] = ["map", "mpr", "yrm", "yro"];
 pub enum Difficulty {
     Easy,
     Medium,
-    Hard,
+    Brutal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,31 +143,67 @@ pub fn validate(mut setup: Ra2Setup, starts: usize, online: bool) -> Result<Ra2S
     Ok(setup)
 }
 
-/// The engine bundled with the launcher, if this build has one.
+
+/// The engine bundled with the launcher, if this build has one (`ra2game.exe` on Windows: it has no console window).
 pub fn engine(resources: Option<&Path>) -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "ra2engine.exe" } else { "ra2engine" };
+    let exe = if cfg!(windows) { "ra2game.exe" } else { "ra2engine" };
     resources.map(|r| r.join("ra2engine").join(exe)).filter(|p| p.is_file())
 }
 
-/// What the engine is given: the checked setup, this player's name, the display settings and the map's own path.
-#[derive(Debug, Serialize)]
-pub struct Launch {
-    pub setup: Ra2Setup,
-    pub player_name: String,
-    pub display: crate::ra2::Ra2Config,
-    pub map_path: PathBuf,
+/// The engine's launch file (ra2/README.md, "The launch file") for a checked `setup`: `map_path` is the player's own
+/// copy of the map, `local` the index of the player this machine plays. Online (a tunnel in `setup`) it is a network
+/// game; slot 0 must then be the host, a human. The engine's INI cuts a value at `;`, so none may contain one.
+pub fn launch_ini(setup: &Ra2Setup, map_path: &Path, local: usize) -> Result<String, String> {
+    use std::fmt::Write;
+    let map = map_path.to_string_lossy();
+    if map.contains([';', '\n', '\r']) {
+        return Err("The map's folder has a character the game cannot read (; or a line break). Move the map to another folder".into());
+    }
+    let p = setup.players.get(local).ok_or("This player is not in the game")?;
+    if p.ai.is_some() {
+        return Err("This player is not in the game".into());
+    }
+    let online = setup.tunnel.is_some();
+    if online && setup.players[0].ai.is_some() {
+        return Err("The host must be the first player".into());
+    }
+    let pick = |v: i32, max: i32| if (0..max).contains(&v) { v.to_string() } else { "random".to_string() };
+    let mut f = String::new();
+    let _ = writeln!(f, "[Game]\nMode={}\nMap={map}\nLocalPlayer={local}\nCredits={}\nGameSpeed={}", if online { "network" } else { "skirmish" }, setup.credits, setup.speed.min(SLOWEST));
+    if online || setup.seed != 0 {
+        let _ = writeln!(f, "Seed={}", setup.seed);
+    }
+    if let Some(t) = setup.tunnel {
+        let _ = writeln!(f, "\n[Tunnel]\nAddress=127.0.0.1\nPort={}\nVersion=2", t.port);
+    }
+    for (n, p) in setup.players.iter().take(MAX_PLAYERS).enumerate() {
+        let _ = writeln!(f, "\n[Player{n}]");
+        match p.ai {
+            Some(d) => {
+                let _ = writeln!(f, "Type=ai\nAI={}", match d { Difficulty::Easy => "easy", Difficulty::Medium => "medium", Difficulty::Brutal => "brutal" });
+            }
+            None => {
+                let _ = writeln!(f, "Type=human\nName={}", clean_name(&p.name));
+                if let (true, Some(id)) = (online, p.tunnel_id) {
+                    let _ = writeln!(f, "TunnelId={id}");
+                }
+            }
+        }
+        let team = if (0..TEAMS).contains(&p.team) { ((b'A' + p.team as u8) as char).to_string() } else { "none".into() };
+        let start = if (1..=MAX_PLAYERS as i32).contains(&p.start) { p.start.to_string() } else { "random".into() };
+        let _ = writeln!(f, "Country={}\nColor={}\nStart={start}\nTeam={team}", pick(p.side, SIDES), pick(p.color, COLORS));
+    }
+    Ok(f)
 }
 
-pub fn write_launch(file: &Path, l: &Launch) -> Result<(), String> {
-    std::fs::write(file, serde_json::to_vec_pretty(l).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
-/// How the engine is started: in the game folder, with the setup written as JSON beside the launcher's data.
-/// shortcut: the engine's launch interface is not final; this passes the setup file as the only argument. Upgrade when
-/// the engine's spawner settles (likely a spawn.ini written from `Ra2Setup` and `[Tunnel]`/`[OtherN]` sections).
-pub fn command(engine: &Path, game_dir: &Path, setup_file: &Path) -> std::process::Command {
+/// The engine's command line: the game files, the launch file, the window. A size of 0 x 0 is the screen's own.
+pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &crate::ra2::Ra2Config) -> std::process::Command {
     let mut c = std::process::Command::new(engine);
-    c.current_dir(game_dir).arg(setup_file);
+    c.arg("--data").arg(game_dir).arg("--launch").arg(launch_file);
+    if display.width > 0 && display.height > 0 {
+        c.arg("--width").arg(display.width.to_string()).arg("--height").arg(display.height.to_string());
+    }
+    c.arg(if display.windowed { "--windowed" } else { "--fullscreen" }).arg("--title").arg("Red Alert 2");
     c
 }
 
@@ -179,7 +215,7 @@ mod tests {
         Ra2Player { name: name.into(), ai: None, side: -1, color: -1, start: -1, team: -1, tunnel_id: None }
     }
     fn ai() -> Ra2Player {
-        Ra2Player { ai: Some(Difficulty::Hard), name: "x".into(), ..human("") }
+        Ra2Player { ai: Some(Difficulty::Brutal), name: "x".into(), ..human("") }
     }
     fn setup(players: Vec<Ra2Player>) -> Ra2Setup {
         Ra2Setup { map: "Little Big Lake.yrm".into(), players, credits: 10000, speed: 2, seed: 0, tunnel: Some(Tunnel { port: 1, id: 1 }) }
@@ -219,6 +255,29 @@ mod tests {
             assert!(!safe_map_name(bad), "{bad}");
         }
         assert!(safe_map_name("Golden State Fwy.yrm") && safe_map_name("tn01t2.MAP"));
+    }
+
+    #[test]
+    fn the_launch_file_says_everything_the_engine_needs() {
+        let mut s = validate(setup(vec![human("Me"), ai()]), 4, false).unwrap();
+        s.players[0] = Ra2Player { side: 8, color: 2, start: 3, team: 1, ..s.players[0].clone() };
+        let ini = launch_ini(&s, Path::new("/maps/Lake.yrm"), 0).unwrap();
+        assert_eq!(ini, "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n");
+        assert!(launch_ini(&s, Path::new("/a;b/x.map"), 0).is_err(), "a ; would cut the value");
+        assert!(launch_ini(&s, Path::new("/x.map"), 1).is_err(), "the computer is not this machine");
+        // online: network mode, the tunnel, everyone's tunnel id and the seed
+        let (mut a, mut b) = (human("Host"), human("Guest"));
+        a.tunnel_id = Some(1);
+        b.tunnel_id = Some(7);
+        let mut s = validate(setup(vec![a, b, ai()]), 4, true).unwrap();
+        s.seed = 99;
+        s.tunnel = Some(Tunnel { port: 50000, id: 7 });
+        let ini = launch_ini(&s, Path::new("C:\\RA2\\x.map"), 1).unwrap();
+        for want in ["Mode=network\n", "LocalPlayer=1\n", "Seed=99\n", "[Tunnel]\nAddress=127.0.0.1\nPort=50000\nVersion=2\n", "Name=Host\nTunnelId=1\n", "Name=Guest\nTunnelId=7\n"] {
+            assert!(ini.contains(want), "{want} in {ini}");
+        }
+        s.players.swap(0, 2);
+        assert!(launch_ini(&s, Path::new("/x.map"), 1).unwrap_err().contains("host"));
     }
 
     #[test]
