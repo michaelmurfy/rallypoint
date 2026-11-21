@@ -134,6 +134,7 @@ Command line (any order):
 | `--launch <file.ini>` | Start the game described in the file (below): no menu, no lobby. When the score page is closed the process exits. |
 | `--width <w> --height <h>` | Window size. The engine draws a 720-line canvas scaled to the window (its own design); RA2.INI's size is then ignored. |
 | `--fullscreen` / `--windowed` | Desktop fullscreen at the display's size, or a window. |
+| `RA2_LOGICAL_HEIGHT` | Optional logical canvas height (720, 900 or 1080). The launcher sets it from Settings > Display > UI scale when not default. Current engine builds still fix the canvas at 720 px and ignore this variable; a future patch will honour it so large windows show more of the map instead of only upscaling. |
 | `--title <text>` or `RA2_WINDOW_TITLE` | Window title. |
 | `--no-audio` | Silent. |
 | `--extract-maps <dir>` | Write every multiplayer map as plain INI under `<dir>` and an `index.json` (display name, source, `Map=`). No window; the process exits when done. Used by the launcher to list official and `.mmx` maps. |

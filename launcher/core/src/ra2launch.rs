@@ -238,6 +238,8 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
 }
 
 /// The engine's command line: the game files, the launch file, the window. A size of 0 x 0 is the screen's own.
+/// `Ra2Config::logical_height` becomes `RA2_LOGICAL_HEIGHT` when set (see `ra2::LOGICAL_HEIGHT_ENV`); current engine
+/// builds still scale a 720-line canvas and ignore the variable until a patch honours it.
 pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &crate::ra2::Ra2Config) -> std::process::Command {
     let mut c = std::process::Command::new(engine);
     c.arg("--data").arg(game_dir).arg("--launch").arg(launch_file);
@@ -245,6 +247,9 @@ pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &cra
         c.arg("--width").arg(display.width.to_string()).arg("--height").arg(display.height.to_string());
     }
     c.arg(if display.windowed { "--windowed" } else { "--fullscreen" }).arg("--title").arg("Red Alert 2");
+    if display.logical_height != 0 {
+        c.env(crate::ra2::LOGICAL_HEIGHT_ENV, display.logical_height.to_string());
+    }
     c
 }
 
@@ -348,6 +353,33 @@ mod tests {
         }
         s.players.swap(0, 2);
         assert!(launch_ini(&s, "/x.map", 1).unwrap_err().contains("host"));
+    }
+
+    #[test]
+    fn the_command_line_carries_display_and_ui_scale() {
+        use crate::ra2::Ra2Config;
+        use std::ffi::OsStr;
+        let display = Ra2Config {
+            width: 1920,
+            height: 1080,
+            windowed: true,
+            logical_height: 900,
+            ..Default::default()
+        };
+        let c = command(Path::new("ra2engine"), Path::new("/game"), Path::new("/tmp/launch.ini"), &display);
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|w| w[0] == "--width" && w[1] == "1920"));
+        assert!(args.contains(&"--windowed".into()));
+        assert_eq!(
+            c.get_envs()
+                .find(|(k, _)| *k == OsStr::new(crate::ra2::LOGICAL_HEIGHT_ENV))
+                .map(|(_, v)| v),
+            Some(OsStr::new("900").into())
+        );
+        let native = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config::default());
+        let native_args: Vec<_> = native.get_args().collect();
+        assert!(!native_args.iter().any(|a| *a == OsStr::new("--width")));
+        assert!(native.get_envs().find(|(k, _)| *k == OsStr::new(crate::ra2::LOGICAL_HEIGHT_ENV)).is_none());
     }
 
     #[test]
