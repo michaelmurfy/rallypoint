@@ -913,10 +913,10 @@ function mapOrganiser(onLoad) {
 }
 
 // ---------------------------------------------------------------- map editor (World Builder)
-/** The game or mod the editor loads: the player's last pick for it, else what Play is set to. Extras stay a Play matter. */
+/** The game or mod the editor loads: what Play is set to, unless another was picked in the menu since the Maps page opened. Extras stay a Play matter. */
+let editorPick = null;
 function editorGame() {
-  const id = prefs.get().editorGame;
-  return gameChoices().find((g) => g.id === id && g.installed) || selectedGame();
+  return gameChoices().find((g) => g.id === editorPick && g.installed) || selectedGame();
 }
 let editorBusy = false;
 /** Start the editor, on one of the player's maps or empty. It takes several seconds to show, so the buttons wait instead of starting a second copy. */
@@ -932,11 +932,10 @@ async function launchEditor(map, buttons) {
     setTimeout(done, 8000);
   } catch (e) { done(); say(errText(e), "bad"); }
 }
-/** "Open World Builder \u00b7 Shockwave" with a caret to pick another installed game or mod. Off, with the reason, where there is no editor. */
+/** "Open World Builder \u00b7 Shockwave" with a caret to pick another installed game or mod. Nothing where there is no editor. */
 function editorControl() {
-  if (!store.cfg.editor_available) {
-    return h("button", { class: "btn small", disabled: true, title: store.cfg.os === "windows" ? "This build does not include World Builder" : "World Builder is only available on Windows" }, "Open World Builder");
-  }
+  if (!store.cfg.editor_available) return null;
+  editorPick = null; // each visit starts from the Play selection
   const name = h("span", { class: "muted" });
   const main = h("button", { class: "btn small", onclick: () => launchEditor(null, [main]) }, "Open World Builder", name);
   const menu = h("div", { class: "menu", role: "menu", "aria-label": "Game or mod for World Builder", hidden: true });
@@ -949,7 +948,7 @@ function editorControl() {
   function draw() {
     const cur = editorGame();
     name.textContent = `\u00b7 ${cur.name}`;
-    fill(menu, gameChoices().filter((g) => g.installed).map((g) => h("button", { class: "menuitem", role: "menuitemradio", "aria-checked": String(g.id === cur.id), onclick: () => { prefs.set({ editorGame: g.id }); draw(); toggle(false); caret.focus(); } }, g.id === cur.id ? "\u2713 " : "\u2003", g.name)));
+    fill(menu, gameChoices().filter((g) => g.installed).map((g) => h("button", { class: "menuitem", role: "menuitemradio", "aria-checked": String(g.id === cur.id), onclick: () => { editorPick = g.id; draw(); toggle(false); caret.focus(); } }, g.id === cur.id ? "\u2713 " : "\u2003", g.name)));
   }
   draw();
   const el = h("div", { class: "splitbtn" }, main, caret, menu);
@@ -973,7 +972,7 @@ function mapsPage() {
     h("div", { class: "skbanner" }, h("span", { class: "skbanner-icon", "aria-hidden": "true" }, icon("play")), h("div", {}, h("h3", {}, "Play a skirmish on any map"), h("p", { class: "muted small" }, "Press Skirmish on a map below to choose who plays, their generals, teams and where they start."))),
     h("div", { class: "card" }, org.el),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packs.el));
-  return { el, dispose: () => { packs.dispose(); org.dispose(); editor.el.dispose && editor.el.dispose(); } };
+  return { el, dispose: () => { packs.dispose(); org.dispose(); editor.el && editor.el.dispose(); } };
 }
 
 // ---------------------------------------------------------------- components
