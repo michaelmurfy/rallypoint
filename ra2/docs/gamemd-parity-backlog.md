@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0044`). Docs only: nothing here is implemented by this file.
+`0047`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -25,6 +25,9 @@ reference (never a substitute for gamemd behaviour).
 | T1.2 unit tilt on TMP slopes (presentation) | `0042-unit-tilt-on-slopes` | [#184](https://github.com/michaelmurfy/rallypoint/pull/184) |
 | T3.3 Siege Chopper deploy / Undeploy (`IsSimpleDeployer` / SCHD) | `0043-siege-chopper-deploy` | [#182](https://github.com/michaelmurfy/rallypoint/pull/182) |
 | T1.3 call-for-help (partial; RE leftovers below) | `0044-ai-call-for-help` | [#183](https://github.com/michaelmurfy/rallypoint/pull/183) |
+| T3.4 MagBeam + Floating Disc DISKRAY (presentation) | `0045-magnetron-disc-beam-art` | [#186](https://github.com/michaelmurfy/rallypoint/pull/186) |
+| T3.5 blank `Cameo=` → XXICON / Image+ICON (Yuri sidebar) | `0046-yuri-blank-cameos` | [#187](https://github.com/michaelmurfy/rallypoint/pull/187) |
+| T2.4 undeployed SMIN slaves + killer-house liberation | `0047-slave-miner-undeployed` | [#188](https://github.com/michaelmurfy/rallypoint/pull/188) |
 
 ---
 
@@ -192,18 +195,27 @@ but upstream still lists it as incomplete vs retail feel.
 
 ### T2.4 Yuri leftovers (from `ra2/README.md` Partial)
 
-Already patched for playable YuriCountry + many uniques; remaining:
+Already patched for playable YuriCountry + many uniques. **Landed on
+`main`:** undeployed SMIN slaves + killer-house liberation
+(`0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188));
+MagBeam + DISKRAY presentation (`0045` / [#186](https://github.com/michaelmurfy/rallypoint/pull/186));
+blank `Cameo=` XXICON / Image+ICON (`0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187)).
+Do not re-land those.
+
+**Still open (Slave Miner):** AI `AISlaveMinerNumber` / `SlaveMinerShortScan`
+redeploy scoot; SMIN↔YAREFN deploy SlaveManager brain-transplant; Xvfb Yuri
+skirmish CI proof.
 
 | Item | Files / keys | Effort | OpenRA |
 |---|---|---|---|
-| Undeployed SMIN slaves | ~~done~~ patch `0047` (`FUN_006F3FC0`/`FUN_006AF1A0`; ModEnc = Enslaves names InfantryType) | — | Partial |
-| Killer-house liberation on miner death | ~~done~~ patch `0047` (`Building::killed_by` / `Unit::vet.killed_by`) | — | Partial |
+| Undeployed SMIN slaves | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) (`FUN_006F3FC0`/`FUN_006AF1A0`) | — | Partial |
+| Killer-house liberation on miner death | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) | — | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `[General]` SlaveMiner* / AISlaveMinerNumber | M | Yes |
 | SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
 | MC enter cursors / Bio Reactor eject | `engine` capture/MC + patch 0022 | S | No |
-| Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art in `0045`) | M | No |
+| Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
-| Blank cameos (YACOMD, YAPPPT, YAROCK, …) | artmd `Cameo=`; patches 0016 + `0046-yuri-blank-cameos` (XXICON / AltCameo / Image+ICON) | S | No |
+| Blank cameos (YACOMD, YAPPPT, YAROCK, …) | ~~done~~ `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187) (XXICON / AltCameo / Image+ICON); AltCameo *draw* swap still T3.5 | — | No |
 | Xvfb Yuri skirmish CI proof | harness | S | n/a |
 
 ---
@@ -264,39 +276,50 @@ diverge.
 | **Effort** | SCHP done; remaining vehicle turret/deploy M |
 | **OpenRA** | Partial |
 
-### T3.4 Weapon beams / lasers / prism / magnetron / disc rays
+### T3.4 Weapon beams / lasers / prism / magnetron / disc rays — MagBeam/DISKRAY landed
 
 Logic for prism support, magnetron lift, disc drain exists. Chrono Legionnaire
-erase uses ChronoBeam (`0028`). **Partial land:** patch
-`0045-magnetron-disc-beam-art` — Magnetron `IsMagBeam` MagnaBeamColor wave
-(`WaveClass::Draw_Magnetic` **FUN_00762070** / Update **FUN_00762af0**; Fire
-**FUN_006ff5f5**) while `IsLocomotor` holds; Floating Disc `DrainWeapon`
-loops `DrainAnimationType`/DISKRAY (**FUN_0070fd70** / AnimClass
-**FUN_00421ea0**). Remaining: some fragment beams only via FX events; prism
-support visual polish.
+erase uses ChronoBeam (`0028`).
+
+**Landed:** patch `0045-magnetron-disc-beam-art`
+([#186](https://github.com/michaelmurfy/rallypoint/pull/186)) —
+Magnetron `IsMagBeam` MagnaBeamColor wave (`WaveClass::Draw_Magnetic`
+**FUN_00762070** / Update **FUN_00762af0**; Fire **FUN_006ff5f5**) while
+`IsLocomotor` holds; Floating Disc `DrainWeapon` loops
+`DrainAnimationType`/DISKRAY (**FUN_0070fd70** / AnimClass **FUN_00421ea0**).
+Do not re-implement MagBeam / DISKRAY art.
+
+**Still open:** fragment beams only via FX events; prism support visual
+polish; Magnetron building *toss* (logic) and Disc-over-base check (T2.4).
 
 | | |
 |---|---|
 | **Files** | `engine/building_combat.cpp` (prism), magnetron / disc patches, `pres_fx.inc` / `pres_game.inc`, patch `0045` |
 | **gamemd** | Laser / electric / magnetic beam drawers (`FUN_00762070`, `FUN_0070fd70`) |
 | **Rules / art** | `IsLaser`, `IsElectric`, `IsLocomotor`, `IsMagBeam`, `DrainWeapon`, `DrainAnimationType`, `MagnaBeamColor` |
-| **Effort** | remaining S–M |
+| **Effort** | MagBeam/DISKRAY done; remaining fragment/prism S–M |
 | **OpenRA** | No |
-| **Status** | MagBeam + DISKRAY presentation (this PR); fragment/prism leftovers |
 
-### T3.5 Cameo / sidebar icon gaps — partial
+### T3.5 Cameo / sidebar icon gaps — blank Cameo= landed
 
 Cameos load from `language/cameo` + `langmd/cameomd` via AssetFS.
-Blank artmd `Cameo=` falls back to `AltCameo` / `Image`+`ICON` / `XXICON`
-(patch `0046-yuri-blank-cameos`). SW cameos sit in side2 sockets (`0031`).
-Remaining: veteran/undeployed `AltCameo` swap when drawing (name is loaded).
+SW cameos sit in side2 sockets (`0031`).
+
+**Landed:** patch `0046-yuri-blank-cameos`
+([#187](https://github.com/michaelmurfy/rallypoint/pull/187)) —
+blank artmd `Cameo=` falls back to `AltCameo` / `Image`+`ICON` / `XXICON`
+(and `language/cameo.mix` is on AssetFS). Do not re-implement blank-cameo
+resolve.
+
+**Still open:** veteran/undeployed `AltCameo` swap when drawing (name is
+loaded).
 
 | | |
 |---|---|
 | **Files** | sidebar draw in `engine/main.cpp`, patches `0016`, `0031`, `0046` |
 | **gamemd** | SidebarClass cameo strip / FlashCameo |
 | **Rules / art** | artmd `Cameo=`, `AltCameo=`; `cameo.pal` |
-| **Effort** | remaining S (AltCameo draw swap) |
+| **Effort** | blank Cameo= done; remaining S (AltCameo draw swap) |
 | **OpenRA** | No |
 
 ---
@@ -388,18 +411,23 @@ Upstream known limitation.
 
 ## Suggested attack order
 
-1. Burn down T2.4 Yuri Partial list (mostly S/M: undeployed SMIN slaves,
-   Magnetron/Disc beam art, blank cameos, MC cursors, …).
+1. Burn down remaining T2.4 Yuri Partial: AI `AISlaveMinerNumber` /
+   `SlaveMinerShortScan` scoot; SMIN↔YAREFN SlaveManager transplant; MC
+   cursors / Bio Reactor eject; Magnetron building toss; Disc-over-base;
+   Xvfb Yuri skirmish CI — do not re-land `0045`–`0047`.
 2. T1.3 remaining RE only (victim `+0x2DC`, MapZone ids, ArchiveTarget==self)
    — do not re-land `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183).
 3. T3.3 leftovers: non-SCHP vehicle turret / deploy SHPs (SCHP done in `0043`).
 4. T3.1 / T3.2 leftovers (damage fires, prone/crawl/fire proofs) — do not
    re-land AnimActive / Undeploy from `0041`.
-5. T3.4 weapon beams / lasers (Magnetron toss beam, `DISKRAY`, fragment beams)
-   where not already covered by a T2.4 item.
+5. T3.4 leftovers (fragment beams, prism polish) and T3.5 AltCameo draw swap
+   — MagBeam/DISKRAY and blank Cameo= are done (`0045`/`0046`).
 6. T4 systems as product priorities (campaign Yuri, naval AI, net gates).
 
-Landed recently (skip): T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
+Landed recently (skip): MagBeam/DISKRAY `0045` / [#186](https://github.com/michaelmurfy/rallypoint/pull/186);
+blank cameos `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187);
+undeployed SMIN `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188);
+T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
 T3.3 SCHP `0043` / [#182](https://github.com/michaelmurfy/rallypoint/pull/182);
 T1.3 bulk `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183);
 launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
@@ -408,12 +436,14 @@ launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
 
 Before starting a new patch in an area listed under **Recently landed**,
 rebase on `main` and read the cited patch — re-implementing
-`0034`/`0035`/`0037`/`0040`–`0044` or the `0025`–`0033` presentation stack is
+`0034`/`0035`/`0037`/`0040`–`0047` or the `0025`–`0033` presentation stack is
 wasted work.
 
-Sibling work often in flight on T2.4 / T3.4 / T3.5 (undeployed Slave Miner,
-Magnetron + Disc beam art, blank Yuri cameos): check open PRs before starting
-another patch in those areas.
+No open sibling parity PRs assumed for MagBeam / blank cameos / undeployed
+SMIN (those landed in #186–#188). Check open PRs before starting another
+patch in T2.4 leftovers (AI Slave Miner scoot, SMIN↔YAREFN transplant,
+Xvfb CI) or T3.4/T3.5 polish.
 
-Next priorities (open): T2.4 Yuri Partial; T1.3 RE leftovers; non-SCHP T3.3;
-T3.1/T3.2 leftovers; T4.
+Next priorities (open): T2.4 Slave Miner AI scoot / deploy transplant /
+Xvfb CI + other Yuri Partial; T1.3 RE leftovers; non-SCHP T3.3;
+T3.1/T3.2 leftovers; T3.4/T3.5 polish; T4.
