@@ -356,7 +356,7 @@ pub fn is_game_packet(p: &[u8]) -> bool {
     }
     let mut plain = p.to_vec();
     let mut mask: u32 = 0xFADE;
-    for w in plain.chunks_exact_mut(4) {
+    for w in plain.as_chunks_mut::<4>().0 {
         let v = u32::from_be_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
         w.copy_from_slice(&v.to_le_bytes());
         mask = mask.wrapping_add(0x321);
@@ -416,7 +416,7 @@ pub fn game_packet(payload: &[u8]) -> Vec<u8> {
     let crc = p[4..].iter().fold(0u32, |c, &b| (c << 1).wrapping_add(b as u32).wrapping_add(c >> 31));
     p[..4].copy_from_slice(&crc.to_le_bytes());
     let mut mask: u32 = 0xFADE;
-    for w in p.chunks_exact_mut(4) {
+    for w in p.as_chunks_mut::<4>().0 {
         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) ^ mask;
         w.copy_from_slice(&v.to_be_bytes());
         mask = mask.wrapping_add(0x321);
