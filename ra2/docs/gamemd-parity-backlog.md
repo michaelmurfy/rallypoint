@@ -196,9 +196,10 @@ Already patched for playable YuriCountry + many uniques; remaining:
 
 | Item | Files / keys | Effort | OpenRA |
 |---|---|---|---|
-| Undeployed SMIN slaves | slave-miner patches; ModEnc: infantry leave BuildingTypes only | S–M | Partial |
-| Killer-house liberation on miner death | combat → slave free | M | Partial |
+| Undeployed SMIN slaves | ~~done~~ patch `0047` (`FUN_006F3FC0`/`FUN_006AF1A0`; ModEnc = Enslaves names InfantryType) | — | Partial |
+| Killer-house liberation on miner death | ~~done~~ patch `0047` (`Building::killed_by` / `Unit::vet.killed_by`) | — | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `[General]` SlaveMiner* / AISlaveMinerNumber | M | Yes |
+| SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
 | MC enter cursors / Bio Reactor eject | `engine` capture/MC + patch 0022 | S | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
