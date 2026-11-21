@@ -183,15 +183,18 @@ Demolition Truck, Cuba Terrorist, …) needs a pass against live `rulesmd`.
 
 ### T2.3 Country superweapons / para drops
 
-Amer/Ally/Sov/Yuri para-drop infantry counts are wired; Spy Plane is typed
-but upstream still lists it as incomplete vs retail feel.
+Amer/Ally/Sov/Yuri para-drop infantry counts are wired. Spy Plane SW path
+landed in patch `0050-spy-plane-sw` (grant from NARADR, Approach→Overfly
+camera reveal per `FUN_006CD66F` / `FUN_004155F0` / `FUN_004157C0`). Remaining
+feel polish (rules-driven Camera* keys into `SwParams`, snapshot SFX/art) is
+optional follow-up.
 
 | | |
 |---|---|
-| **Files** | `engine/w2air_main.inc`, `engine/superweapon.*`, `engine/world_an.cpp`, `engine/world.cpp` (SW dispatch) |
+| **Files** | `engine/w2air_*.inc`, `engine/superweapon.*`, `engine/world_an.cpp`, `engine/world_sw.cpp`, `engine/realplay_economy.inc` |
 | **gamemd** | SW type table; SpyPlaneSpecial / AmericanParaDropSpecial |
 | **Rules** | `AmerParaDropInf`/`Num`, `AllyParaDrop*`, `SovParaDrop*`, `YuriParaDrop*`, `[SpyPlaneSpecial]`, `SpyPlaneCamera*` |
-| **Effort** | M |
+| **Effort** | ~~M~~ Spy Plane core done (`0050`); Camera* rules wiring S |
 | **OpenRA** | Partial |
 
 ### T2.4 Yuri leftovers (from `ra2/README.md` Partial)
@@ -344,15 +347,15 @@ naval attack teams vs water maps need a dedicated pass.
 ### T4.2 Aircraft recruit / airport-bound / Spy Plane feel
 
 AirportBound crash-if-no-dock, spawner (Carrier/Dreadnought/V3), paradrop
-planes exist. Spy Plane SW and some recruit/idle paths still called out as
-incomplete. Siege Chopper overlaps T3.3.
+planes exist. Spy Plane SW fog-reveal sweep is patch `0050` (loaner SPYP
+Approach/Overfly). Remaining: recruit/idle polish; Siege Chopper overlaps T3.3.
 
 | | |
 |---|---|
 | **Files** | `engine/air_naval.hpp`, `engine/w2air_*.inc`, `engine/campaign_runtime.inc` (recruit / PDPLANE), `engine/world.cpp` docks |
-| **gamemd** | AircraftClass Mission_Attack **FUN_00417FE0**, Enter_Idle_Mode **FUN_004176F0**, SpawnManager **FUN_006B68B0** |
+| **gamemd** | AircraftClass Mission_Attack **FUN_00417FE0**, Enter_Idle_Mode **FUN_004176F0**, SpawnManager **FUN_006B68B0**; SpyPlane Launch **FUN_006CD66F** |
 | **Rules** | `AirportBound`, `Helipad`, `Spawns`/`SpawnsNumber`, `SpyPlane*` |
-| **Effort** | L |
+| **Effort** | L (Spy Plane SW ~~done~~ in `0050`) |
 | **OpenRA** | Partial |
 
 ### T4.3 Capture / engineer / spy polish
