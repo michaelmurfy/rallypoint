@@ -202,7 +202,7 @@ Already patched for playable YuriCountry + many uniques; remaining:
 | MC enter cursors / Bio Reactor eject | `engine` capture/MC + patch 0022 | S | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
-| Blank cameos (YACOMD, YAPPPT, YAROCK, …) | artmd `Cameo=`; patch 0016 mix lookup | S | No |
+| Blank cameos (YACOMD, YAPPPT, YAROCK, …) | artmd `Cameo=`; patches 0016 + `0046-yuri-blank-cameos` (XXICON / AltCameo / Image+ICON) | S | No |
 | Xvfb Yuri skirmish CI proof | harness | S | n/a |
 
 ---
@@ -283,17 +283,19 @@ support visual polish.
 | **OpenRA** | No |
 | **Status** | MagBeam + DISKRAY presentation (this PR); fragment/prism leftovers |
 
-### T3.5 Cameo / sidebar icon gaps
+### T3.5 Cameo / sidebar icon gaps — partial
 
-Cameos load from cameo / cameomd mixes; types without `Cameo=` stay blank.
-SW cameos sit in side2 sockets (`0031`).
+Cameos load from `language/cameo` + `langmd/cameomd` via AssetFS.
+Blank artmd `Cameo=` falls back to `AltCameo` / `Image`+`ICON` / `XXICON`
+(patch `0046-yuri-blank-cameos`). SW cameos sit in side2 sockets (`0031`).
+Remaining: veteran/undeployed `AltCameo` swap when drawing (name is loaded).
 
 | | |
 |---|---|
-| **Files** | sidebar draw in `engine/main.cpp`, patches `0016-yuri-cameo-mix-lookup`, `0031-sw-sidebar-slots` |
+| **Files** | sidebar draw in `engine/main.cpp`, patches `0016`, `0031`, `0046` |
 | **gamemd** | SidebarClass cameo strip / FlashCameo |
 | **Rules / art** | artmd `Cameo=`, `AltCameo=`; `cameo.pal` |
-| **Effort** | S–M |
+| **Effort** | remaining S (AltCameo draw swap) |
 | **OpenRA** | No |
 
 ---
