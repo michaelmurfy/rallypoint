@@ -56,6 +56,42 @@ the original game would differ); every one of our builds simulates identically, 
 | `0003-linux-and-macos-link-sdl-statically` | Linux and macOS link SDL statically: one executable, no rpath. Windows keeps `SDL2.dll`. |
 | `0004-launcher-interface` | `--launch`, window size/fullscreen/title, map files by path, the CnCNet V2 tunnel. |
 | `0005-crt-lround-check-only-with-ucrt` | One test compares `om::lround` with the Windows C runtime's; it now runs only against the UCRT (our MinGW build links msvcrt, which differs out of range; the sim never calls it). |
+| `0005a-macos-interfaces-with-getifaddrs` | macOS lists interfaces with `getifaddrs` (no `ifr_netmask`). |
+| `0010-yuri-side-helpers` | Pure helpers for the third side (`yuri_side.hpp`) and `tests/test_yuri.cpp`. |
+| `0011-yuri-lobby-ai-and-economy` | `YuriCountry` as lobby index 9, ThirdSide country/AI keys, Yuri AI roster and catalog. |
+| `0012-yuri-buildings-roster-and-crews` | Load Yuri structures/units, cameomd cameos, ThirdCrew survivors, Soviet chrome for Yuri. |
+
+## Factions (Country=)
+
+Launch-file / launcher `Country=` is an index into the lobby list, or the country name:
+
+| Index | Country | Side (rules `Side=`) |
+|---|---|---|
+| 0 | Americans | GDI (Allied) |
+| 1 | Alliance | GDI |
+| 2 | French | GDI |
+| 3 | Germans | GDI |
+| 4 | British | GDI |
+| 5 | Africans | Nod (Soviet) |
+| 6 | Arabs | Nod |
+| 7 | Confederation | Nod |
+| 8 | Russians | Nod |
+| 9 | YuriCountry | ThirdSide (Yuri) |
+
+`Country=9` and `Country=YuriCountry` are the same. The launcher's Yuri seat is side index 9 and writes `Country=9`.
+
+### What works as Yuri
+
+- Selectable in `--launch` skirmish; human roster is rules-driven for `YuriCountry` (INIT, SMIN, YTNK, YURI, …).
+- Yuri buildings load (YACNST, YAPOWR, YABRCK, YAWEAP, YAREFN, …) and AI skirmish arms with `conyard=YACNST`.
+- PCV is the BaseUnit; deploy/build tree follows prerequisites.
+
+### Partial / missing
+
+- **Slave Miner**: SMIN / YAREFN are buildable and deployable; `Enslaves=` / slave gather AI is not implemented (no classic `Harvester=` path).
+- **Mind control**: weapons and warheads resolve; capture polling is campaign-only (`w_mind_control`), not skirmish.
+- **Gattling** (`IsGattling` / YTNK): unit loads and fires its primary; rate-up weapon stages are not implemented.
+- Many Yuri structure cameos still miss art (`cameomd`) until the search chain finds them.
 
 ## Building
 
@@ -121,7 +157,7 @@ Version=2            ; 2 = CnCNet tunnel v2 header (the Rallypoint agent), 3 = v
 [Player0]            ; up to [Player7]; slot 0 must be human in a network game: it is the host (lockstep master)
 Type=human           ; human, ai, or closed (a missing section is closed)
 Name=Alice
-Country=Americans    ; Americans Alliance French Germans British Africans Arabs Confederation Russians, an index 0-8, or random
+Country=Americans    ; Americans..Russians, YuriCountry (index 9), an index 0-9, or random
 Color=0              ; 0..7 or random
 Start=1              ; 1..8 (the map's start waypoints) or random
 Team=A               ; A..D (or 1..4) or none
@@ -161,7 +197,9 @@ installers and packages are named `<tauri.conf.json version>-ra2.alpha.N`, and t
 
 ## Not verified
 
-- Nothing has been played: this VM has no Yuri's Revenge files, so `--launch` (skirmish and network), the window
-  options and the map-by-path loader are compiled and reviewed only. The V2 tunnel path is covered by a test
-  (`mp: lobby through a CnCNet V2 tunnel`) against a minimal forwarder.
+- A Linux Xvfb `--launch` skirmish as `Country=9` / `YuriCountry` (map `xmp31s2.map`, real YR data) loads the
+  Yuri roster and AI (`side=Yuri`, `conyard=YACNST`); Slave Miner slaves, skirmish mind control and Gattling
+  stages were not proven in play. Network play and the window options are still compile/review only aside from
+  that smoke. The V2 tunnel path is covered by a test (`mp: lobby through a CnCNet V2 tunnel`) against a
+  minimal forwarder.
 - macOS is built only by CI.
