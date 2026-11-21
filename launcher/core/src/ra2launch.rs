@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const MAX_PLAYERS: usize = 8;
-/// The engine's countries 0..8 (America, Korea, France, Germany, Great Britain, Libya, Iraq, Cuba, Russia); -1 random.
-pub const SIDES: i32 = 9;
+/// The engine's countries 0..9 (America, Korea, France, Germany, Great Britain, Libya, Iraq, Cuba, Russia, Yuri); -1
+/// random. Yuri (9) needs an engine that lists it (`Country=9`, otherwise the engine stops with "unknown Country").
+pub const SIDES: i32 = 10;
 /// Multiplayer colours 0..7 (yellow, red, blue, green, orange, teal, purple, pink); -1 any free one.
 pub const COLORS: i32 = 8;
 /// Teams A..D; -1 none.

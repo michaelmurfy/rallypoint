@@ -2133,7 +2133,7 @@ function settingsPage() {
 const isRa2 = () => store.cfg.game === "ra2";
 const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
 const RA2_NAME = "Red Alert 2: Yuri's Revenge";
-const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia"]; // the engine has no Yuri side
+const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia", "Yuri"]; // the engine's countries in order (ra2launch::SIDES)
 const RA2_COLORS = ["Yellow", "Red", "Blue", "Green", "Orange", "Teal", "Purple", "Pink"];
 const RA2_PC = [3, 1, 0, 2, 4, 6, 5, 7]; // each RA2 colour's nearest place colour (style.css .pcN, PLACE_COLORS)
 const RA2_SPEEDS = [[0, "Fastest"], [1, "Faster"], [2, "Fast"], [3, "Medium"], [4, "Slow"], [5, "Slower"], [6, "Slowest"]];
@@ -2408,31 +2408,91 @@ function ra2MapsPage() {
   return { el };
 }
 
-/** The online lobby: who is in the room, their seats, the host's map and options, and Start. Shown while connected. */
+/** The online lobby: the host's map with its starts, who is in the room, their seats, the options, and Start. Shown
+ *  while connected. Ready belongs to the current settings: any change by the host clears it (see `ra2lobby`). */
 function ra2LobbyCard() {
-  let sig = "", seeded = false, hostSeeded = false, maps = null, hostAi = [], mySeat = null;
+  let sig = "", seeded = false, hostSeeded = false, maps = null, hostAi = [], mySeat = null, active = -1, cleared = false;
+  const views = {}; // map file -> map_view result, or { error }
   const card = h("div", { class: "card", hidden: true });
   const fb = liveStatus();
   const sendSeat = () => invoke("ra2_lobby_seat", { seat: mySeat }).catch((e) => fb.bad(errText(e)));
   async function sendRoom(settings) {
     try { await invoke("ra2_lobby_room", { map: settings.map, credits: settings.credits, speed: settings.speed, ai: hostAi }); } catch (e) { fb.bad(errText(e)); }
   }
+  async function loadView(file) {
+    views[file] = null;
+    try { views[file] = await invoke("ra2_map_view", { file }); } catch (e) { views[file] = { error: errText(e) }; }
+    sig = ""; draw();
+  }
   async function draw() {
     const d = store.lobby;
     card.hidden = !store.relay.startsWith("Connected as");
     if (card.hidden) { sig = ""; seeded = hostSeeded = false; return; }
     if (!d) { if (sig !== "wait") { sig = "wait"; fill(card, h("h2", {}, "Lobby"), h("p", { class: "muted small row" }, h("span", { class: "spin", "aria-hidden": "true" }), "Joining the lobby…")); } return; }
+    const me = d.players.find((p) => p.me);
     if (!seeded) { seeded = true; mySeat = { side: store.cfg.ra2.side, color: store.cfg.ra2.color, start: -1, team: -1, ready: false }; sendSeat(); }
+    else if (me) {
+      // the lobby's copy wins: a change by the host clears ready there
+      if (mySeat.ready && !me.ready) cleared = true;
+      mySeat = { side: me.side, color: me.color, start: me.start, team: me.team, ready: me.ready };
+    }
     if (d.am_host && maps === null) { maps = []; maps = playable(await loadRa2Maps()); }
     if (d.am_host && !d.settings && !hostSeeded && maps && maps.length) {
       hostSeeded = true;
       const want = prefs.get().ra2Map, m = maps.find((x) => fileOf(x.path) === want) || maps[0];
       sendRoom({ map: fileOf(m.path), credits: ra2Credits(), speed: ra2Speed() });
     }
-    const next = JSON.stringify({ p: d.players, s: d.settings, h: d.am_host, b: d.blocked, m: maps && maps.length });
+    if (d.settings && !(d.settings.map in views)) loadView(d.settings.map);
+    if (!d.am_host || (active >= 0 && !(d.settings && d.settings.ai[active]))) active = -1;
+    const next = JSON.stringify({ p: d.players, s: d.settings, h: d.am_host, b: d.blocked, m: maps && maps.length, a: active, c: cleared });
     if (next === sig) return;
     sig = next;
-    render(d);
+    render(store.lobby);
+  }
+  /** Who is on start n: a name, a colour, and whether it is the selected place (you, or the host's chosen computer). */
+  function ownerOf(d, n) {
+    const s = d.settings;
+    const p = d.players.find((x) => (x.me ? mySeat.start : x.start) === n);
+    if (p) return { name: p.me ? "you" : p.name || "a player", color: p.me ? mySeat.color : p.color, mine: !!p.me && active < 0 };
+    const k = s ? s.ai.findIndex((a) => a.start === n) : -1;
+    if (k >= 0) return { name: `computer ${k + 1}`, color: s.ai[k].color, mine: k === active };
+    return null;
+  }
+  function mapPanel(d) {
+    const s = d.settings, v = s && views[s.map];
+    const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": s ? `Map preview: ${s.map_name}` : "Map preview" });
+    const marks = h("div", { class: "startmarks" });
+    const note = h("p", { class: "muted small" });
+    if (!v || v.error) {
+      const c = canvas.getContext("2d"); c.fillStyle = css("--bg"); c.fillRect(0, 0, MAP_VIEW, MAP_VIEW);
+      note.textContent = !s ? "" : !v ? "Loading the map…" : `You don't have this map, or it can't be read: ${v.error}`;
+    } else {
+      const spots = paintMap(canvas, v, (n) => { const o = ownerOf(d, n); return o ? { color: markerColor(o.color), halo: o.mine } : null; });
+      // the markers as buttons over the picture, so they can be reached with the keyboard
+      fill(marks, spots.map((sp) => {
+        const o = ownerOf(d, sp.n), mine = o && o.mine;
+        const b = h("button", { type: "button", class: "startmark", "data-key": `start-${sp.n}`, disabled: !!o && !mine,
+          "aria-label": `Start ${sp.n}, ${o ? o.name : "free"}`, title: o ? (mine ? `Start ${sp.n}: click to go back to a random start` : `Start ${sp.n}: ${o.name}`) : `Start ${sp.n}: click to take it`,
+          onclick: () => takeStart(d, sp.n, mine) });
+        b.style.left = `${(sp.x / MAP_VIEW) * 100}%`; b.style.top = `${(sp.y / MAP_VIEW) * 100}%`;
+        return b;
+      }));
+      note.textContent = !v.rgba ? "This map has no preview picture." : d.am_host ? "Select yourself or a computer player, then click a free start." : "Click a free start to take it. Click it again to go back to random.";
+    }
+    return h("div", { class: "mapcol" }, h("div", { class: "stage" }, h("div", { class: "markwrap" }, canvas, marks)), note);
+  }
+  function takeStart(d, n, mine) {
+    const start = mine ? -1 : n;
+    if (active >= 0) { hostAi[active].start = start; sendRoom(d.settings); return; }
+    mySeat.start = start; sendSeat();
+    render(store.lobby);
+  }
+  function readyButton() {
+    const b = h("button", { type: "button", class: "btn readybtn", "data-key": "ready", "aria-pressed": String(mySeat.ready), onclick: () => {
+      mySeat.ready = !mySeat.ready; cleared = false;
+      sendSeat(); render(store.lobby);
+    } }, mySeat.ready ? icon("check") : null, mySeat.ready ? "Ready" : "Ready up");
+    return b;
   }
   function render(d) {
     const s = d.settings, starts = s ? s.starts : 8;
@@ -2446,33 +2506,31 @@ function ra2LobbyCard() {
       const set = (patch) => { const n = { ...cur, ...patch }; if ("map" in patch) prefs.set({ ra2Map: n.map }); if ("credits" in patch) prefs.set({ ra2Credits: n.credits }); if ("speed" in patch) prefs.set({ ra2Speed: n.speed }); sendRoom(n); };
       const mapSel = pick("Map", all.map((m) => [fileOf(m.path), `${m.name} (${m.players})`]), cur.map, (v) => set({ map: v }));
       mapSel.disabled = !all.length;
-      options = h("div", { class: "ra2opts" },
+      options = h("div", { class: "stack tight" },
         h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps. Add some on the Maps page.")),
         h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
-        h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))));
+        h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
+        h("p", { class: "muted small" }, "Any change asks everyone to ready again."));
     } else {
-      options = s ? h("p", { class: "factline" }, [s.map_name, `$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`].map((b) => h("span", {}, b)))
+      options = s ? h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "factline" }, [`$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`].map((b) => h("span", {}, b))))
         : h("p", { class: "muted small" }, "Waiting for the host to choose a map.");
     }
+    const select = (k) => () => { if (d.am_host && active !== k) { active = k; render(store.lobby); } };
     const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"), h("span", {}, "Status"));
     const people = d.players.map((p) => {
       const seat = p.me ? mySeat : p;
       const name = h("span", { class: "skwho" }, p.name || "Player", p.me ? h("span", { class: "muted small" }, " (you)") : null);
-      const cells = p.me ? seatCells("you", mySeat, starts, (patch) => { Object.assign(mySeat, patch); sendSeat(); }) : seatText(p);
-      let state;
-      if (p.host) state = pill("Host");
-      else if (p.me) {
-        const box = h("input", { type: "checkbox", checked: mySeat.ready, "aria-label": "Ready", onchange: () => { mySeat.ready = box.checked; sendSeat(); } });
-        state = h("label", { class: "switch small" }, box, "Ready");
-      } else state = pill(p.ready ? "Ready" : "Not ready", p.ready ? "ok" : "");
-      return h("div", { class: "skrow2 static" + ra2RowClass(seat.color) }, ra2Swatch(seat.color), name, cells, state);
+      const cells = p.me ? seatCells("you", mySeat, starts, (patch) => { Object.assign(mySeat, patch); sendSeat(); render(store.lobby); }) : seatText(p);
+      const state = p.host ? pill("Host") : pill(p.ready ? "Ready" : "Not ready", p.ready ? "ok" : "");
+      const pickable = d.am_host && p.me;
+      return h("div", { class: "skrow2" + (pickable ? "" : " static") + (pickable && active < 0 ? " active" : "") + ra2RowClass(seat.color), onclick: pickable ? select(-1) : null, onfocusin: pickable ? select(-1) : null }, ra2Swatch(seat.color), name, cells, state);
     });
     const ais = (s ? s.ai : []).map((a, k) => {
       const who = d.am_host ? pick(`Computer ${k + 1}`, RA2_DIFFS.map(([v, t]) => [v, `${t} AI`]), a.difficulty, (v) => { hostAi[k].difficulty = v; sendRoom(s); })
         : h("span", { class: "skwho" }, `${(RA2_DIFFS.find(([v]) => v === a.difficulty) || RA2_DIFFS[0])[1]} AI`);
       const cells = d.am_host ? seatCells(`computer ${k + 1}`, a, starts, (patch) => { Object.assign(hostAi[k], patch); sendRoom(s); }) : seatText(a);
-      const state = d.am_host ? h("button", { class: "btn small ghost", onclick: () => { hostAi.splice(k, 1); sendRoom(s); } }, "Remove") : h("span", {});
-      return h("div", { class: "skrow2 static" + ra2RowClass(a.color) }, ra2Swatch(a.color), who, cells, state);
+      const state = d.am_host ? h("button", { class: "btn small ghost", onclick: (e) => { e.stopPropagation(); hostAi.splice(k, 1); if (active === k) active = -1; sendRoom(s); } }, "Remove") : h("span", {});
+      return h("div", { class: "skrow2" + (d.am_host ? "" : " static") + (k === active ? " active" : "") + ra2RowClass(a.color), onclick: d.am_host ? select(k) : null, onfocusin: d.am_host ? select(k) : null }, ra2Swatch(a.color), who, cells, state);
     });
     if (d.am_host && s) hostAi = s.ai.map((a) => ({ ...a }));
     const room = d.players.length + (s ? s.ai.length : 0);
@@ -2484,17 +2542,25 @@ function ra2LobbyCard() {
         try { const setup = await invoke("ra2_lobby_start"); await launchRa2(setup); } catch (e) { fb.bad(errText(e)); }
         start.disabled = false;
       } }, icon("play"), "Start the game");
-      foot = h("div", { class: "row between" }, h("span", { class: "muted small" }, d.blocked || "Everyone is ready."), h("div", { class: "row" }, fb.el, start));
+      foot = h("div", { class: "row between lobbyfoot" }, h("span", { class: "muted small" }, d.blocked || "Everyone is ready."), h("div", { class: "row" }, fb.el, start));
     } else {
-      foot = h("div", { class: "row between" }, h("span", { class: "muted small" }, mySeat.ready ? "Waiting for the host to start." : "Turn on Ready when you are set."), fb.el);
+      const say = mySeat.ready ? "Waiting for the host to start." : cleared ? "The host changed the game. Ready up again when you are set." : s ? "Ready up when you are set." : "Waiting for the host to choose a map.";
+      const ready = readyButton();
+      ready.disabled = !s;
+      foot = h("div", { class: "row between lobbyfoot" }, h("span", { class: cleared && !mySeat.ready ? "small" : "muted small", role: "status" }, say), h("div", { class: "row" }, fb.el, ready));
     }
+    // the card is redrawn whenever the room changes: keep the keyboard where it was
+    const f = card.contains(document.activeElement) ? document.activeElement : null;
+    const key = f && (f.dataset.key || f.getAttribute("aria-label"));
     fill(card,
       h("div", { class: "row between" }, h("h2", {}, "Lobby"), badge),
-      options,
+      h("div", { class: "ra2setup" }, mapPanel(d), h("div", { class: "mapside" }, options)),
       h("div", { class: "skgrid ra2 lobby", role: "group", "aria-label": "Players in the room" }, head, people, ais),
       addAi ? h("div", { class: "row" }, addAi) : null,
       d.players.length < 2 ? h("p", { class: "muted small" }, "Nobody else is here yet. Share the server, room and password with your friends.") : null,
       foot);
+    const again = key && [...card.querySelectorAll("[data-key], [aria-label]")].find((el) => (el.dataset.key || el.getAttribute("aria-label")) === key);
+    if (again) again.focus();
   }
   window.addEventListener("lobby", draw);
   draw();

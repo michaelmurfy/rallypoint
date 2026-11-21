@@ -1,6 +1,7 @@
 // A fake Tauri backend so the launcher UI can be opened in a plain browser:
 //   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install,
-//   #ra2 for Red Alert 2 mode, #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest)
+//   #ra2 for Red Alert 2 mode, #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
+//   #ra2guestchanged: the host changes the speed 2.5 s in, #ra2guestready: a guest who is ready)
 const hash = location.hash;
 const fakeMaps = () => {
   const names = ["! 1v1 ! super no money map v2", "!!! no money !!! lots of fun3", "!2v2 cxn", "Tournament Desert", "Twilight Flame", "Defcon 6", "Mountain Pass", "Arctic Convoy", "Bear Town", "Fallen Empire", "Winter Wolves", "Dust Bowl 2v2", "Golden Gate", "Oasis 3v3"];
@@ -32,8 +33,11 @@ function advance() {
 setInterval(advance, 500);
 const ra2Maps = [["Little Big Lake", 4, "yr"], ["Golden State Fwy", 6, "yr"], ["Heck Freezes Over", 8, "ra2"], ["Isle of War", 2, "yr"], ["Dune Patrol", 2, "ra2"], ["Tour of Egypt", 6, "ra2"], ["Kill Bill", 2, "yr"], ["Cold War", 4, "ra2"], ["Mission: Last Stand", 1, "yr"]]
   .map(([name, players, game], i) => ({ path: `/Users/me/Library/Application Support/GeneralsZH/RA2Maps/${name.replace(/[^A-Za-z ]/g, "")}.${game === "yr" ? "yrm" : "mpr"}`, name, players, game, size_kb: 60 + i * 23 }));
-const lobby = { seat: { side: -1, color: -1, start: -1, team: -1, ready: false }, settings: null };
+const lobby = { seat: { side: -1, color: -1, start: -1, team: -1, ready: false }, settings: null, changedAt: 0 };
 const guestHost = hash.includes("ra2guest");
+// what the guest sees of the host's room; any change clears the guest's ready, as in ra2lobby
+const guestRoom = { map: "Little Big Lake.yrm", map_name: "Little Big Lake", starts: 4, credits: 10000, speed: 2, ai: [{ difficulty: "brutal", side: 7, color: 6, start: 3, team: 1 }] };
+if (hash.includes("changed")) { setTimeout(() => { lobby.seat.ready = true; }, 1000); setTimeout(() => { guestRoom.speed = 0; lobby.seat.ready = false; }, 2500); }
 const handlers = {
   set_game: ({ game }) => { state.cfg.game = game; },
   ra2_detect: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Red Alert II" }] : []),
@@ -48,15 +52,24 @@ const handlers = {
   },
   ra2_open_maps_folder: () => {},
   ra2_launch: ({ setup }) => { window.__lastRa2 = setup; if (!state.cfg.ra2_engine) throw new Error("The RA2 engine is not in this build yet"); },
-  ra2_lobby_seat: ({ seat }) => { lobby.seat = seat; },
-  ra2_lobby_room: ({ map, credits, speed, ai }) => { const m = ra2Maps.find((x) => x.path.endsWith("/" + map)); lobby.settings = { map, map_name: m.name, starts: m.players, credits, speed, ai }; },
+  ra2_lobby_seat: ({ seat }) => {
+    const changed = ["side", "color", "start", "team"].some((k) => seat[k] !== lobby.seat[k]);
+    lobby.seat = { ...seat };
+    if (changed && !guestHost && lobby.settings) lobby.changedAt = Date.now();
+  },
+  ra2_lobby_room: ({ map, credits, speed, ai }) => {
+    const m = ra2Maps.find((x) => x.path.endsWith("/" + map)), next = { map, map_name: m.name, starts: m.players, credits, speed, ai };
+    if (JSON.stringify(next) !== JSON.stringify(lobby.settings)) { lobby.settings = next; lobby.changedAt = Date.now(); }
+  },
   ra2_lobby_start: () => { throw new Error("Waiting for Dana to be ready"); },
   ra2_lobby_poll: () => {
     if (!hash.includes("online") && !guestHost) return null;
-    const me = { id: 2, name: "Michaels-Mac", host: !guestHost, me: true, ...lobby.seat };
-    const others = [{ id: 1, name: "Sam", host: guestHost, me: false, side: 8, color: 1, start: 1, team: 0, ready: true }, { id: 3, name: "Dana", host: false, me: false, side: -1, color: 3, start: -1, team: -1, ready: false }];
-    const settings = guestHost ? { map: "Little Big Lake.yrm", map_name: "Little Big Lake", starts: 4, credits: 10000, speed: 2, ai: [{ difficulty: "brutal", side: 7, color: 6, start: -1, team: 1 }] } : lobby.settings;
-    return { me: 2, host: guestHost ? 1 : 2, am_host: !guestHost, players: [others[0], me, others[1]], settings, blocked: guestHost ? "" : !settings ? "Choose a map first" : "Waiting for Dana to be ready", start: null };
+    const me = { id: 2, name: "Michaels-Mac", host: !guestHost, me: true, ...lobby.seat, ...(hash.includes("guestready") ? { ready: true } : {}) };
+    // Sam readies again 4 s after the host's last change; Dana never does
+    const samReady = guestHost || Date.now() - lobby.changedAt > 4000;
+    const others = [{ id: 1, name: "Sam", host: guestHost, me: false, side: 8, color: 1, start: 1, team: 0, ready: samReady }, { id: 3, name: "Dana", host: false, me: false, side: 9, color: 3, start: -1, team: -1, ready: false }];
+    const settings = guestHost ? structuredClone(guestRoom) : lobby.settings;
+    return { me: 2, host: guestHost ? 1 : 2, am_host: !guestHost, players: [others[0], me, others[1]], settings, blocked: guestHost ? "" : !settings ? "Choose a map first" : `Waiting for ${samReady ? "Dana" : "Sam"} to be ready`, start: null };
   },
   get_config: () => structuredClone(state.cfg),
   maps_info: () => ({ dir: "/Users/me/Documents/Command and Conquer Generals Zero Hour Data/Maps", count: state.mapCount || 0, packs: [
@@ -142,3 +155,6 @@ window.__TAURI__ = {
   webview: { getCurrentWebview: () => ({ onDragDropEvent: () => {} }) },
   dialog: { open: async () => "/Users/me/Downloads/ShockWave_1.201.zip" },
 };
+// #...@online opens the Online page; #ra2online...hostchange changes the credits 6 s in (Sam's ready clears for 4 s)
+if (hash.includes("@online")) { const t = setInterval(() => { if (store.page === "play") { clearInterval(t); go("online"); } }, 100); }
+if (hash.includes("hostchange")) setTimeout(() => { if (lobby.settings) { lobby.settings = { ...lobby.settings, credits: 20000 }; lobby.changedAt = Date.now(); } }, 6000);

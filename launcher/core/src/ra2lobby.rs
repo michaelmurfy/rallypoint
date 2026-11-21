@@ -3,6 +3,10 @@
 //! host (the room master) also sends the room's `state` and, to begin, `start` with the whole setup. Everything received
 //! comes from other players, so it is size-capped, parsed strictly and range-checked, and only the host is heard on
 //! the room's settings and the start.
+//!
+//! Ready is per revision of the room: every change the host makes (map, options, computer players, its own seat) gives
+//! the settings a new `rev`, a guest's ready carries the `rev` it was given for, and only a ready for the current one
+//! counts. A guest that sees a new revision drops its own ready, so everyone readies again after a change.
 use crate::ra2launch::{self, Difficulty, Ra2Player, Ra2Setup, COLORS, SIDES, TEAMS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -22,11 +26,20 @@ pub struct Seat {
     pub team: i32,
     #[serde(default)]
     pub ready: bool,
+    /// The settings revision `ready` was given for (set by the lobby, not the page).
+    #[serde(default)]
+    pub rev: u32,
 }
 
 impl Default for Seat {
     fn default() -> Self {
-        Seat { side: -1, color: -1, start: -1, team: -1, ready: false }
+        Seat { side: -1, color: -1, start: -1, team: -1, ready: false, rev: 0 }
+    }
+}
+
+impl Seat {
+    fn same_choice(&self, o: &Seat) -> bool {
+        (self.side, self.color, self.start, self.team) == (o.side, o.color, o.start, o.team)
     }
 }
 
@@ -51,6 +64,9 @@ pub struct RoomSettings {
     pub speed: u8,
     #[serde(default)]
     pub ai: Vec<AiSeat>,
+    /// Changes with every change the host makes; its address is in the top byte, so a new host never reuses one.
+    #[serde(default)]
+    pub rev: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,6 +160,8 @@ pub struct Lobby {
     start_in: Option<Ra2Setup>,
     start_out: Option<(Ra2Setup, u8)>,
     last_seed: Option<u32>,
+    /// The host's count of its own changes, for `RoomSettings::rev`.
+    changes: u32,
 }
 
 impl Lobby {
@@ -187,7 +205,15 @@ impl Lobby {
                 let p = self.peers.entry(from).or_insert_with(fresh);
                 (p.seat, p.heard_ms) = (s, now_ms);
             }
-            Msg::State(r) if from == self.host() => self.settings = Some((from, r)),
+            Msg::State(r) if from == self.host() => {
+                if self.current_settings().map(|c| c.rev) != Some(r.rev) {
+                    self.seat.ready = false;
+                }
+                if self.seat.start > r.starts as i32 {
+                    self.seat.start = -1;
+                }
+                self.settings = Some((from, r));
+            }
             Msg::Start(s) if from == self.host() && self.last_seed != Some(s.seed) && s.players.iter().any(|p| p.tunnel_id == Some(self.me)) => {
                 self.last_seed = Some(s.seed);
                 self.start_in = Some(s);
@@ -204,8 +230,22 @@ impl Lobby {
         if !seat_ok(seat.side, seat.color, seat.start, seat.team) {
             return Err("That choice is out of range".into());
         }
-        self.seat = seat;
+        let changed = !seat.same_choice(&self.seat);
+        let rev = self.current_settings().map_or(0, |r| r.rev);
+        self.seat = Seat { rev, ..seat };
+        if changed && self.is_host() {
+            self.bump();
+        }
         Ok(())
+    }
+
+    /// The host changed something everyone readied for.
+    fn bump(&mut self) {
+        let me = self.me;
+        if let Some((_, r)) = self.settings.as_mut().filter(|(from, _)| *from == me) {
+            self.changes = self.changes.wrapping_add(1) & 0xFF_FFFF;
+            r.rev = (me as u32) << 24 | self.changes;
+        }
     }
 
     /// The host's choice of map and options (checked by the caller against its own map list).
@@ -215,7 +255,13 @@ impl Lobby {
         }
         let b = encode(&Msg::State(r.clone()))?;
         decode(&b).ok_or("Those settings are out of range")?;
-        self.settings = Some((self.me, r));
+        let cur = self.current_settings();
+        let rev = cur.map_or(0, |c| c.rev);
+        let same = cur.is_some_and(|c| RoomSettings { rev, ..r.clone() } == *c);
+        self.settings = Some((self.me, RoomSettings { rev, ..r }));
+        if !same {
+            self.bump();
+        }
         Ok(())
     }
 
@@ -249,7 +295,7 @@ impl Lobby {
         if self.peers.is_empty() {
             return Err("Waiting for another player to join the room".into());
         }
-        if let Some(p) = self.peers.values().find(|p| !p.seat.ready) {
+        if let Some(p) = self.peers.values().find(|p| !(p.seat.ready && p.seat.rev == r.rev)) {
             return Err(format!("Waiting for {} to be ready", if p.name.is_empty() { "a player" } else { &p.name }));
         }
         let human = |id: u8, name: &str, s: Seat| Ra2Player { name: name.into(), ai: None, side: s.side, color: s.color, start: s.start, team: s.team, tunnel_id: Some(id) };
@@ -270,8 +316,11 @@ impl Lobby {
 
     pub fn view(&mut self) -> LobbyView {
         let host = self.host();
-        let mut players: Vec<PlayerView> = std::iter::once(PlayerView { id: self.me, name: self.name.clone(), host: host == self.me, me: true, seat: self.seat })
-            .chain(self.peers.iter().map(|(id, p)| PlayerView { id: *id, name: p.name.clone(), host: host == *id, me: false, seat: p.seat }))
+        let rev = self.current_settings().map(|r| r.rev);
+        // a ready shows only when it is for the current settings
+        let shown = |s: Seat| Seat { ready: s.ready && Some(s.rev) == rev, ..s };
+        let mut players: Vec<PlayerView> = std::iter::once(PlayerView { id: self.me, name: self.name.clone(), host: host == self.me, me: true, seat: shown(self.seat) })
+            .chain(self.peers.iter().map(|(id, p)| PlayerView { id: *id, name: p.name.clone(), host: host == *id, me: false, seat: shown(p.seat) }))
             .collect();
         players.sort_by_key(|p| p.id);
         LobbyView {
@@ -294,18 +343,18 @@ mod tests {
         encode(m).unwrap()
     }
     fn settings() -> RoomSettings {
-        RoomSettings { map: "Lake.yrm".into(), map_name: "Lake".into(), starts: 4, credits: 10000, speed: 2, ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }] }
+        RoomSettings { map: "Lake.yrm".into(), map_name: "Lake".into(), starts: 4, credits: 10000, speed: 2, ai: vec![AiSeat { difficulty: Difficulty::Easy, side: -1, color: -1, start: -1, team: -1 }], rev: 0 }
     }
 
     #[test]
     fn messages_round_trip_and_bad_ones_are_dropped() {
-        for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 8, color: 7, start: 8, team: 3, ready: true }), Msg::State(settings())] {
+        for m in [Msg::Hello { name: "Ann".into(), master: true }, Msg::Ready(Seat { side: 9, color: 7, start: 8, team: 3, ready: true, rev: 7 }), Msg::State(settings())] {
             assert_eq!(decode(&blob(&m)), Some(m));
         }
-        assert_eq!(String::from_utf8(blob(&Msg::Ready(Seat::default()))).unwrap(), r#"{"t":"ready","side":-1,"color":-1,"start":-1,"team":-1,"ready":false}"#);
+        assert_eq!(String::from_utf8(blob(&Msg::Ready(Seat::default()))).unwrap(), r#"{"t":"ready","side":-1,"color":-1,"start":-1,"team":-1,"ready":false,"rev":0}"#);
         assert_eq!(decode(br#"{"t":"hello","name":"[x]=y;\u0007","master":false}"#), Some(Msg::Hello { name: "xy".into(), master: false }));
         for bad in [
-            &br#"{"t":"ready","side":9,"color":0,"start":1,"team":0}"#[..],
+            &br#"{"t":"ready","side":10,"color":0,"start":1,"team":0}"#[..],
             br#"{"t":"ready","side":0,"color":0,"start":0,"team":0}"#,
             br#"{"t":"state","map":"../x.map","map_name":"x","starts":2,"credits":5000,"speed":1}"#,
             br#"{"t":"state","map":"x.map","map_name":"x","starts":9,"credits":5000,"speed":1}"#,
@@ -379,5 +428,66 @@ mod tests {
         c.set_self(5, "Bob", None);
         c.receive(0, 3, &blob(&Msg::Ready(Seat { color: 9, ..Seat::default() })));
         assert_eq!(c.view().players.len(), 1, "out-of-range seat dropped");
+    }
+
+    fn exchange(a: &mut Lobby, ida: u8, b: &mut Lobby, idb: u8, now: u64) {
+        for m in a.outgoing() {
+            b.receive(now, ida, &m);
+        }
+        for m in b.outgoing() {
+            a.receive(now, idb, &m);
+        }
+    }
+
+    #[test]
+    fn any_host_change_clears_ready_and_a_stale_ready_does_not_count() {
+        let (mut a, mut b) = (Lobby::default(), Lobby::default());
+        a.set_self(1, "Ann", Some(true));
+        b.set_self(2, "Bob", Some(false));
+        a.set_settings(settings()).unwrap();
+        exchange(&mut a, 1, &mut b, 2, 0);
+        b.set_seat(Seat { ready: true, start: 4, ..Seat::default() }).unwrap();
+        exchange(&mut b, 2, &mut a, 1, 1);
+        assert_eq!(a.view().blocked, "");
+        let rev = a.view().settings.unwrap().rev;
+        // sending the same settings again changes nothing
+        a.set_settings(settings()).unwrap();
+        assert_eq!((a.view().settings.unwrap().rev, a.view().blocked.as_str()), (rev, ""));
+        // Bob's ready, still on its way from before the change
+        let stale = b.outgoing();
+        a.set_settings(RoomSettings { credits: 20000, ..settings() }).unwrap();
+        assert_ne!(a.view().settings.unwrap().rev, rev);
+        for m in &stale {
+            a.receive(2, 2, m);
+        }
+        assert_eq!(a.view().blocked, "Waiting for Bob to be ready", "a ready for the old settings");
+        assert!(a.view().players.iter().all(|p| !p.seat.ready));
+        assert!(a.start(1).is_err());
+        // Bob hears the new settings and drops his ready
+        exchange(&mut a, 1, &mut b, 2, 3);
+        assert!(!b.view().players.iter().find(|p| p.me).unwrap().seat.ready);
+        b.set_seat(Seat { ready: true, start: 4, ..Seat::default() }).unwrap();
+        exchange(&mut b, 2, &mut a, 1, 4);
+        assert_eq!(a.view().blocked, "");
+        // the host's own seat is part of what everyone readied for; its ready flag alone is not
+        a.set_seat(Seat { ready: true, ..Seat::default() }).unwrap();
+        assert_eq!(a.view().blocked, "");
+        a.set_seat(Seat { side: 9, ..Seat::default() }).unwrap();
+        assert_eq!(a.view().blocked, "Waiting for Bob to be ready");
+        // a smaller map frees a start that is no longer on it
+        a.set_settings(RoomSettings { starts: 2, ..settings() }).unwrap();
+        exchange(&mut a, 1, &mut b, 2, 5);
+        assert_eq!(b.view().players.iter().find(|p| p.me).unwrap().seat.start, -1);
+    }
+
+    #[test]
+    fn a_new_host_never_reuses_the_old_hosts_revision() {
+        let mut a = Lobby::default();
+        a.set_self(1, "Ann", Some(true));
+        a.set_settings(settings()).unwrap();
+        let mut c = Lobby::default();
+        c.set_self(3, "Cy", Some(true));
+        c.set_settings(settings()).unwrap();
+        assert_ne!(a.view().settings.unwrap().rev, c.view().settings.unwrap().rev);
     }
 }
