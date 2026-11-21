@@ -28,7 +28,7 @@ reference (never a substitute for gamemd behaviour).
 | T3.4 MagBeam + Floating Disc DISKRAY (presentation) | `0045-magnetron-disc-beam-art` | [#186](https://github.com/michaelmurfy/rallypoint/pull/186) |
 | T3.5 blank `Cameo=` → XXICON / Image+ICON (Yuri sidebar) | `0046-yuri-blank-cameos` | [#187](https://github.com/michaelmurfy/rallypoint/pull/187) |
 | T2.4 undeployed SMIN slaves + killer-house liberation | `0047-slave-miner-undeployed` | [#188](https://github.com/michaelmurfy/rallypoint/pull/188) |
-| T2.4 AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `0049-ai-slave-miner-scoot` | (this PR) |
+| T2.4 AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `0049-ai-slave-miner-scoot` | [#192](https://github.com/michaelmurfy/rallypoint/pull/192) |
 
 ---
 
@@ -201,7 +201,8 @@ Already patched for playable YuriCountry + many uniques. **Landed on
 (`0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188));
 MagBeam + DISKRAY presentation (`0045` / [#186](https://github.com/michaelmurfy/rallypoint/pull/186));
 blank `Cameo=` XXICON / Image+ICON (`0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187)).
-AI Slave Miner scoot is `0049` (this PR). Do not re-land those.
+AI Slave Miner scoot is `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192).
+Do not re-land those.
 
 **Still open (Slave Miner):** SMIN↔YAREFN deploy SlaveManager brain-transplant;
 Xvfb Yuri skirmish CI proof.
@@ -210,7 +211,7 @@ Xvfb Yuri skirmish CI proof.
 |---|---|---|---|
 | Undeployed SMIN slaves | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) (`FUN_006F3FC0`/`FUN_006AF1A0`) | — | Partial |
 | Killer-house liberation on miner death | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) | — | Partial |
-| AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | ~~done~~ `0049` (`FUN_0066D530` / `FUN_006AFD60` / `FUN_006B1020` / `FUN_004FEACA`) | — | Yes |
+| AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | ~~done~~ `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192) (`FUN_0066D530` / `FUN_006AFD60` / `FUN_006B1020` / `FUN_004FEACA`) | — | Yes |
 | SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
 | MC enter cursors / Bio Reactor eject | ~~done~~ patch `0048` (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
