@@ -151,12 +151,12 @@ pub fn engine(resources: Option<&Path>) -> Option<PathBuf> {
     resources.map(|r| r.join("ra2engine").join(exe)).filter(|p| p.is_file())
 }
 
-/// The engine's launch file (ra2/README.md, "The launch file") for a checked `setup`: `map_path` is the player's own
-/// copy of the map, `local` the index of the player this machine plays. Online (a tunnel in `setup`) it is a network
-/// game; slot 0 must then be the host, a human. The engine's INI cuts a value at `;`, so none may contain one.
-pub fn launch_ini(setup: &Ra2Setup, map_path: &Path, local: usize) -> Result<String, String> {
+/// The engine's launch file (ra2/README.md, "The launch file") for a checked `setup`: `map` is the exact `Map=` value
+/// (a multimd.mix entry such as `xmp01t4.map`, or a path to a plain map file), `local` the index of the player this
+/// machine plays. Online (a tunnel in `setup`) it is a network game; slot 0 must then be the host, a human. The
+/// engine's INI cuts a value at `;`, so none may contain one.
+pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, String> {
     use std::fmt::Write;
-    let map = map_path.to_string_lossy();
     if map.contains([';', '\n', '\r']) {
         return Err("The map's folder has a character the game cannot read (; or a line break). Move the map to another folder".into());
     }
@@ -262,10 +262,11 @@ mod tests {
     fn the_launch_file_says_everything_the_engine_needs() {
         let mut s = validate(setup(vec![human("Me"), ai()]), 4, false).unwrap();
         s.players[0] = Ra2Player { side: 8, color: 2, start: 3, team: 1, ..s.players[0].clone() };
-        let ini = launch_ini(&s, Path::new("/maps/Lake.yrm"), 0).unwrap();
+        let ini = launch_ini(&s, "/maps/Lake.yrm", 0).unwrap();
         assert_eq!(ini, "[Game]\nMode=skirmish\nMap=/maps/Lake.yrm\nLocalPlayer=0\nCredits=10000\nGameSpeed=2\n\n[Player0]\nType=human\nName=Me\nCountry=8\nColor=2\nStart=3\nTeam=B\n\n[Player1]\nType=ai\nAI=brutal\nCountry=random\nColor=random\nStart=random\nTeam=none\n");
-        assert!(launch_ini(&s, Path::new("/a;b/x.map"), 0).is_err(), "a ; would cut the value");
-        assert!(launch_ini(&s, Path::new("/x.map"), 1).is_err(), "the computer is not this machine");
+        assert!(launch_ini(&s, "/a;b/x.map", 0).is_err(), "a ; would cut the value");
+        assert!(launch_ini(&s, "/x.map", 1).is_err(), "the computer is not this machine");
+        assert!(launch_ini(&s, "xmp01t4.map", 0).unwrap().contains("Map=xmp01t4.map\n"), "a multimd entry is Map= as-is");
         // online: network mode, the tunnel, everyone's tunnel id and the seed
         let (mut a, mut b) = (human("Host"), human("Guest"));
         a.tunnel_id = Some(1);
@@ -273,12 +274,12 @@ mod tests {
         let mut s = validate(setup(vec![a, b, ai()]), 4, true).unwrap();
         s.seed = 99;
         s.tunnel = Some(Tunnel { port: 50000, id: 7 });
-        let ini = launch_ini(&s, Path::new("C:\\RA2\\x.map"), 1).unwrap();
+        let ini = launch_ini(&s, "C:\\RA2\\x.map", 1).unwrap();
         for want in ["Mode=network\n", "LocalPlayer=1\n", "Seed=99\n", "[Tunnel]\nAddress=127.0.0.1\nPort=50000\nVersion=2\n", "Name=Host\nTunnelId=1\n", "Name=Guest\nTunnelId=7\n"] {
             assert!(ini.contains(want), "{want} in {ini}");
         }
         s.players.swap(0, 2);
-        assert!(launch_ini(&s, Path::new("/x.map"), 1).unwrap_err().contains("host"));
+        assert!(launch_ini(&s, "/x.map", 1).unwrap_err().contains("host"));
     }
 
     #[test]

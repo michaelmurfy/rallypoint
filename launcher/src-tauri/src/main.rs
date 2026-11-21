@@ -1211,17 +1211,28 @@ fn ra2_maps_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(d)
 }
 
+/// Where `--extract-maps` writes plain INI + index.json: `<app data>/GeneralsZH/ra2/maps-cache`.
+fn ra2_maps_cache(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(base(app)?.join("ra2").join("maps-cache"))
+}
+
 fn ra2_map_list(app: &tauri::AppHandle) -> Result<Vec<ra2maps::Ra2Entry>, String> {
     let c = Config::load(&config_path(app)?);
     let mut dirs = vec![];
+    let cache_dir = ra2_maps_cache(app)?;
     if !c.ra2.game_dir.is_empty() {
-        dirs.push(PathBuf::from(&c.ra2.game_dir));
+        let game = PathBuf::from(&c.ra2.game_dir);
+        if let Some(eng) = ra2launch::engine(app.path().resource_dir().ok().as_deref()) {
+            // Best-effort: a failed extract still leaves any previous cache and the loose maps.
+            let _ = ra2maps::refresh_extract(&eng, &game, &cache_dir);
+        }
+        dirs.push(game);
     }
     dirs.push(ra2_maps_dir(app)?);
-    Ok(ra2maps::list(&dirs, &map_library(app)?.join("ra2.json")))
+    Ok(ra2maps::list_all(&dirs, &map_library(app)?.join("ra2.json"), Some(&cache_dir)))
 }
 
-/// A map by its file name, in the player's own folders only (a name from another player never becomes a path).
+/// A map by its file name (loose or extracted), in the player's own folders / cache only.
 fn ra2_find_map(app: &tauri::AppHandle, file: &str) -> Result<ra2maps::Ra2Entry, String> {
     if !ra2launch::safe_map_name(file) {
         return Err("That is not a map file name".into());
@@ -1273,7 +1284,7 @@ fn ra2_launch(app: tauri::AppHandle, relay: tauri::State<Relay>, setup: ra2launc
     if setup.tunnel.is_none() {
         setup.players[local].name = c.lobby_name(); // the page sends a placeholder; the saved name wins
     }
-    let ini = ra2launch::launch_ini(&setup, &map.path, local)?;
+    let ini = ra2launch::launch_ini(&setup, &map.map, local)?;
     let file = base(&app)?.join("ra2").join("launch.ini");
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&file, ini).map_err(|e| e.to_string())?;

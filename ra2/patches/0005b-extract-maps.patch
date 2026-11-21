@@ -1,0 +1,304 @@
+diff --git a/engine/extract_maps.inc b/engine/extract_maps.inc
+new file mode 100644
+index 0000000..959cbf4
+--- /dev/null
++++ b/engine/extract_maps.inc
+@@ -0,0 +1,244 @@
++// Rallypoint: --extract-maps <outdir> writes every multiplayer map the engine
++// can launch (multimd.mix, loose .map/.mpr/.yrm, and .mmx/.yro MIX packs) as
++// plain INI under <outdir>, plus index.json with display name, source, and the
++// exact Map= value for --launch. No window; exits when done.
++namespace extractmaps {
++
++inline std::string json_esc(const std::string& s) {
++    std::string o;
++    o.reserve(s.size() + 8);
++    for (unsigned char c : s) {
++        if (c == '"' || c == '\\') { o.push_back('\\'); o.push_back((char)c); }
++        else if (c == '\n') o += "\\n";
++        else if (c == '\r') o += "\\r";
++        else if (c == '\t') o += "\\t";
++        else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; }
++        else o.push_back((char)c);
++    }
++    return o;
++}
++
++inline std::string lower_copy(std::string s) {
++    for (char& c : s) c = (char)std::tolower((unsigned char)c);
++    return s;
++}
++
++inline bool ends_with_ci(const std::string& s, const char* ext) {
++    const size_t n = std::strlen(ext);
++    if (s.size() < n) return false;
++    return lower_copy(s.substr(s.size() - n)) == lower_copy(ext);
++}
++
++inline std::string stem_of(const std::string& name) {
++    const size_t slash = name.find_last_of("/\\");
++    const std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
++    const size_t dot = base.find_last_of('.');
++    return dot == std::string::npos ? base : base.substr(0, dot);
++}
++
++inline std::string basic_name(const std::string& text) {
++    bool in = false;
++    size_t pos = 0;
++    while (pos < text.size()) {
++        size_t eol = text.find('\n', pos);
++        if (eol == std::string::npos) eol = text.size();
++        std::string line = text.substr(pos, eol - pos);
++        pos = eol + 1;
++        const size_t sc = line.find(';');
++        if (sc != std::string::npos) line.resize(sc);
++        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
++        size_t a = 0;
++        while (a < line.size() && (line[a] == ' ' || line[a] == '\t')) ++a;
++        line = line.substr(a);
++        if (line.empty()) continue;
++        if (line[0] == '[') {
++            in = lower_copy(line) == "[basic]";
++            continue;
++        }
++        if (!in) continue;
++        const size_t eq = line.find('=');
++        if (eq == std::string::npos) continue;
++        std::string k = lower_copy(line.substr(0, eq));
++        while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
++        if (k != "name") continue;
++        std::string v = line.substr(eq + 1);
++        a = 0;
++        while (a < v.size() && (v[a] == ' ' || v[a] == '\t')) ++a;
++        v = v.substr(a);
++        while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.pop_back();
++        return v;
++    }
++    return {};
++}
++
++inline bool write_bytes(const std::string& path, const std::vector<uint8_t>& bytes) {
++    std::ofstream f(path, std::ios::binary);
++    if (!f) return false;
++    if (!bytes.empty()) f.write(reinterpret_cast<const char*>(bytes.data()), (std::streamsize)bytes.size());
++    return (bool)f;
++}
++
++inline std::string abs_path(const std::string& p) {
++    std::error_code ec;
++    const auto a = std::filesystem::absolute(std::filesystem::u8path(p), ec);
++    if (ec) return p;
++    return a.generic_string();
++}
++
++struct Row {
++    std::string file;
++    std::string name;
++    std::string source;
++    std::string map;
++    int players = 0;
++};
++
++inline int players_of(const std::string& text) {
++    try {
++        return (int)ra2assets::MapFile::parse(text).start_waypoints().size();
++    } catch (const std::exception&) {
++        return 0;
++    }
++}
++
++inline const ra2assets::MixEntry* find_pack_map(const ra2assets::MixFile& mix, const std::string& stem) {
++    static const char* exts[] = {".map", ".mpr", ".yrm", ".yro", ".MAP", ".MPR", ".YRM", ".YRO"};
++    for (const char* e : exts) {
++        if (const ra2assets::MixEntry* me = mix.find(stem + e)) return me;
++    }
++    for (const std::string& n : mix.local_names()) {
++        const std::string l = lower_copy(n);
++        if (ends_with_ci(l, ".map") || ends_with_ci(l, ".mpr") || ends_with_ci(l, ".yrm") || ends_with_ci(l, ".yro")) {
++            if (const ra2assets::MixEntry* me = mix.find(n)) return me;
++        }
++    }
++    const ra2assets::MixEntry* best = nullptr;
++    size_t best_size = 0;
++    for (const auto& e : mix.entries()) {
++        if (e.size < 64 || e.size <= best_size) continue;
++        try {
++            auto raw = mix.read(e);
++            if (raw.size() < 8) continue;
++            const std::string head(raw.begin(), raw.begin() + std::min<size_t>(raw.size(), 256));
++            if (head.find('[') == std::string::npos) continue;
++            best = &e;
++            best_size = e.size;
++        } catch (const std::exception&) {}
++    }
++    return best;
++}
++
++inline int run(const std::string& outdir_in) {
++    namespace fs = std::filesystem;
++    std::error_code ec;
++    const fs::path outdir = fs::u8path(outdir_in);
++    fs::create_directories(outdir, ec);
++    if (ec) {
++        std::cerr << "extract-maps: cannot create " << outdir_in << ": " << ec.message() << "\n";
++        return 1;
++    }
++    const std::string dir = env_install_dir();
++    std::vector<Row> rows;
++    std::unordered_set<std::string> written;
++
++    auto add = [&](std::string file, std::string name, std::string source, std::string map_val,
++                   const std::vector<uint8_t>& bytes) {
++        if (bytes.empty()) return;
++        const std::string text(bytes.begin(), bytes.end());
++        const int starts = players_of(text);
++        if (starts < 2) return;
++        if (name.empty()) name = basic_name(text);
++        if (name.empty()) name = stem_of(file);
++        const std::string key = lower_copy(file);
++        if (!written.insert(key).second) return;
++        const std::string path = (outdir / fs::u8path(file)).string();
++        if (!write_bytes(path, bytes)) {
++            std::cerr << "extract-maps: failed to write " << path << "\n";
++            written.erase(key);
++            return;
++        }
++        rows.push_back(Row{std::move(file), std::move(name), std::move(source), std::move(map_val), starts});
++    };
++
++    try {
++        ra2engine::MapCatalog cat = ra2engine::load_yr_map_catalog(dir, "");
++        for (const ra2engine::MapEntry& e : cat.entries) {
++            const ra2assets::MixEntry* me = cat.maps.find(e.file_name);
++            if (!me) continue;
++            try {
++                add(e.file_name, e.display_name, "multimd.mix/" + e.file_name, e.file_name, cat.maps.read(*me));
++            } catch (const std::exception& ex) {
++                std::cerr << "extract-maps: " << e.file_name << ": " << ex.what() << "\n";
++            }
++        }
++    } catch (const std::exception& ex) {
++        std::cerr << "extract-maps: multimd catalog: " << ex.what() << "\n";
++    }
++
++    const fs::path gamedir = fs::u8path(dir);
++    for (const auto& ent : fs::directory_iterator(gamedir, ec)) {
++        if (ec || !ent.is_regular_file(ec)) continue;
++        const std::string name = ent.path().filename().string();
++        const std::string lname = lower_copy(name);
++        const bool pack = ends_with_ci(lname, ".mmx") || ends_with_ci(lname, ".yro");
++        const bool loose = ends_with_ci(lname, ".map") || ends_with_ci(lname, ".mpr") || ends_with_ci(lname, ".yrm");
++        if (!pack && !loose) continue;
++        const std::string full = ent.path().string();
++        if (pack || ends_with_ci(lname, ".yro")) {
++            try {
++                ra2assets::MixFile mix = ra2assets::MixFile::open_path(full);
++                const std::string stem = stem_of(name);
++                const ra2assets::MixEntry* me = find_pack_map(mix, stem);
++                if (!me) {
++                    std::cerr << "extract-maps: no map in " << name << "\n";
++                    continue;
++                }
++                auto raw = mix.read(*me);
++                const std::string out_name = stem + ".map";
++                const std::string out_path = abs_path((outdir / fs::u8path(out_name)).string());
++                add(out_name, basic_name(std::string(raw.begin(), raw.end())), name, out_path, raw);
++                continue;
++            } catch (const std::exception&) {
++                if (pack) {
++                    std::cerr << "extract-maps: not a MIX pack: " << name << "\n";
++                    continue;
++                }
++            }
++        }
++        if (loose || ends_with_ci(lname, ".yro")) {
++            try {
++                auto raw = ra2assets::read_file(full);
++                const std::string out_path = abs_path(full);
++                add(name, basic_name(std::string(raw.begin(), raw.end())), name, out_path, raw);
++            } catch (const std::exception& ex) {
++                std::cerr << "extract-maps: " << name << ": " << ex.what() << "\n";
++            }
++        }
++    }
++
++    std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
++        const std::string la = lower_copy(a.name), lb = lower_copy(b.name);
++        if (la != lb) return la < lb;
++        return lower_copy(a.file) < lower_copy(b.file);
++    });
++
++    std::ofstream idx((outdir / "index.json").string(), std::ios::binary);
++    if (!idx) {
++        std::cerr << "extract-maps: cannot write index.json\n";
++        return 1;
++    }
++    idx << "[\n";
++    for (size_t i = 0; i < rows.size(); ++i) {
++        const Row& r = rows[i];
++        idx << "  {\"file\":\"" << json_esc(r.file) << "\",\"name\":\"" << json_esc(r.name)
++            << "\",\"source\":\"" << json_esc(r.source) << "\",\"map\":\"" << json_esc(r.map)
++            << "\",\"players\":" << r.players << "}";
++        if (i + 1 < rows.size()) idx << ',';
++        idx << '\n';
++    }
++    idx << "]\n";
++    std::cerr << "extract-maps: wrote " << rows.size() << " maps to " << abs_path(outdir.string()) << "\n";
++    return 0;
++}
++
++}  // namespace extractmaps
+diff --git a/engine/main.cpp b/engine/main.cpp
+index ee54e9b..ccfd141 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -59,6 +59,7 @@ static char* ra2_cli_pref_path() {
+ #include <sstream>
+ #include <stdexcept>
+ #include <string>
++#include <unordered_set>
+ #include <vector>
+ 
+ #include "audio_mixer.hpp"
+@@ -18721,6 +18722,7 @@ int run_demo_saveload() {
+ #include "realplay_combat_probe.inc"   // gap owner C: --probe-combat (real GameScene harness)
+ 
+ #include "launch_file.inc"   // Rallypoint: --launch <file.ini>
++#include "extract_maps.inc"  // Rallypoint: --extract-maps <outdir>
+ 
+ int main(int argc, char** argv) {
+     // W2-AR-30: SDL-internal assertions log and continue; they never block on
+@@ -18763,7 +18765,25 @@ int main(int argc, char** argv) {
+         }
+         // Rallypoint launcher: --launch <file.ini>, the window (--title, --width,
+         // --height, --fullscreen / --windowed; RA2_WINDOW_TITLE).
++        // --extract-maps runs with no window (handled before set_launch_window).
+         std::string launch_file;
++        std::string extract_maps_dir;
++        {
++            for (int i = 1; i < argc; ++i) {
++                const std::string a = argv[i];
++                if (a == "--data" && i + 1 < argc) {
++                    g_data_dir_cli = argv[i + 1];
++                    reset_data_dir();
++                    ++i;
++                } else if (a == "--extract-maps" && i + 1 < argc) {
++                    extract_maps_dir = argv[++i];
++                }
++            }
++            if (!extract_maps_dir.empty()) {
++                ra2engine::os_attach_parent_console();
++                return extractmaps::run(extract_maps_dir);
++            }
++        }
+         {
+             const char* t = std::getenv("RA2_WINDOW_TITLE");
+             std::string title = t ? t : "";
+@@ -18801,6 +18821,7 @@ int main(int argc, char** argv) {
+                             "  --replay <f>   replay a command log or an input recording (--hidden: no window)\n"
+                             "  --version      print the version\n"
+                             "  --launch <f>   start the skirmish or network game described in <f> (Rallypoint)\n"
++                            "  --extract-maps <dir>  write every multiplayer map as plain INI + index.json (no window)\n"
+                             "  --width <w> --height <h>  window size; --fullscreen / --windowed; --title <t>\n"
+                             "developer modes: --play <script> [--out <dir>], --ai-soak, --demo-*\n",
+                             RA2_VERSION);
