@@ -346,3 +346,55 @@ fn checksums_go_to_the_relay_and_a_disagreement_comes_back_to_both_engines() {
     assert_eq!((d.frame, d.players.len()), (100, 2));
     stop.store(true, Ordering::Relaxed);
 }
+
+fn vip_of(a: &Agent) -> [u8; 4] {
+    match wait(a, |s| matches!(s, Status::Connected(_))) {
+        Status::Connected(v) => v,
+        s => panic!("{s:?}"),
+    }
+}
+
+/// A fake Red Alert 2 game in tunnel mode (yrpp-spawner): `u16 sender, u16 receiver` big-endian, then the payload.
+fn spawner(agent: &Agent) -> UdpSocket {
+    let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    s.connect(("127.0.0.1", agent.tunnel_port())).unwrap();
+    s
+}
+
+#[test]
+fn red_alert_2_tunnel_and_lobby_between_two_players() {
+    let (server, stop) = spawn_relay("AAA\nBBB\n");
+    let a = Agent::start(&server, "AAA", "ra2:room", "pw", None).unwrap();
+    let b = Agent::start(&server, "BBB", "ra2:room", "pw", None).unwrap();
+    let (ia, ib) = (vip_of(&a)[3] as u16, vip_of(&b)[3] as u16);
+    let (ga, gb) = (spawner(&a), spawner(&b));
+    let recv = |s: &UdpSocket| { let mut buf = [0u8; 2048]; let n = s.recv(&mut buf).unwrap(); buf[..n].to_vec() };
+    // a ping is answered locally with its first 12 bytes
+    let mut ping = vec![0u8; 50];
+    ping[4..12].copy_from_slice(b"pingpong");
+    ga.send(&ping).unwrap();
+    assert_eq!(recv(&ga), &ping[..12]);
+    let hdr = |from: u16, to: u16, p: &[u8]| [&from.to_be_bytes()[..], &to.to_be_bytes(), p].concat();
+    // A speaks first (binding its tunnel), then B answers: A sees it from B's id
+    ga.send(&hdr(ia, ib, b"orders")).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    gb.send(&hdr(ib, ia, b"hello")).unwrap();
+    assert_eq!(recv(&ga), &hdr(ib, ia, b"hello")[..]);
+    ga.send(&hdr(ia, ib, b"orders")).unwrap();
+    assert_eq!(recv(&gb), &hdr(ia, ib, b"orders")[..]);
+    // lobby blobs reach the other player only
+    assert!(a.send_lobby(b"ready"));
+    assert!(!a.send_lobby(&[0; 1025]));
+    let t = Instant::now();
+    let got = loop {
+        let got = b.take_lobby();
+        if !got.is_empty() || t.elapsed() > Duration::from_secs(3) {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(got, vec![(ia as u8, b"ready".to_vec())]);
+    assert!(a.take_lobby().is_empty());
+    stop.store(true, Ordering::Relaxed);
+}

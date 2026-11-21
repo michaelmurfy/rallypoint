@@ -84,7 +84,18 @@ pub enum Packet {
     /// Server -> client, with every ping answer: this room's settings. `master` says whether the receiver is the room's master;
     /// `ai` is the level every player's game must start with.
     Room { master: bool, ai: u8 },
+    /// Red Alert 2 game traffic (CnCNet tunnel v2, see `MAX_TUNNEL_PAYLOAD`). Agent -> server: `vip` is the destination.
+    /// Server -> agent: the source. Opaque bytes, carried only between players of the same room.
+    Tunnel { vip: Vip, payload: Vec<u8> },
+    /// The launcher's own Red Alert 2 pre-game lobby: an opaque blob. Agent -> server: `vip` ignored; the server hands it
+    /// to every other player in the room with `vip` set to the sender's.
+    Lobby { vip: Vip, payload: Vec<u8> },
 }
+
+/// Largest Red Alert 2 datagram relayed. The CnCNet v2 tunnel server reads into a 1024-byte buffer, 4 of which are the
+/// tunnel header (cncnet-server `TunnelV2.SyncReceive`), so 1020 is what any real tunnel carries.
+pub const MAX_TUNNEL_PAYLOAD: usize = 1020;
+pub const MAX_LOBBY_PAYLOAD: usize = 1024;
 
 /// The highest "Stronger AI" level.
 pub const MAX_AI_LEVEL: u8 = 3;
@@ -177,6 +188,8 @@ impl Packet {
             }
             Packet::SetAi { level } => vec![18, *level],
             Packet::Room { master, ai } => vec![19, *master as u8, *ai],
+            Packet::Tunnel { vip, payload } => [&[26][..], vip, payload].concat(),
+            Packet::Lobby { vip, payload } => [&[27][..], vip, payload].concat(),
             Packet::Stats(s) => [
                 &[14][..],
                 &s.uptime_secs.to_be_bytes(),
@@ -253,6 +266,8 @@ impl Packet {
             }
             18 if rest.len() == 1 && rest[0] <= MAX_AI_LEVEL => Packet::SetAi { level: rest[0] },
             19 if rest.len() == 2 && rest[1] <= MAX_AI_LEVEL => Packet::Room { master: rest[0] != 0, ai: rest[1] },
+            26 if (5..=4 + MAX_TUNNEL_PAYLOAD).contains(&rest.len()) => Packet::Tunnel { vip: rest[..4].try_into().ok()?, payload: rest[4..].to_vec() },
+            27 if (4..=4 + MAX_LOBBY_PAYLOAD).contains(&rest.len()) => Packet::Lobby { vip: rest[..4].try_into().ok()?, payload: rest[4..].to_vec() },
             14 if rest.len() >= 23 => {
                 let u32_at = |i: usize| u32::from_be_bytes(rest[i..i + 4].try_into().unwrap());
                 let u16_at = |i: usize| u16::from_be_bytes(rest[i..i + 2].try_into().unwrap());
@@ -412,6 +427,9 @@ mod tests {
             Packet::StatsRequest,
             Packet::SetAi { level: 3 },
             Packet::Room { master: true, ai: 2 },
+            Packet::Tunnel { vip: [10, 77, 0, 2], payload: vec![9; MAX_TUNNEL_PAYLOAD] },
+            Packet::Lobby { vip: [0; 4], payload: vec![] },
+            Packet::Lobby { vip: [10, 77, 0, 3], payload: vec![1; MAX_LOBBY_PAYLOAD] },
             Packet::Crc { frame: 100, crc: 0xDEADBEEF, host: true },
             Packet::Desync(SyncVerdict { frame: 100, certain: true, host: Some([10, 77, 0, 1]), players: vec![SyncEntry { vip: [10, 77, 0, 1], crc: 1, odd: false }, SyncEntry { vip: [10, 77, 0, 2], crc: 2, odd: true }] }),
             Packet::Stats(ServerStats { uptime_secs: 86_400, rooms: 3, players: 9, max_rooms: 256, max_players: 2048, room_players: 4, load_pct: 12, pps: 1500, kbps: 800, version: "0.1.0-beta.4".into() }),
@@ -442,6 +460,18 @@ mod tests {
         auth.extend(0..16u8);
         assert_eq!(Packet::Auth { token: core::array::from_fn(|i| i as u8) }.encode(), auth, "the engine's RelayWire.h checks the same bytes");
         assert_eq!(Packet::decode(&[17, 1, 2, 3]), None);
+    }
+
+    #[test]
+    fn ra2_packets_layout_and_limits() {
+        assert_eq!(Packet::Tunnel { vip: [10, 77, 0, 2], payload: vec![0xAB, 0xCD] }.encode(), [26, 10, 77, 0, 2, 0xAB, 0xCD]);
+        assert_eq!(Packet::Lobby { vip: [10, 77, 0, 1], payload: b"hi".to_vec() }.encode(), [27, 10, 77, 0, 1, b'h', b'i']);
+        assert_eq!(Packet::decode(&[26, 10, 77, 0, 2]), None, "a tunnel datagram carries at least one byte");
+        assert_eq!(Packet::decode(&[&[26, 10, 77, 0, 2][..], &[0; MAX_TUNNEL_PAYLOAD + 1]].concat()), None);
+        assert_eq!(Packet::decode(&[27, 10, 77, 0]), None, "short address");
+        assert_eq!(Packet::decode(&[&[27, 0, 0, 0, 0][..], &[0; MAX_LOBBY_PAYLOAD + 1]].concat()), None);
+        // the encrypted transport has room for the biggest of them
+        assert!(Packet::Lobby { vip: [0; 4], payload: vec![0; MAX_LOBBY_PAYLOAD] }.encode().len() + 64 < MAX_WIRE);
     }
 
     #[test]

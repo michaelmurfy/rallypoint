@@ -24,6 +24,8 @@ const SERIAL_TRIES: u32 = 20;
 /// Per session and second: more than this is a flood, and is dropped. A game uses a small fraction.
 pub const SESSION_PACKETS_PER_SEC: u32 = 600;
 pub const SESSION_BYTES_PER_SEC: u32 = 400_000;
+/// Red Alert 2 lobby blobs per session and second: lobby chatter, never game traffic, so far below the game's rate.
+pub const LOBBY_PER_SEC: u32 = 20;
 /// A Register retry from the same address within this window gets the same serial back (UDP loss).
 const REGISTER_DEDUP_SECS: u64 = 60;
 const VIP_PREFIX: [u8; 3] = [10, 77, 0];
@@ -76,6 +78,8 @@ struct Session {
     window: u64,
     pkts: u32,
     bytes: u32,
+    /// Red Alert 2 lobby blobs in second `window` (see `LOBBY_PER_SEC`).
+    lobby: u32,
     /// Order of joining (the room's master is its lowest).
     joined: u64,
 }
@@ -165,7 +169,7 @@ fn valid_room(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= generals_proto::MAX_ROOM
         && name == name.trim()
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b" _.-".contains(&b))
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b" _.-:".contains(&b))
 }
 
 fn ip_bytes(ip: IpAddr) -> Vec<u8> {
@@ -438,7 +442,7 @@ impl Server {
             let tail = &j.serial[j.serial.len().saturating_sub(4)..];
             self.note(format!("join: {} (serial ...{tail}, {}) {} room '{}', {n} in it", fmt_vip(j.vip), from, if new_room { "opened" } else { "entered" }, j.room));
             self.join_seq += 1;
-            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0, joined });
+            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0, lobby: 0, joined });
         }
         let reply = Wire::Hs2 { msg: reply }.encode();
         if self.hs_cache.len() < HANDSHAKE_CACHE_MAX {
@@ -454,7 +458,7 @@ impl Server {
         };
         // Flood limit per session, before any decryption is spent on it; dropped packets do not keep it alive.
         if me.window != now {
-            (me.window, me.pkts, me.bytes) = (now, 0, 0);
+            (me.window, me.pkts, me.bytes, me.lobby) = (now, 0, 0, 0);
         }
         let size = data.len() as u32;
         if me.pkts >= SESSION_PACKETS_PER_SEC || me.bytes.saturating_add(size) > SESSION_BYTES_PER_SEC {
@@ -466,6 +470,10 @@ impl Server {
             return vec![]; // forged, damaged, replayed: could be a spoofer, so do not answer
         };
         me.last_seen = now;
+        let lobby_ok = matches!(pkt, Packet::Lobby { .. }) && me.lobby < LOBBY_PER_SEC;
+        if lobby_ok {
+            me.lobby += 1;
+        }
         let (my_vip, room) = (me.vip, me.room.clone());
         let same_room = |s: &Session| s.room == room;
         // The tunnel is for the game only: its two UDP ports, and datagrams the engine itself made.
@@ -504,11 +512,25 @@ impl Server {
                 .filter(|(a, s)| **a != from && same_room(s) && s.vip == vip)
                 .map(|(a, _)| (*a, Packet::Data { vip: my_vip, src_port, dst_port, payload: payload.clone() }))
                 .collect(),
+            // Red Alert 2 (CnCNet tunnel v2 behind the agent): opaque, but only to one player of the same room, who learns
+            // the sender's address. Sizes are checked by `Packet::decode`.
+            Packet::Tunnel { vip, payload } => self
+                .sessions
+                .iter()
+                .filter(|(a, s)| **a != from && same_room(s) && s.vip == vip)
+                .map(|(a, _)| (*a, Packet::Tunnel { vip: my_vip, payload: payload.clone() }))
+                .collect(),
+            Packet::Lobby { payload, .. } if lobby_ok => self
+                .sessions
+                .iter()
+                .filter(|(a, s)| **a != from && same_room(s))
+                .map(|(a, _)| (*a, Packet::Lobby { vip: my_vip, payload: payload.clone() }))
+                .collect(),
             _ => vec![],
         };
         // Count what the relay actually forwarded (not pings and stats).
         for (_, p) in &replies {
-            if let Packet::Bcast { payload, .. } | Packet::Data { payload, .. } = p {
+            if let Packet::Bcast { payload, .. } | Packet::Data { payload, .. } | Packet::Tunnel { payload, .. } | Packet::Lobby { payload, .. } = p {
                 self.sec_pkts = self.sec_pkts.saturating_add(1);
                 self.sec_bytes = self.sec_bytes.saturating_add(payload.len() as u32 + 9);
             }
@@ -1054,6 +1076,51 @@ mod tests {
         let mut bad = game_packet(b"hello");
         bad[8] ^= 0x40;
         assert_eq!(ok(&mut w, data(vb, 8088, bad)), 0);
+    }
+
+    #[test]
+    fn ra2_rooms_are_namespaced_by_a_prefix() {
+        let mut w = World::standard();
+        let a = w.quick(addr(1), "AAA", "ra2:lan", 0);
+        let b = w.quick(addr(2), "BBB", "lan", 0);
+        assert_eq!(a, b, "a separate room, so the same first address");
+        assert_eq!(w.recipients(addr(1), Packet::Lobby { vip: [0; 4], payload: vec![1] }, 1), Vec::<SocketAddr>::new());
+    }
+
+    #[test]
+    fn tunnel_goes_to_one_player_of_the_room_with_the_sender_address() {
+        let mut w = World::standard();
+        let va = w.quick(addr(1), "AAA", "ra2:r", 0);
+        let vb = w.quick(addr(2), "BBB", "ra2:r", 0);
+        let vd = w.quick(addr(3), "DDD", "ra2:other", 0);
+        let t = |vip: Vip, payload: Vec<u8>| Packet::Tunnel { vip, payload };
+        assert_eq!(w.send(addr(1), t(vb, vec![7; 3]), 1), vec![(addr(2), t(va, vec![7; 3]))], "the receiver learns who sent it");
+        assert_eq!(w.send(addr(2), t(va, vec![generals_proto::MAX_TUNNEL_PAYLOAD as u8; generals_proto::MAX_TUNNEL_PAYLOAD]), 1).len(), 1, "a full-size datagram passes");
+        // the same address in another room, an address nobody has, and oneself: nothing goes anywhere
+        assert_eq!(vd, va);
+        assert!(w.send(addr(3), t(vb, vec![1]), 1).is_empty(), "rooms never cross");
+        assert!(w.send(addr(1), t([10, 77, 0, 99], vec![1]), 1).is_empty(), "unknown address");
+        assert!(w.send(addr(1), t(va, vec![1]), 1).is_empty(), "not back to the sender");
+        // too big or empty does not decode, so it is dropped without an answer (what an old server does with the new tags too)
+        assert!(w.send(addr(1), t(vb, vec![0; generals_proto::MAX_TUNNEL_PAYLOAD + 1]), 2).is_empty());
+        assert!(w.send(addr(1), t(vb, vec![]), 2).is_empty());
+        assert!(w.send(addr(1), Packet::Lobby { vip: vb, payload: vec![0; generals_proto::MAX_LOBBY_PAYLOAD + 1] }, 2).is_empty());
+    }
+
+    #[test]
+    fn lobby_reaches_everyone_else_in_the_room_and_is_rate_capped() {
+        let mut w = World::standard();
+        let va = w.quick(addr(1), "AAA", "ra2:r", 0);
+        w.quick(addr(2), "BBB", "ra2:r", 0);
+        w.quick(addr(3), "DDD", "ra2:r", 0);
+        let lobby = |b: u8| Packet::Lobby { vip: [1, 2, 3, 4], payload: vec![b] };
+        let mut got = w.send(addr(1), lobby(5), 1);
+        got.sort_by_key(|o| o.0);
+        assert_eq!(got, vec![(addr(2), Packet::Lobby { vip: va, payload: vec![5] }), (addr(3), Packet::Lobby { vip: va, payload: vec![5] })], "not to the sender, vip is the sender's");
+        let passed = (0..LOBBY_PER_SEC + 10).filter(|_| !w.send(addr(1), lobby(1), 5).is_empty()).count();
+        assert_eq!(passed as u32, LOBBY_PER_SEC);
+        assert_eq!(w.send(addr(1), lobby(1), 6).len(), 2, "the cap is per second");
+        assert_eq!(w.send(addr(1), Packet::Ping, 5).len(), 2, "pings are not counted against it");
     }
 
     #[test]

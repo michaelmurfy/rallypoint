@@ -2,8 +2,9 @@
 //! signs up with the relay if needed, joins the room, and forwards datagrams both ways. Sign-up is invisible to
 //! the user: with no stored serial the agent registers and hands the issued serial back through `take_issued`.
 //! Engine sockets register with `Bind{port}` (or by sending), keyed by logical port (8086 lobby, 8088 game).
+//! Red Alert 2 uses a second loopback socket that looks like a CnCNet tunnel to the game (see `from_spawner`).
 use generals_proto::secure::{self, ClientPending, Key, Session as Crypto};
-use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT};
+use generals_proto::{is_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_LOBBY_PAYLOAD, MAX_TUNNEL_PAYLOAD};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -26,6 +27,61 @@ const WINDOW: usize = 30;
 /// How long the relay may stay silent before the agent joins again. The server forgets a quiet client after 30 s,
 /// and a returning serial takes over its old session, so rejoining early is safe and shortens a dead lobby.
 const SILENCE_LIMIT: Duration = Duration::from_secs(8);
+/// Red Alert 2 lobby blobs kept until the launcher takes them; the oldest go first.
+const LOBBY_QUEUE: usize = 256;
+/// Received lobby blobs: (last octet of the sender's virtual address, blob).
+type LobbyQueue = Arc<Mutex<VecDeque<(u8, Vec<u8>)>>>;
+/// Every room's virtual addresses are `10.77.0.x`; a Red Alert 2 player's tunnel id is `x`.
+const VIP_PREFIX: [u8; 3] = [10, 77, 0];
+
+/// What a datagram from the local Red Alert 2 game (yrpp-spawner in tunnel mode) asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum FromSpawner<'a> {
+    /// A tunnel ping: answer with these bytes.
+    Pong(&'a [u8]),
+    /// Game traffic for the player at this virtual address.
+    Forward { to: Vip, payload: &'a [u8] },
+    Ignore,
+}
+
+/// CnCNet tunnel v2 as yrpp-spawner speaks it. Checked against CnCNet/yrpp-spawner `src/Spawner/NetHack.cpp`
+/// (`Tunnel::SendTo`/`RecvFrom`: header `u16 sender, u16 receiver`, both `htons`, so big-endian, then at most 1024 bytes
+/// of payload; a received datagram needs at least 5 bytes and `receiver == own id`, and `sender` becomes the peer's
+/// "port", matched against `[OtherN] Port`) and CnCNet/cncnet-server `TunnelV2.cs` (`OnReceive`: sender 0 and receiver 0
+/// with exactly 50 bytes is a ping, answered with its first 12 bytes; sender == receiver otherwise is refused; the first
+/// datagram from a sender id binds its endpoint and others claiming that id are dropped; its 1024-byte buffer leaves
+/// 1020 bytes of payload). Here a player's tunnel id is the last octet of its room address.
+///
+/// shortcut: the game cannot present the engine token (`Packet::Auth`), so the first loopback endpoint that sends a valid
+/// header with our own id as sender owns the tunnel until `Agent::arm_tunnel`. Another local process that wins that race
+/// (it would have to know the port and our id) can speak for the player in the room; upgrade by teaching the spawner to
+/// send the token, or by checking the endpoint belongs to the game process we started.
+fn from_spawner<'a>(own: Option<u8>, bound: &mut Option<SocketAddr>, from: SocketAddr, d: &'a [u8]) -> FromSpawner<'a> {
+    if from.ip() != std::net::Ipv4Addr::LOCALHOST || d.len() < 4 {
+        return FromSpawner::Ignore;
+    }
+    let (sender, receiver) = (u16::from_be_bytes([d[0], d[1]]), u16::from_be_bytes([d[2], d[3]]));
+    if sender == 0 && receiver == 0 {
+        return if d.len() == 50 { FromSpawner::Pong(&d[..12]) } else { FromSpawner::Ignore };
+    }
+    let payload = &d[4..];
+    let Some(own) = own else { return FromSpawner::Ignore };
+    if sender != own as u16 || receiver == sender || !(1..=255).contains(&receiver) || payload.is_empty() || payload.len() > MAX_TUNNEL_PAYLOAD {
+        return FromSpawner::Ignore;
+    }
+    match bound {
+        Some(b) if *b != from => return FromSpawner::Ignore,
+        Some(_) => {}
+        None => *bound = Some(from),
+    }
+    FromSpawner::Forward { to: [VIP_PREFIX[0], VIP_PREFIX[1], VIP_PREFIX[2], receiver as u8], payload }
+}
+
+/// A relayed Red Alert 2 datagram as the spawner expects it from its tunnel: `sender` is the source's id.
+fn to_spawner(src: Vip, own: u8, payload: &[u8]) -> Option<Vec<u8>> {
+    (src[..3] == VIP_PREFIX && src[3] != own && (1..=MAX_TUNNEL_PAYLOAD).contains(&payload.len()))
+        .then(|| [&(src[3] as u16).to_be_bytes()[..], &(own as u16).to_be_bytes(), payload].concat())
+}
 
 /// Where the connection is, for the Online page when it cannot connect (or lost the server).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -204,6 +260,10 @@ pub struct Agent {
     engine_epoch: Arc<AtomicU32>,
     crypto: Arc<Mutex<Option<Arc<Crypto>>>>,
     relay: UdpSocket,
+    tunnel_port: u16,
+    /// The Red Alert 2 game's endpoint on the tunnel socket, once it has spoken (see `from_spawner`).
+    tunnel_peer: Arc<Mutex<Option<SocketAddr>>>,
+    lobby: LobbyQueue,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -259,6 +319,11 @@ impl Agent {
         let local = UdpSocket::bind("127.0.0.1:0")?;
         local.set_read_timeout(Some(TICK))?;
         let local_addr = local.local_addr()?;
+        let tunnel = UdpSocket::bind("127.0.0.1:0")?;
+        tunnel.set_read_timeout(Some(TICK))?;
+        let tunnel_port = tunnel.local_addr()?.port();
+        let tunnel_peer: Arc<Mutex<Option<SocketAddr>>> = Arc::default();
+        let lobby: LobbyQueue = Arc::default();
 
         let status = Arc::new(Mutex::new(Status::Connecting));
         let progress: Arc<Mutex<Progress>> = Arc::new(Mutex::new(Progress { started: Some(Instant::now()), stage: "contacting the server", ..Default::default() }));
@@ -330,10 +395,38 @@ impl Agent {
             })
         };
 
+        // Red Alert 2 game -> relay
+        let t2r = {
+            let (relay, tunnel, status, stop, crypto, bytes, peer) = (relay.try_clone()?, tunnel.try_clone()?, status.clone(), stop.clone(), crypto.clone(), bytes.clone(), tunnel_peer.clone());
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                while !stop.load(Ordering::Relaxed) {
+                    let Ok((n, from)) = tunnel.recv_from(&mut buf) else { continue };
+                    let own = match *status.lock().unwrap() {
+                        Status::Connected(v) => Some(v[3]),
+                        _ => None,
+                    };
+                    let what = from_spawner(own, &mut peer.lock().unwrap(), from, &buf[..n]);
+                    match what {
+                        FromSpawner::Pong(echo) => {
+                            let _ = tunnel.send_to(echo, from);
+                        }
+                        FromSpawner::Forward { to, payload } => {
+                            if send_sealed(&relay, &crypto, &Packet::Tunnel { vip: to, payload: payload.to_vec() }) {
+                                bytes[0].fetch_add(n as u64, Ordering::Relaxed);
+                            }
+                        }
+                        FromSpawner::Ignore => {}
+                    }
+                }
+            })
+        };
+
         // relay -> local, plus handshake and keepalive
         let r2l = {
             let (relay, status, stop, issued, health, bytes, server_key, learned, crypto, progress) =
                 (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone(), progress.clone());
+            let (tunnel, tunnel_peer, lobby) = (tunnel, tunnel_peer.clone(), lobby.clone());
             std::thread::spawn(move || {
                 let mut serial = serial;
                 let mut cookie: Cookie = [0; 16];
@@ -453,6 +546,26 @@ impl Agent {
                                             }
                                         }
                                     }
+                                    Some(Packet::Tunnel { vip, payload }) => {
+                                        let own = match *status.lock().unwrap() {
+                                            Status::Connected(v) => Some(v[3]),
+                                            _ => None,
+                                        };
+                                        let to = *tunnel_peer.lock().unwrap();
+                                        if let (Some(own), Some(to)) = (own, to) {
+                                            if let Some(d) = to_spawner(vip, own, &payload) {
+                                                bytes[1].fetch_add(n as u64, Ordering::Relaxed);
+                                                let _ = tunnel.send_to(&d, to);
+                                            }
+                                        }
+                                    }
+                                    Some(Packet::Lobby { vip, payload }) if vip[..3] == VIP_PREFIX => {
+                                        let mut q = lobby.lock().unwrap();
+                                        if q.len() == LOBBY_QUEUE {
+                                            q.pop_front();
+                                        }
+                                        q.push_back((vip[3], payload));
+                                    }
                                     _ => {}
                                 }
                             }
@@ -526,7 +639,7 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, stop, threads: vec![l2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, tunnel_port, tunnel_peer, lobby, stop, threads: vec![l2r, t2r, r2l] })
     }
 
     /// Where the connection is and what to check, for the Online page.
@@ -550,6 +663,29 @@ impl Agent {
     /// the lobby worked (its sockets came first) and the game never loaded.
     pub fn new_engine(&self) {
         self.engine_epoch.fetch_add(1, Ordering::Relaxed);
+        self.arm_tunnel();
+    }
+
+    /// The loopback port of the Red Alert 2 tunnel: the spawn.ini `[Tunnel] Ip=127.0.0.1 Port=` value. The player's own
+    /// tunnel id (`[Settings] Port`) and each other player's (`[OtherN] Port`) are the last octet of their virtual address.
+    pub fn tunnel_port(&self) -> u16 {
+        self.tunnel_port
+    }
+
+    /// A Red Alert 2 game is about to start: forget the endpoint of the last one; the next to speak as us takes the tunnel.
+    pub fn arm_tunnel(&self) {
+        *self.tunnel_peer.lock().unwrap() = None;
+    }
+
+    /// Hand a blob (at most 1024 bytes) to every other player in the room, for the launcher's Red Alert 2 lobby.
+    /// False if it is too big or the agent is not connected.
+    pub fn send_lobby(&self, blob: &[u8]) -> bool {
+        blob.len() <= MAX_LOBBY_PAYLOAD && matches!(self.status(), Status::Connected(_)) && send_sealed(&self.relay, &self.crypto, &Packet::Lobby { vip: [0; 4], payload: blob.to_vec() })
+    }
+
+    /// Lobby blobs received since the last call, oldest first, each with the last octet of its sender's virtual address.
+    pub fn take_lobby(&self) -> Vec<(u8, Vec<u8>)> {
+        self.lobby.lock().unwrap().drain(..).collect()
     }
 
     /// The token to give the engine (`GEN_RELAY_TOKEN`), in hex.
@@ -630,6 +766,48 @@ mod tests {
             e.admit(sock(50000 + p));
         }
         assert!(e.addrs.len() <= 16);
+    }
+
+    #[test]
+    fn spawner_header_becomes_a_tunnel_packet_and_back() {
+        let game: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let mut bound = None;
+        // our id is 3: to id 2 goes to 10.77.0.2 (header big-endian, as htons writes it)
+        assert_eq!(from_spawner(Some(3), &mut bound, game, &[0, 3, 0, 2, 0xAA, 0xBB]), FromSpawner::Forward { to: [10, 77, 0, 2], payload: &[0xAA, 0xBB] });
+        assert_eq!(bound, Some(game));
+        // what arrives from 10.77.0.2 for us
+        assert_eq!(to_spawner([10, 77, 0, 2], 3, &[0xCC]), Some(vec![0, 2, 0, 3, 0xCC]));
+        assert_eq!(to_spawner([192, 168, 0, 2], 3, &[0xCC]), None, "not a room address");
+        assert_eq!(to_spawner([10, 77, 0, 2], 3, &[]), None);
+        // a ping: 50 bytes of sender 0, receiver 0, answered with its first 12, even before connecting
+        let mut ping = vec![0u8; 50];
+        ping[4..12].copy_from_slice(b"pingpong");
+        assert_eq!(from_spawner(None, &mut None, game, &ping), FromSpawner::Pong(&ping[..12]));
+        assert_eq!(from_spawner(None, &mut None, game, &ping[..49]), FromSpawner::Ignore);
+    }
+
+    #[test]
+    fn the_tunnel_belongs_to_the_first_local_game_that_speaks_as_us() {
+        let (game, other): (SocketAddr, SocketAddr) = ("127.0.0.1:5000".parse().unwrap(), "127.0.0.1:5001".parse().unwrap());
+        let ok = [0, 3, 0, 2, 1];
+        let mut bound = None;
+        // not connected yet (no id), someone else's id, our own id as receiver, id 0, id above 255, no payload, too much,
+        // not loopback: ignored and nothing bound
+        assert_eq!(from_spawner(None, &mut bound, game, &ok), FromSpawner::Ignore);
+        for bad in [&[0, 4, 0, 2, 1][..], &[0, 3, 0, 3, 1], &[0, 3, 0, 0, 1], &[0, 3, 1, 0, 1], &[0, 3, 0, 2]] {
+            assert_eq!(from_spawner(Some(3), &mut bound, game, bad), FromSpawner::Ignore, "{bad:?}");
+        }
+        assert_eq!(from_spawner(Some(3), &mut bound, game, &[&[0, 3, 0, 2][..], &[0; MAX_TUNNEL_PAYLOAD + 1]].concat()), FromSpawner::Ignore);
+        assert_eq!(from_spawner(Some(3), &mut bound, "192.168.1.9:5000".parse().unwrap(), &ok), FromSpawner::Ignore);
+        assert_eq!(bound, None);
+        // the first good one owns it; another local endpoint is then ignored
+        assert!(matches!(from_spawner(Some(3), &mut bound, game, &ok), FromSpawner::Forward { .. }));
+        assert_eq!(from_spawner(Some(3), &mut bound, other, &ok), FromSpawner::Ignore);
+        assert!(matches!(from_spawner(Some(3), &mut bound, game, &ok), FromSpawner::Forward { .. }));
+        // re-armed (`arm_tunnel`): the next game takes it
+        bound = None;
+        assert!(matches!(from_spawner(Some(3), &mut bound, other, &ok), FromSpawner::Forward { .. }));
+        assert_eq!(bound, Some(other));
     }
 
     #[test]
