@@ -2118,13 +2118,17 @@ function settingsPage() {
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
       h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), diagnosePanel(),
-        setting("First-run setup", "Walk through the setup again.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"))),
+        firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed; the game engine is GPL-3.0 with EA's additional terms. Not affiliated with or endorsed by Electronic Arts.`)]],
   ], store.settingsTab || "game", (id) => { store.settingsTab = id; });
   const el = h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Settings")),
     t.bar, t.body);
   return { el, dispose: files.dispose };
+}
+
+function firstRunSetupRow() {
+  return setting("First-run setup", "Walk through the setup again for this game.", h("button", { class: "btn", onclick: () => openWizard() }, "Run"));
 }
 
 // ---------------------------------------------------------------- Red Alert 2
@@ -2733,13 +2737,14 @@ function ra2SettingsPage() {
     ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ...ra2SettingsCards()]],
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
+      h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
   ], store.settingsTab === "rallypoint" ? "rallypoint" : "game", (id) => { store.settingsTab = id; });
   const el = h("div", { class: "page" }, h("div", { class: "page-head" }, h("h1", {}, "Settings")), t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 
-/** Change game: a new shell with that game's pages. Rooms are per game, so the relay is left. */
+/** Change game: a new shell with that game's pages. Rooms are per game, so the relay is left. The choice is remembered for next launch. */
 async function switchGame(id) {
   if (id === store.cfg.game) return;
   try { await invoke("set_game", { game: id }); } catch (e) { say(errText(e), "bad"); return; }
@@ -2749,7 +2754,13 @@ async function switchGame(id) {
   document.querySelector(".app").remove();
   shell();
   go("play");
-  if (isRa2() && !store.cfg.ra2.game_dir) openWizard();
+  // First time in RA2 (or Generals if that wizard was never finished): walk through setup.
+  if (needsSetup()) openWizard();
+}
+
+/** Whether the current game still needs its first-run wizard. */
+function needsSetup() {
+  return isRa2() ? !store.cfg.ra2.setup_done : !store.cfg.setup_done;
 }
 
 // ---------------------------------------------------------------- shell
@@ -2902,46 +2913,119 @@ function openWizard() {
   render();
 }
 
-/** First run for Red Alert 2: find or download the game files, then go. */
+/** First run for Red Alert 2: same shape as the Generals wizard (welcome, files, display, maps, ready). */
 function openRa2Wizard() {
-  const steps = ["Game files", "Ready"];
-  const w = { i: 0, filesOk: !!store.cfg.ra2.game_dir, dispose: null };
+  const steps = ["Welcome", "Game files", "Display", "Maps", "Ready"];
+  const w = { i: 0, filesOk: !!store.cfg.ra2.game_dir, dispose: null, mapsNote: "" };
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Set up Red Alert 2" });
   wizardEl = overlay;
   document.getElementById("root").append(overlay);
-  const finish = async () => {
-    await invoke("set_setup_done", { done: true }).catch(() => {});
-    store.cfg.setup_done = true;
+
+  const finish = async (then) => {
+    await invoke("set_ra2_setup_done", { done: true }).catch(() => {});
+    store.cfg.ra2.setup_done = true;
     w.dispose && w.dispose();
     closeWizard();
     go("play");
     updateSidebar();
+    then && then();
   };
-  function body() {
+
+  function body(step) {
     w.dispose = null;
-    if (w.i === 0) {
+    if (step === 0) {
+      return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
+        h("div", { class: "stack" }, h("h1", {}, `Set up ${RA2_NAME}`),
+          h("p", { class: "muted" }, "Rallypoint can also run Red Alert 2 with Yuri's Revenge. It needs your own copy of the game. This takes about a minute and everything can be changed later."),
+          h("ol", { class: "checklist" },
+            h("li", {}, "Find or download your game files"),
+            h("li", {}, "Choose a resolution"),
+            h("li", {}, "Add community maps, if you want them"))));
+    }
+    if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); }, "ra2");
       w.dispose = panel.dispose;
       return h("div", { class: "stack" }, h("h2", {}, "Your game files"),
         h("p", { class: "muted" }, `Rallypoint needs your own copy of ${RA2_NAME} (the folder with ra2md.mix). A Steam or EA app install is found automatically; otherwise point to it or download it below.`), panel.el);
     }
+    if (step === 2) {
+      const r = store.cfg.ra2, nat = nativeRes();
+      const sizes = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720], [1024, 768]].filter(([x]) => x < nat.w);
+      const save = async (patch) => {
+        Object.assign(store.cfg.ra2, patch);
+        const c = store.cfg.ra2;
+        try { await invoke("ra2_set_settings", { width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color }); } catch (e) { say(errText(e), "bad"); }
+      };
+      const resSel = pick("Resolution", [["0x0", `Screen size (${nat.w} × ${nat.h})`], ...sizes.map(([x, y]) => [`${x}x${y}`, `${x} × ${y}`])],
+        `${r.width}x${r.height}`, (v) => { const [width, height] = v.split("x").map(Number); save({ width, height }); });
+      const win = h("input", { type: "checkbox", checked: r.windowed, onchange: () => save({ windowed: win.checked }) });
+      return h("div", { class: "stack" }, h("h2", {}, "Display"),
+        h("p", { class: "muted" }, "Pick a size for the game window, or use your whole screen. You can change this any time in Settings."),
+        h("label", { class: "field" }, h("span", {}, "Resolution"), resSel),
+        h("label", { class: "switch" }, win, "Windowed"));
+    }
+    if (step === 3) {
+      const note = h("p", { class: "muted small", role: "status" }, w.mapsNote);
+      const install = h("button", { class: "btn primary", onclick: async () => {
+        install.disabled = true;
+        note.textContent = "Installing community map packs…";
+        try {
+          const [packs, files] = await invoke("ra2_install_community_packs");
+          w.mapsNote = `Installed ${packs} pack${packs === 1 ? "" : "s"} (${files} maps).`;
+          note.textContent = w.mapsNote;
+          say(w.mapsNote, "ok");
+        } catch (e) {
+          w.mapsNote = errText(e);
+          note.textContent = w.mapsNote;
+          say(w.mapsNote, "bad");
+        } finally { install.disabled = false; }
+      } }, "Install community packs");
+      invoke("ra2_community_packs").then((c) => {
+        if (!c || !c.available) { note.textContent = "No community packs are bundled with this build."; return; }
+        const total = (c.packs || []).reduce((n, p) => n + (p.maps || 0), 0);
+        if (!w.mapsNote) {
+          note.textContent = c.installed_files
+            ? `${c.installed_files} community map file${c.installed_files === 1 ? "" : "s"} already in your map folder.`
+            : `${(c.packs || []).length} packs (${total} maps) ready to install.`;
+        }
+      }).catch(() => { note.textContent = "Community packs are not available in this build."; });
+      return h("div", { class: "stack" }, h("h2", {}, "Maps (optional)"),
+        h("p", { class: "muted" }, "Yuri's Revenge comes with multiplayer maps. Community packs add classic Red Alert 2 and Yuri's Revenge maps used online. You can add more any time from the Maps tab."),
+        h("div", { class: "row" }, install), note);
+    }
+    const r = store.cfg.ra2, nat = nativeRes();
+    const resLabel = !r.width ? `Screen size ${nat.w} × ${nat.h}` : `${r.width} × ${r.height}`;
     return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
-      h("dl", { class: "summary" }, h("dt", {}, "Game files"), h("dd", {}, store.cfg.ra2.game_dir || "not set yet")),
+      h("dl", { class: "summary" },
+        h("dt", {}, "Game files"), h("dd", {}, r.game_dir || "not set yet"),
+        h("dt", {}, "Display"), h("dd", {}, resLabel + (r.windowed ? ", windowed" : ", fullscreen")),
+        h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "you can add packs from the Maps tab")),
       h("p", { class: "muted small" }, "Set up a skirmish on the Play page, or join friends from Online."),
-      h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint")));
+      h("div", { class: "row" },
+        h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"),
+        h("button", { class: "btn big", onclick: () => finish(() => go("maps")) }, "Browse maps")));
   }
-  let nextBtn;
-  function nav() { if (nextBtn) nextBtn.disabled = w.i === 0 && !w.filesOk; }
+
+  let nextBtn, backBtn;
+  function nav() {
+    if (!nextBtn) return;
+    nextBtn.disabled = w.i === 1 && !w.filesOk;
+    nextBtn.textContent = ["Start setup", "Use these game files", "Continue to maps", "Review"][w.i] || "Continue";
+    backBtn.hidden = w.i === 0;
+  }
   function render() {
     w.dispose && w.dispose();
-    nextBtn = h("button", { class: "btn primary", onclick: () => { w.i++; render(); } }, "Use these game files");
-    const back = h("button", { class: "btn", hidden: w.i === 0, onclick: () => { w.i--; render(); } }, "Back");
+    nextBtn = h("button", { class: "btn primary", onclick: () => { w.i++; render(); } }, "Continue");
+    backBtn = h("button", { class: "btn", onclick: () => { w.i--; render(); } }, "Back");
     const last = w.i === steps.length - 1;
     overlay.replaceChildren(h("div", { class: "wizard" },
-      h("div", { class: "wiz-head" }, h("div", { class: "row between" }, h("span", { class: "muted small" }, `Step ${w.i + 1} of ${steps.length}: ${steps[w.i]}`), last ? null : h("button", { class: "btn small ghost", onclick: () => finish() }, "Skip setup")),
-        h("div", { class: "chevs", role: "img", "aria-label": `Step ${w.i + 1} of ${steps.length}` }, steps.map((_, k) => h("i", { class: k < w.i ? "done" : k === w.i ? "now" : "" })))),
-      h("div", { class: "wiz-body" }, body()),
-      h("div", { class: "wiz-foot" }, back, last ? h("span") : nextBtn)));
+      h("div", { class: "wiz-head" }, h("div", { class: "row between" },
+        h("span", { class: "muted small" }, `Step ${w.i + 1} of ${steps.length}: ${steps[w.i]}`),
+        last ? null : h("button", { class: "btn small ghost", onclick: () => finish() }, "Skip setup")),
+        h("div", { class: "chevs", role: "img", "aria-label": `Step ${w.i + 1} of ${steps.length}` },
+          steps.map((_, k) => h("i", { class: k < w.i ? "done" : k === w.i ? "now" : "" })))),
+      h("div", { class: "wiz-body" }, body(w.i)),
+      h("div", { class: "wiz-foot" }, backBtn, last ? h("span") : nextBtn)));
     nav();
   }
   render();
@@ -3025,7 +3109,7 @@ async function start() {
     notifyOnlineOnly();
     await pollLobby();
   }, 1000);
-  if (isRa2() ? !store.cfg.ra2.game_dir : !store.cfg.setup_done) openWizard();
+  if (needsSetup()) openWizard();
   if (store.cfg.check_updates !== false) checkUpdate();
   // A launcher left open still hears about a release: look again every six hours.
   setInterval(() => { if (store.cfg.check_updates !== false) checkUpdate(true); }, 6 * 3600 * 1000);

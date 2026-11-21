@@ -91,11 +91,14 @@ pub struct Ra2Config {
     pub side: i32,
     /// Colour 0..7, -1 any free one.
     pub color: i32,
+    /// The Red Alert 2 first-run wizard has been completed (or skipped). Separate from Generals' `setup_done`.
+    #[serde(default)]
+    pub setup_done: bool,
 }
 
 impl Default for Ra2Config {
     fn default() -> Self {
-        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, side: -1, color: -1 }
+        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, side: -1, color: -1, setup_done: false }
     }
 }
 
@@ -130,6 +133,6 @@ mod tests {
     fn settings_fill_in_what_an_older_file_lacks() {
         let c: Ra2Config = serde_json::from_str(r#"{"windowed":true,"renderer":"gdi"}"#).unwrap();
         assert_eq!(c, Ra2Config { windowed: true, ..Default::default() });
-        assert_eq!((c.side, c.color), (-1, -1));
+        assert_eq!((c.side, c.color, c.setup_done), (-1, -1, false));
     }
 }

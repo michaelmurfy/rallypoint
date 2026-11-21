@@ -86,7 +86,8 @@ pub struct Config {
     /// that later answers with a different key is refused until the player chooses to trust it.
     #[serde(default)]
     pub server_keys: std::collections::BTreeMap<String, String>,
-    /// The game the launcher is set up for: "generals" (also when empty) or "ra2".
+    /// The game the launcher shows: "generals" (the default for a new install) or "ra2".
+    /// Remembered across launches so the last game you used comes back.
     #[serde(default = "default_game")]
     pub game: String,
     #[serde(default)]

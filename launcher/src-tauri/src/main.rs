@@ -460,6 +460,15 @@ fn set_setup_done(app: tauri::AppHandle, done: bool) -> Result<(), String> {
     c.save(&path).map_err(|e| e.to_string())
 }
 
+/// Mark the Red Alert 2 first-run wizard done (or clear it to run again). Does not touch Generals' `setup_done`.
+#[tauri::command]
+fn set_ra2_setup_done(app: tauri::AppHandle, done: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.ra2.setup_done = done;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
 // ---- online ---------------------------------------------------------------------------------------
 
 /// Joins `room` on the relay, creating it with `password` if nobody is in it. Signing up with the server is automatic.
@@ -1434,7 +1443,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_check_updates, set_beta_updates, update_skip,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_ra2_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
