@@ -233,16 +233,18 @@ country uniques — do not re-patch the Undeploy lock.
 
 ### T3.3 Vehicle anims / turret / deploy (Siege Chopper)
 
-Upstream known miss: Siege Chopper deploy. Turret facings and deploy SHPs for
-other vehicles still diverge on some types.
+Siege Chopper (`SCHP`) deploy/undeploy: `IsSimpleDeployer` + `DeployToLand` +
+`UnloadingClass=SCHD` + `DeployingAnim=SCHPDEPL` (patch `0043`). Turret facings
+and deploy SHPs for other vehicles may still diverge.
 
 | | |
 |---|---|
-| **Files** | vehicle draw in `engine/main.cpp`, `engine/unit_w6.*`, deploy mission paths in `engine/world.cpp` |
-| **gamemd** | UnitClass deploy / turret facing |
-| **Rules / art** | `CSCRW` / Siege Chopper art; `Deployer`, turret HVA |
+| **Files** | `weapon_resolve`, `world_abilities` / `world` / `world_an`, draw + `pres_audio_events`, tests |
+| **gamemd** | `FUN_00739AC0` / `FUN_00739CD0` (IsSimpleDeployer), `FUN_0054BD30` (DeployToLand) |
+| **Rules / art** | `SCHP`/`SCHD`; `IsSimpleDeployer`, `DeployToLand`, `UnloadingClass`, `DeployingAnim` |
 | **Effort** | M |
 | **OpenRA** | Partial |
+| **Status** | SCHP deploy mission + UnloadingClass draw + DeployingAnim (this PR) |
 
 ### T3.4 Weapon beams / lasers / prism / magnetron / disc rays
 
