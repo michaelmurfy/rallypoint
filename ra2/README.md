@@ -98,6 +98,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0044-ai-call-for-help` | T1.3 call-for-help vs Steam `FUN_00708080`: building victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell + IQ `RepairSell` on ConditionRed sell. Simulation change (no `World` sizeof growth). |
 | `0045-magnetron-disc-beam-art` | Presentation: Magnetron `IsMagBeam` MagnaBeamColor wave (`WaveClass::Draw_Magnetic` FUN_00762070) while `IsLocomotor` holds; Floating Disc `DrainWeapon` loops `DrainAnimationType` (DISKRAY) via FUN_0070fd70. No sim/CRC change. |
 | `0050-spy-plane-sw` | Spy Plane special (T2.3 / T4.2): NARADR grants `Type=SpyPlane`; Launch `FUN_006CC390` case 8 @`0x6CD66F` → loaner `SPYP` on Mission Approach (`FUN_004155F0`) → Overfly (`FUN_004157C0`) with SpyCameraWeapon Damage=6 / Range=20 / SpyPlaneCameraFrames=16 fog reveal. Sidebar `spypicon` (+ cameomd fallback), `EVA_SpyPlaneReady`. Stock constants (no `SwParams` / save growth). |
+| `0052-country-unique-roster` | T2.2: audit Owner/RequiredHouses/ForbiddenHouses vs live rulesmd for all 10 countries. AI `*BaseDefenses` filtered by ownership; `AIBuildThis` Combat buildings (French Grand Cannon `GTGCAN`, Gap Generator, …) enter the AI defense catalog; Yuri `YADOG`/`YDOG` on the AI unit roster; `rp_country_allows` shares `country::country_allows`; doctest matrix + realplay probe. |
 
 ## Factions (Country=)
 
@@ -120,7 +121,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 
 ### Country bonuses (all 10)
 
-- **Ownership**: sidebar, AI catalogs and skirmish start pools honour `Owner=` / `RequiredHouses=` / `ForbiddenHouses=` (Americans `AMRADR` paradrop radar, French `GTGCAN`, British `SNIPE`, Germans `TNKD`, Korea `BEAG`, Iraq `DESO`, …; `GAAIRC` forbidden for Americans).
+- **Ownership**: sidebar, AI catalogs and skirmish start pools honour `Owner=` / `RequiredHouses=` / `ForbiddenHouses=` (Americans `AMRADR`/`ORCA`, Korea `BEAG`, French `GTGCAN`, British `SNIPE`, Germans `TNKD`, Libya `DTRUCK`, Iraq `DESO`, Cuba `TERROR`, Russia `TTNK`, Yuri `YADOG`/`YDOG`; `GAAIRC` forbidden for Americans). AI also plans country Combat `AIBuildThis` defenses (Grand Cannon) and filters `*BaseDefenses` by ownership.
 - **Multipliers / veterans**: `country_bonuses.hpp` loads the HouseType keys gamemd reads (`CostUnitsMult`, `VeteranInfantry`, …). Stock YR comments them out (all 1.0 / empty lists); when present they scale production cost/build time, firepower/ROF, spawn speed/HP, and arm listed types as veterans at factory exit and at the UnitCount start force.
 - Doctests cover `CostUnitsMult` cost scaling and `VeteranInfantry` arming (synthetic INI).
 
