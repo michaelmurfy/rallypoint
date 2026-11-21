@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0050`). Docs only: nothing here is implemented by this file.
+`0051`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -31,6 +31,7 @@ reference (never a substitute for gamemd behaviour).
 | T2.4 / T4.3 MC enter cursors + Bio Reactor eject | `0048-mc-cursors-bio-eject` | [#190](https://github.com/michaelmurfy/rallypoint/pull/190) |
 | T2.4 AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `0049-ai-slave-miner-scoot` | [#192](https://github.com/michaelmurfy/rallypoint/pull/192) |
 | T2.3 / T4.2 Spy Plane SW Approach→Overfly fog reveal | `0050-spy-plane-sw` | [#191](https://github.com/michaelmurfy/rallypoint/pull/191) |
+| T2.4 SMIN↔YAREFN SlaveManager deploy transplant | `0051-smin-yarefn-deploy-transplant` | (this PR) |
 
 ---
 
@@ -212,16 +213,16 @@ MagBeam + DISKRAY presentation (`0045` / [#186](https://github.com/michaelmurfy/
 blank `Cameo=` XXICON / Image+ICON (`0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187)).
 Do not re-land those.
 
-**Still open (Slave Miner / Yuri):** SMIN↔YAREFN deploy SlaveManager
-brain-transplant; Magnetron building toss; Floating Disc Disc-over-base;
-Xvfb Yuri skirmish CI proof.
+**Still open (Slave Miner / Yuri):** Magnetron building toss; Floating Disc
+Disc-over-base; Xvfb Yuri skirmish CI proof.
+SMIN↔YAREFN transplant landed as `0051` (`FUN_006AF580`).
 
 | Item | Files / keys | Effort | OpenRA |
 |---|---|---|---|
 | Undeployed SMIN slaves | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) (`FUN_006F3FC0`/`FUN_006AF1A0`) | — | Partial |
 | Killer-house liberation on miner death | ~~done~~ `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/188) | — | Partial |
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | ~~done~~ `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192) (`FUN_0066D530` / `FUN_006AFD60` / `FUN_006B1020` / `FUN_004FEACA`) | — | Yes |
-| SMIN↔YAREFN deploy SlaveManager transplant | deploy/undeploy path | M | Partial |
+| SMIN↔YAREFN deploy SlaveManager transplant | ~~done~~ `0051` (`FUN_006AF580` / `FUN_007383E0` @0x739956 / `FUN_00449C30` @0x44A03C; `FUN_006B0D10` dock) | — | Partial |
 | MC enter cursors / Bio Reactor eject | ~~done~~ `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190) (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
 | Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
 | Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
@@ -425,10 +426,10 @@ Upstream known limitation.
 
 ## Suggested attack order
 
-1. Burn down remaining T2.4 Yuri Partial: SMIN↔YAREFN SlaveManager transplant;
-   Magnetron building toss; Disc-over-base; Xvfb Yuri skirmish CI — do not
-   re-land `0045`–`0050` (MC cursors / Bio eject `0048`, AI scoot `0049`,
-   Spy Plane SW `0050` are done).
+1. Burn down remaining T2.4 Yuri Partial: Magnetron building toss;
+   Disc-over-base; Xvfb Yuri skirmish CI — do not re-land `0045`–`0051`
+   (MC cursors / Bio eject `0048`, AI scoot `0049`, Spy Plane SW `0050`,
+   SMIN↔YAREFN transplant `0051` are done).
 2. T1.3 remaining RE only (victim `+0x2DC`, MapZone ids, ArchiveTarget==self)
    — do not re-land `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183).
 3. T2.2 country unique roster completeness (`RequiredHouses` /
@@ -447,6 +448,7 @@ undeployed SMIN `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/
 MC cursors / Bio eject `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190);
 AI Slave Miner scoot `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192);
 Spy Plane SW `0050` / [#191](https://github.com/michaelmurfy/rallypoint/pull/191);
+SMIN↔YAREFN transplant `0051` (this PR);
 T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
 T3.3 SCHP `0043` / [#182](https://github.com/michaelmurfy/rallypoint/pull/182);
 T1.3 bulk `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183);
@@ -456,15 +458,15 @@ launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
 
 Before starting a new patch in an area listed under **Recently landed**,
 rebase on `main` and read the cited patch — re-implementing
-`0034`/`0035`/`0037`/`0040`–`0050` or the `0025`–`0033` presentation
+`0034`/`0035`/`0037`/`0040`–`0051` or the `0025`–`0033` presentation
 stack is wasted work.
 
 No open sibling parity PRs assumed for MagBeam / blank cameos / undeployed
 SMIN / MC cursors / Bio eject / AI Slave Miner scoot / Spy Plane SW (those
-landed in #186–#192). Check open PRs before starting another patch in T2.4
-leftovers (SMIN↔YAREFN transplant, Magnetron toss, Disc-over-base, Xvfb CI),
-T2.2 roster, T1.3 RE leftovers, or T3.4/T3.5 polish.
+landed in #186–#192), or SMIN↔YAREFN transplant (`0051`). Check open PRs
+before starting another patch in T2.4 leftovers (Magnetron toss, Disc-over-base,
+Xvfb CI), T2.2 roster, T1.3 RE leftovers, or T3.4/T3.5 polish.
 
-Next priorities (open): T2.4 SMIN↔YAREFN transplant / Magnetron toss /
-Disc-over-base / Xvfb CI; T1.3 RE leftovers; T2.2 roster; non-SCHP T3.3;
-T3.1/T3.2 leftovers; T3.4/T3.5 polish; T4 (naval AI, campaign Yuri, net).
+Next priorities (open): T2.4 Magnetron toss / Disc-over-base / Xvfb CI;
+T1.3 RE leftovers; T2.2 roster; non-SCHP T3.3; T3.1/T3.2 leftovers;
+T3.4/T3.5 polish; T4 (naval AI, campaign Yuri, net).
