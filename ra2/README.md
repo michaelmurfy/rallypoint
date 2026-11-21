@@ -80,6 +80,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0026-crisp-credits-macos-cursor` | Credits tally: integer-scaled 12metfnt glyphs with nearest sampling on HiDPI; nearest logical-to-output upscale; macOS focus regained re-hides the OS cursor when the game draws its own. |
 | `0027-desktop-canvas-follows-window` | Desktop match canvas height follows the window (720..1440) so 1080p/1440p shows more map. Menus stay 1280x720. Android and `--play set canvas` are unchanged. |
 | `0028-cleg-chrono-beam` | Chrono Legionnaire: Temporal weapons use ChronoBeamColor RadBeam (not EBolt); beam held on the victim while erasing. |
+| `0035-stock-ai-min-defense-rule` | Skirmish AI: `UseMinDefenseRule` / `MinimumAIDefensiveTeams` from gamemd `FUN_0041e740` — under the minimum only `IsBaseDefense` Team1 triggers fire and autocreate is held off so stock base-guard teams form; call_for_help then has guard members (save v56). Simulation change. |
 
 ## Factions (Country=)
 

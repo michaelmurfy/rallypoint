@@ -1,0 +1,435 @@
+diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
+index 4d6d2d3..89a6310 100644
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -213,6 +213,21 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
+         const int c = ra2engine::difficulty_class_index(s.diff);
+         acfg.virtual_purifiers = c < (int)v.size() ? std::max(0, std::atoi(v[(std::size_t)c].c_str())) : 0;
+     }
++    {   // [RE: FUN_0041e740; loader FUN_0066feb0 -> Rules+0x1390 / +0x17f3]:
++        // UseMinDefenseRule=yes and MinimumAIDefensiveTeams=1,1,1 ;h,m,e.
++        // Until the house has that many live IsBaseDefense teams, ConditionMet
++        // only admits Team1-IsBaseDefense triggers (stock base-guard lines);
++        // autocreate (offense-only) is held off so the first team slot is a
++        // guard. Without this the 11 stock guard triggers lost the weight draw
++        // to ~150 offense lines and call_for_help had no IsBaseDefense members.
++        acfg.team.use_min_defense_rule =
++            rules.section_flag("General", "UseMinDefenseRule", true);
++        const std::vector<std::string> v =
++            aiside::csv_tokens(rules.section_string("General", "MinimumAIDefensiveTeams", "1,1,1"));
++        const int c = ra2engine::difficulty_class_index(s.diff);
++        acfg.team.min_defense_teams =
++            c < (int)v.size() ? std::max(0, std::atoi(v[(std::size_t)c].c_str())) : 1;
++    }
+     std::cerr << "[ai] slot side=" << ra2engine::yuri::side_name(s.side)
+               << " country=" << country << " diff=" << (int)s.diff
+               << " roster=" << acfg.team.unit_roster.size()
+diff --git a/engine/ai_trigger.cpp b/engine/ai_trigger.cpp
+index 3c0554a..7a37e59 100644
+--- a/engine/ai_trigger.cpp
++++ b/engine/ai_trigger.cpp
+@@ -113,17 +113,26 @@ bool trigger_condition_true(const AITriggerType& t, const TriggerView& view) {
+     }
+ }
+ 
+-bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view) {
++bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view,
++                          bool team1_is_base_defense) {
+     // [RE-GATE APPLIED: ai-trigger.md §5 — ConditionMet's CONFIRMED filter
+     // set, in the recovered order. Filter #2 (IsGlobal) passes vacuously:
+     // aimd-loaded triggers are never Global in the original (IsGlobal=0),
+     // so the field is not parsed or checked.]
+-    // #1 base-defense vs offense split: AI-3's scope is OFFENSIVE triggers;
+-    // ALL stock triggers are IsForBaseDefense=0. [RE-FALLBACK: the recovered
+-    // split consults the house's defensive-team need (Rules+0x1394[diff] vs
+-    // house+0x566c), inputs this engine does not track — base-defense
+-    // triggers are rejected until a defensive-need input exists.]
+-    if (t.base_defense) return false;
++    // #1 UseMinDefenseRule [RE: FUN_0041e740 @0x41e760..0x41e7b1, Rules
++    // +0x17f3 / MinimumAIDefensiveTeams +0x1394 vs house+0x566c]: under the
++    // minimum, only a Team1 IsBaseDefense (dl from TeamType+0xf6) — or the
++    // rare IsForBaseDefense=1 trigger — may fire; at/above the minimum those
++    // are rejected so offense takes over. use_min_defense_rule false keeps
++    // the pre-hunt behaviour (no split; tests / synthetic configs).
++    if (view.use_min_defense_rule) {
++        const bool bd = team1_is_base_defense || t.base_defense;
++        if (view.defense_teams < view.min_defense_teams) {
++            if (!bd) return false;
++        } else if (bd) {
++            return false;
++        }
++    }
+     // #3 per-trigger [AITriggerTypesEnable] flag [RE: §5].
+     if (!t.is_enabled) return false;
+     // #4 IsForSkirmish must be 1 — skirmish-only engine [RE: §5].
+@@ -150,8 +159,10 @@ bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view) {
+     return true;
+ }
+ 
+-bool trigger_eligible(const AITriggerType& t, const TriggerView& view) {
+-    return trigger_condition_true(t, view) && trigger_filters_pass(t, view);
++bool trigger_eligible(const AITriggerType& t, const TriggerView& view,
++                      bool team1_is_base_defense) {
++    return trigger_condition_true(t, view) &&
++           trigger_filters_pass(t, view, team1_is_base_defense);
+ }
+ 
+ TriggerDecision select_trigger(const AimdData& aimd,
+@@ -170,7 +181,10 @@ TriggerDecision select_trigger(const AimdData& aimd,
+         const AITriggerType& t = aimd.triggers[i];
+         const long w = om::lround(weights[i]);
+         if (w <= 0) continue;                        // no probability mass
+-        if (!trigger_eligible(t, view)) continue;
++        const bool team1_bd =
++            t.team1 >= 0 && t.team1 < (int)aimd.teams.size() &&
++            aimd.teams[t.team1].is_base_defense;
++        if (!trigger_eligible(t, view, team1_bd)) continue;
+         // Per-TeamType Max cap for BOTH Team1 and Team2, INSIDE eligibility,
+         // before the draw (Max < 0 = UNCAPPED) [RE-GATE APPLIED:
+         // ai-trigger.md §5/§6 — CONFIRMED at ConditionMet's tail]. The
+diff --git a/engine/ai_trigger.hpp b/engine/ai_trigger.hpp
+index d4b6dcd..b99d3a0 100644
+--- a/engine/ai_trigger.hpp
++++ b/engine/ai_trigger.hpp
+@@ -104,6 +104,13 @@ struct TriggerView {
+     double iron_charge = -1.0;
+     double chrono_charge = -1.0;
+     double minor_ready = 0.7;
++    // [RE: FUN_0041e740 + Rules UseMinDefenseRule / MinimumAIDefensiveTeams
++    // (Rules+0x17f3 / +0x1394)]: live IsBaseDefense TeamType count for this
++    // house (house+0x566c) and the per-difficulty minimum. use_min_defense_rule
++    // false (tests / synthetic configs) keeps the pre-hunt filter (no split).
++    int defense_teams = 0;
++    int min_defense_teams = 1;
++    bool use_min_defense_rule = false;
+ };
+ 
+ // select_trigger's answer: which trigger fired and which TeamType(s) to
+@@ -164,22 +171,27 @@ bool compare_count(int lhs, const TriggerComparator& c);
+ bool trigger_condition_true(const AITriggerType& t, const TriggerView& view);
+ 
+ // Enable-filter matrix [RE-GATE APPLIED: ai-trigger.md §5 — ConditionMet's
+-// CONFIRMED filter set, applied BEFORE the condition]: (1) base-defense
+-// split — base_defense triggers rejected (offensive scope; [RE-FALLBACK]:
+-// the recovered split consults the house's defensive-team need, an input
+-// this engine does not track; ALL stock triggers are IsForBaseDefense=0);
+-// (2) IsGlobal — passes vacuously (aimd-loaded triggers are never Global in
+-// the original); (3) is_enabled from [AITriggerTypesEnable]; (4)
+-// IsForSkirmish must be 1 (skirmish-only engine); (5) per-difficulty enable
+-// INVERTED — house difficulty index 0 (=HARDEST) -> enabled[2] (Hard), 1 ->
+-// enabled[1], 2 -> enabled[0] (Easy); (6) OwnerHouse — "<all>"/Any pass,
+-// country name match, "<none>"/"" reject; (7) SideIndex — 0=any, else must
+-// equal view.side (1=Allied/2=Soviet/3=Yuri); (8) TechLevel — require
+-// view.tech_level >= t.tech_level.
+-bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view);
++// CONFIRMED filter set, applied BEFORE the condition]: (1) UseMinDefenseRule
++// split [RE: FUN_0041e740]: when view.use_min_defense_rule, Team1's
++// IsBaseDefense (or the trigger's IsForBaseDefense) must match the house's
++// defensive-team need (defense_teams < min_defense_teams -> only BD Team1;
++// else -> only non-BD Team1). Stock aimd marks the base-guard TeamTypes
++// IsBaseDefense=yes with IsForBaseDefense=0 on the trigger line; (2) IsGlobal
++// — passes vacuously (aimd-loaded triggers are never Global in the original);
++// (3) is_enabled from [AITriggerTypesEnable]; (4) IsForSkirmish must be 1
++// (skirmish-only engine); (5) per-difficulty enable INVERTED — house
++// difficulty index 0 (=HARDEST) -> enabled[2] (Hard), 1 -> enabled[1], 2 ->
++// enabled[0] (Easy); (6) OwnerHouse — "<all>"/Any pass, country name match,
++// "<none>"/"" reject; (7) SideIndex — 0=any, else must equal view.side
++// (1=Allied/2=Soviet/3=Yuri); (8) TechLevel — require view.tech_level >=
++// t.tech_level. `team1_is_base_defense` is AimdData::teams[t.team1].is_base_defense
++// (caller supplies it so this stays Aimd-free).
++bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view,
++                          bool team1_is_base_defense = false);
+ 
+ // ELIGIBLE = condition TRUE && filters pass [spec §3].
+-bool trigger_eligible(const AITriggerType& t, const TriggerView& view);
++bool trigger_eligible(const AITriggerType& t, const TriggerView& view,
++                      bool team1_is_base_defense = false);
+ 
+ // Weighted-random selection [RE-GATE APPLIED: ai-trigger.md §3 — CONFIRMED
+ // draw shape: gather eligible triggers with w = round(Weight_Current) (int);
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 256d632..e6c3f00 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1540,6 +1540,8 @@ template <class Ar> void fields(Ar& ar, AiTeamConfig& v) {
+     io(ar, v.triggers_enabled);
+     io(ar, v.trigger_side);
+     io(ar, v.trigger_tech_level);
++    io(ar, v.use_min_defense_rule);   // v56: UseMinDefenseRule / MinimumAIDefensiveTeams
++    io(ar, v.min_defense_teams);
+ }
+ template <class Ar> void fields(Ar& ar, AiHouseConfig& v) {
+     io(ar, v.difficulty);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index b81aabe..085a176 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 55;   // 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 56;   // 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 631d7d8..84b42e3 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -3955,32 +3955,51 @@ void World::step_ai_houses(double dt) {
+         // 1) Income (the economy phase accumulates per-house unload income).
+         ai_econ(rec).credits += take_income(h);
+         ai_pick_enemy_house(h, rec);   // W2-SK-08
+-        // W2-SK-10 base defence [RE-FALLBACK: the IsBaseDefense teams and
+-        // [AI] ComputerBaseDefenseResponse were not decoded]: every ~7 s, idle
+-        // un-teamed combat units engage enemies inside 12 cells of the base.
++        // W2-SK-10 base defence interim: every ~7 s, idle un-teamed combat
++        // units engage enemies inside 12 cells of the base — ONLY while the
++        // house has no live IsBaseDefense team. Once UseMinDefenseRule has
++        // raised a guard team, call_for_help (FUN_00707500, ComputerBaseDefenseResponse)
++        // owns the response and this path must not steal recruits.
+         if ((repair_frame_ + (std::uint64_t)h) % 105u == 0u) {
+-            const BaseView bv = make_ai_base_view(h, rec);
+-            std::vector<int> intruders;
+-            for (int i = 0; i < (int)units_.size(); ++i) {
+-                const Unit& e = units_[(std::size_t)i];
+-                if (!e.alive || e.die_time >= 0.0 || e.cargo_of >= 0 || e.is_aircraft || !is_enemy(h, e.house)) continue;
+-                const int dx = e.cell_x - bv.center_x, dy = e.cell_y - bv.center_y;
+-                if (dx * dx + dy * dy <= 144) intruders.push_back(i);
++            bool has_bd = false;
++            for (const TeamInstance& ti : rec.team_state.teams) {
++                if (ti.teamtype >= 0 && ti.teamtype < (int)rec.cfg.team.aimd.teams.size() &&
++                    rec.cfg.team.aimd.teams[(std::size_t)ti.teamtype].is_base_defense &&
++                    !ti.members.empty()) {
++                    has_bd = true;
++                    break;
++                }
+             }
+-            if (!intruders.empty())
+-                for (const IdleUnitView& iv : ai_idle_units(h, rec)) {
+-                    const Unit& u = units_[(std::size_t)iv.unit];
+-                    if (u.w_damage <= 0 || u.deploys_into >= 0 || unit_is_engineer(u) || unit_is_spy(u))   // W7-01-33
++            if (!has_bd) {
++                const BaseView bv = make_ai_base_view(h, rec);
++                std::vector<int> intruders;
++                for (int i = 0; i < (int)units_.size(); ++i) {
++                    const Unit& e = units_[(std::size_t)i];
++                    if (!e.alive || e.die_time >= 0.0 || e.cargo_of >= 0 || e.is_aircraft ||
++                        !is_enemy(h, e.house))
+                         continue;
+-                    int best = -1;
+-                    long long bd = 0;
+-                    for (int e : intruders) {
+-                        const long long dx = units_[(std::size_t)e].cell_x - u.cell_x,
+-                                        dy = units_[(std::size_t)e].cell_y - u.cell_y;
+-                        if (best < 0 || dx * dx + dy * dy < bd) { best = e; bd = dx * dx + dy * dy; }
+-                    }
+-                    if (best >= 0) ai_order_attack(iv.unit, best);
++                    const int dx = e.cell_x - bv.center_x, dy = e.cell_y - bv.center_y;
++                    if (dx * dx + dy * dy <= 144) intruders.push_back(i);
+                 }
++                if (!intruders.empty())
++                    for (const IdleUnitView& iv : ai_idle_units(h, rec)) {
++                        const Unit& u = units_[(std::size_t)iv.unit];
++                        if (u.w_damage <= 0 || u.deploys_into >= 0 || unit_is_engineer(u) ||
++                            unit_is_spy(u))
++                            continue;
++                        int best = -1;
++                        long long bd = 0;
++                        for (int e : intruders) {
++                            const long long dx = units_[(std::size_t)e].cell_x - u.cell_x,
++                                            dy = units_[(std::size_t)e].cell_y - u.cell_y;
++                            if (best < 0 || dx * dx + dy * dy < bd) {
++                                best = e;
++                                bd = dx * dx + dy * dy;
++                            }
++                        }
++                        if (best >= 0) ai_order_attack(iv.unit, best);
++                    }
++            }
+         }
+ 
+         // 1b) [G-65] AI repair [RE: FUN_00450620, BuildingClass AI -- gated by
+@@ -5437,33 +5456,21 @@ void World::step_ai_teams(double dt) {
+                     if (m.unit < 0 || m.unit >= (int)unit_ok.size() || !unit_ok[m.unit])
+                         team_ok[ti] = 0;
+             }
++            // Live IsBaseDefense team count (house+0x566c) for UseMinDefenseRule.
++            int defense_teams = 0;
++            for (const TeamInstance& ti : st.teams) {
++                if (ti.teamtype >= 0 && ti.teamtype < (int)tc.aimd.teams.size() &&
++                    tc.aimd.teams[(std::size_t)ti.teamtype].is_base_defense)
++                    ++defense_teams;
++            }
++            const bool need_defense =
++                tc.use_min_defense_rule && defense_teams < tc.min_defense_teams;
+             st.spawn_clock += check_period;
+             const double spawn_period = tc.rules.autocreate_time_min * 900.0;  // min->frames (Net L0)
+-            if (st.spawn_clock >= spawn_period) {
+-                st.spawn_clock = 0.0;
+-                // CONTRACT F: select_autocreate_team takes a trailing seeded rng
+-                // (the house's AiTeamState::rng — deterministic, never wall-clock).
+-                const int pick = select_autocreate_team(tc.aimd, tc.house_name,
+-                                                        st.teams, ai_econ(rec).credits,
+-                                                        tc.rules, st.rng, &team_ok);
+-                if (pick >= 0) {
+-                    TeamInstance t;
+-                    t.teamtype = pick;
+-                    st.teams.push_back(t);
+-                    ++st.teams_created;
+-                }
+-            }
+-            // AI-3 trigger-eval step [RE-GATE APPLIED: ai-trigger.md §5 —
+-            // CONFIRMED: trigger eval lives INSIDE this team-management
+-            // pass; no separate AITrigger clock exists]. A SECOND creation
+-            // path BESIDE autocreate: both feed st.teams and reuse the whole
+-            // AI-2 recruit/produce/gather/execute machinery (lifecycle
+-            // transitions UNCHANGED) [spec §4]. BOTH sources respect
+-            // TotalAITeamCap. NO team->trigger link is stored — attribution
+-            // at disband is a Team1-identity scan [RE-GATE APPLIED:
+-            // ai-trigger.md §6]. FIREWALL: triggers_enabled defaults false,
+-            // so no existing gate ever reaches this block; the draw consumes
+-            // trigger_state.rng (a separate stream), never st.rng.
++            // AI-3 trigger-eval [RE: ai-trigger.md §5]: under UseMinDefenseRule
++            // with too few IsBaseDefense teams, triggers run BEFORE autocreate
++            // and autocreate is held off — ConditionMet only admits BD Team1
++            // then, and autocreate never picks IsBaseDefense TeamTypes.
+             if (tc.triggers_enabled && !tc.aimd.triggers.empty() &&
+                 (int)st.teams.size() < tc.rules.total_team_cap) {
+                 TriggerView tv;
+@@ -5500,6 +5507,24 @@ void World::step_ai_teams(double dt) {
+                     rec.trigger_state.last_fired = d.trigger;
+                 }
+             }
++            // Autocreate SPAWN (offense-only: select_autocreate_team skips
++            // IsBaseDefense). Held while UseMinDefenseRule still needs a guard.
++            if (!need_defense && st.spawn_clock >= spawn_period) {
++                st.spawn_clock = 0.0;
++                const int pick = select_autocreate_team(tc.aimd, tc.house_name,
++                                                        st.teams, ai_econ(rec).credits,
++                                                        tc.rules, st.rng, &team_ok);
++                if (pick >= 0) {
++                    TeamInstance t;
++                    t.teamtype = pick;
++                    st.teams.push_back(t);
++                    ++st.teams_created;
++                }
++            } else if (need_defense && st.spawn_clock >= spawn_period) {
++                // Keep one spawn period of credit so offense autocreates on
++                // the next check after the minimum is met.
++                st.spawn_clock = spawn_period;
++            }
+         }
+ 
+         // 5) Recruit-idle first [RE: ai-team.md §2] (re-scanned per team so a
+@@ -5890,6 +5915,16 @@ void World::ai_fill_trigger_view(int house, const HouseAiRec& rec,
+         if (t == SuperweaponType::IronCurtain) v.iron_charge = sw_charge_fraction(house, t);
+         if (t == SuperweaponType::ChronoSphere) v.chrono_charge = sw_charge_fraction(house, t);
+     }
++    // [RE: FUN_0041e740 house+0x566c vs MinimumAIDefensiveTeams]: live
++    // IsBaseDefense TeamType count + the skirmish house's UseMinDefenseRule.
++    v.defense_teams = 0;
++    for (const TeamInstance& ti : rec.team_state.teams) {
++        if (ti.teamtype >= 0 && ti.teamtype < (int)tc.aimd.teams.size() &&
++            tc.aimd.teams[(std::size_t)ti.teamtype].is_base_defense)
++            ++v.defense_teams;
++    }
++    v.min_defense_teams = tc.min_defense_teams;
++    v.use_min_defense_rule = tc.use_min_defense_rule;
+ }
+ 
+ void World::step(double dt) {
+diff --git a/engine/world.hpp b/engine/world.hpp
+index ae45192..0df4fc6 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -761,6 +761,11 @@ struct AiTeamConfig {
+                                     // filter (house >= field passes)
+                                     // [RE-FALLBACK: skirmish ceiling — no
+                                     // recovered per-house tech input]
++    // [RE: FUN_0041e740 / Rules UseMinDefenseRule + MinimumAIDefensiveTeams]:
++    // skirmish arms these from rulesmd (UseMinDefenseRule=yes, CSV 1,1,1 at
++    // house+0x184). false / 0 keep every synthetic gate bit-identical.
++    bool use_min_defense_rule = false;
++    int min_defense_teams = 0;
+ };
+ 
+ struct AiHouseConfig {
+diff --git a/tests/test_ai_trigger.cpp b/tests/test_ai_trigger.cpp
+index ec6cf99..cbf140b 100644
+--- a/tests/test_ai_trigger.cpp
++++ b/tests/test_ai_trigger.cpp
+@@ -135,11 +135,10 @@ TEST_CASE("ai_trigger: the enable-filter matrix") {
+     TriggerView v = firing_view();
+     AITriggerType t = d.triggers[0];
+     CHECK(trigger_filters_pass(t, v));
+-    // #1 base-defense split: offensive scope -> base-defense triggers
+-    // rejected [RE-FALLBACK: no defensive-need input; all stock are
+-    // IsForBaseDefense=0].
++    // #1 UseMinDefenseRule off (default): IsForBaseDefense alone does not
++    // reject — the split needs view.use_min_defense_rule.
+     t.base_defense = true;
+-    CHECK_FALSE(trigger_filters_pass(t, v));
++    CHECK(trigger_filters_pass(t, v));
+     t.base_defense = false;
+     // #3 [AITriggerTypesEnable] per-trigger flag [RE: ai-trigger.md §5].
+     t.is_enabled = false;
+@@ -355,3 +354,57 @@ TEST_CASE("ai_trigger: weight dynamics - additive +20/-50 track-record rule, cla
+     adjust_weight(st, d, 5, true);
+     CHECK(st.adjustments == before);
+ }
++
++TEST_CASE("ai_trigger: UseMinDefenseRule prefers IsBaseDefense Team1 under the minimum") {
++    // [RE: FUN_0041e740 / Rules UseMinDefenseRule + MinimumAIDefensiveTeams]:
++    // under the minimum only a Team1 IsBaseDefense trigger is eligible; at or
++    // above it those are rejected so offense fires. Stock aimd marks the
++    // base-guard TeamTypes IsBaseDefense=yes with IsForBaseDefense=0.
++    AimdData d = one_trigger_aimd();
++    d.teams[0].max = -1;
++    d.teams[0].is_base_defense = false;           // TRG0 Team1 = offense
++    TeamType guard = d.teams[0];
++    guard.id = "TT_GUARD";
++    guard.is_base_defense = true;
++    d.teams.push_back(guard);
++    AITriggerType g = d.triggers[0];
++    g.id = "TRG_GUARD";
++    g.team1 = 1;                                  // guard TeamType
++    g.team2 = -1;
++    g.condition_type = kCondNone;                 // always true
++    d.triggers.push_back(g);
++    TriggerView v = firing_view();
++    v.use_min_defense_rule = true;
++    v.min_defense_teams = 1;
++    v.defense_teams = 0;
++    std::vector<TeamInstance> live;
++    std::uint32_t rng = 1u;
++    // Under the minimum: only the guard trigger is eligible (offense rejected).
++    for (std::uint32_t seed = 1; seed <= 50; ++seed) {
++        rng = seed;
++        const TriggerDecision td =
++            select_trigger(d, {50.0, 50.0}, live, v, rng);
++        CHECK(td.trigger == 1);
++        CHECK(td.teamtype1 == 1);
++    }
++    CHECK(trigger_filters_pass(d.triggers[0], v, /*team1_bd=*/false) == false);
++    CHECK(trigger_filters_pass(d.triggers[1], v, /*team1_bd=*/true));
++    // At the minimum: guard rejected, offense admitted.
++    v.defense_teams = 1;
++    CHECK(trigger_filters_pass(d.triggers[0], v, false));
++    CHECK(trigger_filters_pass(d.triggers[1], v, true) == false);
++    for (std::uint32_t seed = 1; seed <= 50; ++seed) {
++        rng = seed;
++        const TriggerDecision td =
++            select_trigger(d, {50.0, 50.0}, live, v, rng);
++        CHECK(td.trigger == 0);
++        CHECK(td.teamtype1 == 0);
++    }
++    // IsForBaseDefense=1 counts as BD even when Team1 is not marked.
++    AITriggerType marked = d.triggers[0];
++    marked.base_defense = true;
++    v.defense_teams = 0;
++    CHECK(trigger_filters_pass(marked, v, /*team1_bd=*/false));
++    v.defense_teams = 1;
++    CHECK_FALSE(trigger_filters_pass(marked, v, false));
++}
