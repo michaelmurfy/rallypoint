@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub const RA2_ROOM_PREFIX: &str = "ra2:";
+
 /// Longest name the game's lobby takes (`g_lanPlayerNameLength`).
 pub const PLAYER_NAME_MAX: usize = 12;
 
@@ -120,6 +122,16 @@ impl Config {
         if !old.is_empty() && !key.is_empty() && self.server_keys.contains_key(&key) {
             self.serials.entry(key).or_insert(old);
         }
+    }
+
+    pub fn is_ra2(&self) -> bool {
+        self.game == "ra2"
+    }
+
+    /// The room name sent to the relay. Red Alert 2 rooms are their own (`ra2:<name>`), so a Generals room and an RA2
+    /// room of the same name never meet; the page only ever shows the bare name.
+    pub fn relay_room(&self) -> String {
+        if self.is_ra2() { format!("{RA2_ROOM_PREFIX}{}", self.room) } else { self.room.clone() }
     }
 
     /// The lobby name to start the game with: the one the player set, else this computer's name.
@@ -239,6 +251,16 @@ mod tests {
         assert_eq!((c.server.as_str(), c.game.as_str(), c.ra2.side), ("a.example:7777", "generals", -1));
         let back: Config = serde_json::from_str(&serde_json::to_string(&Config { game: "ra2".into(), ..c }).unwrap()).unwrap();
         assert_eq!(back.game, "ra2");
+    }
+
+    #[test]
+    fn red_alert_2_rooms_are_namespaced() {
+        let mut c = Config { room: "lan".into(), ..Default::default() };
+        assert_eq!(c.relay_room(), "lan");
+        c.game = "generals".into();
+        assert_eq!(c.relay_room(), "lan");
+        c.game = "ra2".into();
+        assert_eq!(c.relay_room(), "ra2:lan");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
+use generals_core::{ra2, ra2launch, ra2lobby, ra2maps, generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -13,7 +13,7 @@ const MAP_PACKS_JSON: &str = include_str!("../../../mods/mappacks.json");
 #[derive(Default)]
 struct Relay(Mutex<Option<Agent>>);
 #[derive(Default)]
-struct Downloads(Mutex<Option<AssetJob>>);
+struct Downloads(Mutex<Option<(AssetJob, assets::Title)>>);
 /// A mod the user is currently downloading in their browser: we watch their Downloads folder for it.
 struct Watch {
     id: String,
@@ -133,26 +133,32 @@ fn open_game_data_folder(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn assets_start(app: tauri::AppHandle, jobs: tauri::State<Downloads>, user: String, password: String) -> Result<(), String> {
+fn assets_start(app: tauri::AppHandle, jobs: tauri::State<Downloads>, user: String, password: String, title: Option<String>) -> Result<(), String> {
+    let title = if title.as_deref() == Some("ra2") { assets::Title::Ra2 } else { assets::Title::Generals };
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     c.steam_user = user.trim().to_string();
     let _ = c.save(&path);
-    let job = AssetJob::start(&base(&app)?, user.trim(), password).map_err(|e| e.to_string())?;
-    *jobs.0.lock().unwrap() = Some(job);
+    let job = AssetJob::start_title(&base(&app)?, title, user.trim(), password).map_err(|e| e.to_string())?;
+    *jobs.0.lock().unwrap() = Some((job, title));
     Ok(())
 }
 
 #[tauri::command]
 fn assets_status(app: tauri::AppHandle, jobs: tauri::State<Downloads>) -> assets::AssetState {
-    let state = jobs.0.lock().unwrap().as_ref().map(|j| j.state()).unwrap_or_default();
+    let (state, title) = jobs.0.lock().unwrap().as_ref().map(|(j, t)| (j.state(), *t)).unwrap_or_default();
     if state.phase == assets::Phase::Done {
         // Point the launcher at the freshly downloaded files.
         if let (Ok(path), Ok(root)) = (config_path(&app), base(&app)) {
             let mut c = Config::load(&path);
-            let zh = assets::zero_hour_dir(&root).to_string_lossy().to_string();
-            if c.game_dir != zh {
-                c.game_dir = zh;
+            let (slot, dir) = match title {
+                assets::Title::Generals => (&mut c.game_dir, assets::zero_hour_dir(&root)),
+                // the files may sit one folder down: keep the folder that really holds them
+                assets::Title::Ra2 => (&mut c.ra2.game_dir, ra2::find_under(&assets::ra2_dir(&root)).map(|i| i.dir).unwrap_or_else(|| assets::ra2_dir(&root))),
+            };
+            let dir = dir.to_string_lossy().to_string();
+            if *slot != dir {
+                *slot = dir;
                 let _ = c.save(&path);
             }
         }
@@ -163,7 +169,7 @@ fn assets_status(app: tauri::AppHandle, jobs: tauri::State<Downloads>) -> assets
 /// Answer the download's prompt: the password or the Steam Guard code.
 #[tauri::command]
 fn assets_submit(jobs: tauri::State<Downloads>, text: String) {
-    if let Some(j) = jobs.0.lock().unwrap().as_ref() {
+    if let Some((j, _)) = jobs.0.lock().unwrap().as_ref() {
         j.submit(&text);
     }
 }
@@ -171,7 +177,7 @@ fn assets_submit(jobs: tauri::State<Downloads>, text: String) {
 /// While the download waits for approval in the Steam Mobile app: ask for a code instead.
 #[tauri::command]
 fn assets_use_code(jobs: tauri::State<Downloads>) {
-    if let Some(j) = jobs.0.lock().unwrap().as_ref() {
+    if let Some((j, _)) = jobs.0.lock().unwrap().as_ref() {
         j.use_code();
     }
 }
@@ -223,12 +229,18 @@ struct ConfigView {
     default_player_name: String,
     version: &'static str,
     os: &'static str,
+    /// "generals" or "ra2": which game the launcher shows.
+    game: String,
+    ra2: ra2::Ra2Config,
+    /// This build carries the Red Alert 2 engine.
+    ra2_engine: bool,
 }
 
 #[tauri::command]
 fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
     let c = Config::load(&config_path(&app)?);
     let camera_height = c.camera();
+    let game = if c.is_ra2() { "ra2" } else { "generals" }.to_string();
     Ok(ConfigView {
         server: c.server,
         room: c.room,
@@ -252,6 +264,9 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         default_player_name: generals_core::config::machine_name(),
         version: update::current_version(),
         os: std::env::consts::OS,
+        game,
+        ra2: c.ra2,
+        ra2_engine: ra2launch::engine(app.path().resource_dir().ok().as_deref()).is_some(),
     })
 }
 
@@ -459,7 +474,10 @@ fn relay_connect(app: tauri::AppHandle, relay: tauri::State<Relay>, relay_server
     let pinned = c.server_keys.get(&c.server.to_lowercase()).and_then(|k| generals_proto::secure::from_hex(k));
     // No password typed: use the one saved for this server and room, if any.
     let password = if password.is_empty() { c.room_password(&c.server, &c.room).unwrap_or("").to_string() } else { password };
-    let agent = Agent::start(&c.server, c.serial_for(&c.server), &c.room, &password, pinned).map_err(|e| e.to_string())?;
+    if c.is_ra2() && c.relay_room().len() > generals_proto::MAX_ROOM {
+        return Err(format!("Red Alert 2 room names are at most {} characters", generals_proto::MAX_ROOM - generals_core::config::RA2_ROOM_PREFIX.len()));
+    }
+    let agent = Agent::start(&c.server, c.serial_for(&c.server), &c.relay_room(), &password, pinned).map_err(|e| e.to_string())?;
     *relay_server.0.lock().unwrap() = c.server.to_lowercase(); // what the agent was started for, whatever the settings say later
     *relay.0.lock().unwrap() = Some(agent); // dropping the old agent leaves its room
     Ok(())
@@ -1123,6 +1141,182 @@ fn launch_editor(app: tauri::AppHandle, running: tauri::State<Editor>, game_dir:
     Ok(())
 }
 
+// ---- Red Alert 2 -----------------------------------------------------------------------------------
+
+/// The launcher's Red Alert 2 lobby (see `ra2lobby`), fed by `ra2_lobby_poll`; times are milliseconds since `.1`.
+struct Ra2Lobby(Mutex<ra2lobby::Lobby>, std::time::Instant);
+impl Default for Ra2Lobby {
+    fn default() -> Self {
+        Ra2Lobby(Mutex::default(), std::time::Instant::now())
+    }
+}
+
+/// Which game the launcher shows: "generals" or "ra2". Rooms are per game, so a change leaves the relay room.
+#[tauri::command]
+fn set_game(app: tauri::AppHandle, relay: tauri::State<Relay>, lobby: tauri::State<Ra2Lobby>, game: String) -> Result<(), String> {
+    if game != "generals" && game != "ra2" {
+        return Err("Unknown game".into());
+    }
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    if c.is_ra2() != (game == "ra2") {
+        *relay.0.lock().unwrap() = None;
+        *lobby.0.lock().unwrap() = ra2lobby::Lobby::default();
+    }
+    c.game = game;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ra2_detect() -> Vec<ra2::Ra2Install> {
+    ra2::detect()
+}
+
+/// Is `path` a Red Alert 2 with Yuri's Revenge? Saved when it is.
+#[tauri::command]
+fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Ok(GameCheck { ok: false, message: "Choose the folder that contains ra2md.mix".into() });
+    }
+    match ra2::check_dir(Path::new(p)) {
+        Err(message) => Ok(GameCheck { ok: false, message }),
+        Ok(i) => {
+            let cfg = config_path(&app)?;
+            let mut c = Config::load(&cfg);
+            c.ra2.game_dir = i.dir.to_string_lossy().to_string();
+            c.save(&cfg).map_err(|e| e.to_string())?;
+            Ok(GameCheck { ok: true, message: "Yuri's Revenge found".into() })
+        }
+    }
+}
+
+/// Screen size (0 x 0: the screen's own), window, and the default side and colour.
+#[tauri::command]
+fn ra2_set_settings(app: tauri::AppHandle, width: u32, height: u32, windowed: bool, side: i32, color: i32) -> Result<(), String> {
+    if !(-1..ra2launch::SIDES).contains(&side) || !(-1..ra2launch::COLORS).contains(&color) || width > 16384 || height > 16384 {
+        return Err("That setting is out of range".into());
+    }
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.ra2 = ra2::Ra2Config { width, height, windowed, side, color, ..c.ra2 };
+    c.save(&path).map_err(|e| e.to_string())
+}
+
+/// The launcher's own Red Alert 2 map folder, `<app data>/GeneralsZH/RA2Maps` (made on first use); maps dropped there
+/// are listed beside the ones in the game folder.
+fn ra2_maps_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let d = base(app)?.join("RA2Maps");
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+fn ra2_map_list(app: &tauri::AppHandle) -> Result<Vec<ra2maps::Ra2Entry>, String> {
+    let c = Config::load(&config_path(app)?);
+    let mut dirs = vec![];
+    if !c.ra2.game_dir.is_empty() {
+        dirs.push(PathBuf::from(&c.ra2.game_dir));
+    }
+    dirs.push(ra2_maps_dir(app)?);
+    Ok(ra2maps::list(&dirs, &map_library(app)?.join("ra2.json")))
+}
+
+/// A map by its file name, in the player's own folders only (a name from another player never becomes a path).
+fn ra2_find_map(app: &tauri::AppHandle, file: &str) -> Result<ra2maps::Ra2Entry, String> {
+    if !ra2launch::safe_map_name(file) {
+        return Err("That is not a map file name".into());
+    }
+    ra2_map_list(app)?
+        .into_iter()
+        .find(|e| e.path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(file)))
+        .ok_or_else(|| format!("You don't have the map {file}"))
+}
+
+#[tauri::command]
+async fn ra2_maps(app: tauri::AppHandle) -> Result<Vec<ra2maps::Ra2Entry>, String> {
+    tauri::async_runtime::spawn_blocking(move || ra2_map_list(&app)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ra2_map_view(app: tauri::AppHandle, file: String) -> Result<ra2maps::Ra2View, String> {
+    tauri::async_runtime::spawn_blocking(move || ra2maps::view(&ra2_find_map(&app, &file)?.path)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn ra2_open_maps_folder(app: tauri::AppHandle) -> Result<(), String> {
+    open_folder(&ra2_maps_dir(&app)?)
+}
+
+/// Start Red Alert 2 with `setup`: a skirmish, or an online game from the lobby (then through the relay's tunnel).
+#[tauri::command]
+fn ra2_launch(app: tauri::AppHandle, relay: tauri::State<Relay>, setup: ra2launch::Ra2Setup) -> Result<(), String> {
+    let c = Config::load(&config_path(&app)?);
+    if c.ra2.game_dir.is_empty() {
+        return Err("Rallypoint doesn't have your Red Alert 2 files yet".into());
+    }
+    let online = setup.players.iter().filter(|p| p.ai.is_none()).count() > 1;
+    let map = ra2_find_map(&app, &setup.map)?;
+    let mut setup = ra2launch::validate(setup, map.players as usize, online)?;
+    let engine = ra2launch::engine(app.path().resource_dir().ok().as_deref()).ok_or("The RA2 engine is not in this build yet")?;
+    if online {
+        let guard = relay.0.lock().unwrap();
+        let agent = guard.as_ref().ok_or("You are not connected to a server")?;
+        let Status::Connected(vip) = agent.status() else { return Err("You are not connected to a server".into()) };
+        agent.arm_tunnel();
+        setup.tunnel = Some(ra2launch::Tunnel { port: agent.tunnel_port(), id: vip[3] });
+    }
+    let file = base(&app)?.join("ra2").join("setup.json");
+    std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    ra2launch::write_launch(&file, &ra2launch::Launch { setup, player_name: c.lobby_name(), display: c.ra2.clone(), map_path: map.path })?;
+    ra2launch::command(&engine, Path::new(&c.ra2.game_dir), &file).spawn().map_err(|e| format!("{}: {e}", engine.display()))?;
+    Ok(())
+}
+
+/// One round of the lobby: read what the room sent, say who we are, and return what the page shows. `None` unless
+/// connected. The page calls it every second while Red Alert 2 is the game.
+#[tauri::command]
+fn ra2_lobby_poll(app: tauri::AppHandle, relay: tauri::State<Relay>, lobby: tauri::State<Ra2Lobby>) -> Option<ra2lobby::LobbyView> {
+    let name = config_path(&app).map(|p| Config::load(&p).lobby_name()).unwrap_or_default();
+    let guard = relay.0.lock().unwrap();
+    let mut l = lobby.0.lock().unwrap();
+    let Some(Status::Connected(vip)) = guard.as_ref().map(|a| a.status()) else {
+        *l = ra2lobby::Lobby::default();
+        return None;
+    };
+    let agent = guard.as_ref()?;
+    let now = lobby.1.elapsed().as_millis() as u64;
+    l.set_self(vip[3], &name, agent.diagnostics().and_then(|d| d.room_master));
+    for (from, blob) in agent.take_lobby() {
+        l.receive(now, from, &blob);
+    }
+    l.prune(now);
+    for blob in l.outgoing() {
+        agent.send_lobby(&blob);
+    }
+    Some(l.view())
+}
+
+#[tauri::command]
+fn ra2_lobby_seat(lobby: tauri::State<Ra2Lobby>, seat: ra2lobby::Seat) -> Result<(), String> {
+    lobby.0.lock().unwrap().set_seat(seat)
+}
+
+/// The host picks the map (by file name, from its own list) and the options; the starts and the map's name come from
+/// the file, not the page.
+#[tauri::command]
+fn ra2_lobby_room(app: tauri::AppHandle, lobby: tauri::State<Ra2Lobby>, map: String, credits: u32, speed: u8, ai: Vec<ra2lobby::AiSeat>) -> Result<(), String> {
+    let m = ra2_find_map(&app, &map)?;
+    let settings = ra2lobby::RoomSettings { map, map_name: m.name, starts: m.players, credits, speed, ai };
+    lobby.0.lock().unwrap().set_settings(settings)
+}
+
+/// The host starts: the setup goes to everyone in the room, and back to the page for this player's own launch.
+#[tauri::command]
+fn ra2_lobby_start(lobby: tauri::State<Ra2Lobby>) -> Result<ra2launch::Ra2Setup, String> {
+    let t = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() ^ d.as_secs() as u32).unwrap_or(0);
+    lobby.0.lock().unwrap().start(t ^ std::process::id().rotate_left(16))
+}
+
 fn main() {
     tauri::Builder::default()
         // Each start: clear out what the updater downloaded or staged for the version that is now running.
@@ -1141,6 +1335,7 @@ fn main() {
         .manage(Updates::default())
         .manage(Editor::default())
         .manage(MapJobs::default())
+        .manage(Ra2Lobby::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
@@ -1149,7 +1344,8 @@ fn main() {
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
-            launch_game, launch_editor
+            launch_game, launch_editor,
+            set_game, ra2_detect, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
         ])
         .run(tauri::generate_context!())
         .expect("tauri");

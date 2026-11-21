@@ -19,6 +19,8 @@ pub mod mods;
 pub mod proc;
 pub mod ra2maps;
 pub mod ra2;
+pub mod ra2launch;
+pub mod ra2lobby;
 pub mod selfupdate;
 pub mod steam;
 pub mod syncdiff;

@@ -484,6 +484,55 @@ const MAP_VIEW = 400;
 /** One colour per place in a skirmish: on its row's swatch (style.css .pc0 to .pc7) and on its start marker. */
 const PLACE_COLORS = ["#4d8dff", "#e5484d", "#46a758", "#f5c542", "#f08c3c", "#9a6bdc", "#3dc7c0", "#e5509b"];
 
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** Draw a map preview (a map_view result) on its square canvas with the start markers. `owner(n)` says who has start n:
+ *  null, or { color, halo }. Returns where the markers are, for clicks (`spotUnder`). Shared by Generals and RA2. */
+function paintMap(canvas, v, owner) {
+  const info = v.info;
+  // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
+  // proportions, centred in it.
+  const ratio = info ? info.width / info.height : 1;
+  const cw = ratio >= 1 ? MAP_VIEW : Math.round(MAP_VIEW * ratio), ch = ratio >= 1 ? Math.round(MAP_VIEW / ratio) : MAP_VIEW;
+  const ox = Math.round((MAP_VIEW - cw) / 2), oy = Math.round((MAP_VIEW - ch) / 2);
+  canvas.width = MAP_VIEW; canvas.height = MAP_VIEW;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, MAP_VIEW, MAP_VIEW);
+  if (v.rgba) {
+    if (!v.bitmap) {
+      const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
+      for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
+      v.bitmap = document.createElement("canvas");
+      v.bitmap.width = v.image_w; v.bitmap.height = v.image_h;
+      v.bitmap.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
+    }
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(v.bitmap, ox, oy, cw, ch);
+  }
+  const spots = [];
+  if (info) {
+    ctx.font = "700 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (const st of info.starts) {
+      const x = ox + st.x * cw, y = oy + (1 - st.y) * ch;
+      const o = owner(st.number);
+      spots.push({ x, y, n: st.number });
+      // a taken start wears its owner's colour; the selected one's start also gets a halo
+      if (o && o.halo) { ctx.beginPath(); ctx.arc(x, y, 21, 0, Math.PI * 2); ctx.fillStyle = o.color; ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.beginPath(); ctx.arc(x, y, o ? 14 : 11, 0, Math.PI * 2);
+      ctx.fillStyle = o ? o.color : "rgba(20, 8, 9, .72)"; ctx.fill();
+      ctx.lineWidth = o ? 2.5 : 1.5; ctx.strokeStyle = o ? "#fff" : "rgba(255, 255, 255, .7)"; ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.fillText(String(st.number), x, y + 1);
+    }
+  }
+  return spots;
+}
+/** The start marker under the pointer, if any. */
+function spotUnder(canvas, spots, e) {
+  const r = canvas.getBoundingClientRect(), k = MAP_VIEW / r.width;
+  const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
+  return spots.find((s) => Math.hypot(s.x - x, s.y - y) <= 18);
+}
+
 /** A map as the game shows it: the preview picture with the start positions on it, beside the skirmish table. */
 function openMapViewer(entries, start, onChange) {
   let i = start, token = 0, active = 0, shown = null; // active: the row the next click on the map assigns a start position to
@@ -607,56 +656,19 @@ function openMapViewer(entries, start, onChange) {
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
   function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   // Where the start markers are on the canvas, for drawing them and for clicks.
   let spots = [];
   function paint(v) {
     if (!v) return;
     shown = v;
-    const info = v.info;
-    // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
-    // proportions, centred in it.
-    const ratio = info ? info.width / info.height : 1;
-    const cw = ratio >= 1 ? MAP_VIEW : Math.round(MAP_VIEW * ratio), ch = ratio >= 1 ? Math.round(MAP_VIEW / ratio) : MAP_VIEW;
-    const ox = Math.round((MAP_VIEW - cw) / 2), oy = Math.round((MAP_VIEW - ch) / 2);
-    canvas.width = MAP_VIEW; canvas.height = MAP_VIEW;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, MAP_VIEW, MAP_VIEW);
-    if (v.rgba) {
-      if (!v.bitmap) {
-        const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
-        for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
-        v.bitmap = document.createElement("canvas");
-        v.bitmap.width = v.image_w; v.bitmap.height = v.image_h;
-        v.bitmap.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
-      }
-      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(v.bitmap, ox, oy, cw, ch);
-    }
-    spots = [];
-    if (info) {
-      ctx.font = "700 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      for (const st of info.starts) {
-        const x = ox + st.x * cw, y = oy + (1 - st.y) * ch;
-        const owner = rows.findIndex((r) => r.kind !== "closed" && r.start === st.number);
-        spots.push({ x, y, n: st.number });
-        const taken = owner >= 0, mine = owner === active;
-        // a taken start wears its place's colour; the selected place's start also gets a halo
-        if (taken && mine) { ctx.beginPath(); ctx.arc(x, y, 21, 0, Math.PI * 2); ctx.fillStyle = PLACE_COLORS[owner]; ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
-        ctx.beginPath(); ctx.arc(x, y, taken ? 14 : 11, 0, Math.PI * 2);
-        ctx.fillStyle = taken ? PLACE_COLORS[owner] : "rgba(20, 8, 9, .72)"; ctx.fill();
-        ctx.lineWidth = taken ? 2.5 : 1.5; ctx.strokeStyle = taken ? "#fff" : "rgba(255, 255, 255, .7)"; ctx.stroke();
-        ctx.fillStyle = "#fff"; ctx.fillText(String(st.number), x, y + 1);
-      }
-    }
+    spots = paintMap(canvas, v, (n) => {
+      const owner = rows.findIndex((r) => r.kind !== "closed" && r.start === n);
+      return owner < 0 ? null : { color: PLACE_COLORS[owner], halo: owner === active };
+    });
   }
   // Click a start position on the picture to give it to the selected place in the table (again to make it random).
-  const spotAt = (e) => {
-    const r = canvas.getBoundingClientRect(), k = MAP_VIEW / r.width;
-    const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
-    return spots.find((s) => Math.hypot(s.x - x, s.y - y) <= 18);
-  };
+  const spotAt = (e) => spotUnder(canvas, spots, e);
   canvas.addEventListener("click", (e) => { const s = spotAt(e); if (s && rows[active] && rows[active].kind !== "closed") assign(active, rows[active].start === s.n ? null : s.n); });
   canvas.addEventListener("mousemove", (e) => { const s = spotAt(e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected place` : ""; });
 
@@ -983,21 +995,35 @@ function pill(text, kind) { return h("span", { class: "pill " + (kind || "") }, 
 /** A plain status line with a dot, for ambient state in the sidebar. */
 function status(text, kind) { return h("span", { class: "status " + (kind || "") }, text); }
 
+/** What differs between the two games' file panels. */
+const FILES = {
+  generals: {
+    file: "INIZH.big", dir: () => store.cfg.game_dir, setDir: (d) => { store.cfg.game_dir = d; },
+    found: () => store.games.filter((g) => g.zero_hour),
+    check: async (path) => { const r = await invoke("check_game_dir", { path }); if (r.ok) await invoke("save_game_dir", { path }); return r; },
+    steam: "Downloads Generals and Zero Hour (about 4 GB) through Steam. You must own both on Steam.",
+  },
+  ra2: {
+    file: "ra2md.mix", dir: () => store.cfg.ra2.game_dir, setDir: (d) => { store.cfg.ra2.game_dir = d; },
+    found: () => store.ra2Games,
+    check: (path) => invoke("ra2_check_dir", { path }),
+    steam: "Downloads Red Alert 2 and Yuri's Revenge (about 3 GB) through Steam. You must own them on Steam.",
+  },
+};
+
 /** "Choose or download the game files". `onChange(ok)` fires whenever validity changes. */
-function gameFilesPanel(onChange) {
+function gameFilesPanel(onChange, game = "generals") {
   const timers = [];
-  const dir = h("input", { type: "text", placeholder: "Folder that contains INIZH.big", value: store.cfg.game_dir || "", "aria-label": "Game folder" });
+  const g$ = FILES[game];
+  const dir = h("input", { type: "text", placeholder: `Folder that contains ${g$.file}`, value: g$.dir() || "", "aria-label": "Game folder" });
   const status = h("div", { class: "msg muted", role: "status" });
   const detected = h("div", { class: "stack" });
 
   async function check(path) {
-    const r = await invoke("check_game_dir", { path });
+    const r = await g$.check(path);
     status.className = "msg " + (r.ok ? "ok" : path.trim() ? "bad" : "muted");
     status.textContent = (r.ok ? "✓ " : path.trim() ? "✗ " : "") + r.message;
-    if (r.ok) {
-      await invoke("save_game_dir", { path });
-      store.cfg.game_dir = path.trim();
-    }
+    if (r.ok) g$.setDir(path.trim());
     onChange && onChange(r.ok);
     return r.ok;
   }
@@ -1007,7 +1033,7 @@ function gameFilesPanel(onChange) {
     try {
       picked = await tauri.dialog.open({
         multiple: false, directory: true, defaultPath: dir.value || undefined,
-        title: "Choose the folder that contains INIZH.big",
+        title: `Choose the folder that contains ${g$.file}`,
       });
     } catch (e) {
       status.className = "msg bad";
@@ -1019,7 +1045,7 @@ function gameFilesPanel(onChange) {
     check(dir.value);
   } }, "Browse");
 
-  const zh = store.games.filter((g) => g.zero_hour);
+  const zh = g$.found();
   zh.forEach((g) => {
     detected.append(h("button", { class: "btn", onclick: () => { dir.value = g.dir; check(g.dir); } }, "Use Steam install: " + g.dir));
   });
@@ -1028,7 +1054,7 @@ function gameFilesPanel(onChange) {
   const user = h("input", { type: "text", autocomplete: "username", value: store.cfg.steam_user || "", "aria-label": "Steam account name" });
   const pass = h("input", { type: "password", autocomplete: "current-password", "aria-label": "Steam password" });
   const go = h("button", { class: "btn primary", onclick: async () => {
-    try { await invoke("assets_start", { user: user.value, password: pass.value }); pass.value = ""; } catch (e) { smsg.textContent = errText(e); }
+    try { await invoke("assets_start", { user: user.value, password: pass.value, title: game }); pass.value = ""; } catch (e) { smsg.textContent = errText(e); }
   } }, "Download from Steam");
   const cancel = h("button", { class: "btn", hidden: true, onclick: () => invoke("assets_cancel") }, "Cancel");
   const codeBtn = h("button", { class: "btn", hidden: true, onclick: () => invoke("assets_use_code") }, "Enter a code instead");
@@ -1056,7 +1082,7 @@ function gameFilesPanel(onChange) {
     if (s.log) log.textContent = s.log;
     if (s.phase === "Done" && !wasDone) {
       store.cfg = await invoke("get_config");
-      dir.value = store.cfg.game_dir;
+      dir.value = g$.dir();
       check(dir.value);
     }
     wasDone = s.phase === "Done";
@@ -1065,7 +1091,7 @@ function gameFilesPanel(onChange) {
   const steam = h("details", {},
     h("summary", {}, "Don't have the files on this computer? Download them from Steam"),
     h("div", { class: "stack" },
-      h("p", { class: "muted small" }, "Downloads Generals and Zero Hour (about 4 GB) through Steam. You must own both on Steam. Your password is used only to sign in and is never saved."),
+      h("p", { class: "muted small" }, `${g$.steam} Your password is used only to sign in and is never saved.`),
       h("div", { class: "grid2" }, h("label", { class: "field" }, h("span", {}, "Steam account name"), user), h("label", { class: "field" }, h("span", {}, "Steam password"), pass)),
       h("div", { class: "row" }, go, cancel, codeBtn), need, bar, smsg,
       h("details", {}, h("summary", { class: "small muted" }, "Details"), log)));
@@ -1079,7 +1105,7 @@ function gameFilesPanel(onChange) {
   (async () => {
     if (dir.value) await check(dir.value);
     else if (zh[0]) { dir.value = zh[0].dir; await check(dir.value); }
-    else { onChange && onChange(false); status.textContent = "Choose the folder that contains INIZH.big"; }
+    else { onChange && onChange(false); status.textContent = `Choose the folder that contains ${g$.file}`; }
   })();
   return { el, dispose: () => timers.forEach(clearInterval) };
 }
@@ -1667,11 +1693,12 @@ function roomCard() {
 
 function onlinePage() {
   const conn = connectionCard();
-  const roomSettings = roomCard();
+  const ra2 = isRa2();
+  const roomSettings = ra2 ? ra2LobbyCard() : roomCard();
   const saved = splitServer(store.cfg.server);
   const server = h("input", { type: "text", placeholder: "play.example.com", value: saved.host, "aria-label": "Server address" });
   const port = h("input", { type: "text", inputmode: "numeric", placeholder: DEFAULT_PORT, value: saved.port, "aria-label": "Server port" });
-  const room = h("input", { type: "text", placeholder: "any name", value: store.cfg.room || "", "aria-label": "Room" });
+  const room = h("input", { type: "text", placeholder: "any name", maxlength: ra2 ? 28 : 32, value: store.cfg.room || "", "aria-label": "Room" });
   const pw = h("input", { type: "password", autocomplete: "off", "aria-label": "Room password" });
   const remember = h("input", { type: "checkbox", checked: true });
   const nameBox = h("input", { type: "text", maxlength: 12, placeholder: store.cfg.default_player_name || "Player", value: store.cfg.player_name || "", "aria-label": "Player name" });
@@ -1745,7 +1772,7 @@ function onlinePage() {
   } }, "Connect");
   const nextText = h("span", {});
   const next = h("div", { class: "nextstep", role: "status", hidden: true }, h("div", { class: "stack tight" }, h("strong", {}, "You are connected"), h("span", { class: "muted small" }, nextText)),
-    h("button", { class: "btn primary", onclick: () => startGame() }, icon("play"), "Start the game"));
+    ra2 ? null : h("button", { class: "btn primary", onclick: () => startGame() }, icon("play"), "Start the game"));
   async function refresh() {
     const s = store.relay;
     const connected = s.startsWith("Connected as");
@@ -1757,7 +1784,7 @@ function onlinePage() {
     btn.className = on ? "btn" : "btn primary";
     for (const f of [server, port, room, pw, remember]) f.disabled = on;
     next.hidden = !connected;
-    if (connected) nextText.textContent = `${store.cfg.room ? `You are in room ${store.cfg.room}` : "You are in the server's open room"}${store.cfg.server ? ` on ${store.cfg.server}` : ""}. Start the game and choose Multiplayer: everyone in this room is in the lobby.`;
+    if (connected) nextText.textContent = `${store.cfg.room ? `You are in room ${store.cfg.room}` : "You are in the server's open room"}${store.cfg.server ? ` on ${store.cfg.server}` : ""}. ${ra2 ? "Everyone in this room is in the lobby below." : "Start the game and choose Multiplayer: everyone in this room is in the lobby."}`;
     state.replaceChildren(pill(s === "Connecting..." ? "Connecting…" : s, connected ? "ok" : on ? "warn" : s === "Offline" ? "" : "bad"));
     // Why it is not working, in the words of what to check.
     let c = null;
@@ -1798,7 +1825,7 @@ function onlinePage() {
       next,
       problem,
       h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
-        h("p", { class: "muted small" }, "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
+        h("p", { class: "muted small" }, ra2 ? "Join a room on a Rallypoint server: everyone in the same room with the same password meets in the lobby below. The player who joined first hosts: they pick the map and start the game. Red Alert 2 rooms are separate from Generals rooms of the same name." : "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
     roomSettings.el,
     saved$,
     conn.el,
@@ -2085,7 +2112,7 @@ function tabbed(label, sections, current, onPick) {
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const t = tabbed("Settings", [
-    ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
+    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
     ["graphics", "Graphics", () => graphicsCards()],
     ["multiplayer", "Multiplayer", () => [syncCard()]],
     ["rallypoint", "Rallypoint", () => [
@@ -2100,15 +2127,465 @@ function settingsPage() {
   return { el, dispose: files.dispose };
 }
 
+// ---------------------------------------------------------------- Red Alert 2
+// The second game: the same shell and components, its own Play, Maps, Online lobby and Settings. Nothing of the
+// Generals-only features (mods, World Builder, command bar, renderer, sync logs, Stronger AI) appears here.
+const isRa2 = () => store.cfg.game === "ra2";
+const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
+const RA2_NAME = "Red Alert 2: Yuri's Revenge";
+const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia", "Yuri"];
+const RA2_COLORS = ["Yellow", "Red", "Blue", "Green", "Orange", "Teal", "Purple", "Pink"];
+const RA2_PC = [3, 1, 0, 2, 4, 6, 5, 7]; // each RA2 colour's nearest place colour (style.css .pcN, PLACE_COLORS)
+const RA2_SPEEDS = [[0, "Fastest"], [1, "Faster"], [2, "Fast"], [3, "Medium"], [4, "Slow"], [5, "Slower"], [6, "Slowest"]];
+const RA2_CREDITS = [2500, 5000, 7500, 10000, 20000, 50000];
+const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["hard", "Hard"]];
+const RA2_TEAMS = [[-1, "No team"], [0, "Team A"], [1, "Team B"], [2, "Team C"], [3, "Team D"]];
+const ra2Speed = () => (RA2_SPEEDS.some(([v]) => v === prefs.get().ra2Speed) ? prefs.get().ra2Speed : 2);
+const ra2Credits = () => (RA2_CREDITS.includes(prefs.get().ra2Credits) ? prefs.get().ra2Credits : 10000);
+const fileOf = (path) => String(path).split(/[\\/]/).pop();
+const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
+const playersText = (n) => (n >= 2 ? `${n} players` : "No start positions");
+
+/** A drop-down of [value, text] pairs; values are numbers or strings, compared as text. */
+function pick(label, options, value, onchange) {
+  const el = h("select", { "aria-label": label, onchange: () => onchange(el.value) }, ...options.map(([v, t]) => new Option(t, String(v))));
+  el.value = String(value);
+  return el;
+}
+/** The four choices every seat has. `change(patch)` gets the one that changed. */
+function seatCells(who, seat, starts, change) {
+  return [
+    pick(`Side for ${who}`, [[-1, "Random side"], ...RA2_SIDES.map((s, i) => [i, s])], seat.side, (v) => change({ side: +v })),
+    pick(`Colour for ${who}`, [[-1, "Any colour"], ...RA2_COLORS.map((c, i) => [i, c])], seat.color, (v) => change({ color: +v })),
+    pick(`Start for ${who}`, [[-1, "Random"], ...Array.from({ length: starts }, (_, n) => [n + 1, `Start ${n + 1}`])], seat.start, (v) => change({ start: +v })),
+    pick(`Team for ${who}`, RA2_TEAMS, seat.team, (v) => change({ team: +v })),
+  ];
+}
+/** The same four as text, for another player's seat. */
+const seatText = (s) => [RA2_SIDES[s.side] || "Random side", RA2_COLORS[s.color] || "Any colour", s.start > 0 ? `Start ${s.start}` : "Random", (RA2_TEAMS.find(([v]) => v === s.team) || RA2_TEAMS[0])[1]]
+  .map((t) => h("span", { class: "skcell" }, t));
+const ra2Swatch = (color) => h("i", { class: "swatch" + (color >= 0 ? "" : " any"), "aria-hidden": "true" });
+const ra2RowClass = (color) => (color >= 0 ? ` pc${RA2_PC[color]}` : "");
+const markerColor = (color) => (color >= 0 ? PLACE_COLORS[RA2_PC[color]] : css("--muted"));
+
+async function loadRa2Maps() {
+  try { store.ra2Maps = await invoke("ra2_maps"); } catch (e) { store.ra2Maps = []; say(errText(e), "bad"); }
+  return store.ra2Maps;
+}
+const playable = (maps) => (maps || []).filter((m) => m.players >= 2);
+
+/** Start Red Alert 2 with a setup (a skirmish, or the lobby's game). */
+async function launchRa2(setup) {
+  const busy = busyOverlay(`Starting ${RA2_NAME}…`);
+  let ok = false;
+  try { await invoke("ra2_launch", { setup }); ok = true; } catch (e) { say(errText(e), "bad"); }
+  setTimeout(() => busy.close(), ok ? 5000 : 0);
+  return ok;
+}
+
+/** The skirmish table: you, then one row per other start on the map (a computer player or closed). Assigning a start
+ *  or a colour someone else has takes it from them (a start goes back to random, a colour is swapped). */
+function ra2Skirmish(onChange) {
+  let maps = [], view = null, rows = [], active = 0, spots = [], token = 0;
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start to give it to the selected player" });
+  const facts = h("p", { class: "factline" });
+  const note = h("p", { class: "muted small", role: "status" });
+  const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2Map: mapSel.value }); load(); } });
+  const table = h("div", { class: "skgrid ra2", role: "group", "aria-label": "Skirmish players" });
+  const summary = h("span", { class: "muted small" });
+  const credits = pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), ra2Credits(), (v) => prefs.set({ ra2Credits: +v }));
+  const speed = pick("Game speed", RA2_SPEEDS, ra2Speed(), (v) => prefs.set({ ra2Speed: +v }));
+  const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
+
+  function newRows(n) {
+    const wantAi = Math.min(Math.max(1, prefs.get().ra2Ai || 1), n - 1), diff = RA2_DIFFS.some(([d]) => d === prefs.get().ra2Diff) ? prefs.get().ra2Diff : "medium";
+    const mine = store.cfg.ra2.color >= 0 ? store.cfg.ra2.color : 0;
+    rows = Array.from({ length: n }, (_, k) => ({ kind: k === 0 ? "you" : k <= wantAi ? "ai" : "closed", difficulty: diff, side: k === 0 ? store.cfg.ra2.side : -1, color: -1, start: -1, team: -1 }));
+    // every open place gets its own colour, so the map and the table agree from the start
+    rows[0].color = mine;
+    rows.forEach((r, k) => { if (k && r.kind !== "closed") r.color = freeColor(k); });
+    active = 0;
+  }
+  function freeColor(k, want = -1) {
+    const used = new Set(rows.filter((r, j) => j !== k && r.kind !== "closed").map((r) => r.color).filter((c) => c >= 0));
+    if (want >= 0 && !used.has(want)) return want;
+    for (let c = 0; c < RA2_COLORS.length; c++) if (!used.has(c)) return c;
+    return -1;
+  }
+  function change(k, patch) {
+    const r = rows[k];
+    if ("start" in patch && patch.start > 0) rows.forEach((o, j) => { if (j !== k && o.start === patch.start) o.start = -1; });
+    if ("color" in patch && patch.color >= 0) rows.forEach((o, j) => { if (j !== k && o.color === patch.color) o.color = r.color; });
+    Object.assign(r, patch);
+    draw();
+  }
+  function setActive(k) {
+    if (active === k) return;
+    active = k;
+    table.querySelectorAll(".skrow2").forEach((el, j) => el.classList.toggle("active", j === k));
+    paint();
+  }
+  function draw() {
+    const n = starts();
+    if (!rows.length) {
+      fill(table, h("p", { class: "muted small" }, !maps.length ? "" : "This map has no start positions for a skirmish."));
+      summary.textContent = "";
+    } else {
+      const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"));
+      fill(table, head, rows.map((r, k) => {
+        const closed = r.kind === "closed";
+        const who = k === 0 ? h("span", { class: "skwho" }, "You")
+          : pick(`Place ${k + 1}`, [...RA2_DIFFS.map(([d, t]) => [d, `${t} AI`]), ["closed", "Closed"]], closed ? "closed" : r.difficulty, (v) => {
+            if (v === "closed") change(k, { kind: "closed" });
+            else { prefs.set({ ra2Diff: v }); change(k, { kind: "ai", difficulty: v, color: closed ? freeColor(k) : r.color }); }
+          });
+        const cells = closed ? [h("span", {}), h("span", {}), h("span", {}), h("span", {})] : seatCells(k === 0 ? "you" : `place ${k + 1}`, r, n, (p) => change(k, p));
+        return h("div", { class: "skrow2" + (closed ? " closed" : ra2RowClass(r.color)) + (k === active ? " active" : ""), onclick: () => setActive(k), onfocusin: () => setActive(k) }, ra2Swatch(closed ? -1 : r.color), who, cells);
+      }));
+      const ai = rows.filter((r) => r.kind === "ai").length;
+      summary.textContent = ai ? `You and ${ai} computer player${ai === 1 ? "" : "s"}` : "No computer players";
+    }
+    paint();
+    show();
+    onChange && onChange();
+  }
+  function paint() {
+    if (!view) { const c = canvas.getContext("2d"); c.fillStyle = css("--bg"); c.fillRect(0, 0, MAP_VIEW, MAP_VIEW); spots = []; return; }
+    spots = paintMap(canvas, view, (n) => {
+      const k = rows.findIndex((r) => r.kind !== "closed" && r.start === n);
+      return k < 0 ? null : { color: markerColor(rows[k].color), halo: k === active };
+    });
+  }
+  canvas.addEventListener("click", (e) => { const s = spotUnder(canvas, spots, e); const r = rows[active]; if (s && r && r.kind !== "closed") change(active, { start: r.start === s.n ? -1 : s.n }); });
+  canvas.addEventListener("mousemove", (e) => { const s = spotUnder(canvas, spots, e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected player` : ""; });
+
+  async function load() {
+    const file = mapSel.value, mine = ++token;
+    view = null; rows = []; fill(facts); note.textContent = file ? "Loading…" : "";
+    draw();
+    if (!file) return;
+    try {
+      const v = await invoke("ra2_map_view", { file });
+      if (mine !== token) return;
+      view = v;
+      const n = starts();
+      if (n >= 2) newRows(n);
+      const m = maps.find((x) => fileOf(x.path) === file);
+      fill(facts, [m && m.game === "yr" ? "Yuri's Revenge" : "Red Alert 2", `${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0), sizeText(v.size_kb)].map((b) => h("span", {}, b)));
+      note.textContent = !v.rgba ? "This map has no preview picture." : n >= 2 ? "Select a player, then click a start on the map." : "";
+      draw();
+    } catch (e) { if (mine === token) { note.textContent = "Couldn't read this map: " + errText(e); onChange && onChange(); } }
+  }
+  async function reload() {
+    maps = playable(await loadRa2Maps());
+    const want = prefs.get().ra2Map;
+    fill(mapSel, maps.map((m) => new Option(`${m.name} (${m.players})`, fileOf(m.path))));
+    mapSel.disabled = !maps.length;
+    mapSel.value = maps.some((m) => fileOf(m.path) === want) ? want : maps.length ? fileOf(maps[0].path) : "";
+    await load();
+  }
+  const setup = () => ({
+    map: mapSel.value, credits: +credits.value, speed: +speed.value, seed: 0,
+    players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
+  });
+  /** Why Play cannot start this setup yet ("" when it can). */
+  const why = () => !store.cfg.ra2.game_dir ? "Find your game files first."
+    : !maps.length ? "Add a map first." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
+    : !rows.some((r) => r.kind === "ai") ? "Give the computer at least one place." : "";
+  const empty = h("div", { class: "listempty" }, h("strong", {}, "No skirmish maps yet"),
+    h("span", { class: "muted small" }, "Red Alert 2 maps in your game folder or in Rallypoint's map folder show up here."),
+    h("button", { class: "btn small", onclick: () => go("maps") }, "Go to Maps"));
+  const body = h("div", { class: "ra2setup" },
+    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts),
+    h("div", { class: "mapside" },
+      h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
+      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note,
+      h("div", { class: "ra2opts" }, h("label", { class: "field" }, h("span", {}, "Starting credits"), credits), h("label", { class: "field" }, h("span", {}, "Game speed"), speed))));
+  const el = h("div", { class: "stack" }, empty, body);
+  const show = () => { empty.hidden = !!maps.length || !store.ra2Maps; body.hidden = !maps.length; };
+  reload();
+  return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length }); } };
+}
+
+function ra2PlayPage() {
+  const status = h("span", { class: "muted small" });
+  const sk = ra2Skirmish(() => update());
+  const play = h("button", { class: "btn primary big", onclick: async () => {
+    play.disabled = true;
+    sk.remember();
+    const ok = await launchRa2(sk.setup());
+    setTimeout(update, ok ? 5000 : 0);
+  } }, icon("play"), "Play skirmish");
+  function update() {
+    const why = !store.cfg.ra2_engine ? "The RA2 engine is not in this build yet." : sk.why();
+    play.disabled = !!why;
+    status.textContent = why || "Starts straight into the game with the setup below.";
+  }
+  const files = store.cfg.ra2.game_dir ? h("p", { class: "muted small gamepath" }, store.cfg.ra2.game_dir)
+    : h("div", { class: "row" }, h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet."), h("button", { class: "btn", onclick: () => openWizard() }, "Find or download game files"));
+  const el = h("div", { class: "page" },
+    h("div", { class: "page-head" }, h("h1", {}, "Play")),
+    h("div", { class: "card hero" },
+      h("div", { class: "stack tight herotext" }, h("h2", {}, RA2_NAME), h("p", { class: "muted" }, "Skirmish against the computer, or play online from the Online page."), files),
+      h("div", { class: "row heroact" }, play, status)),
+    h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el));
+  update();
+  return { el };
+}
+
+function ra2MapsPage() {
+  let maps = [], filter = "all", sel = null, token = 0, spots = [];
+  const list = h("div", { class: "maplist", role: "listbox", "aria-label": "Maps" });
+  const empty = h("div", { class: "listempty" });
+  const result = h("span", { class: "muted small" });
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview with its start positions" });
+  const title = h("h3", {}), facts = h("p", { class: "factline" }), note = h("p", { class: "muted small", role: "status" });
+  const skirmish = h("button", { class: "btn", onclick: () => { prefs.set({ ra2Map: fileOf(sel.path) }); go("play"); } }, icon("play"), "Set up a skirmish");
+  const preview = h("div", { class: "mapcol ra2preview" }, h("div", { class: "stage" }, canvas), h("div", { class: "stack tight" }, title, facts, note), skirmish);
+  const counts = () => [...new Set(maps.map((m) => m.players).filter((n) => n >= 2))].sort((a, b) => a - b);
+  const chips = h("div", { class: "chips", role: "group", "aria-label": "Players" });
+  const shown = () => maps.filter((m) => filter === "all" || m.players === +filter);
+  function drawChips() {
+    const opts = [["all", "All"], ...counts().map((n) => [String(n), `${n} players`])];
+    fill(chips, h("span", { class: "muted small chiplabel" }, "Players"), opts.map(([v, t]) => h("button", { class: "chip", type: "button", "aria-pressed": String(filter === v), onclick: () => { filter = v; draw(); } }, t)));
+  }
+  function draw() {
+    const v = shown();
+    drawChips();
+    result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
+    empty.hidden = !!v.length; list.hidden = !v.length;
+    fill(empty, maps.length ? [h("strong", {}, "No maps match"), h("button", { class: "btn small", onclick: () => { filter = "all"; draw(); } }, "Show all")]
+      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Put Red Alert 2 maps (.map, .mpr, .yrm) in Rallypoint's map folder, or in the game folder."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
+    if (sel && !v.includes(sel)) sel = null;
+    if (!sel && v.length) { sel = v[0]; show(); }
+    preview.hidden = !sel;
+    fill(list, v.map((m) => {
+      const row = h("div", { class: "maprow ra2" + (m === sel ? " on" : ""), role: "option", tabindex: m === sel ? "0" : "-1", "aria-selected": String(m === sel),
+        onclick: () => choose(m), onkeydown: (e) => {
+          const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+          if (!step) return;
+          e.preventDefault();
+          const n = v[v.indexOf(m) + step];
+          if (n) { choose(n); list.querySelector('[tabindex="0"]').focus(); }
+        } },
+      h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), h("span", { class: "maptags" }, h("span", { class: "gametag" }, m.game === "yr" ? "Yuri's Revenge" : "Red Alert 2"))),
+      h("span", { class: "small mapplayers" }, m.players >= 2 ? `${m.players} players` : "Solo"), h("span", { class: "muted small mapsize" }, sizeText(m.size_kb)));
+      return row;
+    }));
+  }
+  function choose(m) { sel = m; draw(); show(); }
+  async function show() {
+    if (!sel) return;
+    const m = sel, mine = ++token;
+    title.textContent = m.name; fill(facts); note.textContent = "Loading…";
+    skirmish.disabled = m.players < 2;
+    skirmish.title = m.players < 2 ? "This map has no start positions for a skirmish" : "";
+    try {
+      const v = await invoke("ra2_map_view", { file: fileOf(m.path) });
+      if (mine !== token) return;
+      spots = paintMap(canvas, v, () => null);
+      fill(facts, [`${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0), sizeText(v.size_kb)].map((b) => h("span", {}, b)));
+      note.textContent = v.rgba ? "" : "This map has no preview picture.";
+    } catch (e) { if (mine === token) note.textContent = "Couldn't read this map: " + errText(e); }
+  }
+  async function openFolder() { try { await invoke("ra2_open_maps_folder"); } catch (e) { say(errText(e), "bad"); } }
+  const refresh = h("button", { class: "btn small", onclick: async () => { await reload(); say(`${maps.length} map${maps.length === 1 ? "" : "s"} found`, "ok"); } }, "Look again");
+  async function reload() {
+    fill(empty, h("span", { class: "muted small" }, "Reading your maps…")); empty.hidden = false; list.hidden = true;
+    maps = await loadRa2Maps();
+    draw();
+  }
+  reload();
+  const el = h("div", { class: "page" },
+    h("div", { class: "page-head" }, h("h1", {}, "Maps"), h("button", { class: "btn", onclick: openFolder }, "Open map folder")),
+    h("div", { class: "card" },
+      h("div", { class: "row between" }, h("h2", {}, "Your maps"), refresh),
+      chips,
+      h("div", { class: "ra2maps" },
+        h("div", { class: "listbox" }, h("div", { class: "listhead" }, result), list, empty),
+        preview),
+      h("p", { class: "muted small" }, "Maps are read from your game folder and from Rallypoint's own map folder. Drop new maps into the map folder, then press Look again.")));
+  return { el };
+}
+
+/** The online lobby: who is in the room, their seats, the host's map and options, and Start. Shown while connected. */
+function ra2LobbyCard() {
+  let sig = "", seeded = false, hostSeeded = false, maps = null, hostAi = [], mySeat = null;
+  const card = h("div", { class: "card", hidden: true });
+  const fb = liveStatus();
+  const sendSeat = () => invoke("ra2_lobby_seat", { seat: mySeat }).catch((e) => fb.bad(errText(e)));
+  async function sendRoom(settings) {
+    try { await invoke("ra2_lobby_room", { map: settings.map, credits: settings.credits, speed: settings.speed, ai: hostAi }); } catch (e) { fb.bad(errText(e)); }
+  }
+  async function draw() {
+    const d = store.lobby;
+    card.hidden = !store.relay.startsWith("Connected as");
+    if (card.hidden) { sig = ""; seeded = hostSeeded = false; return; }
+    if (!d) { if (sig !== "wait") { sig = "wait"; fill(card, h("h2", {}, "Lobby"), h("p", { class: "muted small row" }, h("span", { class: "spin", "aria-hidden": "true" }), "Joining the lobby…")); } return; }
+    if (!seeded) { seeded = true; mySeat = { side: store.cfg.ra2.side, color: store.cfg.ra2.color, start: -1, team: -1, ready: false }; sendSeat(); }
+    if (d.am_host && maps === null) { maps = []; maps = playable(await loadRa2Maps()); }
+    if (d.am_host && !d.settings && !hostSeeded && maps && maps.length) {
+      hostSeeded = true;
+      const want = prefs.get().ra2Map, m = maps.find((x) => fileOf(x.path) === want) || maps[0];
+      sendRoom({ map: fileOf(m.path), credits: ra2Credits(), speed: ra2Speed() });
+    }
+    const next = JSON.stringify({ p: d.players, s: d.settings, h: d.am_host, b: d.blocked, m: maps && maps.length });
+    if (next === sig) return;
+    sig = next;
+    render(d);
+  }
+  function render(d) {
+    const s = d.settings, starts = s ? s.starts : 8;
+    const hostName = (d.players.find((p) => p.host) || {}).name || "another player";
+    const badge = pill(d.am_host ? "You are the host" : `Host: ${hostName}`, d.am_host ? "ok" : "");
+    // the host's choices: map, credits, speed
+    let options;
+    if (d.am_host) {
+      const all = maps || [];
+      const cur = s || { map: "", credits: ra2Credits(), speed: ra2Speed() };
+      const set = (patch) => { const n = { ...cur, ...patch }; if ("map" in patch) prefs.set({ ra2Map: n.map }); if ("credits" in patch) prefs.set({ ra2Credits: n.credits }); if ("speed" in patch) prefs.set({ ra2Speed: n.speed }); sendRoom(n); };
+      const mapSel = pick("Map", all.map((m) => [fileOf(m.path), `${m.name} (${m.players})`]), cur.map, (v) => set({ map: v }));
+      mapSel.disabled = !all.length;
+      options = h("div", { class: "ra2opts" },
+        h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps. Add some on the Maps page.")),
+        h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
+        h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))));
+    } else {
+      options = s ? h("p", { class: "factline" }, [s.map_name, `$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`].map((b) => h("span", {}, b)))
+        : h("p", { class: "muted small" }, "Waiting for the host to choose a map.");
+    }
+    const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"), h("span", {}, "Status"));
+    const people = d.players.map((p) => {
+      const seat = p.me ? mySeat : p;
+      const name = h("span", { class: "skwho" }, p.name || "Player", p.me ? h("span", { class: "muted small" }, " (you)") : null);
+      const cells = p.me ? seatCells("you", mySeat, starts, (patch) => { Object.assign(mySeat, patch); sendSeat(); }) : seatText(p);
+      let state;
+      if (p.host) state = pill("Host");
+      else if (p.me) {
+        const box = h("input", { type: "checkbox", checked: mySeat.ready, "aria-label": "Ready", onchange: () => { mySeat.ready = box.checked; sendSeat(); } });
+        state = h("label", { class: "switch small" }, box, "Ready");
+      } else state = pill(p.ready ? "Ready" : "Not ready", p.ready ? "ok" : "");
+      return h("div", { class: "skrow2 static" + ra2RowClass(seat.color) }, ra2Swatch(seat.color), name, cells, state);
+    });
+    const ais = (s ? s.ai : []).map((a, k) => {
+      const who = d.am_host ? pick(`Computer ${k + 1}`, RA2_DIFFS.map(([v, t]) => [v, `${t} AI`]), a.difficulty, (v) => { hostAi[k].difficulty = v; sendRoom(s); })
+        : h("span", { class: "skwho" }, `${(RA2_DIFFS.find(([v]) => v === a.difficulty) || RA2_DIFFS[0])[1]} AI`);
+      const cells = d.am_host ? seatCells(`computer ${k + 1}`, a, starts, (patch) => { Object.assign(hostAi[k], patch); sendRoom(s); }) : seatText(a);
+      const state = d.am_host ? h("button", { class: "btn small ghost", onclick: () => { hostAi.splice(k, 1); sendRoom(s); } }, "Remove") : h("span", {});
+      return h("div", { class: "skrow2 static" + ra2RowClass(a.color) }, ra2Swatch(a.color), who, cells, state);
+    });
+    if (d.am_host && s) hostAi = s.ai.map((a) => ({ ...a }));
+    const room = d.players.length + (s ? s.ai.length : 0);
+    const addAi = d.am_host && s ? h("button", { class: "btn small", disabled: room >= starts, title: room >= starts ? "Every start on this map is taken" : "", onclick: () => { hostAi.push({ difficulty: "medium", side: -1, color: -1, start: -1, team: -1 }); sendRoom(s); } }, icon("plus"), "Add a computer player") : null;
+    let foot;
+    if (d.am_host) {
+      const start = h("button", { class: "btn primary", disabled: !!d.blocked, onclick: async () => {
+        start.disabled = true;
+        try { const setup = await invoke("ra2_lobby_start"); await launchRa2(setup); } catch (e) { fb.bad(errText(e)); }
+        start.disabled = false;
+      } }, icon("play"), "Start the game");
+      foot = h("div", { class: "row between" }, h("span", { class: "muted small" }, d.blocked || "Everyone is ready."), h("div", { class: "row" }, fb.el, start));
+    } else {
+      foot = h("div", { class: "row between" }, h("span", { class: "muted small" }, mySeat.ready ? "Waiting for the host to start." : "Turn on Ready when you are set."), fb.el);
+    }
+    fill(card,
+      h("div", { class: "row between" }, h("h2", {}, "Lobby"), badge),
+      options,
+      h("div", { class: "skgrid ra2 lobby", role: "group", "aria-label": "Players in the room" }, head, people, ais),
+      addAi ? h("div", { class: "row" }, addAi) : null,
+      d.players.length < 2 ? h("p", { class: "muted small" }, "Nobody else is here yet. Share the server, room and password with your friends.") : null,
+      foot);
+  }
+  window.addEventListener("lobby", draw);
+  draw();
+  return { el: card, dispose: () => window.removeEventListener("lobby", draw) };
+}
+
+/** Display, side and colour defaults: one call saves all five. */
+function ra2SettingsCards() {
+  const r = store.cfg.ra2, nat = nativeRes();
+  const save = async (patch) => {
+    Object.assign(store.cfg.ra2, patch);
+    const c = store.cfg.ra2;
+    try { await invoke("ra2_set_settings", { width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color }); fb.ok("Saved"); } catch (e) { fb.bad(errText(e)); }
+  };
+  const fb = liveStatus();
+  const sizes = [[3840, 2160], [2560, 1440], [1920, 1080], [1600, 900], [1280, 720], [1024, 768], [800, 600]].filter(([w]) => w < nat.w);
+  const res = pick("Resolution", [["0x0", `Screen size (${nat.w} × ${nat.h})`], ...sizes.map(([w, hh]) => [`${w}x${hh}`, `${w} × ${hh}`]), ...(r.width && !sizes.some(([w, hh]) => w === r.width && hh === r.height) ? [[`${r.width}x${r.height}`, `${r.width} × ${r.height}`]] : [])],
+    `${r.width}x${r.height}`, (v) => { const [w, hh] = v.split("x").map(Number); save({ width: w, height: hh }); });
+  const win = h("input", { type: "checkbox", checked: r.windowed, onchange: () => save({ windowed: win.checked }) });
+  const side = pick("Default side", [[-1, "Random"], ...RA2_SIDES.map((s, i) => [i, s])], r.side, (v) => save({ side: +v }));
+  const color = pick("Default colour", [[-1, "Any free one"], ...RA2_COLORS.map((c, i) => [i, c])], r.color, (v) => save({ color: +v }));
+  return [
+    h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Display"), fb.el), h("div", { class: "settings" },
+      setting("Resolution", "Screen size uses your whole display.", res),
+      setting("Windowed", "Play in a window instead of full screen.", h("label", { class: "switch" }, win)))),
+    h("div", { class: "card" }, h("h2", {}, "You"), h("div", { class: "settings" },
+      nameSetting(),
+      setting("Side", "What a new skirmish or lobby seat starts with.", side),
+      setting("Colour", "If someone else has it, you get the next free one.", color))),
+  ];
+}
+
+/** The lobby name, shared by both games. */
+function nameSetting() {
+  const box = h("input", { type: "text", maxlength: 12, placeholder: store.cfg.default_player_name || "Player", value: store.cfg.player_name || "", "aria-label": "Player name" });
+  const note = h("span", { class: "muted small" });
+  const show = (used) => { note.textContent = `Other players see ${used}.`; };
+  show(store.cfg.player_name || store.cfg.default_player_name || "your computer's name");
+  box.addEventListener("change", async () => {
+    try {
+      const used = await invoke("set_player_name", { name: box.value });
+      store.cfg.player_name = box.value.trim() === "" ? "" : used;
+      box.value = store.cfg.player_name;
+      show(used);
+    } catch (e) { say(errText(e), "bad"); }
+  });
+  return setting("Name", note, box);
+}
+
+/** Which game the launcher shows, for narrow windows where the sidebar has no room for its menu. */
+function gameSetting() {
+  return h("div", { class: "card narrow-only" }, h("div", { class: "settings" }, setting("Game", "The game Rallypoint is set up for.", pick("Game", GAMES, store.cfg.game, (v) => switchGame(v)))));
+}
+
+function ra2SettingsPage() {
+  const files = gameFilesPanel(() => updateSidebar(), "ra2");
+  const t = tabbed("Settings", [
+    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ...ra2SettingsCards()]],
+    ["rallypoint", "Rallypoint", () => [
+      updatesCard(),
+      h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
+  ], store.settingsTab === "rallypoint" ? "rallypoint" : "game", (id) => { store.settingsTab = id; });
+  const el = h("div", { class: "page" }, h("div", { class: "page-head" }, h("h1", {}, "Settings")), t.bar, t.body);
+  return { el, dispose: files.dispose };
+}
+
+/** Change game: a new shell with that game's pages. Rooms are per game, so the relay is left. */
+async function switchGame(id) {
+  if (id === store.cfg.game) return;
+  try { await invoke("set_game", { game: id }); } catch (e) { say(errText(e), "bad"); return; }
+  store.cfg.game = id;
+  store.relay = "Offline"; store.lobby = null; net.last = null; net.hist = [];
+  current && current.dispose && current.dispose(); current = null;
+  document.querySelector(".app").remove();
+  shell();
+  go("play");
+  if (isRa2() && !store.cfg.ra2.game_dir) openWizard();
+}
+
 // ---------------------------------------------------------------- shell
 const PAGES = { play: ["Play", "play", playPage], mods: ["Mods", "mods", modsPage], maps: ["Maps", "maps", mapsPage], online: ["Online", "online", onlinePage], settings: ["Settings", "settings", settingsPage] };
+const RA2_PAGES = { play: ["Play", "play", ra2PlayPage], maps: ["Maps", "maps", ra2MapsPage], online: ["Online", "online", onlinePage], settings: ["Settings", "settings", ra2SettingsPage] };
+const pages = () => (isRa2() ? RA2_PAGES : PAGES);
 let current = null, sideFiles, sideNet;
 
 function go(name) {
+  if (!pages()[name]) name = "play";
   store.page = name;
   current && current.dispose && current.dispose();
   pageStatus = liveStatus();
-  current = PAGES[name][2]();
+  current = pages()[name][2]();
   const head = current.el.querySelector(".page-head");
   if (head) head.after(h("div", { class: "page-status" }, pageStatus.el));
   document.getElementById("pagehost").replaceChildren(current.el);
@@ -2118,7 +2595,8 @@ function go(name) {
 
 function updateSidebar() {
   if (!sideFiles) return;
-  sideFiles.replaceChildren(status(store.cfg.game_dir ? "Game files ready" : "Game files needed", store.cfg.game_dir ? "ok" : "warn"));
+  const dir = isRa2() ? store.cfg.ra2.game_dir : store.cfg.game_dir;
+  sideFiles.replaceChildren(status(dir ? "Game files ready" : "Game files needed", dir ? "ok" : "warn"));
   const s = store.relay;
   // under "Online": how the connection is doing, as three small readings
   const d = net.last, on = !!d && s.startsWith("Connected as");
@@ -2134,10 +2612,14 @@ window.addEventListener("net", () => updateSidebar());
 
 function shell() {
   sideFiles = h("div"); sideNet = h("div");
-  const nav = Object.entries(PAGES).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
+  const nav = Object.entries(pages()).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
   document.getElementById("root").append(h("div", { class: "app" },
     h("aside", { class: "sidebar" },
-      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"), h("span", {}, "Generals Zero Hour"))),
+      // the brand line names the game, and is the menu that changes it
+      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"),
+        // the label shows the game; the select over it (invisible) is what is clicked and focused, so it keeps the native menu
+        h("label", { class: "gamepick", title: "Choose the game" }, h("span", {}, (GAMES.find(([id]) => id === store.cfg.game) || GAMES[0])[1]),
+          h("select", { "aria-label": "Game", onchange: (e) => switchGame(e.target.value) }, ...GAMES.map(([id, t]) => { const o = new Option(t, id); o.selected = id === store.cfg.game; return o; }))))),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
@@ -2149,6 +2631,7 @@ function closeWizard() { wizardEl && wizardEl.remove(); wizardEl = null; }
 
 function openWizard() {
   closeWizard();
+  if (isRa2()) return openRa2Wizard();
   const steps = ["Welcome", "Game files", "Display", "Mods", "Maps", "Ready"];
   const w = { i: 0, filesOk: !!store.cfg.game_dir, dispose: null };
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Set up Rallypoint" });
@@ -2241,6 +2724,51 @@ function openWizard() {
   render();
 }
 
+/** First run for Red Alert 2: find or download the game files, then go. */
+function openRa2Wizard() {
+  const steps = ["Game files", "Ready"];
+  const w = { i: 0, filesOk: !!store.cfg.ra2.game_dir, dispose: null };
+  const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Set up Red Alert 2" });
+  wizardEl = overlay;
+  document.getElementById("root").append(overlay);
+  const finish = async () => {
+    await invoke("set_setup_done", { done: true }).catch(() => {});
+    store.cfg.setup_done = true;
+    w.dispose && w.dispose();
+    closeWizard();
+    go("play");
+    updateSidebar();
+  };
+  function body() {
+    w.dispose = null;
+    if (w.i === 0) {
+      const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); }, "ra2");
+      w.dispose = panel.dispose;
+      return h("div", { class: "stack" }, h("h2", {}, "Your game files"),
+        h("p", { class: "muted" }, `Rallypoint needs your own copy of ${RA2_NAME} (the folder with ra2md.mix). A Steam or EA app install is found automatically; otherwise point to it or download it below.`), panel.el);
+    }
+    return h("div", { class: "stack" }, h("h1", {}, "Ready to play"),
+      h("dl", { class: "summary" }, h("dt", {}, "Game files"), h("dd", {}, store.cfg.ra2.game_dir || "not set yet")),
+      h("p", { class: "muted small" }, "Set up a skirmish on the Play page, or join friends from Online."),
+      h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint")));
+  }
+  let nextBtn;
+  function nav() { if (nextBtn) nextBtn.disabled = w.i === 0 && !w.filesOk; }
+  function render() {
+    w.dispose && w.dispose();
+    nextBtn = h("button", { class: "btn primary", onclick: () => { w.i++; render(); } }, "Use these game files");
+    const back = h("button", { class: "btn", hidden: w.i === 0, onclick: () => { w.i--; render(); } }, "Back");
+    const last = w.i === steps.length - 1;
+    overlay.replaceChildren(h("div", { class: "wizard" },
+      h("div", { class: "wiz-head" }, h("div", { class: "row between" }, h("span", { class: "muted small" }, `Step ${w.i + 1} of ${steps.length}: ${steps[w.i]}`), last ? null : h("button", { class: "btn small ghost", onclick: () => finish() }, "Skip setup")),
+        h("div", { class: "chevs", role: "img", "aria-label": `Step ${w.i + 1} of ${steps.length}` }, steps.map((_, k) => h("i", { class: k < w.i ? "done" : k === w.i ? "now" : "" })))),
+      h("div", { class: "wiz-body" }, body()),
+      h("div", { class: "wiz-foot" }, back, last ? h("span") : nextBtn)));
+    nav();
+  }
+  render();
+}
+
 /** Release notes are markdown. Render the small subset GitHub notes use, as elements, never as HTML. */
 function renderNotes(text) {
   const body = (text || "").trim();
@@ -2305,9 +2833,10 @@ function showChangelog(notes, title = "Changelog") {
 async function start() {
   store.cfg = await invoke("get_config");
   store.games = await invoke("detect_games").catch(() => []);
+  store.ra2Games = await invoke("ra2_detect").catch(() => []);
   shell();
   await loadMods();
-  ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
+  if (!isRa2()) ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
   await loadMaps();
   go("play");
   setInterval(pollNet, 2000);
@@ -2316,8 +2845,9 @@ async function start() {
     try { store.relay = await invoke("relay_status"); } catch { /* keep the last status */ }
     updateSidebar();
     notifyOnlineOnly();
+    await pollLobby();
   }, 1000);
-  if (!store.cfg.setup_done) openWizard();
+  if (isRa2() ? !store.cfg.ra2.game_dir : !store.cfg.setup_done) openWizard();
   if (store.cfg.check_updates !== false) checkUpdate();
   // A launcher left open still hears about a release: look again every six hours.
   setInterval(() => { if (store.cfg.check_updates !== false) checkUpdate(true); }, 6 * 3600 * 1000);
@@ -2328,13 +2858,21 @@ async function start() {
     tauri.webview.getCurrentWebview().onDragDropEvent((e) => {
       const z = document.getElementById("dropzone");
       if (e.payload.type === "over" && z) z.classList.add("over");
-      else if (e.payload.type === "drop") {
+      else if (e.payload.type === "drop" && !isRa2()) {
         z && z.classList.remove("over");
         if (store.page !== "mods") go("mods");
         (e.payload.paths || []).forEach(installPath);
       } else z && z.classList.remove("over");
     });
   } catch { /* drag and drop is a convenience; the path box still works */ }
+}
+/** The RA2 lobby, once a second while connected in RA2 mode; a start from the host launches the game here too. */
+async function pollLobby() {
+  let d = null;
+  if (isRa2() && store.relay.startsWith("Connected as")) { try { d = await invoke("ra2_lobby_poll"); } catch { d = null; } }
+  store.lobby = d;
+  window.dispatchEvent(new Event("lobby"));
+  if (d && d.start) launchRa2(d.start);
 }
 function notifyOnlineOnly() { if (store.page === "online") refreshers.forEach((f) => f.name === "refresh" && f()); }
 
