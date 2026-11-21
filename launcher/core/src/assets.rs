@@ -621,8 +621,10 @@ mod tests {
         let gen = apps(Title::Generals, root);
         assert_eq!(gen.iter().map(|a| (a.0, a.1.clone())).collect::<Vec<_>>(), [(GENERALS_APP, generals_dir(root)), (ZERO_HOUR_APP, zero_hour_dir(root))]);
         let ra2 = apps(Title::Ra2, root);
-        assert_eq!((ra2.len(), ra2[0].0, ra2[0].1.clone()), (1, 2229850, root.join("game/RA2")));
-        assert!(dd_args("alice", RA2_APP, &ra2_dir(root), false).join(" ").contains("-app 2229850 -os windows -dir /data/game/RA2"));
+        assert_eq!((ra2.len(), ra2[0].0, ra2[0].1.clone()), (1, 2229850, ra2_dir(root)));
+        // path separators differ by OS; check the flags, not a hard-coded /dir string
+        let args = dd_args("alice", RA2_APP, &ra2_dir(root), false);
+        assert_eq!(&args[..6], &["-app".into(), "2229850".into(), "-os".into(), "windows".into(), "-dir".into(), ra2_dir(root).display().to_string()][..]);
         // arrived only when Yuri's Revenge's data is there, also one folder down
         let t = std::env::temp_dir().join(format!("gen-ra2-dl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&t);
@@ -637,11 +639,14 @@ mod tests {
 
     #[test]
     fn args_never_carry_a_password() {
-        let a = dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), false).join(" ");
-        assert!(a.contains("-app 2732960 -os windows -dir /g/ZH -username alice -remember-password -validate"));
-        assert!(!a.contains("-no-mobile"), "phone approval is the default");
-        assert!(dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).contains(&"-no-mobile".to_string()));
-        assert!(!dd_args("alice", ZERO_HOUR_APP, Path::new("/g/ZH"), true).iter().any(|x| x == "-password"));
+        let dir = Path::new("/g/ZH");
+        let a = dd_args("alice", ZERO_HOUR_APP, dir, false);
+        assert_eq!(&a[..6], &["-app".into(), "2732960".into(), "-os".into(), "windows".into(), "-dir".into(), dir.display().to_string()][..]);
+        assert!(a.windows(2).any(|w| w == ["-username", "alice"]));
+        assert!(a.iter().any(|x| x == "-remember-password") && a.iter().any(|x| x == "-validate"));
+        assert!(!a.iter().any(|x| x == "-no-mobile"), "phone approval is the default");
+        assert!(dd_args("alice", ZERO_HOUR_APP, dir, true).contains(&"-no-mobile".to_string()));
+        assert!(!dd_args("alice", ZERO_HOUR_APP, dir, true).iter().any(|x| x == "-password"));
     }
 
     #[test]
