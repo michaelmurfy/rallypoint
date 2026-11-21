@@ -1,0 +1,634 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 857d1e1..53278d5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -296,7 +296,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_roster2.cpp engine/roster2.cpp
+ # the radiation field (engine/abilities.cpp, World-free) and the World-side
+ # ability pass + orders (engine/world_abilities.cpp, a World member TU split out
+ # of world.cpp), exercised by test_abilities.cpp.
+-target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp
++target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_grinder_bio.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp tests/test_grinder_bio.cpp
+                  engine/world_sw.cpp engine/world_an.cpp engine/ai_unit.cpp tests/test_ai_w7.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_w7r2.cpp)   # w7r2: wave-7 mission-script restore fixes
+ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer: deck / ground layers
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 3b65ad3..d01f901 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -158,6 +158,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/abilities.cpp
+     ${RA2_ROOT}/engine/world_abilities.cpp
+     ${RA2_ROOT}/engine/world_mind_control.cpp
++    ${RA2_ROOT}/engine/world_grinder_bio.cpp
+     ${RA2_ROOT}/engine/world_w5.cpp
+     ${RA2_ROOT}/engine/world_w6.cpp
+     ${RA2_ROOT}/engine/world_w7.cpp
+diff --git a/engine/building.hpp b/engine/building.hpp
+index bd223f1..13676b5 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -106,6 +106,11 @@ struct BuildingTypeDef {
+     bool can_be_occupied = false;   // CanBeOccupied=     (BuildingType +0x157B)
+     bool can_occupy_fire = false;   // CanOccupyFire=     (+0x157C)
+     int max_occupants = 0;          // MaxNumberOccupants= (+0x1580)
++    // Rallypoint: Yuri Grinder / Bio Reactor (rulesmd YAGRND / YAPOWR).
++    bool grinding = false;          // Grinding=          (YAGRND)
++    bool infantry_absorb = false;   // InfantryAbsorb=    (YAPOWR Bio Reactor)
++    int  extra_power = 0;           // ExtraPower=        per absorbed infantry
++    int  passengers = 0;            // Passengers=        absorb slot count
+     bool bridge_repair_hut = false; // BridgeRepairHut=   (+0x16B6)
+     // W6-03-01 [RE: rulesmd [OverlayTypes] 3=GAWALL / 27=NAWALL -- a placed
+     // Wall=yes type becomes an OVERLAY in the original, never a BuildingClass,
+diff --git a/engine/grinder_bio.hpp b/engine/grinder_bio.hpp
+new file mode 100644
+new file mode 100644
+index 0000000..0a407d4
+--- /dev/null
++++ b/engine/grinder_bio.hpp
+@@ -0,0 +1,35 @@
++#pragma once
++// Yuri Grinder (Grinding=) and Bio Reactor (InfantryAbsorb=) — ModEnc / rulesmd.
++ // YAGRND: Grinding=yes. YAPOWR: InfantryAbsorb=yes, Passengers=5, ExtraPower=100,
++ // Power=150 (YABRCK is the barracks). Pure helpers; World hooks live in
++ // world_grinder_bio.cpp. Grind refund is sell_refund (Soylent absolute, else
++ // Cost * RefundPercent for humans).
++#include "building.hpp"
++#include "repair_sell.hpp"
++
++namespace ra2engine {
++namespace grinder_bio {
++
++// Power_Output for an InfantryAbsorb plant: Power + ExtraPower * occupants
++ // (ExtraPower <= 0 adds nothing). Health scaling is left to power_totals.
++inline int absorb_power(int power, int extra_power, int occupants) {
++    if (extra_power > 0 && occupants > 0) power += extra_power * occupants;
++    return power;
++}
++
++inline int grind_refund(int cost, int soylent, double refund_percent, bool owner_is_human) {
++    return sell_refund(cost, soylent, refund_percent, owner_is_human);
++}
++
++inline bool type_grinds(const BuildingTypeDef& t) { return t.grinding; }
++
++inline bool type_absorbs(const BuildingTypeDef& t) {
++    return t.infantry_absorb && t.passengers > 0;
++}
++
++inline bool absorb_has_room(const BuildingTypeDef& t, const Building& b) {
++    return type_absorbs(t) && static_cast<int>(b.occupants.size()) < t.passengers;
++}
++
++}  // namespace grinder_bio
++}  // namespace ra2engine
+diff --git a/engine/main.cpp b/engine/main.cpp
+index d5f2f18..375ee70 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -1192,8 +1192,9 @@ ResolvedUnit resolve_combat_unit(const Rules& rules, const std::string& unit_id)
+     // per-type experience/ability/elite-weapon keys. Inert unless a World
+     // enables veterancy (World copies them into Unit::vet and reads them only
+     // past that firewall), so resolving them here moves no existing gate.
+-    r.combat.cost = rules.cost(unit_id);
+-    r.combat.trainable = rules.section_flag(unit_id, "Trainable", true);      // default YES
++        r.combat.cost = rules.cost(unit_id);
++        r.combat.soylent = (int)rules.section_double(unit_id, "Soylent", 0.0);
++        r.combat.trainable = rules.section_flag(unit_id, "Trainable", true);      // default YES
+     r.combat.dont_score = rules.section_flag(unit_id, "DontScore", false);
+     r.combat.self_healing = rules.section_flag(unit_id, "SelfHealing", false);
+     r.combat.crate_goodie = rules.section_flag(unit_id, "CrateGoodie", false);  // default NO
+@@ -2840,6 +2841,11 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+         d.slave_regen_rate = rules.slave_regen_rate(id);
+         d.slave_reload_rate = rules.slave_reload_rate(id);
+         d.slave_storage    = d.enslaves.empty() ? 0 : rules.storage(d.enslaves);
++        // Rallypoint: Yuri Grinder (YAGRND) / Bio Reactor (YAPOWR, not YABRCK).
++        d.grinding         = rules.section_flag(id, "Grinding", false);
++        d.infantry_absorb  = rules.section_flag(id, "InfantryAbsorb", false);
++        d.extra_power      = (int)rules.section_double(id, "ExtraPower", 0.0);
++        d.passengers       = (int)rules.section_double(id, "Passengers", 0.0);
+         d.wall             = rules.section_flag(id, "Wall", false);            // W6-03-01
+         d.insignificant    = rules.section_flag(id, "Insignificant", false);   // W6-03-01
+         // W2-SK-12/19/20: Capturable= / Spyable= / UnitRepair= (absent = no in
+diff --git a/engine/production.cpp b/engine/production.cpp
+index 9c2c401..1b9ff9c 100644
+--- a/engine/production.cpp
++++ b/engine/production.cpp
+@@ -20,6 +20,9 @@ PowerTotals power_totals(const std::vector<Building>& buildings,
+         if (!b.alive || b.house != house || b.state != Building::State::Idle) continue;
+         if (b.type < 0 || b.type >= (int)types.size()) continue;
+         int pw = types[b.type].power;
++        // Rallypoint: YAPOWR InfantryAbsorb — ExtraPower * occupants (ModEnc).
++        if (types[b.type].infantry_absorb && types[b.type].extra_power > 0)
++            pw += types[b.type].extra_power * static_cast<int>(b.occupants.size());
+         // [RE: BuildingClass::Power_Output FUN_0044E7B0 @0x44E85F-0x44E86A,
+         // construction.md §8] a positive PowerBonus is scaled by the health
+         // ratio -- ftol(Health / Type.Strength * PowerBonus) -- so a damaged
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index eb6e928..256d632 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -682,6 +682,7 @@ template <class Ar> void fields(Ar& ar, UnitVet& v) {
+     io(ar, v.killed_by);
+     io(ar, v.credited);
+     io(ar, v.cost);
++    io(ar, v.soylent);   // v51: Grinder Soylent
+     io(ar, v.trainable);
+     io(ar, v.dont_score);
+     io(ar, v.self_healing);
+@@ -986,6 +987,7 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
+     io(ar, v.sight);
+     // P5
+     io(ar, v.cost);
++    io(ar, v.soylent);   // v51: Grinder Soylent
+     io(ar, v.trainable);
+     io(ar, v.dont_score);
+     io(ar, v.self_healing);
+@@ -1112,6 +1114,10 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
+     io(ar, v.can_be_occupied);   // G16
+     io(ar, v.can_occupy_fire);
+     io(ar, v.max_occupants);
++    io(ar, v.grinding);          // v51: Yuri Grinder
++    io(ar, v.infantry_absorb);   // v51: Yuri Bio Reactor
++    io(ar, v.extra_power);
++    io(ar, v.passengers);
+     io(ar, v.bridge_repair_hut);
+     io(ar, v.w5);   // wave-5 abilities (agent C)
+     io(ar, v.wall);            // W6-03-01 (v25)
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 3ba2836..b81aabe 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 54;   // 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 55;   // 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
+index 36ecd7b..93c3a46 100644
+--- a/engine/unit_combat.hpp
++++ b/engine/unit_combat.hpp
+@@ -144,6 +144,7 @@ struct UnitCombat {
+     // firewall (a hand-built UnitCombat in an existing gate never sets them,
+     // and add_combat_unit merely copies them into Unit::vet).
+     int cost = 0;                     // Cost= (experience value / owner cost)
++    int soylent = 0;                  // Soylent= (Grinder refund override; 0 = Cost path)
+     bool trainable = true;            // Trainable= (default YES, V14)
+     bool dont_score = false;          // DontScore=
+     bool self_healing = false;        // SelfHealing= (V11)
+diff --git a/engine/veterancy.hpp b/engine/veterancy.hpp
+index dd252fa..360b648 100644
+--- a/engine/veterancy.hpp
++++ b/engine/veterancy.hpp
+@@ -134,6 +134,7 @@ struct UnitVet {
+     bool credited = false;        // kill credit already resolved
+     // --- type data (copied from UnitCombat at spawn) ---
+     int cost = 0;
++    int soylent = 0;              // Soylent= (Grinder); 0 = sell_refund uses Cost
+     bool trainable = true;        // Trainable (default yes, V14)
+     bool dont_score = false;      // DontScore
+     bool self_healing = false;    // SelfHealing= (type flag, V11)
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 410ae4d..be4c3e1 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1234,6 +1234,7 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
+     // past this point unless vet_any_). Only a vet-enabled World arms the
+     // combat hook, applies a requested rank and refreshes the stats.
+     u.vet.cost = c.cost;
++    u.vet.soylent = c.soylent;
+     u.vet.trainable = c.trainable;
+     u.vet.dont_score = c.dont_score;
+     u.vet.self_healing = c.self_healing;
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 11d8f0c..ae45192 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -2604,7 +2604,17 @@ public:
+     void mc_release(int ctl, int vi);
+     void mc_release_all(int ctl);
+     bool mc_capture(int ctl, int vi);
++    // Free CaptureManager slot without restoring mc_orig_house (Grinder kill /
++    // Bio Reactor absorb — unit stays under the controller's house).
++    void mc_free_keep_owner(int ctl, int vi);
+     std::vector<std::pair<int, int>> mind_control_pairs() const;
++    // Yuri Grinder (Grinding=) / Bio Reactor (InfantryAbsorb=).
++    bool can_grind(int unit_idx, int b_idx) const;
++    bool grind_now(int unit_idx, int b_idx);
++    void order_grind(int unit_idx, int b_idx);
++    bool can_absorb(int unit_idx, int b_idx) const;
++    bool absorb_now(int unit_idx, int b_idx);
++    void order_absorb(int unit_idx, int b_idx);
+     bool garrison_firing(int b_idx) const;                   // CanOccupyFire && occupants
+     double garrison_range(int b_idx) const;                  // cells
+     struct GarrisonEvent { enum Kind { Entered, Garrisoned, Abandoned, Unloaded } kind = Entered; int building = -1; int house = -1; };
+diff --git a/engine/world_depth.cpp b/engine/world_depth.cpp
+index c659687..2c9b14e 100644
+--- a/engine/world_depth.cpp
++++ b/engine/world_depth.cpp
+@@ -951,26 +951,37 @@ void World::step_depth(double dt) {
+         w6_overlay_wall_hit(x, y, u.w6.wall_flags, u.w_damage);
+     }
+     if (!garrison_any_) return;
+-    // Occupy arrivals (the step_capture analogue).
++    // Occupy / Grinder / Bio Reactor arrivals.
+     for (int i = 0; i < static_cast<int>(units_.size()); ++i) {
+         Unit& u = units_[i];
+         if (u.occupy_target < 0) continue;
+         const int bi = u.occupy_target;
+-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !can_occupy(i, bi)) {
++        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) {
++            u.occupy_target = -1;
++            continue;
++        }
++        const bool grind = can_grind(i, bi);
++        const bool absorb = can_absorb(i, bi);
++        const bool occupy = can_occupy(i, bi);
++        if (!grind && !absorb && !occupy) {
+             u.occupy_target = -1;
+             continue;
+         }
+         if (cheb_to_foundation(buildings_[bi], u.cell_x, u.cell_y) <= 1) {
+-            occupy_now(i, bi);
++            if (grind) grind_now(i, bi);
++            else if (absorb) absorb_now(i, bi);
++            else occupy_now(i, bi);
+         } else if (!u.moving()) {
+-            order_occupy(i, bi);   // re-path adjacent
++            if (grind) order_grind(i, bi);
++            else if (absorb) order_absorb(i, bi);
++            else order_occupy(i, bi);
+         }
+     }
+     for (int bi = 0; bi < static_cast<int>(buildings_.size()); ++bi) {
+         Building& b = buildings_[bi];
+-        if (b.type < 0 || b.type >= static_cast<int>(btypes().size()) ||
+-            !btypes()[b.type].can_be_occupied)
+-            continue;
++        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
++        const BuildingTypeDef& bt = btypes()[b.type];
++        if (!bt.can_be_occupied && !bt.infantry_absorb) continue;
+         // Dead occupants leave the list (they cannot be hurt inside, but a
+         // trigger/ability may still erase them).
+         b.occupants.erase(std::remove_if(b.occupants.begin(), b.occupants.end(),
+@@ -991,7 +1002,9 @@ void World::step_depth(double dt) {
+             unload_occupants(bi);
+             continue;
+         }
+-        if (b.alive && b.state != Building::State::Dead) sync_garrison_owner(bi);
++        // InfantryAbsorb (YAPOWR) keeps its house; only CanBeOccupied civ huts sync.
++        if (bt.can_be_occupied && b.alive && b.state != Building::State::Dead)
++            sync_garrison_owner(bi);
+     }
+     step_garrison_combat(dt);
+ }
+diff --git a/engine/world_grinder_bio.cpp b/engine/world_grinder_bio.cpp
+new file mode 100644
+new file mode 100644
+index 0000000..9eb092c
+--- /dev/null
++++ b/engine/world_grinder_bio.cpp
+@@ -0,0 +1,159 @@
++// Yuri Grinder / Bio Reactor enter fates (skirmish CaptureManager victims).
++ // Grinding: destroy the unit, pay Soylent to the building's house, free the
++ // MC slot without restoring the original house (unit is dead). InfantryAbsorb
++ // (YAPOWR): limbo into occupants, free the MC slot but keep the controller's
++ // house so ExtraPower still counts (YR: release capacity while they sit inside).
++#include "world.hpp"
++
++#include "grinder_bio.hpp"
++#include "group_move.hpp"  // nearest_free_cells
++
++#include <algorithm>
++#include <cmath>
++
++namespace ra2engine {
++namespace {
++
++bool live_unit(const Unit& u) { return u.alive && u.die_time < 0.0; }
++
++bool live_bld(const Building& b) {
++    return b.alive && b.state == Building::State::Idle && !b.selling;
++}
++
++int cheb_to_foundation(const Building& b, int x, int y) {
++    int best = -1;
++    for (const Cellxy& c : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
++        const int d = std::max(std::abs(x - c.x), std::abs(y - c.y));
++        if (best < 0 || d < best) best = d;
++    }
++    return best;
++}
++
++}  // namespace
++
++void World::mc_free_keep_owner(int ctl, int vi) {
++    if (ctl < 0 || ctl >= static_cast<int>(units_.size())) return;
++    if (vi < 0 || vi >= static_cast<int>(units_.size())) return;
++    Unit& cu = units_[static_cast<std::size_t>(ctl)];
++    Unit& vu = units_[static_cast<std::size_t>(vi)];
++    auto& vv = cu.w7.mc_victims;
++    vv.erase(std::remove(vv.begin(), vv.end(), vi), vv.end());
++    if (vu.w7.mc_controller != ctl) return;
++    vu.w7.mc_controller = -1;
++    vu.w7.mc_orig_house = -1;
++}
++
++bool World::can_grind(int ui, int bi) const {
++    if (ui < 0 || ui >= static_cast<int>(units_.size())) return false;
++    if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return false;
++    const Unit& u = units_[static_cast<std::size_t>(ui)];
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (!live_unit(u) || u.is_aircraft || u.cargo_of >= 0) return false;
++    if (!live_bld(b) || b.house != u.house) return false;
++    if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) return false;
++    return grinder_bio::type_grinds(btypes()[static_cast<std::size_t>(b.type)]);
++}
++
++bool World::grind_now(int ui, int bi) {
++    if (!can_grind(ui, bi)) return false;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    const bool human = is_human(b.house);
++    const int pay = grinder_bio::grind_refund(u.vet.cost, u.vet.soylent, repair_rules_.refund_percent,
++                                              human);
++    if (u.w7.mc_controller >= 0) mc_free_keep_owner(u.w7.mc_controller, ui);
++    deposit_credits(b.house, static_cast<double>(pay));
++    ability_kill_unit(ui);
++    return true;
++}
++
++bool World::can_absorb(int ui, int bi) const {
++    if (ui < 0 || ui >= static_cast<int>(units_.size())) return false;
++    if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return false;
++    const Unit& u = units_[static_cast<std::size_t>(ui)];
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (!live_unit(u) || u.is_vehicle || u.is_aircraft || u.cargo_of >= 0) return false;
++    if (!live_bld(b) || b.house != u.house) return false;
++    if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) return false;
++    return grinder_bio::absorb_has_room(btypes()[static_cast<std::size_t>(b.type)], b);
++}
++
++bool World::absorb_now(int ui, int bi) {
++    if (!can_absorb(ui, bi)) return false;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    if (u.w7.mc_controller >= 0) mc_free_keep_owner(u.w7.mc_controller, ui);
++    Building& b = buildings_[static_cast<std::size_t>(bi)];
++    occ_.release_all_of(ui, -1, -1);
++    u.path.clear();
++    u.path_idx = 0;
++    u.target = -1;
++    u.target_building = -1;
++    u.occupy_target = -1;
++    u.cargo_of = kGarrisonCargo;
++    u.garrison_of = bi;
++    b.occupants.push_back(ui);
++    garrison_any_ = true;
++    return true;
++}
++
++void World::order_grind(int ui, int bi) {
++    if (!can_grind(ui, bi)) return;
++    garrison_any_ = true;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    u.target = -1;
++    u.target_building = -1;
++    u.attack_order = false;
++    u.enter_target = -1;
++    u.capture_target = -1;
++    u.infiltrate_target = -1;
++    u.attack_cell_x = u.attack_cell_y = -1;
++    u.occupy_target = bi;
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (cheb_to_foundation(b, u.cell_x, u.cell_y) <= 1) return;
++    int nx = b.cx, ny = b.cy, best = -1;
++    for (const Cellxy& c : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
++        const int d = std::max(std::abs(u.cell_x - c.x), std::abs(u.cell_y - c.y));
++        if (best < 0 || d < best) {
++            best = d;
++            nx = c.x;
++            ny = c.y;
++        }
++    }
++    const std::vector<Cellxy> free = nearest_free_cells({nx, ny}, 8, passable_, grid_w_, grid_h_, occ_);
++    for (const Cellxy& g : free) {
++        order_unit_move(ui, g.x, g.y);
++        if (units_[static_cast<std::size_t>(ui)].moving()) break;
++    }
++}
++
++void World::order_absorb(int ui, int bi) {
++    if (!can_absorb(ui, bi)) return;
++    garrison_any_ = true;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    u.target = -1;
++    u.target_building = -1;
++    u.attack_order = false;
++    u.enter_target = -1;
++    u.capture_target = -1;
++    u.infiltrate_target = -1;
++    u.attack_cell_x = u.attack_cell_y = -1;
++    u.occupy_target = bi;
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (cheb_to_foundation(b, u.cell_x, u.cell_y) <= 1) return;
++    int nx = b.cx, ny = b.cy, best = -1;
++    for (const Cellxy& c : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
++        const int d = std::max(std::abs(u.cell_x - c.x), std::abs(u.cell_y - c.y));
++        if (best < 0 || d < best) {
++            best = d;
++            nx = c.x;
++            ny = c.y;
++        }
++    }
++    const std::vector<Cellxy> free = nearest_free_cells({nx, ny}, 8, passable_, grid_w_, grid_h_, occ_);
++    for (const Cellxy& g : free) {
++        order_unit_move(ui, g.x, g.y);
++        if (units_[static_cast<std::size_t>(ui)].moving()) break;
++    }
++}
++
++}  // namespace ra2engine
+diff --git a/engine/world_mind_control.cpp b/engine/world_mind_control.cpp
+index f3c59d8..bf2957a 100644
+--- a/engine/world_mind_control.cpp
++++ b/engine/world_mind_control.cpp
+@@ -98,7 +98,17 @@ void World::step_mind_control() {
+                         units_[static_cast<std::size_t>(v)].w7.mc_orig_house = -1;
+                     }
+                 } else if (mc_boarded(vu)) {
+-                    mc_release(ci, v);
++                    // YAPOWR InfantryAbsorb: free the slot, keep controller house
++                    // (YR: victims stay inside and still make ExtraPower).
++                    bool absorb = false;
++                    if (vu.garrison_of >= 0 &&
++                        vu.garrison_of < static_cast<int>(buildings_.size())) {
++                        const Building& bb = buildings_[static_cast<std::size_t>(vu.garrison_of)];
++                        if (bb.type >= 0 && bb.type < static_cast<int>(btypes().size()))
++                            absorb = btypes()[static_cast<std::size_t>(bb.type)].infantry_absorb;
++                    }
++                    if (absorb) mc_free_keep_owner(ci, v);
++                    else mc_release(ci, v);
+                 }
+             }
+         }
+diff --git a/tests/test_grinder_bio.cpp b/tests/test_grinder_bio.cpp
+new file mode 100644
+new file mode 100644
+index 0000000..0142911
+--- /dev/null
++++ b/tests/test_grinder_bio.cpp
+@@ -0,0 +1,151 @@
++// Yuri Grinder / Bio Reactor helpers + World MC fates (no install required
++ // for the pure cases; World cases skip without mapsmd03).
++#include "doctest.h"
++
++#include "asset_fixture.hpp"
++#include "grinder_bio.hpp"
++#include "production.hpp"
++#include "world.hpp"
++
++using namespace ra2engine;
++using namespace ra2engine::grinder_bio;
++
++TEST_CASE("grinder_bio: absorb_power and grind_refund (pure)") {
++    CHECK(absorb_power(150, 100, 0) == 150);
++    CHECK(absorb_power(150, 100, 2) == 350);   // YAPOWR: Power + ExtraPower*n
++    CHECK(absorb_power(150, 0, 5) == 150);
++    CHECK(absorb_power(-50, 100, 1) == 50);     // ExtraPower still adds when Power drain
++    CHECK(grind_refund(200, 0, 0.50, true) == 100);
++    CHECK(grind_refund(200, 150, 0.50, true) == 150);   // Soylent absolute
++    CHECK(grind_refund(200, 0, 0.50, false) == 200);    // AI: no RefundPercent
++}
++
++TEST_CASE("grinder_bio: type predicates") {
++    BuildingTypeDef g;
++    g.grinding = true;
++    CHECK(type_grinds(g));
++    CHECK_FALSE(type_absorbs(g));
++    BuildingTypeDef r;
++    r.infantry_absorb = true;
++    r.passengers = 5;
++    r.extra_power = 100;
++    r.power = 150;
++    CHECK(type_absorbs(r));
++    Building b;
++    CHECK(absorb_has_room(r, b));
++    b.occupants = {0, 1, 2, 3, 4};
++    CHECK_FALSE(absorb_has_room(r, b));
++}
++
++TEST_CASE("power_totals: InfantryAbsorb ExtraPower counts occupants") {
++    BuildingTypeDef t;
++    t.id = "YAPOWR";
++    t.power = 150;
++    t.infantry_absorb = true;
++    t.extra_power = 100;
++    t.passengers = 5;
++    std::vector<BuildingTypeDef> types = {t};
++    Building b;
++    b.type = 0;
++    b.house = 0;
++    b.alive = true;
++    b.state = Building::State::Idle;
++    b.hp = b.max_hp = 700;
++    b.occupants = {1, 2};
++    auto p = power_totals({b}, types, 0);
++    CHECK(p.output == 350);   // 150 + 100*2
++}
++
++namespace {
++
++UnitCombat mk_gi() {
++    UnitCombat c;
++    c.image = "E1";
++    c.strength = 125;
++    c.armor = "none";
++    c.cost = 200;
++    c.soylent = 100;
++    c.is_infantry = true;
++    return c;
++}
++
++UnitCombat mk_yuri() {
++    UnitCombat c = mk_gi();
++    c.image = "YURI";
++    c.w7.mind_control = true;
++    c.w7.mc_capacity = 1;
++    c.damage = 1;
++    return c;
++}
++
++bool open_cell(const World& w, int& x, int& y) {
++    for (int yy = 2; yy + 4 < w.grid_h() - 2; ++yy)
++        for (int xx = 2; xx + 8 < w.grid_w() - 2; ++xx)
++            if (w.walkable(xx, yy) && w.walkable(xx + 2, yy) && w.unit_at_cell(xx, yy) < 0 &&
++                w.unit_at_cell(xx + 2, yy) < 0) {
++                x = xx;
++                y = yy;
++                return true;
++            }
++    return false;
++}
++
++}  // namespace
++
++#define GB_WORLD(world, x0, y0)                                              \
++    if (!ra2fixture::mapsmd03_available()) {                                 \
++        MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR"); \
++        return;                                                              \
++    }                                                                        \
++    World world(ra2fixture::mapsmd03_map());                                 \
++    int x0 = 0, y0 = 0;                                                      \
++    REQUIRE(open_cell(world, x0, y0));
++
++TEST_CASE("grinder: MC victim pays Soylent to controller house and frees slot") {
++    GB_WORLD(w, x0, y0);
++    BuildingTypeDef grind;
++    grind.id = "YAGRND";
++    grind.fw = 2;
++    grind.fh = 2;
++    grind.grinding = true;
++    grind.power = -50;
++    w.set_building_types({grind});
++    w.enable_player_economy(0, 0.0);
++    const int bi = w.add_building(0, x0 + 4, y0, 2, 2, 0, 900, 0, 0.0, true);
++    w.add_combat_unit(x0, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 2, y0, 1, mk_gi());
++    REQUIRE(w.mc_capture(0, 1));
++    CHECK(w.units()[1].house == 0);
++    CHECK(w.units()[0].w7.mc_victims.size() == 1);
++    REQUIRE(w.grind_now(1, bi));
++    CHECK(w.units()[1].die_time >= 0.0);
++    CHECK(w.units()[0].w7.mc_victims.empty());
++    CHECK(w.house_credits(0) == doctest::Approx(100.0));   // Soylent=100
++}
++
++TEST_CASE("bio reactor: MC infantry absorb keeps house and frees MC capacity") {
++    GB_WORLD(w, x0, y0);
++    BuildingTypeDef reactor;
++    reactor.id = "YAPOWR";
++    reactor.fw = 2;
++    reactor.fh = 2;
++    reactor.power = 150;
++    reactor.infantry_absorb = true;
++    reactor.extra_power = 100;
++    reactor.passengers = 5;
++    w.set_building_types({reactor});
++    const int bi = w.add_building(0, x0 + 4, y0, 2, 2, 0, 700, 0, 0.0, true);
++    w.add_combat_unit(x0, y0, 0, mk_yuri());
++    w.add_combat_unit(x0 + 2, y0, 1, mk_gi());
++    REQUIRE(w.mc_capture(0, 1));
++    REQUIRE(w.absorb_now(1, bi));
++    CHECK(w.units()[1].house == 0);
++    CHECK(w.units()[1].garrison_of == bi);
++    CHECK(w.units()[0].w7.mc_victims.empty());
++    CHECK(w.units()[1].w7.mc_controller < 0);
++    CHECK(w.buildings()[bi].occupants.size() == 1);
++    w.step_mind_control();   // boarded absorb must not restore orig house
++    CHECK(w.units()[1].house == 0);
++    const auto pt = power_totals(w.buildings(), w.btypes(), 0);
++    CHECK(pt.output == 250);   // 150 + 100
++}

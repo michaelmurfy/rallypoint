@@ -72,6 +72,7 @@ the original game would differ); every one of our builds simulates identically, 
 | `0019-magnetron-save-fields` | Save visitors for Magnetron `weight_milli` / `magnet_*` / AbilityRules mag_* (format 52). |
 | `0020-lobby-game-options` | `--launch` `AlliesAllowed=` overrides mid-game alliances (format 53). Crates/SuperWeapons already honour the launch file; Play/Online toggles write them. |
 | `0021-auto-repair-and-crate-density` | `--launch` `AutoRepair=` (`[IQ] RepairSell=0`) and `CrateMinimum=` (CnCNet Increased=8 / Extreme=40); Play/Online crate density + Auto repair (format 54). |
+| `0022-grinder-bio-reactor-mc` | Yuri Grinder (`Grinding=` / Soylent) and Bio Reactor (`InfantryAbsorb=` / ExtraPower); MC victims can be ground or absorbed (format 55). |
 
 ## Factions (Country=)
 
@@ -101,7 +102,7 @@ Launch-file / launcher `Country=` is an index into the lobby list, or the countr
 ### Partial / missing
 
 - **Slave Miner**: done for deployed YAREFN (`Enslaves=SLAV`, spawn/regen/reload, gather + deliver into Storage/credits). Remaining: undeployed SMIN does not run slaves (ModEnc: infantry only leave BuildingTypes); killer-house liberation on miner death is not wired from combat; AI `AISlaveMinerNumber` / redeploy scoot (`SlaveMinerShortScan`) not modelled; no Xvfb Yuri skirmish check in CI.
-- **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder/Bio Reactor fates for MC victims still open.
+- **Mind control**: skirmish/MP CaptureManager (`step_mind_control`); campaign keeps its own path. Grinder (`grind_now`) and Bio Reactor (`absorb_now`) free the MC slot (patch 0022); enter cursors / reactor eject still open.
 - **Gattling** (`IsGattling` / YTNK, GTGCAN): RateUp while engaging, RateDown when idle (0 resets); Stage/EliteStage endpoints pick Weapon1..N (odd AG, even AA). Doctests cover the timer and slot pick.
 - Yuri structure/unit cameos load from `langmd.mix`/`cameomd.mix` (patch 0016). Types with no `Cameo=` in artmd (e.g. YACOMD, YAPPPT, YAROCK) stay blank.
 - **Magnetron**: lift/hold/drop via `IsLocomotor` (patch 0017); building toss / beam art not drawn.
