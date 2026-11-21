@@ -1,7 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
---- a/CMakeLists.txt	2026-11-21 10:59:22.627453019 +0000
-+++ b/CMakeLists.txt	2026-11-21 10:58:31.973497671 +0000
-@@ -307,6 +307,8 @@
+index fe0f124..0834a14 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -305,6 +305,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
  target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
  # Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
  target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
@@ -11,8 +12,9 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
  # LobbyState -> SkirmishConfig converter (docs/gap/07-skirmish-page.md).
  target_sources(ra2assets_tests PRIVATE tests/test_skirmish_lobby.cpp engine/skirmish_lobby.cpp)
 diff --git a/engine/building.hpp b/engine/building.hpp
---- a/engine/building.hpp	2026-11-21 10:59:22.627453019 +0000
-+++ b/engine/building.hpp	2026-11-21 10:58:31.973497671 +0000
+index 9206abb..8c93779 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
 @@ -12,6 +12,7 @@
  #include "unit_w6.hpp"   // wave-6 #4 (BldW6)
  #include "target_w6.hpp" // W6 fix #2 (BldTgt)
@@ -21,7 +23,7 @@ diff --git a/engine/building.hpp b/engine/building.hpp
  
  namespace ra2engine {
  
-@@ -112,6 +113,10 @@
+@@ -105,6 +106,10 @@ struct BuildingTypeDef {
      bool insignificant = false;     // Insignificant=
      BldTypeW5 w5;                   // wave-5 abilities (abil_w5.hpp)
      BldTypeW6 w6;                   // wave-6 #4 (unit_w6.hpp): wall damage levels
@@ -32,7 +34,7 @@ diff --git a/engine/building.hpp b/engine/building.hpp
  };
  
  // A placed building instance.
-@@ -199,6 +204,7 @@
+@@ -188,6 +193,7 @@ struct Building {
      int def_slot = 0;                // weapon slot of the last shot
      double def_fire_flash = 0.0;     // seconds of muzzle flash left (renderer)
      bool def_offline = false;        // Powered=yes and the house is low on power
@@ -41,8 +43,9 @@ diff --git a/engine/building.hpp b/engine/building.hpp
      // (+0x688) / FiringOccupantIndex (+0x69C). Inert; NOT read by world_hash.
      std::vector<int> occupants;      // unit indices, in entry order
 diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
---- a/engine/building_combat.cpp	2026-11-21 10:59:00.692217922 +0000
-+++ b/engine/building_combat.cpp	2026-11-21 10:58:31.973549818 +0000
+index 78ef27d..5b93b44 100644
+--- a/engine/building_combat.cpp
++++ b/engine/building_combat.cpp
 @@ -9,6 +9,7 @@
  #include "combat.hpp"      // deliver_hit_from, apply_spread_damage, damage_vs
  #include "production.hpp"  // power_totals
@@ -51,7 +54,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
  #include "world.hpp"
  
  namespace ra2engine {
-@@ -34,6 +35,18 @@
+@@ -34,6 +35,18 @@ bool World::defense_power_ok(int house) const {
      return !house_low_power(house);
  }
  
@@ -70,7 +73,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
  Unit World::defense_shooter(int b_idx, int slot) const {
      const Building& b = buildings_[b_idx];
      const BuildingTypeDef& t = btypes()[b.type];
-@@ -222,6 +235,11 @@
+@@ -222,6 +235,11 @@ void World::step_building_combat(double dt) {
              }
          }
          if (b.def_rearm_frames > 0) --b.def_rearm_frames;   // Net L0: whole frames
@@ -82,7 +85,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
  
          const double cx = bcenter_x(b), cy = bcenter_y(b);
          auto slot_for = [&](const Unit& v) {
-@@ -233,6 +251,13 @@
+@@ -233,6 +251,13 @@ void World::step_building_combat(double dt) {
              // airborne Kirov; the forced index skipped the test and they shot
              // airships down.
              const bool air = unit_airborne(v);
@@ -96,7 +99,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
              if (w5_.armed && t.w5.prism)   // PrismSupport is the beam, not a gun
                  return slot_can_target(t.weapon[0], air, v.armor_ix) ? 0 : -1;
              // Wave-5 (R-045) [TechnoClass::SelectWeapon FUN_006F2890]: an
-@@ -252,7 +277,7 @@
+@@ -252,7 +277,7 @@ void World::step_building_combat(double dt) {
          int bx = 0, by = 0, bz = 0;
          building_aim_lept(b, cell_level(b.cx, b.cy), bx, by, bz);
          auto in_range = [&](const Unit& v, int slot) {
@@ -105,7 +108,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
              // W9-02-07: ONE scratch shooter, reused (a default Unit was
              // constructed + destroyed per candidate unit per defence per
              // frame); only w_range / w_proj are ever set on it, the rest stays
-@@ -438,7 +463,8 @@
+@@ -438,7 +463,8 @@ void World::step_building_combat(double dt) {
              b.w5.prism_stage = 1;
              continue;
          }
@@ -115,7 +118,7 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
          // W6-02-03 [RE: Building vtbl 0x7E2EBC +0x318 = GetROF FUN_006FC460]: the owner's
          // handicap ROF multiplies a defence rearm too.
          b.def_rearm_frames = burst_rearm_frames(b.w6.burst_index, w.burst, house_rof_frames(b.house, w.rof), &combat_rng_);   // G-50 jitter, W6-04-01 Burst
-@@ -449,9 +475,23 @@
+@@ -449,9 +475,23 @@ void World::step_building_combat(double dt) {
              launch_defense_projectile(bi, b.def_target, slot);
              continue;
          }
@@ -142,9 +145,10 @@ diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
                      unit_lept_y(tv), unit_lept_z(tv));
      }
 diff --git a/engine/combat.cpp b/engine/combat.cpp
---- a/engine/combat.cpp	2026-11-21 10:59:00.692217922 +0000
-+++ b/engine/combat.cpp	2026-11-21 10:58:31.973566672 +0000
-@@ -1187,6 +1187,25 @@
+index f5025a6..aa5d377 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1187,6 +1187,25 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
          u.fire_flash -= dt;
          if (u.fire_flash < 0.0) u.fire_flash = 0.0;
  
@@ -171,8 +175,10 @@ diff --git a/engine/combat.cpp b/engine/combat.cpp
          // target_building is ONLY ever set by World::order_attack_building
          // (never by auto-acquire -- units NEVER auto-acquire buildings, and
 diff --git a/engine/gattling.hpp b/engine/gattling.hpp
---- a/engine/gattling.hpp	2026-11-21 10:59:22.545445435 +0000
-+++ b/engine/gattling.hpp	2026-11-21 10:58:31.973599234 +0000
+new file mode 100644
+index 0000000..a8d5a76
+--- /dev/null
++++ b/engine/gattling.hpp
 @@ -0,0 +1,76 @@
 +#pragma once
 +// Rallypoint: Yuri's Revenge IsGattling weapon stages (ModEnc "Gattling Weapon
@@ -251,9 +257,10 @@ diff --git a/engine/gattling.hpp b/engine/gattling.hpp
 +
 +}  // namespace ra2engine
 diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
---- a/engine/save_fields.hpp	2026-11-21 10:59:22.627769048 +0000
-+++ b/engine/save_fields.hpp	2026-11-21 10:58:31.973611552 +0000
-@@ -571,6 +571,16 @@
+index 1e71a26..5cf4e5b 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -568,6 +568,16 @@ template <class Ar> void fields(Ar& ar, World::FireEvent& v) {
      io(ar, v.unit); io(ar, v.building); io(ar, v.target_unit); io(ar, v.target_building);
      io(ar, v.slot); io(ar, v.weapon);
  }
@@ -270,7 +277,7 @@ diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
  // Gap fix C: one resolved weapon slot.
  template <class Ar> void fields(Ar& ar, WeaponSlot& v) {
      io(ar, v.valid);
-@@ -1003,6 +1013,9 @@
+@@ -1000,6 +1010,9 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
      io(ar, v.tg);   // W6 fix #2 (save v29)
      io(ar, v.loco);   // W7 locomotion (save v35)
      io(ar, v.w7);   // v35: wave-7 fix (units)
@@ -280,7 +287,7 @@ diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
  }
  template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
      io(ar, v.id);
-@@ -1094,6 +1107,9 @@
+@@ -1086,6 +1099,9 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
      io(ar, v.wall);            // W6-03-01 (v25)
      io(ar, v.insignificant);   // W6-03-01 (v25)
      io(ar, v.w6);   // v25: W6-04-04 wall damage levels
@@ -290,7 +297,7 @@ diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
  }
  
  // --- the live objects ---
-@@ -1229,6 +1245,10 @@
+@@ -1218,6 +1234,10 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
      io(ar, v.p_proj_elite_set);
      io(ar, v.w_active);
      io(ar, v.w_aa); io(ar, v.w_ag);
@@ -301,7 +308,7 @@ diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
      io(ar, v.deploy_fire);
      io(ar, v.deploy_fire_slot);
      io(ar, v.crusher);
-@@ -1309,6 +1329,7 @@
+@@ -1296,6 +1316,7 @@ template <class Ar> void fields(Ar& ar, Building& v) {
      io(ar, v.def_slot);
      io(ar, v.def_fire_flash);
      io(ar, v.def_offline);
@@ -310,9 +317,10 @@ diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
      io(ar, v.occupants);
      io(ar, v.firing_occupant);
 diff --git a/engine/savegame.hpp b/engine/savegame.hpp
---- a/engine/savegame.hpp	2026-11-21 10:59:22.627798979 +0000
-+++ b/engine/savegame.hpp	2026-11-21 10:58:31.989677628 +0000
-@@ -39,7 +39,7 @@
+index ae01a4e..50a98e5 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
  // Bump on ANY change to what is serialized (a field added to a visitor, a
  // section's layout). A save with a different version is listed but refused
  // on load -- the original's FileEntryClass::IsWrongVersion.
@@ -322,8 +330,9 @@ diff --git a/engine/savegame.hpp b/engine/savegame.hpp
  // --- archives ---------------------------------------------------------------
  // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
 diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
---- a/engine/unit_combat.hpp	2026-11-21 10:59:00.697217973 +0000
-+++ b/engine/unit_combat.hpp	2026-11-21 10:58:31.973660843 +0000
+index b96cec7..17e3225 100644
+--- a/engine/unit_combat.hpp
++++ b/engine/unit_combat.hpp
 @@ -10,6 +10,7 @@
  #include "target_w6.hpp"  // W6 fix #2 (missions): UnitTypeTgt (pure)
  #include "locomotion.hpp" // W7: LocoType (pure)
@@ -332,7 +341,7 @@ diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
  
  namespace ra2engine {
  
-@@ -190,6 +191,10 @@
+@@ -190,6 +191,10 @@ struct UnitCombat {
      UnitTypeW6 w6;                    // wave-6 #4 type data (unit_w6.hpp)
      UnitTypeTgt tg;                   // W6 fix #2: rules id + targeting type data (target_w6.hpp)
      UnitTypeW7 w7;                    // wave-7 fix (units): unit_w7.hpp (save v35)
@@ -344,8 +353,9 @@ diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
  
  }  // namespace ra2engine
 diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
---- a/engine/weapon_resolve.cpp	2026-11-21 10:59:00.697217973 +0000
-+++ b/engine/weapon_resolve.cpp	2026-11-21 10:58:31.973701141 +0000
+index 526c3a8..86c4e5f 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
 @@ -1,6 +1,7 @@
  #include "weapon_resolve.hpp"
  #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
@@ -354,7 +364,7 @@ diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
  
  #include "ra2assets/rules.hpp"
  #include <algorithm>
-@@ -173,6 +174,7 @@
+@@ -173,6 +174,7 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
      // back to the occupant's weapon 0 when the slot is empty, FUN_004526E0).
      if (!c.occupy_weapon.valid) c.occupy_weapon = tw.slot[0];
      if (!c.elite_occupy_weapon.valid) c.elite_occupy_weapon = c.occupy_weapon;
@@ -362,7 +372,7 @@ diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
      fill_unit_w7(rules, type_id, tw, c.w7);
  }
  
-@@ -231,7 +233,41 @@
+@@ -231,7 +233,41 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
      d.max_occupants = om::ftol(rules.section_double(type_id, "MaxNumberOccupants", 0.0));
      d.bridge_repair_hut = rules.section_flag(type_id, "BridgeRepairHut", false);
      d.w6.gate = rules.section_flag(type_id, "Gate", false);   // R-210
@@ -405,8 +415,9 @@ diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
 +
  }  // namespace ra2engine
 diff --git a/engine/weapon_resolve.hpp b/engine/weapon_resolve.hpp
---- a/engine/weapon_resolve.hpp	2026-11-21 10:59:00.697217973 +0000
-+++ b/engine/weapon_resolve.hpp	2026-11-21 10:58:31.973719049 +0000
+index 653b616..9095823 100644
+--- a/engine/weapon_resolve.hpp
++++ b/engine/weapon_resolve.hpp
 @@ -11,6 +11,7 @@
  #include "weapon.hpp"
  #include "unit_combat.hpp"
@@ -415,7 +426,7 @@ diff --git a/engine/weapon_resolve.hpp b/engine/weapon_resolve.hpp
  
  namespace ra2assets { class Rules; }
  
-@@ -57,4 +58,9 @@
+@@ -57,4 +58,9 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
  void fill_building_weapons(const ra2assets::Rules& rules, const std::string& type_id,
                             BuildingTypeDef& d);
  
@@ -426,8 +437,9 @@ diff --git a/engine/weapon_resolve.hpp b/engine/weapon_resolve.hpp
 +
  }  // namespace ra2engine
 diff --git a/engine/weapon_unit.cpp b/engine/weapon_unit.cpp
---- a/engine/weapon_unit.cpp	2026-11-21 10:59:00.697217973 +0000
-+++ b/engine/weapon_unit.cpp	2026-11-21 10:58:31.973731986 +0000
+index 3b25254..a24c82a 100644
+--- a/engine/weapon_unit.cpp
++++ b/engine/weapon_unit.cpp
 @@ -1,5 +1,6 @@
  #include "weapon_unit.hpp"
  #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
@@ -435,7 +447,7 @@ diff --git a/engine/weapon_unit.cpp b/engine/weapon_unit.cpp
  
  #include "capture.hpp"  // veteran_firepower (legacy rank bake)
  
-@@ -171,4 +172,47 @@
+@@ -171,4 +172,47 @@ void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr) {
      u.w_active = slot;
  }
  
@@ -484,9 +496,10 @@ diff --git a/engine/weapon_unit.cpp b/engine/weapon_unit.cpp
 +
  }  // namespace ra2engine
 diff --git a/engine/weapon_unit.hpp b/engine/weapon_unit.hpp
---- a/engine/weapon_unit.hpp	2026-11-21 10:59:00.697217973 +0000
-+++ b/engine/weapon_unit.hpp	2026-11-21 10:58:31.973747082 +0000
-@@ -40,4 +40,8 @@
+index eb9c6f7..fe5ffaa 100644
+--- a/engine/weapon_unit.hpp
++++ b/engine/weapon_unit.hpp
+@@ -40,4 +40,8 @@ int unit_weapon_for_building(const Unit& u, int armor_ix, bool target_bombed = f
  // slot == u.w_active. Slot 1 without a valid secondary is ignored.
  void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr);
  
@@ -496,9 +509,10 @@ diff --git a/engine/weapon_unit.hpp b/engine/weapon_unit.hpp
 +
  }  // namespace ra2engine
 diff --git a/engine/world.cpp b/engine/world.cpp
---- a/engine/world.cpp	2026-11-21 10:59:22.627846022 +0000
-+++ b/engine/world.cpp	2026-11-21 10:58:31.973759523 +0000
-@@ -1199,6 +1199,10 @@
+index b8f6cd7..32e7982 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1198,6 +1198,10 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
      u.p_proj = c.proj;
      u.p_proj_elite = c.elite_proj;
      u.p_proj_elite_set = c.has_elite_proj;
@@ -510,9 +524,10 @@ diff --git a/engine/world.cpp b/engine/world.cpp
      u.deploy_fire_slot = c.deploy_fire_slot;
      u.crusher = c.crusher;
 diff --git a/engine/world.hpp b/engine/world.hpp
---- a/engine/world.hpp	2026-11-21 10:59:22.627940210 +0000
-+++ b/engine/world.hpp	2026-11-21 10:58:31.973831741 +0000
-@@ -380,6 +380,11 @@
+index 88b7607..7ba1b47 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -364,6 +364,11 @@ struct Unit {
      bool p_proj_elite_set = false;
      int w_active = 0;                // 0 = primary in w_*, 1 = secondary
      bool w_aa = false, w_ag = true;  // ACTIVE weapon's AA/AG
@@ -525,8 +540,10 @@ diff --git a/engine/world.hpp b/engine/world.hpp
      // DeployFireWeapon slot resolved; deploy_fire=true makes the deployed unit
      // immobile and fire this slot through the normal step_combat path (G-45).
 diff --git a/tests/test_gattling.cpp b/tests/test_gattling.cpp
---- a/tests/test_gattling.cpp	2026-11-21 10:59:22.554445529 +0000
-+++ b/tests/test_gattling.cpp	2026-11-21 10:58:31.973831741 +0000
+new file mode 100644
+index 0000000..339072a
+--- /dev/null
++++ b/tests/test_gattling.cpp
 @@ -0,0 +1,81 @@
 +// Rallypoint: IsGattling stage timer and weapon-slot pick (synthetic rules).
 +#include "doctest.h"
