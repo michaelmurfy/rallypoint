@@ -602,12 +602,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .page-head:has(.splitbtn) { position: relative; z-index: 5; }
 
 /* ---- Red Alert 2: the same components; only these layouts are its own ---- */
-/* the brand line is the game, and the quiet menu that changes it */
-.gamepick { position: relative; justify-self: start; display: inline-flex; align-items: center; gap: 6px; margin-left: -5px; padding: 1px 6px 1px 5px; border-radius: 6px; color: var(--gold); font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .12s var(--ease); }
-.gamepick::after { content: ""; width: 4px; height: 4px; margin-top: -2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
-.gamepick:hover { background: var(--surface-2); }
-.gamepick:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.gamepick select { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; opacity: 0; cursor: pointer; }
 .narrow-only { display: none !important; }
 @media (max-width: 760px) { .narrow-only { display: grid !important; } }
 /* skirmish and lobby tables: a column more than Generals (side and colour), a status column in the lobby */
@@ -657,3 +651,88 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .startmark:disabled { cursor: default; }
 .readybtn[aria-pressed="true"] { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok-ink) 55%, transparent); background: color-mix(in srgb, var(--ok-ink) 14%, var(--surface-2)); }
 .lobbyfoot { flex-wrap: wrap; }
+
+/* ---- one launcher, one identity per game: data-game on <html> swaps the whole palette ---- */
+:root[data-game="ra2"] {
+  --bg: #08111d; --surface: #0e1a2b; --surface-2: #172b45; --line: rgba(190, 220, 255, .13);
+  --text: #eaf2fc; --muted: #9fb7d3;
+  --accent: #2f7de1; --accent-ink: #ffffff; --rose: #8fbcf5; --gold: #f0b429;
+  --c-settings: #b7a98a; --bad-ink: #ffb4a8;
+  --shadow: 0 18px 48px rgba(0, 0, 0, .6);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-game="ra2"] {
+    --bg: #eef3fa; --surface: #ffffff; --surface-2: #dde8f6; --line: rgba(13, 40, 74, .15);
+    --text: #0c1c33; --muted: #4a6482;
+    --accent: #1f5fbf; --rose: #1f5fbf; --gold: #8a5a00;
+    --c-settings: #5c5238; --shadow: 0 14px 36px rgba(13, 40, 74, .2);
+  }
+}
+:root[data-game="ra2"] .card.hero { --accent: #2f7de1; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)), var(--surface) 68%); }
+body, .sidebar, .card, main { transition: background-color .3s var(--ease), border-color .3s var(--ease); }
+.app.entering > * { animation: gameswap .26s var(--ease); }
+@keyframes gameswap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ---- the game card: who you are playing, and the one place to change it ---- */
+.gamecard { position: relative; margin-bottom: 10px; }
+.gamebtn { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; width: 100%; padding: 8px 10px 8px 8px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface-2)), var(--surface-2)); color: var(--text); font: inherit; text-align: left; cursor: pointer; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 16%, transparent); transition: border-color .12s var(--ease), transform .08s var(--ease); }
+.gamebtn:hover { border-color: color-mix(in srgb, var(--gold) 50%, transparent); }
+.gamebtn:active { transform: scale(.985); }
+.gtile { width: 44px; height: 44px; border-radius: 11px; flex: none; display: grid; place-items: center; overflow: hidden; color: var(--gold); background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 80%, #000), color-mix(in srgb, var(--accent) 35%, #000)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 55%, transparent), 0 8px 18px rgba(0, 0, 0, .38); }
+.gtile img { width: 100%; height: 100%; display: block; }
+.gtile svg { width: 26px; height: 26px; }
+.gtext { display: grid; gap: 1px; min-width: 0; }
+.gtext small { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.gtext b { font-size: 15px; font-weight: 780; letter-spacing: -.015em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gtext .gstate { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; color: var(--muted); }
+.gstate::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.gstate.ok { color: var(--ok-ink); } .gstate.ok::before { background: var(--ok-ink); }
+.gstate.warn { color: var(--warn-ink); } .gstate.warn::before { background: var(--warn-ink); animation: pulse 1.6s ease-in-out infinite; }
+.gcaret { width: 7px; height: 7px; margin: 0 4px 3px 0; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .15s var(--ease); }
+.gamebtn[aria-expanded="true"] .gcaret { transform: rotate(225deg) translate(-2px, -2px); }
+.gamemenu { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 6px); display: grid; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); animation: gameswap .14s var(--ease); }
+.gameopt { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.gameopt:hover, .gameopt:focus-visible { background: var(--surface-2); outline: none; }
+.gameopt:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.gameopt[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
+.gameopt .gtile { width: 36px; height: 36px; border-radius: 9px; } .gameopt .gtile svg { width: 21px; height: 21px; }
+.gameopt kbd { font: 600 10.5px var(--font); color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.gamerule { height: 1px; background: var(--line); margin: 2px 4px; }
+:root[data-game="ra2"] .brand-text span { color: var(--gold); }
+.sidebar > .brand { padding-bottom: 12px; margin-bottom: 8px; }
+@media (max-width: 760px) {
+  .gamebtn { grid-template-columns: auto; justify-content: center; padding: 6px; }
+  .gtext, .gcaret { display: none; }
+  .gamemenu { left: 0; right: auto; width: 230px; }
+}
+
+/* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
+.page-head .head-text { display: grid; gap: 3px; }
+.page-head .head-sub { color: var(--muted); font-size: 13px; }
+.statrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.card.hero.ra2hero { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 22px; }
+.ra2hero .gtile { width: 76px; height: 76px; border-radius: 18px; } .ra2hero .gtile svg { width: 44px; height: 44px; }
+.ra2hero .heroact { justify-items: end; text-align: right; }
+.ra2hero .heroact .live { justify-content: flex-end; }
+@media (max-width: 860px) { .card.hero.ra2hero { grid-template-columns: auto minmax(0, 1fr); } .ra2hero .heroact { grid-column: 1 / -1; justify-items: start; text-align: left; } }
+@media (max-width: 520px) { .card.hero.ra2hero { grid-template-columns: 1fr; } }
+.sectionhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.sectionhead p { color: var(--muted); font-size: 13px; }
+.rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.rules .switches { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.ra2opts .field.check { padding-top: 0; }
+.empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
+.empty svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
+.empty strong { font-size: 15px; } .empty p { max-width: 46ch; color: var(--muted); }
+.empty .row { justify-content: center; margin-top: 4px; }
+.callout { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; }
+.callout.warn { border-color: color-mix(in srgb, var(--warn-ink) 45%, transparent); } .callout.bad { border-color: color-mix(in srgb, var(--bad-ink) 50%, transparent); }
+.callout > span { flex: 1 1 220px; }
+.skeleton { display: block; border-radius: 8px; min-height: 14px; background: linear-gradient(90deg, var(--surface-2) 0, color-mix(in srgb, var(--text) 9%, var(--surface-2)) 50%, var(--surface-2) 100%) 0 0 / 220% 100%; animation: shimmer 1.3s linear infinite; }
+@keyframes shimmer { to { background-position: -220% 0; } }
+.skelrow { display: grid; grid-template-columns: 1fr 60px 40px; gap: 10px; padding: 10px; }
+.mapcol .stage.loading canvas { opacity: 0; }
+.wizpick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.wizpick .gameopt { grid-template-columns: auto minmax(0, 1fr); border: 1px solid var(--line); padding: 10px; }
+@media (max-width: 520px) { .wizpick { grid-template-columns: 1fr; } }

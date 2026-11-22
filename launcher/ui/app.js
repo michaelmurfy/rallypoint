@@ -33,6 +33,8 @@ const ICONS = {
   check: "M9 16.200 4.800 12l-1.400 1.400L9 19 21 7l-1.400-1.400z",
   plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
   prev: "M15.400 7.400 14 6l-6 6 6 6 1.400-1.400L10.800 12z",
+  ra2: "M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.3 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z",
+  folder: "M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
   next: "M8.600 16.600 10 18l6-6-6-6-1.400 1.400L13.200 12z",
 };
 function icon(name) {
@@ -2137,6 +2139,8 @@ function firstRunSetupRow() {
 // Generals-only features (mods, World Builder, command bar, renderer, sync logs) appears here. Stronger AI
 // reuses prefs.aiBoost (same Off/Sharper/Strong/Relentless labels) and becomes AIBoost= in the launch file.
 const isRa2 = () => store.cfg.game === "ra2";
+/** The whole shell takes the game's palette (style.css :root[data-game]). */
+const applyGameTheme = () => { document.documentElement.dataset.game = isRa2() ? "ra2" : "generals"; };
 const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
 const RA2_NAME = "Red Alert 2: Yuri's Revenge";
 const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia", "Yuri"]; // the engine's countries in order (ra2launch::SIDES)
@@ -2810,10 +2814,14 @@ async function switchGame(id) {
   if (id === store.cfg.game) return;
   try { await invoke("set_game", { game: id }); } catch (e) { say(errText(e), "bad"); return; }
   store.cfg.game = id;
+  applyGameTheme();
   store.relay = "Offline"; store.lobby = null; net.last = null; net.hist = [];
   current && current.dispose && current.dispose(); current = null;
   document.querySelector(".app").remove();
   shell();
+  const app = document.querySelector(".app");
+  app.classList.add("entering");
+  setTimeout(() => app.classList.remove("entering"), 400);
   go("play");
   // First time in RA2 (or Generals if that wizard was never finished): walk through setup.
   if (needsSetup()) openWizard();
@@ -2845,6 +2853,8 @@ function go(name) {
 
 function updateSidebar() {
   if (!sideFiles) return;
+  const key = `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}`; // only rebuilt when it would look different, so it keeps focus
+  if (gameCardEl && gameCardEl.isConnected && gameCardEl.dataset.key !== key && !gameCardEl.querySelector(".gamemenu")) gameCardEl.replaceWith(gameCard());
   const dir = isRa2() ? store.cfg.ra2.game_dir : store.cfg.game_dir;
   sideFiles.replaceChildren(status(dir ? "Game files ready" : "Game files needed", dir ? "ok" : "warn"));
   const s = store.relay;
@@ -2860,16 +2870,70 @@ function updateSidebar() {
 }
 window.addEventListener("net", () => updateSidebar());
 
+// ---------------------------------------------------------------- the game card (who you are playing, and the one place to change it)
+const GAME_INFO = {
+  generals: { name: "Generals Zero Hour", kicker: "Command & Conquer", key: "1" },
+  ra2: { name: "Red Alert 2", kicker: "Yuri's Revenge", key: "2" },
+};
+const gameReady = (id) => !!(id === "ra2" ? store.cfg.ra2.game_dir : store.cfg.game_dir);
+/** The game's emblem: Generals keeps the Rallypoint badge, Red Alert 2 gets a star on its own blue. */
+function gameTile(id) { return h("span", { class: "gtile", "aria-hidden": "true" }, id === "ra2" ? icon("ra2") : h("img", { src: "logo.png", alt: "" })); }
+const shortcutLabel = (id) => `${/Mac|iPhone|iPad/.test(navigator.platform) ? "\u2318" : "Ctrl+"}${GAME_INFO[id].key}`;
+let gameCardEl = null;
+
+function gameCard() {
+  const cur = store.cfg.game in GAME_INFO ? store.cfg.game : "generals";
+  const stateOf = (id) => (gameReady(id) ? ["Ready to play", "ok"] : ["Needs game files", "warn"]);
+  const [st, kind] = stateOf(cur);
+  const btn = h("button", { class: "gamebtn", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `Game: ${GAME_INFO[cur].name}. ${st}. Change game` },
+    gameTile(cur),
+    h("span", { class: "gtext" }, h("small", {}, "Rallypoint"), h("b", {}, GAME_INFO[cur].name), h("span", { class: "gstate " + kind }, st)),
+    h("span", { class: "gcaret", "aria-hidden": "true" }));
+  let menu = null;
+  const close = (refocus) => {
+    if (!menu) return;
+    menu.remove(); menu = null; btn.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", away, true);
+    if (refocus) btn.focus();
+  };
+  const away = (e) => { if (menu && !menu.contains(e.target) && !btn.contains(e.target)) close(false); };
+  const open = () => {
+    const opts = Object.keys(GAME_INFO).map((id) => {
+      const [t, k] = stateOf(id);
+      return h("button", { class: "gameopt", type: "button", role: "menuitemradio", "aria-checked": String(id === cur), tabindex: id === cur ? "0" : "-1",
+        onclick: () => { close(true); switchGame(id); } },
+        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].name), h("span", { class: "gstate " + k }, t)), h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)));
+    });
+    menu = h("div", { class: "gamemenu", role: "menu", "aria-label": "Choose the game",
+      onkeydown: (e) => {
+        const i = opts.indexOf(document.activeElement);
+        if (e.key === "Escape") { e.preventDefault(); close(true); }
+        else if (e.key === "Tab") close(false);
+        else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); opts[(i + (e.key === "ArrowDown" ? 1 : opts.length - 1)) % opts.length].focus(); }
+      } }, ...opts);
+    gameCardEl.append(menu);
+    btn.setAttribute("aria-expanded", "true");
+    document.addEventListener("pointerdown", away, true);
+    (opts.find((o) => o.getAttribute("aria-checked") === "true") || opts[0]).focus();
+  };
+  btn.addEventListener("click", () => (menu ? close(true) : open()));
+  btn.addEventListener("keydown", (e) => { if (!menu && e.key === "ArrowDown") { e.preventDefault(); open(); } });
+  gameCardEl = h("div", { class: "gamecard", "data-key": `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}` }, btn);
+  return gameCardEl;
+}
+/** Ctrl or Command with 1 or 2 changes the game from anywhere. */
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || wizardEl || !store.cfg) return;
+  const id = Object.keys(GAME_INFO).find((g) => GAME_INFO[g].key === e.key);
+  if (id) { e.preventDefault(); switchGame(id); }
+});
+
 function shell() {
   sideFiles = h("div"); sideNet = h("div");
   const nav = Object.entries(pages()).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
   document.getElementById("root").append(h("div", { class: "app" },
     h("aside", { class: "sidebar" },
-      // the brand line names the game, and is the menu that changes it
-      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"),
-        // the label shows the game; the select over it (invisible) is what is clicked and focused, so it keeps the native menu
-        h("label", { class: "gamepick", title: "Choose the game" }, h("span", {}, (GAMES.find(([id]) => id === store.cfg.game) || GAMES[0])[1]),
-          h("select", { "aria-label": "Game", onchange: (e) => switchGame(e.target.value) }, ...GAMES.map(([id, t]) => { const o = new Option(t, id); o.selected = id === store.cfg.game; return o; }))))),
+      gameCard(),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
@@ -3142,6 +3206,7 @@ async function start() {
   store.cfg = await invoke("get_config");
   store.games = await invoke("detect_games").catch(() => []);
   store.ra2Games = await invoke("ra2_detect").catch(() => []);
+  applyGameTheme();
   shell();
   await loadMods();
   if (!isRa2()) ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
