@@ -1,0 +1,163 @@
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -25,6 +25,7 @@
+     std::string id;                  // "GAPOWR"
+     int fw = 1, fh = 1;              // Art Foundation=WxH
+     int strength = 1;
++    int build_limit = 0;             // rules BuildLimit= (0 = none): at most this many owned per house
+     int armor_ix = 0;                // armor_index(Rules armor)
+     int cost = 0;
+     // Credits actually deducted by production.cpp's per-stage charge math
+--- a/engine/production.cpp
++++ b/engine/production.cpp
+@@ -83,6 +83,15 @@
+     return true;
+ }
+ 
++bool build_limit_reached(const std::vector<BuildingTypeDef>& types, const std::vector<Building>& buildings,
++                         int house, int type) {
++    if (type < 0 || type >= (int)types.size() || types[type].build_limit <= 0) return false;
++    int owned = 0;
++    for (const Building& b : buildings)
++        owned += b.alive && b.state != Building::State::Dead && b.house == house && b.type == type;
++    return owned >= types[type].build_limit;
++}
++
+ bool can_start(const ProductionState& ps, int type,
+                const std::vector<BuildingTypeDef>& types,
+                const std::vector<Building>& buildings, int house,
+@@ -91,6 +100,7 @@
+     if (type < 0 || type >= (int)types.size()) return false;
+     if (!conyard_alive || ps.slot.type != -1) return false;
+     if (types[type].tech_level <= 0) return false;       // -1 = never buildable
++    if (build_limit_reached(types, buildings, house, type)) return false;   // BuildLimit= (Nuke silo: 1)
+     return prerequisites_met(types[type].prerequisite, buildings, types, house, groups);
+ }
+ 
+--- a/engine/production.hpp
++++ b/engine/production.hpp
+@@ -82,6 +82,9 @@
+ // (the BuildingType factory); slot must be idle; prereqs met; TechLevel > 0.
+ // Affordability is NOT gated here — RA2 starts a build with any credits and
+ // stalls at 0 [RE: construction.md §10].
++// BuildLimit= (rules, per house): true when the house already owns that many of this building type.
++bool build_limit_reached(const std::vector<BuildingTypeDef>& types, const std::vector<Building>& buildings,
++                         int house, int type);
+ bool can_start(const ProductionState& ps, int type,
+                const std::vector<BuildingTypeDef>& types,
+                const std::vector<Building>& buildings, int house,
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2960,6 +2960,7 @@
+         std::cerr << "]\n";
+         ra2engine::fill_building_weapons(rules, id, d);   // Gap fix C (G-40): defenses
+         // W6-04-04: a Wall=yes building takes damage stages (art DamageLevels=).
++        d.build_limit = static_cast<int>(rules.section_double(id, "BuildLimit", 0.0));
+         d.w6.wall_levels = d.wall ? art.damage_levels(art_id) : 0;   // reuses W6-03-01 BuildingTypeDef::wall
+         d.w6.powers_unit = rules.image(rules.section_string(id, "PowersUnit", ""));   // W6-04-18
+         if (rules.section_string(id, "PowersUnit", "").empty()) d.w6.powers_unit.clear();
+@@ -3086,18 +3087,18 @@
+                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
+                 if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
+             }
+-        // YR SPYPICON lives in cameomd.mix (langmd) when cameo.mix has no entry.
+-        if (!ba.sw_cameos.count(static_cast<int>(ra2engine::SuperweaponType::SpyPlane))) {
+-            try {
+-                MixFile cmd = language.open_nested("cameomd.mix");
+-                if (const MixEntry* ce = cmd.find(std::string("spypicon.shp"))) {
++        // YR cameos (SPYPICON, ...) live in langmd.mix/cameomd.mix, not inside language.mix.
++        try {
++            MixFile lmd = MixFile::open_path(env_install_dir() + "langmd.mix");
++            MixFile cmd = lmd.open_nested("cameomd.mix");
++            for (const auto& kv : kSwIcons) {
++                if (ba.sw_cameos.count(static_cast<int>(kv.first))) continue;
++                if (const MixEntry* ce = cmd.find(std::string(kv.second) + ".shp")) {
+                     ra2assets::ShpFile shp = ShpFile::load(cmd.read(*ce));
+-                    if (shp.count() > 0)
+-                        ba.sw_cameos[static_cast<int>(ra2engine::SuperweaponType::SpyPlane)] =
+-                            std::move(shp);
++                    if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
+                 }
+-            } catch (const std::exception&) {}
+-        }
++            }
++        } catch (const std::exception&) {}
+     } catch (const std::exception&) {}
+     std::cerr << "[sw] SW cameos loaded=" << ba.sw_cameos.size() << "\n";
+ 
+@@ -5455,7 +5456,7 @@
+     if (cam != ba.sw_cameos.end())
+         blit_shp(ren, tc, "swcam:" + std::to_string(static_cast<int>(ty)), cam->second, 0,
+                  ba.cameo_pal, slot.x, slot.y);
+-    else if (ba.sw_has_cameo)
++    else if (ba.sw_has_cameo && ty == ra2engine::SuperweaponType::Nuke)   // never another SW's cameo
+         blit_shp(ren, tc, "swcam:nukeicon", ba.sb_nukeicon, 0, ba.cameo_pal, slot.x, slot.y);
+     else
+         shade_rect(ren, slot, 140);                     // placeholder tile
+--- a/engine/realplay_scene.inc
++++ b/engine/realplay_scene.inc
+@@ -289,6 +289,7 @@
+                 const bool def = i < static_cast<int>(ba_.defense.size()) && ba_.defense[i] != 0;
+                 if (def != (tab == 1)) continue;
+                 const bool queued = lq().producing(bc) == i;
++                if (!queued && ra2engine::build_limit_reached(ba_.roster, bs, local_house_, i)) continue;   // BuildLimit=
+                 if (!queued &&
+                     !ra2engine::prerequisites_met(d.prerequisite, bs, ba_.roster, local_house_, ba_.groups))
+                     continue;
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -545,6 +545,7 @@
+     //  * Ready (own): EVA_*Ready.
+     //  * Bolt: WeatherConBolts=WCLBOLT1 + WeatherConBoltExplosion + LightningSounds.
+     int sw_seen_ = 0;
++    long last_dropped_eva_ = -1;   // frame of the last "reinforcements have arrived"
+     std::string gen_s(const char* k) const {
+         std::string v = pres_clean(rules_ini_->get("General", k));
+         if (v.empty()) v = pres_clean(rules_ini_->get("AudioVisual", k));
+@@ -601,6 +602,8 @@
+                         fx_.spawn(gen_s("ChronoBlast"), e.x, e.y, level_at(w, e.x, e.y), 0.0);
+                         fx_.spawn(gen_s("ChronoBlastDest"), e.x2, e.y2, level_at(w, e.x2, e.y2), 0.0);
+                         snd_.eva("EVA_ChronosphereActivated");
++                    } else if (t == T::SpyPlane) {
++                        if (own) snd_.eva("EVA_SpyPlaneEnRoute");
+                     } else if (t == T::LightningStorm) {
+                         fx_.spawn(gen_s("WeatherConClouds"), e.x, e.y, level_at(w, e.x, e.y), 60.0);
+                         snd_.eva("EVA_LightningStormCreated");
+@@ -614,7 +617,16 @@
+                     snd_.play_at(gen_s("LightningSounds"), e.x, e.y, "bolt");
+                     break;
+                 case E::Dropped:
+-                    if (own) snd_.eva("EVA_ReinforcementsHaveArrived");
++                    // The spy plane reuses Dropped for each camera shot: a click, not an EVA line.
++                    if (t == T::SpyPlane) {
++                        snd_.play_at(gen_s("SpyPlaneCamera"), e.x, e.y, "spy camera");
++                        break;
++                    }
++                    // One Dropped per paratrooper: say it once per drop, not once per man.
++                    if (own && (last_dropped_eva_ < 0 || frame_ - last_dropped_eva_ > 450)) {
++                        last_dropped_eva_ = frame_;
++                        snd_.eva("EVA_ReinforcementsHaveArrived");
++                    }
+                     break;
+                 default:
+                     break;
+--- a/tests/test_production.cpp
++++ b/tests/test_production.cpp
+@@ -451,3 +451,17 @@
+     kill_building(bs[1]);                                     // Battle Lab destroyed
+     CHECK_FALSE(prerequisites_met(sref, bs, bt, 0, groups));  // TECH unmet again
+ }
++
++TEST_CASE("BuildLimit= stops a second building of the type for the same house") {
++    auto t = roster();
++    t[1].build_limit = 1;
++    std::vector<Building> bs = {live(0)};
++    ProductionState ps;
++    CHECK(can_start(ps, 1, t, bs, 0, kGroups, true));
++    bs.push_back(live(1));
++    CHECK(build_limit_reached(t, bs, 0, 1));
++    CHECK_FALSE(can_start(ps, 1, t, bs, 0, kGroups, true));
++    CHECK_FALSE(build_limit_reached(t, bs, 1, 1));   // another house is not held to it
++    bs.back().alive = false;                         // destroyed: the limit frees up
++    CHECK(can_start(ps, 1, t, bs, 0, kGroups, true));
++}
