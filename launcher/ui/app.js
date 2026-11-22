@@ -1839,7 +1839,7 @@ function onlinePage() {
       next,
       problem,
       h("details", { class: "help-inline" }, h("summary", {}, "How rooms work"),
-        h("p", { class: "muted small" }, ra2 ? "Same room and password → same lobby. First to join hosts. RA2 rooms are separate from Generals rooms of the same name." : "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
+        h("p", { class: "muted small" }, ra2 ? "Everyone who joins the same room with the same password lands in the same lobby, and the first one in hosts. Red Alert 2 rooms are separate from Generals rooms of the same name." : "Join a room on a Rallypoint server, then use the game's LAN lobby: everyone in the same room with the same password ends up in the same game. A room that doesn't exist yet is created with your password and disappears when everyone has left. A saved password stays in Rallypoint's settings file on this computer, readable only by you."))),
     roomSettings.el,
     saved$,
     conn.el,
@@ -2147,8 +2147,8 @@ function firstRunSetupRow() {
 
 // ---------------------------------------------------------------- Red Alert 2
 // The second game: the same shell and components, its own Play, Maps, Online lobby and Settings. Nothing of the
-// Generals-only features (mods, World Builder, command bar, renderer, sync logs) appears here. Stronger AI
-// reuses prefs.aiBoost (same Off/Sharper/Strong/Relentless labels) and becomes AIBoost= in the launch file.
+// Generals-only features (mods, World Builder, command bar, renderer, sync logs) appears here, nor Stronger AI:
+// RA2 games always start with the computer at its normal strength (ai_boost 0) and repairing its own buildings.
 const isRa2 = () => store.cfg.game === "ra2";
 /** The whole shell takes the game's palette (style.css :root[data-game]). */
 const applyGameTheme = () => { document.documentElement.dataset.game = isRa2() ? "ra2" : "generals"; };
@@ -2174,6 +2174,8 @@ function ra2CrateDensity() {
   if (RA2_CRATE_DENSITIES.some(([v]) => v === d)) return d;
   return ra2Flag("ra2Crates") ? "normal" : "off";
 }
+/** The crate density a room's settings describe. */
+const crateDensOf = (r) => (r.crates === false ? "off" : r.crate_minimum === 40 ? "extreme" : r.crate_minimum === 8 ? "increased" : "normal");
 /** Match options for a launch / lobby room from remembered prefs. */
 function ra2MatchOpts() {
   const dens = ra2CrateDensity();
@@ -2182,21 +2184,41 @@ function ra2MatchOpts() {
     crate_minimum: dens in RA2_CRATE_MIN ? RA2_CRATE_MIN[dens] : null,
     superweapons: ra2Flag("ra2Superweapons"),
     allies: ra2Flag("ra2Allies"),
-    auto_repair: ra2Flag("ra2AutoRepair"),
-    ai_boost: aiLocal(),
+    auto_repair: true,
+    ai_boost: 0,
   };
 }
-const ra2AiBoostLabel = (n) => (AI_BOOSTS.find(([v]) => v === n) || AI_BOOSTS[0])[1];
-function ra2CrateDensityLabel(dens, crates, min) {
-  if (crates === false || dens === "off") return "No crates";
-  if (min === 40 || dens === "extreme") return "Crates extreme";
-  if (min === 8 || dens === "increased") return "Crates increased";
-  return "Crates";
+/** The remembered rules, in the shape a room's settings have. */
+const ra2RulesNow = () => ({ credits: ra2Credits(), speed: ra2Speed(), ...ra2MatchOpts() });
+/** Remember a change to the rules for the next skirmish or room. */
+function ra2SaveRules(p) {
+  const n = {};
+  if ("credits" in p) n.ra2Credits = p.credits;
+  if ("speed" in p) n.ra2Speed = p.speed;
+  if ("crates" in p) { n.ra2CrateDensity = crateDensOf(p); n.ra2Crates = p.crates; }
+  if ("superweapons" in p) n.ra2Superweapons = p.superweapons;
+  if ("allies" in p) n.ra2Allies = p.allies;
+  prefs.set(n);
 }
-/** A remembered yes/no match option for RA2 skirmish / lobby. */
-function ra2OptCheck(label, desc, key, fallback = true) {
-  const box = h("input", { type: "checkbox", checked: ra2Flag(key, fallback), "aria-label": label, onchange: () => prefs.set({ [key]: box.checked }) });
-  return h("label", { class: "rulerow", title: desc }, h("span", {}, label), h("span", { class: "switch small" }, box));
+const RA2_CREDIT_OPTS = RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]);
+/** The match rules: three values and two switches, the same in a skirmish and a room. With `set(patch)` they are
+ *  controls; without it (a guest in a room) they are the host's choices as plain text in the same places. */
+function ra2Rules(cur, set) {
+  const text = (opts, v) => (opts.find(([x]) => x === v) || [v, String(v)])[1];
+  const field = (name, opts, v, patch) => h(set ? "label" : "div", { class: "field" }, h("span", {}, name),
+    set ? pick(name, opts, v, (x) => set(patch(x))) : h("span", { class: "fieldvalue" }, text(opts, v)));
+  const flag = (name, desc, key) => {
+    const on = cur[key] !== false;
+    if (!set) return h("div", { class: "field" }, h("span", {}, name), h("span", { class: "fieldvalue" + (on ? "" : " off") }, on ? "On" : "Off"));
+    const box = h("input", { type: "checkbox", role: "switch", checked: on, onchange: () => set({ [key]: box.checked }) });
+    return h("label", { class: "rulesw" }, h("span", { class: "stack tight" }, h("b", {}, name), h("span", { class: "muted small" }, desc)), h("span", { class: "switch small" }, box));
+  };
+  return h("div", { class: "rules" + (set ? "" : " readonly"), role: "group", "aria-label": "Match rules" },
+    field("Starting credits", RA2_CREDIT_OPTS, cur.credits, (x) => ({ credits: +x })),
+    field("Game speed", RA2_SPEEDS, cur.speed, (x) => ({ speed: +x })),
+    field("Crates", RA2_CRATE_DENSITIES, crateDensOf(cur), (x) => ({ crates: x !== "off", crate_minimum: x in RA2_CRATE_MIN ? RA2_CRATE_MIN[x] : null })),
+    flag("Superweapons", "Nukes, weather storms and the rest", "superweapons"),
+    flag("Allies", "Alliances can change mid-game", "allies"));
 }
 const fileOf = (path) => String(path).split(/[\\/]/).pop();
 const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
@@ -2249,13 +2271,7 @@ function ra2Skirmish(onChange) {
   const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2Map: mapSel.value }); load(); } });
   const table = h("div", { class: "skgrid ra2", role: "group", "aria-label": "Skirmish players" });
   const summary = h("span", { class: "muted small" });
-  const credits = pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), ra2Credits(), (v) => prefs.set({ ra2Credits: +v }));
-  const speed = pick("Game speed", RA2_SPEEDS, ra2Speed(), (v) => prefs.set({ ra2Speed: +v }));
-  const crateDensity = pick("Crates", RA2_CRATE_DENSITIES, ra2CrateDensity(), (v) => prefs.set({ ra2CrateDensity: v, ra2Crates: v !== "off" }));
-  const strongerAi = pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), aiLocal(), (v) => prefs.set({ aiBoost: +v }));
-  const superweapons = ra2OptCheck("Superweapons", "Nuclear missiles, weather storms and the rest can be built.", "ra2Superweapons");
-  const allies = ra2OptCheck("Allies", "Players can make and break alliances during the game.", "ra2Allies");
-  const autoRepair = ra2OptCheck("AI repairs", "The AI fixes damaged buildings on its own.", "ra2AutoRepair");
+  const hint = h("p", { class: "muted small maphint" }, "Click a start on the map to place the highlighted player.");
   const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
 
   function newRows(n) {
@@ -2306,6 +2322,7 @@ function ra2Skirmish(onChange) {
       const ai = rows.filter((r) => r.kind === "ai").length;
       summary.textContent = ai ? `You and ${ai} computer player${ai === 1 ? "" : "s"}` : "No computer players";
     }
+    hint.hidden = !rows.length;
     paint();
     show();
     onChange && onChange();
@@ -2356,9 +2373,8 @@ function ra2Skirmish(onChange) {
     await load();
   }
   const setup = () => ({
-    map: mapSel.value, credits: +credits.value, speed: +speed.value, seed: 0,
-    ...ra2MatchOpts(),
-    ai_boost: +strongerAi.value,
+    map: mapSel.value, seed: 0,
+    ...ra2RulesNow(),
     players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
   });
   /** Why Play cannot start this setup yet ("" when it can). */
@@ -2368,21 +2384,25 @@ function ra2Skirmish(onChange) {
   const empty = emptyState("maps", "No skirmish maps yet", "Maps with at least two start positions show up here. Add community packs or your own files.", h("button", { class: "btn", onclick: () => go("maps") }, "Open Maps"));
   const skel = h("div", { class: "ra2setup", "aria-hidden": "true" }, h("span", { class: "skeleton sk-map" }), h("div", { class: "stack" }, h("span", { class: "skeleton sk-line" }), skeletonLines(4)));
   const errBox = h("div", { hidden: true });
-  // the rules sit under the map they apply to, in the column the preview leaves free
-  const rule = (label, ctl) => h("label", { class: "rulerow" }, h("span", {}, label), ctl);
-  const rules = h("div", { class: "rulelist", role: "group", "aria-label": "Match rules" }, h("h3", {}, "Rules"),
-    rule("Credits", credits), rule("Speed", speed), rule("Crates", crateDensity), rule("Stronger AI", strongerAi),
-    superweapons, allies, autoRepair);
+  const rules = ra2Rules(ra2RulesNow(), (p) => { ra2SaveRules(p); onChange && onChange(); });
   const body = h("div", { class: "ra2setup" },
-    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts, rules),
+    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts, hint),
     h("div", { class: "mapside" },
       h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
-      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox));
+      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox,
+      h("h3", { class: "ruleshead" }, "Rules"), rules));
   const el = h("div", { class: "stack" }, skel, empty, body);
   let loaded = false;
   const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; };
+  /** What Play will start, in one line, for the footer beside it. */
+  const what = () => {
+    const m = maps.find((x) => fileOf(x.path) === mapSel.value), ai = rows.filter((r) => r.kind === "ai").length;
+    if (!m || !ai) return "";
+    const speedName = (RA2_SPEEDS.find(([v]) => v === ra2Speed()) || [0, ""])[1].toLowerCase();
+    return `${m.name}: you against ${ai} computer player${ai === 1 ? "" : "s"}, $${ra2Credits().toLocaleString("en-US")}, ${speedName} speed`;
+  };
   reload();
-  return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length, aiBoost: +strongerAi.value }); } };
+  return { el, setup, why, what, reload, remember: () => prefs.set({ ra2Ai: rows.filter((r) => r.kind === "ai").length }) };
 }
 
 function ra2PlayPage() {
@@ -2396,23 +2416,26 @@ function ra2PlayPage() {
   } }, icon("play"), "Play skirmish");
   const hasFiles = !!store.cfg.ra2.game_dir;
   const disp = h("span", { class: "muted small" });
-  const redrawDisp = () => fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()), " · ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change"));
+  const redrawDisp = () => fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()));
   redrawDisp();
   window.addEventListener("ra2display", redrawDisp);
+  const what = h("p", { class: "skwhat" });
   function update() {
     const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : sk.why();
     play.disabled = !!why;
     status.set(why);
+    what.textContent = why ? "" : sk.what();
   }
-  const hero = h("div", { class: "card hero" },
-    h("div", { class: "stack tight herotext" }, h("h2", {}, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
-      h("p", { class: "muted small gamepath" }, store.cfg.ra2.game_dir || "No game folder chosen yet"), disp),
-    h("div", { class: "row heroact" }, play, status.el));
+  // RA2 has no main menu to open: the header says which game and screen, and Play sits under the setup it starts
+  const hero = h("div", { class: "card hero slim" },
+    h("div", { class: "stack tight herotext" }, h("h2", { title: store.cfg.ra2.game_dir || "" }, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2")),
+    h("div", { class: "herodisp" }, disp, h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")));
   const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge. Steam and EA installs are found for you.", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
   const el = h("div", { class: "page" },
     pageHead("Play"),
     hero,
-    hasFiles ? h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el) : setupCard);
+    hasFiles ? h("div", { class: "card skcard" }, h("h2", {}, "Skirmish"), sk.el,
+      h("div", { class: "skfoot" }, what, h("div", { class: "row" }, status.el, play))) : setupCard);
   update();
   return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
@@ -2429,9 +2452,9 @@ function ra2MapsPage() {
   const counts = () => [...new Set(maps.map((m) => m.players).filter((n) => n >= 2))].sort((a, b) => a - b);
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Players" });
   const packStatus = h("p", { class: "muted small" });
-  const installPacks = h("button", { class: "btn", onclick: async () => {
+  const installPacks = h("button", { class: "btn small", onclick: async () => {
     installPacks.disabled = true;
-    packStatus.textContent = "Installing community map packs…";
+    packStatus.textContent = "Installing the community map packs…";
     try {
       const [packs, files] = await invoke("ra2_install_community_packs");
       say(`Installed ${packs} pack${packs === 1 ? "" : "s"} (${files} maps)`, "ok");
@@ -2439,9 +2462,6 @@ function ra2MapsPage() {
     } catch (e) { say(errText(e), "bad"); packStatus.textContent = errText(e); }
     finally { installPacks.disabled = false; drawPacks(); }
   } }, "Install community packs");
-  const packCard = h("div", { class: "card" },
-    h("div", { class: "row between" }, h("h2", {}, "Community packs"), installPacks),
-    packStatus);
   const shown = () => maps.filter((m) => filter === "all" || m.players === +filter);
   function drawChips() {
     const opts = [["all", "All"], ...counts().map((n) => [String(n), `${n} players`])];
@@ -2449,13 +2469,15 @@ function ra2MapsPage() {
   }
   function drawPacks() {
     const c = community;
-    if (!c || !c.available) { packCard.hidden = true; return; }
-    packCard.hidden = false;
+    const off = !c || !c.available;
+    installPacks.hidden = off;
+    if (off) { packStatus.textContent = ""; return; }
     const total = (c.packs || []).reduce((n, p) => n + (p.maps || 0), 0);
     const have = c.installed_files || 0;
     packStatus.textContent = have
-      ? `${have} installed · Install again to refresh`
-      : `${(c.packs || []).length} packs · ${total} maps`;
+      ? `Community packs installed (${have} files).`
+      : `${(c.packs || []).length} community packs with ${total} maps are ready to install.`;
+    installPacks.textContent = have ? "Update community packs" : "Install community packs";
     installPacks.disabled = false;
   }
   function draw() {
@@ -2465,7 +2487,7 @@ function ra2MapsPage() {
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
     empty.hidden = !!v.length; list.hidden = !v.length; empty.classList.toggle("listempty", false);
     fill(empty, maps.length ? emptyState("maps", "No maps with that many players", "Try another player count.", h("button", { class: "btn", onclick: () => { filter = "all"; draw(); } }, "Show all maps"))
-      : emptyState("maps", "No maps yet", "Install the community packs above, or drop .map, .mpr and .yrm files into your map folder.",
+      : emptyState("maps", "No maps yet", "Install the community packs, or drop .map, .mpr and .yrm files into your map folder.",
           h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")));
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
@@ -2511,9 +2533,8 @@ function ra2MapsPage() {
   reload();
   const el = h("div", { class: "page" },
     pageHead("Maps", "Skirmish and multiplayer maps for Red Alert 2 and Yuri's Revenge.", h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")),
-    packCard,
     h("div", { class: "card" },
-      h("div", { class: "row between" }, h("h2", {}, "Your maps"), refresh),
+      h("div", { class: "row between" }, h("div", { class: "stack tight" }, h("h2", {}, "Your maps"), packStatus), h("div", { class: "row" }, refresh, installPacks)),
       chips,
       h("div", { class: "ra2maps" },
         h("div", { class: "listbox" }, h("div", { class: "listhead" }, result), list, empty),
@@ -2535,9 +2556,9 @@ function ra2LobbyCard() {
         crates: settings.crates !== false,
         superweapons: settings.superweapons !== false,
         allies: settings.allies !== false,
-        auto_repair: settings.auto_repair !== false,
+        auto_repair: true,
         crate_minimum: settings.crates === false ? null : (settings.crate_minimum ?? null),
-        ai_boost: AI_BOOSTS.some(([v]) => v === settings.ai_boost) ? settings.ai_boost : aiLocal(),
+        ai_boost: 0,
       };
       await invoke("ra2_lobby_room", {
         map: settings.map, credits: settings.credits, speed: settings.speed,
@@ -2566,7 +2587,7 @@ function ra2LobbyCard() {
     if (d.am_host && !d.settings && !hostSeeded && maps && maps.length) {
       hostSeeded = true;
       const want = prefs.get().ra2Map, m = maps.find((x) => fileOf(x.path) === want) || maps[0];
-      sendRoom({ map: fileOf(m.path), credits: ra2Credits(), speed: ra2Speed(), ...ra2MatchOpts() });
+      sendRoom({ map: fileOf(m.path), ...ra2RulesNow() });
     }
     if (d.settings && !(d.settings.map in views)) loadView(d.settings.map);
     if (!d.am_host || (active >= 0 && !(d.settings && d.settings.ai[active]))) active = -1;
@@ -2614,7 +2635,7 @@ function ra2LobbyCard() {
     render(store.lobby);
   }
   function readyButton() {
-    const b = h("button", { type: "button", class: "btn readybtn", "data-key": "ready", "aria-pressed": String(mySeat.ready), onclick: () => {
+    const b = h("button", { type: "button", class: "btn readybtn" + (mySeat.ready ? "" : " primary"), "data-key": "ready", "aria-pressed": String(mySeat.ready), onclick: () => {
       mySeat.ready = !mySeat.ready; cleared = false;
       sendSeat(); render(store.lobby);
     } }, mySeat.ready ? icon("check") : null, mySeat.ready ? "Ready" : "Ready up");
@@ -2628,52 +2649,22 @@ function ra2LobbyCard() {
     let options;
     if (d.am_host) {
       const all = maps || [];
-      const cur = s || { map: "", credits: ra2Credits(), speed: ra2Speed(), ...ra2MatchOpts() };
-      const densOf = (r) => (r.crates === false ? "off" : r.crate_minimum === 40 ? "extreme" : r.crate_minimum === 8 ? "increased" : "normal");
+      const cur = s || { map: "", ...ra2RulesNow() };
       const set = (patch) => {
-        const n = { ...cur, ...patch };
-        if ("map" in patch) prefs.set({ ra2Map: n.map });
-        if ("credits" in patch) prefs.set({ ra2Credits: n.credits });
-        if ("speed" in patch) prefs.set({ ra2Speed: n.speed });
-        if ("crates" in patch || "crate_minimum" in patch) {
-          const dens = densOf(n);
-          prefs.set({ ra2CrateDensity: dens, ra2Crates: dens !== "off" });
-        }
-        if ("superweapons" in patch) prefs.set({ ra2Superweapons: n.superweapons });
-        if ("allies" in patch) prefs.set({ ra2Allies: n.allies });
-        if ("auto_repair" in patch) prefs.set({ ra2AutoRepair: n.auto_repair });
-        if ("ai_boost" in patch) prefs.set({ aiBoost: n.ai_boost });
-        sendRoom(n);
+        if ("map" in patch) prefs.set({ ra2Map: patch.map });
+        ra2SaveRules(patch);
+        sendRoom({ ...cur, ...patch });
       };
       const mapSel = pick("Map", all.map((m) => [fileOf(m.path), `${m.name} (${m.players})`]), cur.map, (v) => set({ map: v }));
       mapSel.disabled = !all.length;
-      const flag = (label, key) => {
-        const box = h("input", { type: "checkbox", checked: cur[key] !== false, "aria-label": label, onchange: () => set({ [key]: box.checked }) });
-        return h("label", { class: "field check" }, box, h("span", {}, label));
-      };
-      const densSel = pick("Crates", RA2_CRATE_DENSITIES, densOf(cur), (v) => set({
-        crates: v !== "off",
-        crate_minimum: v in RA2_CRATE_MIN ? RA2_CRATE_MIN[v] : null,
-      }));
-      const boost = AI_BOOSTS.some(([v]) => v === cur.ai_boost) ? cur.ai_boost : aiLocal();
-      options = h("div", { class: "stack tight" },
-        h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps. Add some on the Maps page.")),
-        h("div", { class: "ra2opts" },
-          h("label", { class: "field" }, h("span", {}, "Starting credits"), pick("Starting credits", RA2_CREDITS.map((c) => [c, `$${c.toLocaleString("en-US")}`]), cur.credits, (v) => set({ credits: +v }))),
-          h("label", { class: "field" }, h("span", {}, "Game speed"), pick("Game speed", RA2_SPEEDS, cur.speed, (v) => set({ speed: +v }))),
-          h("label", { class: "field" }, h("span", {}, "Crates"), densSel),
-          h("label", { class: "field" }, h("span", {}, "Stronger AI"), pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), boost, (v) => set({ ai_boost: +v }))),
-          flag("Superweapons", "superweapons"), flag("Allies allowed", "allies"), flag("Auto repair", "auto_repair")));
+      options = h("div", { class: "mapside" },
+        h("label", { class: "field" }, h("span", {}, "Map"), all.length ? mapSel : h("span", { class: "muted small" }, "No skirmish maps yet. Add some on the Maps page.")),
+        h("h3", { class: "ruleshead" }, "Rules"), ra2Rules(cur, set));
     } else {
-      const flags = s ? [
-        ra2CrateDensityLabel(null, s.crates, s.crate_minimum),
-        s.superweapons !== false ? "Superweapons" : "No superweapons",
-        s.allies !== false ? "Allies" : "No allies",
-        s.auto_repair !== false ? "Auto repair" : "No auto repair",
-        s.ai_boost ? `${ra2AiBoostLabel(s.ai_boost)} AI` : null,
-      ].filter(Boolean) : [];
-      options = s ? h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "factline" }, [`$${s.credits.toLocaleString("en-US")}`, (RA2_SPEEDS.find(([v]) => v === s.speed) || [0, ""])[1] + " speed", `${s.starts} starts`, ...flags].map((b) => h("span", {}, b))))
-        : h("p", { class: "muted small" }, "Waiting for the host to choose a map.");
+      options = s ? h("div", { class: "mapside" },
+        h("div", { class: "stack tight" }, h("h3", {}, s.map_name), h("p", { class: "muted small" }, `${s.starts} starts, chosen by the host`)),
+        h("h3", { class: "ruleshead" }, "Rules"), ra2Rules(s, null))
+        : h("div", { class: "mapside" }, h("p", { class: "muted small" }, "Waiting for the host to choose a map."));
     }
     const select = (k) => () => { if (d.am_host && active !== k) { active = k; render(store.lobby); } };
     const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"), h("span", {}, "Status"));
@@ -2714,10 +2705,10 @@ function ra2LobbyCard() {
     const key = f && (f.dataset.key || f.getAttribute("aria-label"));
     fill(card,
       h("div", { class: "row between" }, h("h2", {}, "Lobby"), badge),
-      h("div", { class: "ra2setup" }, mapPanel(d), h("div", { class: "mapside" }, options)),
+      h("div", { class: "ra2setup" }, mapPanel(d), options),
       h("div", { class: "skgrid ra2 lobby", role: "group", "aria-label": "Players in the room" }, head, people, ais),
       addAi ? h("div", { class: "row" }, addAi) : null,
-      d.players.length < 2 ? h("p", { class: "muted small" }, "Waiting for others — share the server, room and password.") : null,
+      d.players.length < 2 ? h("p", { class: "muted small" }, "Nobody else is here yet. Share the server, room and password.") : null,
       foot);
     const again = key && [...card.querySelectorAll("[data-key], [aria-label]")].find((el) => (el.dataset.key || el.getAttribute("aria-label")) === key);
     if (again) again.focus();
@@ -2729,7 +2720,7 @@ function ra2LobbyCard() {
 
 function ra2DisplayLabel(r, nat) {
   const res = !r.width ? `Screen size ${nat.w} × ${nat.h}` : `${r.width} × ${r.height}`;
-  const scale = r.logical_height ? ` · ${r.logical_height}p UI` : "";
+  const scale = r.logical_height ? `, ${r.logical_height}p interface` : "";
   return `${res}${scale}, ${r.windowed ? "windowed" : "fullscreen"}`;
 }
 
