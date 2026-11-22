@@ -1,0 +1,410 @@
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -1,6 +1,7 @@
+ #include "platform.hpp"
+ #include <algorithm>
+ #include "touch_gestures.hpp"
++#include "logical_canvas.hpp"
+ 
+ #include <SDL.h>
+ #include <cstdio>
+@@ -15,6 +16,33 @@
+     int w = 0;
+     int h = 0;
+     TouchGestures touch;   // G-70 gesture layer (fed by SDL_FINGER*)
++    // HiDPI present (logical_canvas.hpp present_mode): an exact whole scale
++    // goes through SDL's integer scale; a fractional one draws the frame into
++    // `canvas`, enlarges it into `pre` with nearest sampling and filters that
++    // down to the window. `hidden` (--play) always keeps the integer scale.
++    bool hidden = false;
++    int int_scale = -1;   // SDL_RenderSetIntegerScale state (-1 = not set yet)
++    bool bound = false;   // `canvas` is the render target of this frame
++    double fit = 1.0;     // window pixels per canvas pixel, last frame
++    SDL_Texture* canvas = nullptr;
++    SDL_Texture* pre = nullptr;
++    int canvas_w = 0, canvas_h = 0, pre_w = 0, pre_h = 0;
++    float wheel = 0.0f;   // fractional trackpad scroll not yet sent as a notch
++    void drop_targets() {
++        if (canvas) SDL_DestroyTexture(canvas);
++        if (pre) SDL_DestroyTexture(pre);
++        canvas = pre = nullptr;
++        canvas_w = canvas_h = pre_w = pre_h = 0;
++    }
++    static SDL_Texture* target(SDL_Renderer* r, SDL_Texture*& t, int& tw, int& th, int w, int h) {
++        if (t && tw == w && th == h) return t;
++        if (t) SDL_DestroyTexture(t);
++        t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w, h);
++        tw = t ? w : 0;
++        th = t ? h : 0;
++        if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
++        return t;
++    }
+     // W9-04-04: a phone returning from the background can deliver a mouse
+     // event (no real mouse: the window corner) -- it switched the game to
+     // mouse mode and edge-scrolled the map into the black. Mouse events are
+@@ -68,12 +96,19 @@
+     // Crisp upscaled UI / shell art: bilinear logical-size scaling blurs 1px
+     // Westwood bitmap fonts and SHP pixels on Retina and other HiDPI windows.
+     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
++    // Windows: per-monitor DPI aware, so a 150% display gets a real pixel
++    // window instead of a 100% one the compositor stretches (blurry text).
++    // Window sizes stay in pixels (no SDL_HINT_WINDOWS_DPI_SCALING). Other
++    // systems ignore the hint.
++    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+         throw std::runtime_error(SDL_GetError());
+     }
+ 
+     Uint32 flags = hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN;
+-#if defined(__APPLE__) && !defined(__ANDROID__)
++#ifndef __ANDROID__
++    // macOS Retina and Wayland scaled outputs: a drawable in real pixels (the
++    // window size stays in points there). X11 and Windows are pixels anyway.
+     flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+ #endif
+ #ifdef __ANDROID__
+@@ -123,10 +158,10 @@
+     //    drawn. Setting the logical size keeps rendering AND input in the
+     //    same fixed coordinate space on both platforms.
+     SDL_RenderSetLogicalSize(renderer, w, h);
+-    SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
+ 
+     Platform p;
+     p.p_ = new Impl{window, renderer, w, h, TouchGestures{}};
++    p.p_->hidden = hidden;
+     p.p_->update_slop();
+     return p;
+ }
+@@ -177,8 +212,13 @@
+ }
+ void Platform::output_size(int& w, int& h) const {
+     w = h = 0;
+-    if (p_) SDL_GetRendererOutputSize(p_->renderer, &w, &h);
++    if (!p_) return;
++    // The window's drawable in pixels (Retina / Wayland: points x scale), also
++    // while the canvas texture is the render target.
++    SDL_GetWindowSizeInPixels(p_->window, &w, &h);
++    if (w <= 0 || h <= 0) SDL_GetRendererOutputSize(p_->renderer, &w, &h);
+ }
++double Platform::present_fit() const { return p_ ? p_->fit : 1.0; }
+ 
+ Platform::Platform(Platform&& other) noexcept : p_(other.p_) {
+     other.p_ = nullptr;
+@@ -317,6 +357,7 @@
+             break;
+         case SDL_RENDER_DEVICE_RESET:
+         case SDL_RENDER_TARGETS_RESET:
++            p_->drop_targets();   // recreated by the next begin_frame
+             ev.kind = InputEvent::RenderReset;
+             break;
+         case SDL_WINDOWEVENT:
+@@ -332,6 +373,21 @@
+                 ev.kind = InputEvent::None;
+             }
+             break;
++        case SDL_MOUSEWHEEL: {
++            // Trackpads send fractions of a notch: add them up, one event per
++            // whole notch (a flick still gives several).
++            float dy = e.wheel.preciseY;
++            if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
++            p_->wheel += dy;
++            const int notches = static_cast<int>(p_->wheel);
++            p_->wheel -= static_cast<float>(notches);
++            if (notches == 0) { ev.kind = InputEvent::None; break; }
++            ev.kind = InputEvent::Wheel;
++            ev.dy = notches;
++            ev.x = e.wheel.mouseX;
++            ev.y = e.wheel.mouseY;
++            break;
++        }
+         case SDL_TEXTINPUT:
+             ev.kind = InputEvent::Text;
+             std::snprintf(ev.text, sizeof ev.text, "%s", e.text.text);
+@@ -406,13 +462,50 @@
+ }
+ 
+ void Platform::begin_frame() {
++    SDL_Renderer* r = p_->renderer;
++    if (p_->bound) SDL_SetRenderTarget(r, nullptr);   // a frame that never presented
++    p_->bound = false;
++    int ow = 0, oh = 0;
++    SDL_GetRendererOutputSize(r, &ow, &oh);
++    const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
++    p_->fit = m.fit;
++    const int want_int = (p_->hidden || m.exact) ? 1 : 0;
++    if (want_int != p_->int_scale) {
++        SDL_RenderSetIntegerScale(r, want_int ? SDL_TRUE : SDL_FALSE);
++        p_->int_scale = want_int;
++    }
++    if (!want_int && Impl::target(r, p_->canvas, p_->canvas_w, p_->canvas_h, p_->w, p_->h) &&
++        SDL_SetRenderTarget(r, p_->canvas) == 0)
++        p_->bound = true;
+     // G-88: black, like the original (unmapped / shrouded area is black).
+-    SDL_SetRenderDrawColor(p_->renderer, 0, 0, 0, 255);
+-    SDL_RenderClear(p_->renderer);
++    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
++    SDL_RenderClear(r);
+ }
+ 
+ void Platform::present() {
+-    SDL_RenderPresent(p_->renderer);
++    SDL_Renderer* r = p_->renderer;
++    if (p_->bound) {
++        p_->bound = false;
++        SDL_Texture* src = p_->canvas;
++        int ow = 0, oh = 0;
++        SDL_SetRenderTarget(r, nullptr);
++        SDL_GetRendererOutputSize(r, &ow, &oh);
++        const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
++        if (m.prescale > 1 &&
++            Impl::target(r, p_->pre, p_->pre_w, p_->pre_h, p_->w * m.prescale, p_->h * m.prescale) &&
++            SDL_SetRenderTarget(r, p_->pre) == 0) {
++            SDL_SetTextureScaleMode(p_->canvas, SDL_ScaleModeNearest);
++            SDL_RenderCopy(r, p_->canvas, nullptr, nullptr);
++            SDL_SetRenderTarget(r, nullptr);
++            src = p_->pre;
++        }
++        SDL_SetTextureScaleMode(src, SDL_ScaleModeLinear);
++        SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
++        SDL_RenderClear(r);
++        const SDL_Rect dst{0, 0, p_->w, p_->h};   // logical: SDL letterboxes it
++        SDL_RenderCopy(r, src, nullptr, &dst);
++    }
++    SDL_RenderPresent(r);
+ }
+ 
+ void* Platform::renderer() const {
+--- a/engine/platform.hpp
++++ b/engine/platform.hpp
+@@ -15,7 +15,9 @@
+     enum Kind { None, Quit, PointerDown, PointerUp, PointerMove, Key, Text, Pan,
+                 AppBackground, AppForeground, AppLowMemory, RenderReset,
+                 Resize /* R-162: the window / panel changed size */,
+-                FocusGained /* desktop: the OS may re-show the system cursor */ } kind = None;
++                FocusGained /* desktop: the OS may re-show the system cursor */,
++                Wheel /* mouse wheel / trackpad scroll: dy whole notches, + = away from the user;
++                         x, y the pointer (logical) */ } kind = None;
+     int x = 0, y = 0;                       // pointer position (window pixels)
+     enum Button { Left, Right } button = Left;  // valid on PointerDown/PointerUp
+     bool shift = false;                     // Shift held at event time
+@@ -81,6 +83,10 @@
+     void set_logical_size(int w, int h);
+     // Physical output size in pixels (the window / phone panel).
+     void output_size(int& w, int& h) const;
++    // Window pixels per logical canvas pixel in the last frame (1 when the
++    // window is the canvas, 2 on a Retina window at the 2x canvas, 1.5 for
++    // 1280x720 menus on 1080p). The tactical zoom limit reads it.
++    double present_fit() const;
+     // W4-AM-07: a finger resting toward a hold (the scene draws a ring).
+     bool touch_hold(int& x, int& y, float& progress) const;
+ private:
+--- a/engine/app_robust.inc
++++ b/engine/app_robust.inc
+@@ -21,14 +21,14 @@
+ // canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi phone -> ~548, clamped
+ // 520..720 -- tablets keep 720; it was 0.85 dp / 484 px, which showed only
+ // 42% of the desktop's map area), so the sidebar's 60x48 cameos stay ~45x36
+-// dp. On desktop the height follows the window's pixel height (720 floor,
+-// 1440 cap): --width/--height, RA2.INI [Video] ScreenWidth/ScreenHeight and
+-// the Options resolution all size that window, so 1920x1080 is a 1080-line
+-// tactical view, not a magnified 720. W = H * aspect, at least 16:9 (narrower
++// dp. On desktop the canvas follows the window's pixels (desktop_canvas:
++// 720 floor, 1440 cap, HiDPI windows divided by a whole number):
++// --width/--height, RA2.INI [Video] ScreenWidth/ScreenHeight and the Options
++// resolution all size that window, so 1920x1080 is a 1080-line tactical view,
++// not a magnified 720. W = H * aspect, at least 16:9 (narrower
+ // panels letterbox) and at most ~21:9. Menus stay 1280x720 (Scene's own
+ // logical size). --play `set canvas` wins; otherwise a hidden 1280x720
+ // harness window stays 1280x720.
+-#include "logical_canvas.hpp"
+ void game_logical_size(int& out_w, int& out_h) {
+     out_w = 1280;
+     out_h = 720;
+@@ -50,7 +50,16 @@
+         lh = std::max(520, std::min(720, lh)) & ~1;
+     }
+ #else
+-    lh = ra2engine::desktop_logical_height(h);
++    // RA2_LOGICAL_HEIGHT (the launcher's Settings > Display > UI scale: 720,
++    // 900 or 1080) fixes the canvas height; otherwise the canvas is the
++    // window's pixels over a whole number (desktop_canvas: crisp on HiDPI).
++    const char* env = std::getenv("RA2_LOGICAL_HEIGHT");
++    const int fixed = env ? std::atoi(env) : 0;
++    if (fixed < 480 || fixed > 2160) {
++        ra2engine::desktop_canvas(w, h, out_w, out_h);
++        return;
++    }
++    lh = fixed & ~1;
+ #endif
+     ra2engine::logical_size_for_height(lh, w, h, out_w, out_h);
+ }
+@@ -83,7 +92,12 @@
+     const std::string dir = autoshot_dir();
+     if (dir.empty()) return;
+     g_autoshot_done.insert(tag);
+-    capture_png(static_cast<SDL_Renderer*>(plat.renderer()), dir + tag + ".png", plat.width(), plat.height());
++    // The frame's real size (the canvas texture, or the HiDPI window), not the
++    // logical one: reading a 2x window into a 1x buffer overran it.
++    SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
++    int w = plat.width(), h = plat.height();
++    SDL_GetRendererOutputSize(ren, &w, &h);
++    capture_png(ren, dir + tag + ".png", w, h);
+     SDL_Log("[autoshot] %s%s.png", dir.c_str(), tag.c_str());
+ }
+ 
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -101,6 +101,7 @@
+ #include <filesystem>        // P7: temp save dir for --demo-saveload
+ #include <ctime>             // P7: save timestamps
+ #include "sidebar.hpp"
++#include "logical_canvas.hpp"  // desktop canvas size and the HiDPI present scale
+ #include "texture_cache.hpp"
+ #include "skirmish.hpp"
+ #include "skirmish_lobby.hpp"
+@@ -5557,14 +5558,13 @@
+         // W5-PRES R-142 [RE: credits draw 0x4A2280, colour 0xB0E98C by side
+         // FUN_0072E520]: Allied RGB(164,210,255), Soviet/other RGB(255,255,0).
+         const bool allied = std::string(g_sidebar_mix) == "sidec01.mix";
+-        int gscale = hud_present_scale(ren);
+-        while (gscale > 1 && g_game_font->height() * gscale > ra2engine::kCreditsH - 1) --gscale;
+-        const int tw = fnt_text_width(*g_game_font, cs) * gscale;
+-        const int th = g_game_font->height() * gscale;
++        // Drawn 1:1 on the canvas: the present scale (Platform) makes each
++        // canvas pixel whole screen pixels, so it stays the sidebar's size.
++        const int tw = fnt_text_width(*g_game_font, cs);
++        const int th = g_game_font->height();
+         const int tx = lay.credits.x + 84 - tw / 2;
+         const int ty = lay.credits.y + (lay.credits.h - th) / 2;
+-        hud_text_rgb(ren, tc, *g_game_font, cs, tx, ty, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0,
+-                     gscale);
++        hud_text_rgb(ren, tc, *g_game_font, cs, tx, ty, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0);
+     } else {
+         draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
+     }
+--- a/engine/hud_text.inc
++++ b/engine/hud_text.inc
+@@ -224,18 +224,6 @@
+     return s;
+ }
+ 
+-// Output / logical scale for crisp bitmap-font sizing (HiDPI letterboxing).
+-inline int hud_present_scale(SDL_Renderer* ren) {
+-    int ow = 0, oh = 0, lw = 0, lh = 0;
+-    if (SDL_GetRendererOutputSize(ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return 1;
+-    if (SDL_RenderGetLogicalSize(ren, &lw, &lh) != 0 || lw <= 0 || lh <= 0) {
+-        lw = 1280;
+-        lh = 720;
+-    }
+-    const double s = std::min(ow / static_cast<double>(lw), oh / static_cast<double>(lh));
+-    return std::max(1, static_cast<int>(std::lround(s)));
+-}
+-
+ // W5-PRES: game-font text in one RGB colour (every non-zero glyph pixel white,
+ // tinted by a texture colour mod) -- the credits tally's side colour. `scale`
+ // enlarges glyphs with nearest-neighbour sampling (integer steps only).
+--- a/engine/logical_canvas.hpp
++++ b/engine/logical_canvas.hpp
+@@ -5,23 +5,89 @@
+ 
+ namespace ra2engine {
+ 
+-// Desktop tactical-view height from the window's pixel height. A bigger
+-// window shows more of the map (the original grew with ScreenHeight) instead
+-// of magnifying a 720-line picture. 720 is the floor so a small window keeps
+-// today's canvas; 1440 is the cap so a 4K window does not draw 4K of sprites.
+-inline int desktop_logical_height(int output_h) {
+-    int lh = output_h;
+-    if (lh < 720) lh = 720;
+-    if (lh > 1440) lh = 1440;
+-    return lh & ~1;
+-}
+-
+-// Width is `lh` times the window's aspect, kept between 16:9 and ~21:9.
+-// Narrower windows letterbox; wider ones gain map until the cap.
++// A canvas `lh` lines high (RA2_LOGICAL_HEIGHT), `lh` times the window's
++// aspect wide, kept between 16:9 and ~21:9. Narrower windows letterbox.
+ inline void logical_size_for_height(int lh, int window_w, int window_h, int& out_w, int& out_h) {
+     const int lw = static_cast<int>(std::lround(static_cast<double>(lh) * window_w / window_h)) & ~1;
+     out_h = lh;
+     out_w = std::max(lh * 16 / 9, std::min(lh * 239 / 100, lw));
+ }
+ 
++// HiDPI: the desktop match canvas is the window's pixels divided by a whole
++// number k, so every canvas pixel is exactly k x k screen pixels (bitmap fonts
++// and SHP art stay crisp, never 1.36 px wide). k is the smallest that keeps
++// the canvas at most 1440 lines: 1080p / 1440p k = 1, a 2160-line 4K screen
++// or a 1964-line Retina panel k = 2 (1080 / 982 lines, the size the art was
++// made for), 5K k = 2 (1440). Below 720 lines the canvas stays 720 (scaled
++// down). Width as logical_size_for_height, without its rounding to even, so
++// k * canvas is the window to within k - 1 pixels.
++inline int desktop_pixel_scale(int output_h) {
++    if (output_h <= 1440) return 1;
++    return (output_h + 1439) / 1440;
++}
++inline void desktop_canvas(int output_w, int output_h, int& out_w, int& out_h) {
++    const int k = desktop_pixel_scale(output_h);
++    const int lh = std::max(720, output_h / k);
++    const int lw = output_w / k;
++    out_h = lh;
++    out_w = std::max(lh * 16 / 9, std::min(lh * 239 / 100, lw));
++}
++
++// How a lw x lh canvas reaches an ow x oh window. `exact`: a whole scale k >= 1
++// fills one axis to within k - 1 pixels, so SDL's integer scale is used (no
++// resampling at all). Otherwise the scale is fractional (1280x720 menus on
++// 1080p are 1.5x; a window smaller than the canvas is < 1): the frame is drawn
++// into a canvas texture, enlarged `prescale` times with nearest sampling and
++// then filtered down to the window (sharp bilinear: even pixel widths, at most
++// one screen pixel of softening at the edges). prescale 1 = filter directly.
++struct PresentMode {
++    bool exact = true;
++    int scale = 1;      // exact: the whole scale
++    int prescale = 1;   // fractional: the nearest-neighbour step before filtering
++    double fit = 1.0;   // window pixels per canvas pixel (the limiting axis)
++};
++inline PresentMode present_mode(int ow, int oh, int lw, int lh) {
++    PresentMode m;
++    if (ow <= 0 || oh <= 0 || lw <= 0 || lh <= 0) return m;
++    m.fit = std::min(static_cast<double>(ow) / lw, static_cast<double>(oh) / lh);
++    const int k = std::min(ow / lw, oh / lh);
++    if (k >= 1 && (ow - k * lw < k || oh - k * lh < k)) {
++        m.scale = k;
++        return m;
++    }
++    m.exact = false;
++    m.prescale = std::max(1, static_cast<int>(std::ceil(m.fit - 1e-9)));
++    return m;
++}
++
++// Tactical zoom (presentation only: the camera, the simulation and the saves
++// never see it). zoom = canvas pixels per world pixel, 1 = the original's
++// size. Zooming out is limited so a world pixel never gets smaller than half
++// a screen pixel's worth of detail: on a 1:1 screen 0.75 (tiles 45 px wide),
++// at 2 screen pixels per canvas pixel (Retina, 4K) 0.5, which is the art at
++// exactly one screen pixel per art pixel. Never below 0.5, never above 1.
++inline double zoom_min(double screen_px_per_canvas_px) {
++    const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
++    return std::max(0.5, std::min(0.75, 1.0 / s));
++}
++// One wheel notch / key press: eighths (1, 0.875, 0.75, 0.625, 0.5), clamped.
++inline double zoom_step(double zoom, int dir, double zmin) {
++    double z = std::round((zoom + 0.125 * dir) * 8.0) / 8.0;
++    return std::max(zmin, std::min(1.0, z));
++}
++// The world-view size that fills `canvas` canvas pixels at `zoom`.
++inline int zoom_view(int canvas, double zoom) {
++    return zoom >= 1.0 ? canvas : static_cast<int>(std::ceil(canvas / zoom - 1e-9));
++}
++// A canvas pixel coordinate (pointer) in the world view (what Input and the
++// camera use). Exact inverse of drawing the world view scaled by `zoom`.
++inline int zoom_to_view(int canvas_px, double zoom) {
++    return zoom >= 1.0 ? canvas_px : static_cast<int>(std::floor(canvas_px / zoom));
++}
++// The camera after a zoom change that keeps the world point under canvas pixel
++// `anchor` fixed (the pointer for the wheel, the view centre for keys).
++inline int zoom_keep_point(int cam, int anchor, double z_old, double z_new) {
++    return cam + static_cast<int>(std::lround(anchor / z_new - anchor / z_old));
++}
++
+ }  // namespace ra2engine
