@@ -1,24 +1,17 @@
+## Rallypoint 0.10.0-beta.4
+
+**Red Alert 2 fixes: the Spy Plane, building limits and Tesla Troopers.** Generals is untouched.
+
+- **Spy Plane done properly.** Its sidebar button no longer shows "Nuke Attack", and each photo no longer plays "Reinforcements have arrived". You get "Spy plane en route" when it launches and a camera click per shot. Paradrops say their line once, not once per soldier.
+- **Building limits.** A building with a limit, like the Nuclear Missile Silo, can only be built once. The sidebar hides it while you have one, and the computer follows the same rule.
+- **Tesla Troopers sound right when they charge a coil**: the recharge hum and a bolt to the coil, the way the original does it.
+- **Old RA2 saves will not load.** Generals saves are unaffected, and RA2 multiplayer needs everyone on this beta.
+- **Not played yet.** These build and pass their tests, but nobody has heard the trooper sound or flown the spy plane with it. If something sounds off, send the debug logs.
+
 ## Rallypoint 0.10.0-beta.3
 
-**Red Alert 2 gets its own look and a much closer match to the original game.** Generals is untouched.
-
-- **A better way to switch games.** Generals and RA2 sit side by side under the logo, one click apart, and the whole window changes colour with the game. `Ctrl/Cmd+1` and `Ctrl/Cmd+2` switch from anywhere, and the setup wizard asks which game you are setting up.
-- **RA2 pages rebuilt to match Generals.** Play uses the same hero, the match rules are one tidy list beside the map, maps show placeholders while they load, and every empty or failed state says what is wrong and what to do next.
-- **Sharp text on big and Retina screens**, and a zoom-out for the battlefield: scroll wheel, trackpad or PgUp/PgDn. See more of the map on a large display without the tiles turning to mush.
-- **Closer to the original game:**
-  - Turrets hold their aim and swing back like the retail ones, and damaged buildings burn.
-  - The computer calls for help the way gamemd does, and transports answer.
-  - Magnetron drops now blast, and the Floating Disc drains a base properly.
-  - The Spy Plane reveals the map, Slave Miners scoot toward ore, and undeployed Slave Miners keep their slaves.
-  - Country bonuses and each country's unique units follow the rules files.
-  - Ramps, slopes and walking animation no longer snap.
-- **Not compatible with beta.2 for RA2 multiplayer, and old RA2 saves will not load.** Everyone in a room needs this beta. Generals multiplayer is unchanged.
-- **Played by nobody yet.** These changes build and pass their tests on Windows, macOS and Linux, but not one of them has been tried in a real game. If a turret, a fire or the zoom looks wrong on your screen, send the debug logs.
+Red Alert 2 got its own look, a two-part game switch (Ctrl/Cmd+1 and 2), sharper text with a battlefield zoom-out, and a closer match to the original: turrets that hold aim, burning buildings, the computer calling for help, Magnetron blasts, country bonuses and unique units, smooth ramps. Not compatible with beta.2 for RA2 multiplayer.
 
 ## Rallypoint 0.10.0-beta.2
 
 Red Alert 2 and Yuri's Revenge join the launcher: play, maps and online, Yuri's Slave Miner, Gattling, Magnetron, Floating Disc and mind control, lobby options from CnCNet, and a first-start wizard that remembers your last game. Apple Silicon only on Mac.
-
-## Rallypoint 0.10.0-beta.1
-
-World Builder opens from the Maps page on Windows with your mods loaded, and Windows updates now stay in the folder you installed to.
