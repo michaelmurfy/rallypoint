@@ -2899,7 +2899,7 @@ window.addEventListener("net", () => updateSidebar());
 // ---------------------------------------------------------------- the game card (who you are playing, and the one place to change it)
 const GAME_INFO = {
   generals: { name: "Generals Zero Hour", kicker: "Generals", short: "Zero Hour", key: "1" },
-  ra2: { name: "Red Alert 2", kicker: "Red Alert 2", short: "Yuri's Revenge", key: "2" },
+  ra2: { name: "Red Alert 2", kicker: "Yuri's Revenge", short: "Red Alert 2", key: "2" },
 };
 const gameReady = (id) => !!(id === "ra2" ? store.cfg.ra2.game_dir : store.cfg.game_dir);
 /** The game's emblem: Generals keeps the Rallypoint badge, Red Alert 2 gets a star on its own blue. */
@@ -2928,7 +2928,7 @@ function gameCard() {
       const [t, k] = stateOf(id);
       return h("button", { class: "gameopt", type: "button", role: "menuitemradio", "aria-checked": String(id === cur), tabindex: id === cur ? "0" : "-1",
         onclick: () => { close(true); switchGame(id); } },
-        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short), h("span", { class: "gstate " + k }, t)), h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)));
+        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short), h("span", { class: "gstate " + k }, t, h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)))));
     });
     menu = h("div", { class: "gamemenu", role: "menu", "aria-label": "Choose the game",
       onkeydown: (e) => {

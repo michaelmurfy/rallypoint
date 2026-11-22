@@ -169,3 +169,10 @@ window.__TAURI__ = {
 // #...@online opens the Online page; #ra2online...hostchange changes the credits 6 s in (Sam's ready clears for 4 s)
 if (hash.includes("@online")) { const t = setInterval(() => { if (store.page === "play") { clearInterval(t); go("online"); } }, 100); }
 if (hash.includes("hostchange")) setTimeout(() => { if (lobby.settings) { lobby.settings = { ...lobby.settings, credits: 20000 }; lobby.changedAt = Date.now(); } }, 6000);
+// #page-maps, #page-settings ... open that page after start; #gamemenu opens the game card's menu; #switch-ra2 switches game after start
+{
+  const pg = hash.match(/page-(\w+)/);
+  const click = (sel) => setTimeout(() => { const el = document.querySelector(sel); el && el.click(); }, 900);
+  if (pg) click(`.nav[data-page="${pg[1]}"]`);
+  if (hash.includes("gamemenu")) click(".gamebtn");
+}
