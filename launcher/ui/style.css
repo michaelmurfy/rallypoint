@@ -602,8 +602,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .page-head:has(.splitbtn) { position: relative; z-index: 5; }
 
 /* ---- Red Alert 2: the same components; only these layouts are its own ---- */
-.narrow-only { display: none !important; }
-@media (max-width: 760px) { .narrow-only { display: grid !important; } }
 /* skirmish and lobby tables: a column more than Generals (side and colour), a status column in the lobby */
 .skgrid.ra2 { --pc: var(--muted); overflow-x: auto; padding: 3px; margin: -3px; }
 .skgrid.ra2 .skrowhead, .skgrid.ra2 .skrow2 { grid-template-columns: 14px minmax(104px, 1.3fr) minmax(104px, 1.2fr) minmax(92px, 1fr) minmax(82px, .85fr) minmax(82px, .85fr); }
@@ -674,12 +672,12 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 
 /* ---- the game switch: two games, two parts, under the brand; the pressed one is the game on screen ---- */
 .gameswitch { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; margin: 0 2px 12px; border-radius: var(--r-btn); background: color-mix(in srgb, var(--bg) 75%, transparent); border: 1px solid var(--line); }
-.gseg { position: relative; min-width: 0; padding: 6px 4px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
+.gseg { min-width: 0; padding: 6px 3px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
 .gseg:hover { color: var(--text); }
 .gseg[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--gold), 0 1px 2px rgba(0, 0, 0, .25); }
 .gseg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gseg .short { display: none; }
-.gseg .need { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn-ink); }
+.gseg .need { display: inline-block; width: 6px; height: 6px; margin-left: 5px; vertical-align: 2px; border-radius: 50%; background: var(--warn-ink); }
 @media (max-width: 760px) {
   .gameswitch { grid-template-columns: 1fr; margin: 0 0 12px; }
   .gseg .long { display: none; } .gseg .short { display: inline; }
@@ -697,7 +695,7 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 /* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
 .page-head .head-text { display: grid; gap: 3px; }
 .page-head .head-sub { color: var(--muted); font-size: 13px; }
-@media (max-width: 860px) { @media (max-width: 520px) { .rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+.rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
 .rules .switches { display: flex; flex-wrap: wrap; gap: 10px 22px; }
 .ra2opts .field.check { padding-top: 0; }
 .empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }

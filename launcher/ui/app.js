@@ -2126,7 +2126,7 @@ function tabbed(label, sections, current, onPick) {
 function settingsPage() {
   const files = gameFilesPanel(() => updateSidebar());
   const t = tabbed("Settings", [
-    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
+    ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow())]],
     ["graphics", "Graphics", () => graphicsCards()],
     ["multiplayer", "Multiplayer", () => [syncCard()]],
     ["rallypoint", "Rallypoint", () => [
@@ -2152,7 +2152,6 @@ function firstRunSetupRow() {
 const isRa2 = () => store.cfg.game === "ra2";
 /** The whole shell takes the game's palette (style.css :root[data-game]). */
 const applyGameTheme = () => { document.documentElement.dataset.game = isRa2() ? "ra2" : "generals"; };
-const GAMES = [["generals", "Generals Zero Hour"], ["ra2", "Red Alert 2"]];
 const RA2_NAME = "Red Alert 2: Yuri's Revenge";
 const RA2_SIDES = ["America", "Korea", "France", "Germany", "Great Britain", "Libya", "Iraq", "Cuba", "Russia", "Yuri"]; // the engine's countries in order (ra2launch::SIDES)
 const RA2_COLORS = ["Yellow", "Red", "Blue", "Green", "Orange", "Teal", "Purple", "Pink"];
@@ -2812,17 +2811,12 @@ function nameSetting() {
   return setting("Name", note, box);
 }
 
-/** Which game the launcher shows, for narrow windows where the sidebar has no room for its menu. */
-function gameSetting() {
-  return h("div", { class: "card narrow-only" }, h("div", { class: "settings" }, setting("Game", "The game Rallypoint is set up for.", pick("Game", GAMES, store.cfg.game, (v) => switchGame(v)))));
-}
-
 function ra2SettingsPage() {
   const files = gameFilesPanel(() => updateSidebar(), "ra2");
   const displayFb = liveStatus();
   const tab = store.settingsTab === "rallypoint" ? "rallypoint" : (store.settingsTab === "display" ? "display" : "game");
   const t = tabbed("Settings", [
-    ["game", "Game", () => [gameSetting(), h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ra2PlayerDefaultsCard()]],
+    ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ra2PlayerDefaultsCard()]],
     ["display", "Display", () => [ra2DisplayCard(displayFb)]],
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
