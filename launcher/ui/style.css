@@ -110,6 +110,14 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 @property --accent { syntax: "<color>"; inherits: true; initial-value: #d4312f; }
 @property --accent-ink { syntax: "<color>"; inherits: true; initial-value: #ffffff; }
 @property --rose { syntax: "<color>"; inherits: true; initial-value: #f08f8a; }
+/* the ground and text tokens too, so switching game cross-fades the palette (browsers without @property just swap) */
+@property --bg { syntax: "<color>"; inherits: true; initial-value: #150808; }
+@property --surface { syntax: "<color>"; inherits: true; initial-value: #200d0f; }
+@property --surface-2 { syntax: "<color>"; inherits: true; initial-value: #301318; }
+@property --text { syntax: "<color>"; inherits: true; initial-value: #f8eded; }
+@property --muted { syntax: "<color>"; inherits: true; initial-value: #cba3a6; }
+@property --gold { syntax: "<color>"; inherits: true; initial-value: #e8b84a; }
+:root.swapping { transition: --bg .4s var(--ease), --surface .4s var(--ease), --surface-2 .4s var(--ease), --text .4s var(--ease), --muted .4s var(--ease), --accent .4s var(--ease), --rose .4s var(--ease), --gold .4s var(--ease); }
 .card.hero { transition: --accent .8s var(--ease), --accent-ink .8s var(--ease), --rose .8s var(--ease); }
 .card.hero.blue { --accent: #2f6fd6; --accent-ink: #ffffff; --rose: #8fb4f2; }
 .card.hero { padding: 26px 28px; gap: 20px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface) 65%); }
@@ -602,14 +610,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .page-head:has(.splitbtn) { position: relative; z-index: 5; }
 
 /* ---- Red Alert 2: the same components; only these layouts are its own ---- */
-/* the brand line is the game, and the quiet menu that changes it */
-.gamepick { position: relative; justify-self: start; display: inline-flex; align-items: center; gap: 6px; margin-left: -5px; padding: 1px 6px 1px 5px; border-radius: 6px; color: var(--gold); font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: background .12s var(--ease); }
-.gamepick::after { content: ""; width: 4px; height: 4px; margin-top: -2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
-.gamepick:hover { background: var(--surface-2); }
-.gamepick:has(select:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.gamepick select { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; opacity: 0; cursor: pointer; }
-.narrow-only { display: none !important; }
-@media (max-width: 760px) { .narrow-only { display: grid !important; } }
 /* skirmish and lobby tables: a column more than Generals (side and colour), a status column in the lobby */
 .skgrid.ra2 { --pc: var(--muted); overflow-x: auto; padding: 3px; margin: -3px; }
 .skgrid.ra2 .skrowhead, .skgrid.ra2 .skrow2 { grid-template-columns: 14px minmax(104px, 1.3fr) minmax(104px, 1.2fr) minmax(92px, 1fr) minmax(82px, .85fr) minmax(82px, .85fr); }
@@ -657,3 +657,79 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .startmark:disabled { cursor: default; }
 .readybtn[aria-pressed="true"] { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok-ink) 55%, transparent); background: color-mix(in srgb, var(--ok-ink) 14%, var(--surface-2)); }
 .lobbyfoot { flex-wrap: wrap; }
+
+/* ---- one launcher, one identity per game: data-game on <html> swaps the whole palette ---- */
+:root[data-game="ra2"] {
+  --bg: #08111d; --surface: #0e1a2b; --surface-2: #172b45; --line: rgba(190, 220, 255, .13);
+  --text: #eaf2fc; --muted: #9fb7d3;
+  --accent: #2f7de1; --accent-ink: #ffffff; --rose: #8fbcf5; --gold: #f0b429;
+  --c-settings: #b7a98a; --bad-ink: #ffb4a8;
+  --shadow: 0 18px 48px rgba(0, 0, 0, .6);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-game="ra2"] {
+    --bg: #eef3fa; --surface: #ffffff; --surface-2: #dde8f6; --line: rgba(13, 40, 74, .15);
+    --text: #0c1c33; --muted: #4a6482;
+    --accent: #1f5fbf; --rose: #1f5fbf; --gold: #8a5a00;
+    --c-settings: #5c5238; --shadow: 0 14px 36px rgba(13, 40, 74, .2);
+  }
+}
+.app.leaving main > *, .app.leaving .nav { opacity: 0; transform: translateY(-4px); transition: opacity .15s ease-in, transform .15s ease-in; }
+.app.entering main > *, .app.entering .nav { animation: gameswap .3s var(--ease) both; }
+.app.entering .nav:nth-child(4) { animation-delay: 20ms; } .app.entering .nav:nth-child(5) { animation-delay: 40ms; } .app.entering .nav:nth-child(6) { animation-delay: 60ms; } .app.entering .nav:nth-child(7) { animation-delay: 80ms; }
+@keyframes gameswap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ---- the game switch: two games, two parts, under the brand; the pressed one is the game on screen ---- */
+.gameswitch { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; margin: 0 2px 12px; border-radius: var(--r-btn); background: color-mix(in srgb, var(--bg) 75%, transparent); border: 1px solid var(--line); }
+.gseg { position: relative; z-index: 1; min-width: 0; padding: 6px 3px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
+.gseg:hover { color: var(--text); }
+.gseg[aria-pressed="true"] { color: var(--text); }
+/* one marker that slides to the pressed part */
+.gameswitch::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 4px); border-radius: 7px; background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--gold), 0 1px 2px rgba(0, 0, 0, .25); transition: transform .32s var(--ease); }
+.gameswitch[data-cur="ra2"]::before { transform: translateX(calc(100% + 2px)); }
+.gseg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gseg .short { display: none; }
+@media (max-width: 760px) {
+  .gameswitch { grid-template-columns: 1fr; margin: 0 0 12px; }
+  .gameswitch::before { width: auto; right: 3px; bottom: auto; height: calc(50% - 4px); }
+  .gameswitch[data-cur="ra2"]::before { transform: translateY(calc(100% + 2px)); }
+  .gseg .long { display: none; } .gseg .short { display: inline; }
+}
+.gtile { width: 40px; height: 40px; border-radius: 11px; flex: none; display: grid; place-items: center; overflow: hidden; font-weight: 850; font-size: 14px; letter-spacing: -.02em; }
+.gtile img { width: 100%; height: 100%; display: block; }
+.gtile.t-ra2 { background: #1d4d8f; color: #f0b429; box-shadow: inset 0 0 0 1px rgba(240, 180, 41, .5); }
+.gtext { display: grid; gap: 1px; min-width: 0; }
+.gtext small { font-size: 11px; font-weight: 650; color: var(--muted); }
+.gtext b { font-size: 15px; font-weight: 750; }
+.gameopt { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.gameopt:hover { background: var(--surface-2); }
+.gameopt[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+
+/* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
+.page-head .head-text { display: grid; gap: 3px; }
+.page-head .head-sub { color: var(--muted); font-size: 13px; }
+.ra2opts .field.check { padding-top: 0; }
+.empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
+.empty > svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
+.empty strong { font-size: 15px; } .empty p { max-width: 46ch; color: var(--muted); }
+.empty .row { justify-content: center; margin-top: 4px; }
+.callout { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; }
+.callout.warn { border-color: color-mix(in srgb, var(--warn-ink) 45%, transparent); } .callout.bad { border-color: color-mix(in srgb, var(--bad-ink) 50%, transparent); }
+.callout > span { flex: 1 1 220px; }
+.skeleton { display: block; border-radius: 8px; min-height: 14px; background: linear-gradient(90deg, var(--surface-2) 0, color-mix(in srgb, var(--text) 9%, var(--surface-2)) 50%, var(--surface-2) 100%) 0 0 / 220% 100%; animation: shimmer 1.3s linear infinite; }
+@keyframes shimmer { to { background-position: -220% 0; } }
+.skelrow { height: 40px; } .sk-line { height: 36px; } .sk-map { width: 220px; height: 220px; border-radius: 12px; }
+.maps-skel { display: grid; gap: 6px; padding: 12px; }
+.mapcol .stage.loading canvas { opacity: 0; }
+.wizpick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.wizpick .gameopt { grid-template-columns: auto minmax(0, 1fr); border: 1px solid var(--line); padding: 10px; }
+@media (max-width: 520px) { .wizpick { grid-template-columns: 1fr; } }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.intro .gtile { width: 110px; height: 110px; border-radius: 26px; font-size: 36px; }
+/* RA2 skirmish rules: a compact list under the map preview, label left, control right */
+.rulelist { width: 220px; display: grid; margin-top: 6px; }
+.rulelist h3 { padding-bottom: 6px; }
+.rulerow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 38px; border-top: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.rulerow select { width: 118px; height: 30px; font-size: 13px; }
+.rulerow .switch.small { margin-right: 2px; }
+@media (max-width: 1080px) { .rulelist { width: 100%; max-width: 460px; } .rulerow select { width: 160px; } }

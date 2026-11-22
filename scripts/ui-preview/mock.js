@@ -1,6 +1,6 @@
 // A fake Tauri backend so the launcher UI can be opened in a plain browser:
 //   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install,
-//   #ra2 for Red Alert 2 mode, #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
+//   #ra2 for Red Alert 2 mode (#ra2nofiles no game files, #ra2noengine, #ra2nomaps, #ra2slow loading maps, #ra2maperr unreadable map), #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
 //   #ra2guestchanged: the host changes the speed 2.5 s in, #ra2guestready: a guest who is ready)
 const hash = location.hash;
 const fakeMaps = () => {
@@ -12,8 +12,8 @@ const fakeMaps = () => {
 const state = {
   orgMaps: fakeMaps(),
   cfg: { server: "", room: "", game_dir: hash.includes("fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/ZeroHour", steam_user: "", setup_done: !hash.includes("fresh"), check_updates: true, beta_updates: false, version_is_beta: hash.includes("onbeta"), engine_arch: "x64", renderer: "enhanced", effects: [["PostProcessing","yes"],["Bloom","yes"],["AmbientOcclusion","yes"],["AmbientOcclusionQuality","half"],["AntiAliasingFXAA","yes"],["SoftShadows","yes"],["ShadowQuality","medium"],["DynamicLights","yes"],["PixelLighting","yes"],["AnisotropicFiltering","16"],["CloudShadows","yes"],["Clouds","no"],["UpdatedWater","yes"],["WaterReflections","yes"],["Shockwaves","yes"],["ScorchRelief","yes"],["BloomStrength","normal"],["ColorLook","standard"],["Sharpen","off"],["Vignette","no"],["SoftParticles","yes"],["SmokeShading","yes"]], effect_preset: "balanced", engines_bundled: hash.includes("win"), editor_available: hash.includes("win"), renderer_available: true, player_name: "", default_player_name: "Michaels-Mac", version: "0.1.0-alpha.3", os: "macos",
-    game: hash.includes("ra2") ? "ra2" : "generals", ra2_engine: hash.includes("engine"),
-    ra2: { game_dir: hash.includes("ra2fresh") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/RA2", width: 0, height: 0, windowed: false, side: -1, color: 2, setup_done: !hash.includes("ra2fresh") } },
+    game: hash.includes("ra2") ? "ra2" : "generals", ra2_engine: !hash.includes("noengine"),
+    ra2: { game_dir: hash.includes("ra2fresh") || hash.includes("ra2nofiles") ? "" : "/Users/me/Library/Application Support/GeneralsZH/game/RA2", width: 0, height: 0, windowed: false, side: -1, color: 2, setup_done: !hash.includes("ra2fresh") } },
   mods: [{ id: "shockwave", name: "C&C: Shockwave", description: "A large fan-made overhaul of Zero Hour with new units, generals and balance (ModDB Editor's Choice 2008).", homepage: "https://www.moddb.com/mods/cc-shockwave", download_page: "https://www.moddb.com/mods/cc-shockwave/downloads", path: "Shockwave", detect: ["shockwave"], pick: true, notes: "On the download page choose the full release. It arrives as a Windows installer, usually inside a .zip. Drop that file here. Rallypoint unpacks the game archives and does not start Shockwave's own launcher, so the same download works on macOS and Windows.", args: [], installed: hash.includes("modinstalled") ? { folder: "Shockwave", bigs: 12, mb: 280 } : null },
     { id: "shockwave-chaos", name: "C&C: Shockwave Chaos", description: "A deliberately over-the-top add-on for Shockwave with lots of new and reworked units, generals and abilities.", homepage: "https://www.moddb.com/mods/cc-shockwave-chaos", download_page: "https://www.moddb.com/mods/cc-shockwave-chaos/downloads", path: "ShockwaveChaos", detect: ["chaos"], addon_for: "shockwave", pick: true, notes: "An add-on: C&C: Shockwave must be installed first. Rallypoint combines it with Shockwave when you launch.", args: [], installed: null },
     { id: "cold-war-crisis", name: "Cold War Crisis", description: "A total conversion of Zero Hour (version 469), with its own movies, cursors and content.", homepage: "https://www.moddb.com/mods/cold-war-crisis", download_page: "https://www.moddb.com/mods/cold-war-crisis", path: "ColdWarCrisis", detect: ["cwc"], pick: true, notes: "Download the manual installation .zip from ModDB (about 550 MB) and choose it here; no installer is run. It replaces the game's content, so it can't be played together with Shockwave or Chaos.", args: [], conflicts: ["shockwave", "shockwave-chaos"], installed: hash.includes("modinstalled") ? { folder: "ColdWarCrisis", bigs: 1, mb: 833 } : null }],
@@ -43,8 +43,9 @@ const handlers = {
   ra2_detect: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Red Alert II" }] : []),
   ra2_check_dir: ({ path }) => (/RA2|Red Alert/i.test(path) ? (state.cfg.ra2.game_dir = path.trim(), { ok: true, message: "Yuri's Revenge found" }) : path.trim() ? { ok: false, message: "That folder has no Red Alert 2 and Yuri's Revenge (ra2md.mix)" } : { ok: false, message: "Choose the folder that contains ra2md.mix" }),
   ra2_set_settings: (a) => { Object.assign(state.cfg.ra2, a); },
-  ra2_maps: async () => (await new Promise((r) => setTimeout(r, 200)), hash.includes("nomaps") ? [] : ra2Maps),
+  ra2_maps: async () => (await new Promise((r) => setTimeout(r, hash.includes("slow") ? 60000 : 200)), hash.includes("nomaps") ? [] : ra2Maps),
   ra2_map_view: ({ file }) => {
+    if (hash.includes("maperr")) throw new Error("the map file is truncated");
     const m = ra2Maps.find((x) => x.path.endsWith("/" + file)) || ra2Maps[0];
     const v = handlers.map_view({ name: m.name });
     const pts = [[.2, .8], [.8, .2], [.8, .8], [.2, .2], [.5, .9], [.5, .1], [.1, .5], [.9, .5]];
@@ -168,3 +169,11 @@ window.__TAURI__ = {
 // #...@online opens the Online page; #ra2online...hostchange changes the credits 6 s in (Sam's ready clears for 4 s)
 if (hash.includes("@online")) { const t = setInterval(() => { if (store.page === "play") { clearInterval(t); go("online"); } }, 100); }
 if (hash.includes("hostchange")) setTimeout(() => { if (lobby.settings) { lobby.settings = { ...lobby.settings, credits: 20000 }; lobby.changedAt = Date.now(); } }, 6000);
+// #page-maps, #page-settings ... open that page after start
+{
+  const pg = hash.match(/page-(\w+)/);
+  const click = (sel) => setTimeout(() => { const el = document.querySelector(sel); el && el.click(); }, 900);
+  if (pg) click(`.nav[data-page="${pg[1]}"]`);
+  // #switchdemo: presses the other game 1.2 s in, to watch the switch animation
+  if (hash.includes("switchdemo")) setTimeout(() => { const b = document.querySelector('.gseg[aria-pressed="false"]'); b && b.click(); }, 1200);
+}
