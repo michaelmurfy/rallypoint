@@ -59,6 +59,10 @@ State colors stay off the red scale on purpose, so "installed", "waiting" and "f
 
 ## Red Alert 2 mode
 
-- **Same product, not a skin.** RA2 pages use the same tokens, components and type scale. No accent change, no faction colours outside the player swatches.
-- **Game switcher** (`.gamepick`): the gold brand line is the current game with a small chevron; an invisible native select over it opens the menu and takes the focus ring. Below 760px the brand text is hidden, so Settings > Game shows a `narrow-only` Game row instead.
+- **Same product, its own palette.** RA2 pages use the same components, type scale and section hues. `data-game="ra2"` on `<html>` swaps the ground and the action colour: navy grounds and a cobalt action instead of oxblood and signal red, gold kept as the brand colour. Both schemes have values (`:root[data-game="ra2"]` in `style.css`). Faction colours stay in the player swatches.
+- **Game switch** (`.gameswitch`): two games, so a two-part control under the brand, always in view at every width (`ZH` / `RA2` below 760px). The pressed part has the gold rule. Ctrl or Command with 1 or 2 switches from anywhere. No menu, no extra column: with two games either would be wasted space. The choice is saved (`set_game`) and the brand's gold line reads "Command & Conquer".
+- **First run** asks which game the setup is for (`wizardGamePick`) and the Ready step offers the other game's setup.
+- **Play**: the same hero as Generals (title, the full name, the folder, the display line, Play with the reason it is off beside it). Without game files, a warning `.callout` with Find game files takes the skirmish card's place.
+- **Match rules**: the four values in a row of fields, the on/off rules as `setting()` rows.
+- **Empty states** (`emptyState()`): an icon in the page hue, what is missing, one way forward. Loading uses `.skeleton` blocks, errors a `.callout` with Try again.
 - **Seat tables** (`.skgrid.ra2`, `.lobby`): the Generals skirmish rows with Side and Colour columns (and Status in the lobby). The swatch is the player's RA2 colour mapped to the nearest place colour (`RA2_PC`); a hollow ring means "any colour". Other players' seats are text, never disabled selects.

@@ -2194,9 +2194,9 @@ function ra2CrateDensityLabel(dens, crates, min) {
   return "Crates";
 }
 /** A remembered yes/no match option for RA2 skirmish / lobby. */
-function ra2OptCheck(label, key, fallback = true) {
+function ra2OptCheck(label, desc, key, fallback = true) {
   const box = h("input", { type: "checkbox", checked: ra2Flag(key, fallback), "aria-label": label, onchange: () => prefs.set({ [key]: box.checked }) });
-  return h("label", { class: "switch small" }, box, h("span", {}, label));
+  return setting(label, desc, h("label", { class: "switch" }, box));
 }
 const fileOf = (path) => String(path).split(/[\\/]/).pop();
 const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
@@ -2253,9 +2253,9 @@ function ra2Skirmish(onChange) {
   const speed = pick("Game speed", RA2_SPEEDS, ra2Speed(), (v) => prefs.set({ ra2Speed: +v }));
   const crateDensity = pick("Crates", RA2_CRATE_DENSITIES, ra2CrateDensity(), (v) => prefs.set({ ra2CrateDensity: v, ra2Crates: v !== "off" }));
   const strongerAi = pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), aiLocal(), (v) => prefs.set({ aiBoost: +v }));
-  const superweapons = ra2OptCheck("Superweapons", "ra2Superweapons");
-  const allies = ra2OptCheck("Allies allowed", "ra2Allies");
-  const autoRepair = ra2OptCheck("Auto repair", "ra2AutoRepair");
+  const superweapons = ra2OptCheck("Superweapons", "Nuclear missiles, weather storms and the rest can be built.", "ra2Superweapons");
+  const allies = ra2OptCheck("Allies allowed", "Players can make and break alliances during the game.", "ra2Allies");
+  const autoRepair = ra2OptCheck("Computer repairs its base", "The AI fixes damaged buildings on its own.", "ra2AutoRepair");
   const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
 
   function newRows(n) {
@@ -2379,7 +2379,7 @@ function ra2Skirmish(onChange) {
       h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
       h("label", { class: "field" }, h("span", {}, "Crates"), crateDensity),
       h("label", { class: "field" }, h("span", {}, "Stronger AI"), strongerAi)),
-    h("div", { class: "switches" }, superweapons, allies, autoRepair));
+    h("div", { class: "settings" }, superweapons, allies, autoRepair));
   const el = h("div", { class: "stack" }, skel, empty, body, rules);
   let loaded = false;
   const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; rules.hidden = body.hidden; };
@@ -2414,8 +2414,7 @@ function ra2PlayPage() {
   const el = h("div", { class: "page" },
     pageHead("Play"),
     hero,
-    hasFiles ? null : setupCard,
-    h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el));
+    hasFiles ? h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el) : setupCard);
   update();
   return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
@@ -2468,8 +2467,8 @@ function ra2MapsPage() {
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
     empty.hidden = !!v.length; list.hidden = !v.length; empty.classList.toggle("listempty", false);
     fill(empty, maps.length ? emptyState("maps", "No maps with that many players", "Try another player count.", h("button", { class: "btn", onclick: () => { filter = "all"; draw(); } }, "Show all maps"))
-      : emptyState("maps", "No maps yet", "Install the community packs for a ready-made set, or drop .map, .mpr and .yrm files into your map folder.",
-          h("button", { class: "btn primary", onclick: () => installPacks.click() }, "Install community packs"), h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")));
+      : emptyState("maps", "No maps yet", "Install the community packs above, or drop .map, .mpr and .yrm files into your map folder.",
+          h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")));
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
     preview.hidden = !sel;
@@ -2908,7 +2907,7 @@ function gameSwitch() {
     return h("button", { class: "gseg", type: "button", "data-game": id, "aria-pressed": String(id === cur),
       "aria-label": `${i.name}${ready ? "" : ", needs game files"}`, title: `${i.name} (${shortcutLabel(id)})${ready ? "" : ". Needs game files"}`,
       onclick: () => switchGame(id) },
-      h("span", { class: "long" }, i.label), h("span", { class: "short", "aria-hidden": "true" }, i.abbr), ready ? null : h("i", { class: "need", "aria-hidden": "true" }));
+      h("span", { class: "long" }, i.label), h("span", { class: "short", "aria-hidden": "true" }, i.abbr));
   }));
 }
 /** First run: which game is this setup for? Picking the other one swaps to its own setup. */

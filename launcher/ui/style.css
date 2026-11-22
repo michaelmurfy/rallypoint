@@ -677,7 +677,6 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 .gseg[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--gold), 0 1px 2px rgba(0, 0, 0, .25); }
 .gseg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gseg .short { display: none; }
-.gseg .need { display: inline-block; width: 6px; height: 6px; margin-left: 5px; vertical-align: 2px; border-radius: 50%; background: var(--warn-ink); }
 @media (max-width: 760px) {
   .gameswitch { grid-template-columns: 1fr; margin: 0 0 12px; }
   .gseg .long { display: none; } .gseg .short { display: inline; }
@@ -696,10 +695,10 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 .page-head .head-text { display: grid; gap: 3px; }
 .page-head .head-sub { color: var(--muted); font-size: 13px; }
 .rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
-.rules .switches { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.rules .ra2opts { gap: 12px; } .rules .settings { padding-top: 4px; }
 .ra2opts .field.check { padding-top: 0; }
 .empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
-.empty svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
+.empty > svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
 .empty strong { font-size: 15px; } .empty p { max-width: 46ch; color: var(--muted); }
 .empty .row { justify-content: center; margin-top: 4px; }
 .callout { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-radius: var(--r-field); border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; }
