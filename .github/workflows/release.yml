@@ -18,6 +18,9 @@ on:
       - 'scripts/package-linux.sh'
       - 'ra2/**'
       - '.github/workflows/release.yml'
+      # RA2 notes build nothing (negations must come after the patterns they narrow)
+      - '!ra2/docs/**'
+      - '!ra2/**.md'
   schedule:
     - cron: '17 3 * * 1' # caches unused for a week are deleted; this also notices a runner image that breaks the build
   workflow_dispatch:

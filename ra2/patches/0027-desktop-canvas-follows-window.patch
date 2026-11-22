@@ -11,10 +11,10 @@ index 53278d5..ffe9bf2 100644
  target_sources(ra2assets_tests PRIVATE tests/test_play_script.cpp engine/play_script.cpp)
  # P7 Save/Load [RE: docs/re/saveload.md]: the archive core, field visitors,
 diff --git a/engine/app_robust.inc b/engine/app_robust.inc
-index b17e092..f92ea1c 100644
+index b17e092..e3824ba 100644
 --- a/engine/app_robust.inc
 +++ b/engine/app_robust.inc
-@@ -17,13 +17,18 @@ bool g_session_no_audio = false;
+@@ -17,13 +17,17 @@ bool g_session_no_audio = false;
  // Scene::logical_width()) and the Platform it drives.
  int g_ui_w = 1280, g_ui_h = 720;
  ra2engine::Platform* g_platform = nullptr;
@@ -36,11 +36,10 @@ index b17e092..f92ea1c 100644
 +// panels letterbox) and at most ~21:9. Menus stay 1280x720 (Scene's own
 +// logical size). --play `set canvas` wins; otherwise a hidden 1280x720
 +// harness window stays 1280x720.
-+#include "logical_canvas.hpp"
  void game_logical_size(int& out_w, int& out_h) {
      out_w = 1280;
      out_h = 720;
-@@ -44,10 +49,10 @@ void game_logical_size(int& out_w, int& out_h) {
+@@ -44,10 +48,10 @@ void game_logical_size(int& out_w, int& out_h) {
          lh = static_cast<int>(std::lround(h / (0.75 * px_per_dp)));
          lh = std::max(520, std::min(720, lh)) & ~1;
      }
@@ -88,10 +87,18 @@ index 0000000..81b2f37
 +
 +}  // namespace ra2engine
 diff --git a/engine/main.cpp b/engine/main.cpp
-index 0d6ad76..715a412 100644
+index 1e5fdcb..e1cae56 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -5889,9 +5889,9 @@ struct Scene {
+@@ -62,6 +62,7 @@ static char* ra2_cli_pref_path() {
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "logical_canvas.hpp"  // desktop canvas height (app_robust.inc, inside namespace {})
+ #include "audio_mixer.hpp"
+ #include "bridges.hpp"      // G16 (agent G): bridge overlay classes
+ #include "overlay_land.hpp"  // W8-03-02 / W8-03-01 (w8fix-place): overlay land + buildable grid
+@@ -5897,9 +5898,9 @@ struct Scene {
      }
      virtual void   probe(std::map<std::string, long long>& out) const { (void)out; }
      virtual bool   cheat(const std::vector<std::string>& args) { (void)args; return false; }
@@ -104,7 +111,7 @@ index 0d6ad76..715a412 100644
      virtual int    logical_width() const                    { return 1280; }
      virtual int    logical_height() const                   { return 720; }
  };
-@@ -7859,16 +7859,16 @@ private:
+@@ -7867,16 +7868,16 @@ private:
  #include "touch_bar.inc"              // W2-AR-07/-08/-16: touch command bar
  #include "touch_ui.inc"               // W4-AM: touch router, mode banner, hold ring, hint
      friend struct CombatProbe;   // gap owner C: --probe-combat drives the real scene

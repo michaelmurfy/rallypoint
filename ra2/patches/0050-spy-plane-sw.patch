@@ -1,25 +1,96 @@
---- a/engine/world_sw.cpp
-+++ b/engine/world_sw.cpp
-@@ -252,8 +252,14 @@
-             an_paradrop(house, type, cx, cy);
-             an_event(SwEvent::Activated, house, type, cx, cy);
-             break;
-+        case SuperweaponType::SpyPlane:
-+            // [RE: SuperClass::Launch FUN_006CC390 case 8 @0x6CD66F]:
-+            // FUN_0041CAA0(SPYP) + FUN_0065EAB0(..., Mission SpyplaneApproach).
-+            an_spyplane(house, cx, cy);
-+            an_event(SwEvent::Activated, house, type, cx, cy);
-+            break;
-         default:
--            return false;   // YR-only types: never granted in a classic game
-+            return false;   // other YR-only types (ForceShield, …) still unwired
-     }
-     rec->sw.on_fired();   // full recharge (§1)
-     an_.any = true;
-
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 922588c..260e8ad 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3074,12 +3074,25 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+             {ra2engine::SuperweaponType::ChronoSphere, "chroicon"},
+             {ra2engine::SuperweaponType::ChronoWarp, "chroicon"},
+             {ra2engine::SuperweaponType::ParaDrop, "paraicon"},
+-            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"}};
++            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"},
++            {ra2engine::SuperweaponType::SpyPlane, "spypicon"}};  // [SpyPlaneSpecial] SidebarImage
+         for (const auto& kv : kSwIcons)
+             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
+                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
+                 if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
+             }
++        // YR SPYPICON lives in cameomd.mix (langmd) when cameo.mix has no entry.
++        if (!ba.sw_cameos.count(static_cast<int>(ra2engine::SuperweaponType::SpyPlane))) {
++            try {
++                MixFile cmd = language.open_nested("cameomd.mix");
++                if (const MixEntry* ce = cmd.find(std::string("spypicon.shp"))) {
++                    ra2assets::ShpFile shp = ShpFile::load(cmd.read(*ce));
++                    if (shp.count() > 0)
++                        ba.sw_cameos[static_cast<int>(ra2engine::SuperweaponType::SpyPlane)] =
++                            std::move(shp);
++                }
++            } catch (const std::exception&) {}
++        }
+     } catch (const std::exception&) {}
+     std::cerr << "[sw] SW cameos loaded=" << ba.sw_cameos.size() << "\n";
+ 
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index 4a5bfbd..4a8b5b7 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -567,6 +567,7 @@ private:
+                     else if (t == T::ChronoSphere) snd_.eva("EVA_ChronosphereReady");
+                     else if (t == T::LightningStorm) snd_.eva("EVA_LightningStormReady");
+                     else if (t == T::ParaDrop || t == T::AmerParaDrop) snd_.eva("EVA_ReinforcementsReady");
++                    else if (t == T::SpyPlane) snd_.eva("EVA_SpyPlaneReady");
+                     break;
+                 case E::Launched:
+                     fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0);
+diff --git a/engine/realplay_economy.inc b/engine/realplay_economy.inc
+index 1b56735..48f5e0f 100644
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -71,13 +71,14 @@ bool rp_country_allows(const Rules& rules, const std::string& id, const std::str
+ 
+ // W2-AN-19: the classic RA2 [SuperWeaponTypes] (rules.ini from ra2.mix/local.mix):
+ // MultiSpecial, IronCurtainSpecial, LightningStormSpecial, ChronoSphereSpecial,
+-// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. The engine reads
+-// YR rulesmd.ini, whose YR-only SW keys (NARADR SpyPlaneSpecial, GATECH/NATECH
+-// ForceShieldSpecial, Yuri's specials) must not leak into a classic game.
++// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. YR also grants
++// SpyPlaneSpecial from NARADR (Type=SpyPlane; Launch FUN_006CD66F). Other YR-only
++// keys (ForceShield, PsychicDominator, …) stay filtered out until wired.
+ bool rp_classic_sw_type(const std::string& type_upper) {
+     return type_upper == "MULTIMISSILE" || type_upper == "IRONCURTAIN" ||
+            type_upper == "LIGHTNINGSTORM" || type_upper == "CHRONOSPHERE" ||
+-           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP";
++           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP" ||
++           type_upper == "SPYPLANE";
+ }
+ 
+ // The classic SW section a building grants ("" when its SuperWeapon= is
+@@ -221,6 +222,7 @@ ra2engine::SuperweaponType rp_sw_type_of(const std::string& type_upper) {
+     if (type_upper == "CHRONOSPHERE") return T::ChronoSphere;
+     if (type_upper == "PARADROP") return T::ParaDrop;
+     if (type_upper == "AMERPARADROP") return T::AmerParaDrop;
++    if (type_upper == "SPYPLANE") return T::SpyPlane;  // [SpyPlaneSpecial] NARADR
+     return T::None;
+ }
+ 
+diff --git a/engine/w2air_play.inc b/engine/w2air_play.inc
+index 2e2cdf5..536e013 100644
+--- a/engine/w2air_play.inc
++++ b/engine/w2air_play.inc
+@@ -301,7 +301,8 @@
+         // Spawned aircraft / missiles (Spawns=, V3/DMisl types) + the paradrop
+         // plane and its infantry.
+         const ra2engine::SwParams sp = world_.sw_params();
+-        std::vector<std::string> ids = {"PDPLANE", sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
++        std::vector<std::string> ids = {"PDPLANE", "SPYP",  // SpyPlaneSpecial aircraft
++                                        sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
+                                         rules_.section_string("General", "DMislType", "DMISL"),
+                                         rules_.section_string("General", "V3RocketType", "V3ROCKET"),
+                                         "HORNET", "ASW",   // any side's spawns (captured / cheat units)
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 09e85ea..aac3a2a 100644
 --- a/engine/world.hpp
 +++ b/engine/world.hpp
-@@ -2979,6 +2979,10 @@
+@@ -3002,6 +3002,10 @@ private:
      void an_nuke_detonate(const SwStrike& s);
      void an_storm_bolt(SwStrike& s, int x, int y);
      void an_paradrop(int house, SuperweaponType type, int cx, int cy);
@@ -30,10 +101,11 @@
      bool an_para_jump(int plane);   // W8-05-07: one trooper out (FUN_00415C60)
      void an_step_parachutes(double dt);  // W4-SQ-06: falling paratroopers
      void an_chrono(int house, int sx, int sy, int dx, int dy);
-
+diff --git a/engine/world_an.cpp b/engine/world_an.cpp
+index af61eee..ef2df42 100644
 --- a/engine/world_an.cpp
 +++ b/engine/world_an.cpp
-@@ -26,7 +26,17 @@
+@@ -26,7 +26,17 @@ constexpr double kFlyClimbLps = 100.0 * 15.0;   // [RE-FALLBACK roster2.md §C]
  constexpr double kRocketDeckZ = 40.0;
  constexpr int kRocketMaxFrames = 1800;
  enum Sortie : int { kDocked = 0, kOutbound = 1, kMoveTo = 2, kReturn = 3, kLanding = 4, kParadrop = 5,
@@ -52,7 +124,7 @@
  bool live(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0; }
  double cdist(double ax, double ay, double bx, double by) { return om::hypot(ax - bx, ay - by); }
  }  // namespace
-@@ -994,6 +1004,57 @@
+@@ -994,6 +1004,57 @@ void World::an_step_fixed_wing(double dt) {
                  }
                  break;
              }
@@ -110,7 +182,7 @@
              case kReturn:
                  if (!home_ok) {
                      // AirportBound=yes with no airfield (or a spawn whose carrier
-@@ -1271,6 +1332,58 @@
+@@ -1271,6 +1332,58 @@ void World::an_paradrop(int house, SuperweaponType type, int cx, int cy) {
      }
  }
  
@@ -169,91 +241,28 @@
  // ------------------------------------------------- W4-SQ-06 team paradrop --
  
  int World::spawn_drop_plane(const std::string& plane_id, int house, int sx, int sy, int dx, int dy,
-
---- a/engine/realplay_economy.inc
-+++ b/engine/realplay_economy.inc
-@@ -71,13 +71,14 @@
- 
- // W2-AN-19: the classic RA2 [SuperWeaponTypes] (rules.ini from ra2.mix/local.mix):
- // MultiSpecial, IronCurtainSpecial, LightningStormSpecial, ChronoSphereSpecial,
--// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. The engine reads
--// YR rulesmd.ini, whose YR-only SW keys (NARADR SpyPlaneSpecial, GATECH/NATECH
--// ForceShieldSpecial, Yuri's specials) must not leak into a classic game.
-+// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. YR also grants
-+// SpyPlaneSpecial from NARADR (Type=SpyPlane; Launch FUN_006CD66F). Other YR-only
-+// keys (ForceShield, PsychicDominator, …) stay filtered out until wired.
- bool rp_classic_sw_type(const std::string& type_upper) {
-     return type_upper == "MULTIMISSILE" || type_upper == "IRONCURTAIN" ||
-            type_upper == "LIGHTNINGSTORM" || type_upper == "CHRONOSPHERE" ||
--           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP";
-+           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP" ||
-+           type_upper == "SPYPLANE";
- }
- 
- // The classic SW section a building grants ("" when its SuperWeapon= is
-@@ -221,6 +222,7 @@
-     if (type_upper == "CHRONOSPHERE") return T::ChronoSphere;
-     if (type_upper == "PARADROP") return T::ParaDrop;
-     if (type_upper == "AMERPARADROP") return T::AmerParaDrop;
-+    if (type_upper == "SPYPLANE") return T::SpyPlane;  // [SpyPlaneSpecial] NARADR
-     return T::None;
- }
- 
-
---- a/engine/w2air_play.inc
-+++ b/engine/w2air_play.inc
-@@ -301,7 +301,8 @@
-         // Spawned aircraft / missiles (Spawns=, V3/DMisl types) + the paradrop
-         // plane and its infantry.
-         const ra2engine::SwParams sp = world_.sw_params();
--        std::vector<std::string> ids = {"PDPLANE", sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
-+        std::vector<std::string> ids = {"PDPLANE", "SPYP",  // SpyPlaneSpecial aircraft
-+                                        sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
-                                         rules_.section_string("General", "DMislType", "DMISL"),
-                                         rules_.section_string("General", "V3RocketType", "V3ROCKET"),
-                                         "HORNET", "ASW",   // any side's spawns (captured / cheat units)
-
---- a/engine/main.cpp
-+++ b/engine/main.cpp
-@@ -3069,12 +3069,25 @@
-             {ra2engine::SuperweaponType::ChronoSphere, "chroicon"},
-             {ra2engine::SuperweaponType::ChronoWarp, "chroicon"},
-             {ra2engine::SuperweaponType::ParaDrop, "paraicon"},
--            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"}};
-+            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"},
-+            {ra2engine::SuperweaponType::SpyPlane, "spypicon"}};  // [SpyPlaneSpecial] SidebarImage
-         for (const auto& kv : kSwIcons)
-             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
-                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
-                 if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
-             }
-+        // YR SPYPICON lives in cameomd.mix (langmd) when cameo.mix has no entry.
-+        if (!ba.sw_cameos.count(static_cast<int>(ra2engine::SuperweaponType::SpyPlane))) {
-+            try {
-+                MixFile cmd = language.open_nested("cameomd.mix");
-+                if (const MixEntry* ce = cmd.find(std::string("spypicon.shp"))) {
-+                    ra2assets::ShpFile shp = ShpFile::load(cmd.read(*ce));
-+                    if (shp.count() > 0)
-+                        ba.sw_cameos[static_cast<int>(ra2engine::SuperweaponType::SpyPlane)] =
-+                            std::move(shp);
-+                }
-+            } catch (const std::exception&) {}
-+        }
-     } catch (const std::exception&) {}
-     std::cerr << "[sw] SW cameos loaded=" << ba.sw_cameos.size() << "\n";
- 
-
---- a/engine/pres_game.inc
-+++ b/engine/pres_game.inc
-@@ -567,6 +567,7 @@
-                     else if (t == T::ChronoSphere) snd_.eva("EVA_ChronosphereReady");
-                     else if (t == T::LightningStorm) snd_.eva("EVA_LightningStormReady");
-                     else if (t == T::ParaDrop || t == T::AmerParaDrop) snd_.eva("EVA_ReinforcementsReady");
-+                    else if (t == T::SpyPlane) snd_.eva("EVA_SpyPlaneReady");
-                     break;
-                 case E::Launched:
-                     fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0);
-
+diff --git a/engine/world_sw.cpp b/engine/world_sw.cpp
+index 5dfb51f..b890d33 100644
+--- a/engine/world_sw.cpp
++++ b/engine/world_sw.cpp
+@@ -252,8 +252,14 @@ bool World::fire_superweapon_at(int house, SuperweaponType type, int cx, int cy,
+             an_paradrop(house, type, cx, cy);
+             an_event(SwEvent::Activated, house, type, cx, cy);
+             break;
++        case SuperweaponType::SpyPlane:
++            // [RE: SuperClass::Launch FUN_006CC390 case 8 @0x6CD66F]:
++            // FUN_0041CAA0(SPYP) + FUN_0065EAB0(..., Mission SpyplaneApproach).
++            an_spyplane(house, cx, cy);
++            an_event(SwEvent::Activated, house, type, cx, cy);
++            break;
+         default:
+-            return false;   // YR-only types: never granted in a classic game
++            return false;   // other YR-only types (ForceShield, …) still unwired
+     }
+     rec->sw.on_fired();   // full recharge (§1)
+     an_.any = true;
+diff --git a/tests/test_superweapon.cpp b/tests/test_superweapon.cpp
+index 804fe4c..b10b789 100644
 --- a/tests/test_superweapon.cpp
 +++ b/tests/test_superweapon.cpp
 @@ -1,8 +1,11 @@
@@ -262,13 +271,13 @@
 +#include <array>
  #include <string>
  
-+#include "ra2fixture.hpp"
++#include "asset_fixture.hpp"
  #include "superweapon.hpp"
 +#include "world.hpp"
  using namespace ra2engine;
  
  TEST_CASE("superweapon: charges to READY at exactly recharge_secs, not before") {
-@@ -117,4 +120,28 @@
+@@ -117,4 +120,29 @@ TEST_CASE("superweapon: the SuperweaponType enum + [SuperWeaponTypes] id mapping
      CHECK(superweapon_type_from_id(99) == SuperweaponType::None);
      CHECK(std::string(superweapon_type_name(SuperweaponType::Nuke)) == "Nuke");
      CHECK(std::string(superweapon_type_name(SuperweaponType::AmerParaDrop)) == "AmerParaDrop");
@@ -278,6 +287,7 @@
 +TEST_CASE("superweapon: Spy Plane fire reveals shroud (camera sweep fallback)") {
 +    // [RE: FUN_006CD66F]: without a registered SPYP type the fire path still
 +    // clears a Camera Damage= disc at the target so the SW is not a no-op.
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
 +    ra2assets::MapFile map = ra2fixture::mapsmd03_map();
 +    World w(map);
 +    REQUIRE(w.grid_w() > 30);
@@ -290,11 +300,10 @@
 +    std::array<int, 11> verses{};
 +    verses.fill(100);
 +    w.grant_superweapon(0, SuperweaponType::SpyPlane, /*recharge_secs=*/1.0, 0, 0.0, 1.0, verses);
-+    w.step_superweapon(1.0);
++    for (int f = 0; f < 60 && !w.sw_ready(0, SuperweaponType::SpyPlane); ++f) w.step(1.0 / 15.0);
 +    REQUIRE(w.sw_ready(0, SuperweaponType::SpyPlane));
 +    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::SpyPlane, tx, ty));
 +    CHECK(w.explored_at(0, tx, ty));
 +    CHECK(w.explored_at(0, tx + 5, ty));
 +    CHECK_FALSE(w.explored_at(0, tx + 8, ty));  // outside Damage=6
  }
-

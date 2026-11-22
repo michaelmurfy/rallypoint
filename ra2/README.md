@@ -10,7 +10,7 @@ The player brings their own Yuri's Revenge files; nothing of the game is in here
 - `engine/`: a trimmed plain copy of https://github.com/omarelarab/ra2-engine at
   `a8cfdccfef8592c13a6517c3fb76d834b1534027` (2026-10-14). It is the pristine base: don't commit patched files.
   Licence: 0BSD (`engine/LICENSE`); `engine/THIRD_PARTY_NOTICES.md` lists what it carries (doctest, stb).
-- `patches/`: our changes, applied with `sh ra2/patches/apply.sh` (idempotent, same rules as `patches/apply.sh`).
+- `patches/`: our changes, applied with `sh ra2/patches/apply.sh` (idempotent, same rules as `patches/apply.sh`; a patch that fails to apply stops it with a non-zero exit; CI applies and builds the series on every PR).
   Regenerate one: edit the tree, `git add -N <new files> && git diff --relative=ra2/engine -- ra2/engine/<paths> > ra2/patches/NNNN-name.patch`,
   then restore (`git checkout ra2/engine && git clean -fd ra2/engine`) and re-apply. The patches are under the engine's 0BSD terms.
 - `third-party/SDL2-2.30.9.tar.gz`: the SDL release tarball the engine's CMake pins (SHA-256

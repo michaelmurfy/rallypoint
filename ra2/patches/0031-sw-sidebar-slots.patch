@@ -1,89 +1,27 @@
-diff --git a/engine/sidebar.hpp b/engine/sidebar.hpp
---- a/engine/sidebar.hpp
-+++ b/engine/sidebar.hpp
-@@ -82,6 +82,11 @@
-     int side2_rows = 0;      // N: side2 tiles / visible cameo rows
-     int power_pips = 0;      // capacity = (50*N + 3) / 3
-     std::vector<CameoCell> cameos;   // 2-column grid, row-major
-+    // Superweapon cameos occupy the first sw_rows of the cameo strip (the
-+    // side2 sockets). Production cameos start below them. 0 keeps the
-+    // production grid where it has always been.
-+    int sw_slots = 0;
-+    int sw_rows = 0;
- 
-     // view_w/view_h = window size; `types` = roster indices to show, already
-     // filtered (cameo != "" AND tech_level > 0) and ordered by tech_level
-@@ -90,15 +95,29 @@
-     // laid out (G-12 strip scrolling).
-     // G-12: top_row scrolls the strip (StripClass TopRowIndex): cells start at
-     // types[2*top_row]; the caller clamps it with max_top_row().
-+    // sw_slots reserves cameo sockets for superweapons (full rows).
-     static SidebarLayout compute(int view_w, int view_h,
--                                 const std::vector<int>& types, int top_row = 0);
-+                                 const std::vector<int>& types, int top_row = 0,
-+                                 int sw_slots = 0);
-     // Largest useful top_row for count cameos (0 when they all fit).
-     int max_top_row(int count) const {
-+        const int vis = side2_rows - sw_rows;
-+        if (vis <= 0) return 0;
-         const int rows = (count + 1) / 2;
--        return rows > side2_rows ? rows - side2_rows : 0;
-+        return rows > vis ? rows - vis : 0;
-     }
-     int top_row = 0;
- 
-+    // k-th superweapon cameo (grant order), in the side2 wells. Column pitch
-+    // is the socket pitch (63), not the 60px cameo width. Never the radar.
-+    SbRect sw_slot(int k) const {
-+        if (k < 0) k = 0;
-+        const int col = k % 2;
-+        const int row = k / 2;
-+        return {bar.x + kCameoX + col * kCameoColPitch,
-+                strip_top + 1 + row * kCameoRowPitch, kCameoW, kCameoH};
-+    }
-+
-     int cameo_at(int px, int py) const;   // index into cameos, or -1
-     int tab_at(int px, int py) const;     // 0..3, or -1
-     bool repair_btn_at(int px, int py) const { return repair_btn.contains(px, py); }
-diff --git a/engine/sidebar.cpp b/engine/sidebar.cpp
---- a/engine/sidebar.cpp
-+++ b/engine/sidebar.cpp
-@@ -9,7 +9,8 @@
- int sidebar_style() { return g_sidebar_style; }
- 
- SidebarLayout SidebarLayout::compute(int view_w, int view_h,
--                                     const std::vector<int>& types, int top_row) {
-+                                     const std::vector<int>& types, int top_row,
-+                                     int sw_slots) {
-     SidebarLayout lay;
-     const bool sov = g_sidebar_style == 1;   // W2-UI-08 constant set
-     const int side3_h = sov ? 18 : kSide3H;
-@@ -57,13 +58,19 @@
-     // 2 columns row-major — these land the 60x48 cameos INSIDE the socket
-     // recesses baked into side2.shp [RE: §11a]. Cells beyond the visible
-     // 2*N are not laid out (no strip scrolling with this roster).
-+    // Superweapon cameos take whole rows at the top of the strip so a
-+    // single one does not share a row with a building. sw_rows is set
-+    // before max_top_row, which counts only the production rows.
-+    lay.sw_slots = std::max(0, sw_slots);
-+    lay.sw_rows = std::min(lay.side2_rows, (lay.sw_slots + 1) / 2);
-     // G-12: the strip starts at row top_row (clamped to the scrollable range).
-     lay.top_row = std::max(0, std::min(top_row, lay.max_top_row(static_cast<int>(types.size()))));
-     const std::size_t first = static_cast<std::size_t>(2 * lay.top_row);
--    const std::size_t max_cells = static_cast<std::size_t>(2 * lay.side2_rows);
-+    const int prod_rows = lay.side2_rows - lay.sw_rows;
-+    const std::size_t max_cells = static_cast<std::size_t>(2 * std::max(0, prod_rows));
-     for (std::size_t i = 0; first + i < types.size() && i < max_cells; ++i) {
-         const int col = static_cast<int>(i % 2);
--        const int row = static_cast<int>(i / 2);
-+        const int row = lay.sw_rows + static_cast<int>(i / 2);
-         CameoCell cell;
-         cell.type = types[first + i];
-         cell.rect = {x0 + kCameoX + col * kCameoColPitch,
+diff --git a/engine/game_scene_play_probe.inc b/engine/game_scene_play_probe.inc
+index fbbf505..a90bb2a 100644
+--- a/engine/game_scene_play_probe.inc
++++ b/engine/game_scene_play_probe.inc
+@@ -384,12 +384,11 @@
+             p.targets["sell"] = rect(lay_.sell_btn);
+         }
+         if (world_.sw_state(0))
+-            p.targets["sw"] = ra2play::Rect{lay_.bar.x + ra2engine::kCameoX, lay_.radar.y + 2,
+-                                            ra2engine::kCameoW, ra2engine::kCameoH};
++            p.targets["sw"] = rect(lay_.sw_slot(0));
+         {   // W2-AN-04: one target per granted SW, `sw:<TYPE>` (Nuke, IronCurtain, ...)
+             const std::vector<ra2engine::SuperweaponType> swt = world_.sw_types(local_house_);
+             for (int k = 0; k < static_cast<int>(swt.size()); ++k) {
+-                const ra2engine::SbRect r = sw_slot_rect(lay_, k);
++                const ra2engine::SbRect r = lay_.sw_slot(k);
+                 p.targets[std::string("sw:") + ra2engine::superweapon_type_name(swt[k])] =
+                     ra2play::Rect{r.x, r.y, r.w, r.h};
+             }
 diff --git a/engine/main.cpp b/engine/main.cpp
+index f972ba7..a2f23a3 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -5244,25 +5244,18 @@
+@@ -5248,25 +5248,18 @@ void shade_rect(SDL_Renderer* ren, const ra2engine::SbRect& r, Uint8 alpha, Uint
  
  // CB-4 Superweapons [spec §6]: draw the SW cameo + recharge indicator in a
  // sidebar slot, reusing the EXISTING gclock2.shp 55-frame chrome + the flashing-
@@ -115,7 +53,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
      // Cameo (art-guarded): the SW's SidebarImage, else a placeholder shade.
      auto cam = ba.sw_cameos.find(static_cast<int>(ty));
      if (cam != ba.sw_cameos.end())
-@@ -5570,12 +5563,9 @@
+@@ -5580,12 +5573,9 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
                  blit_shp_alpha(ren, tc, "sb:darkf", ba.sb_darken, 0, ba.sb_pal, c.rect.x, c.rect.y, 128);
          }
      }
@@ -131,7 +69,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
  }
  
  // Placement cursor: draw the fw*fh foundation cell diamonds green (cell OK) /
-@@ -6852,6 +6842,16 @@
+@@ -6862,6 +6852,16 @@ public:
          return cfg;
      }
  
@@ -148,7 +86,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
      // The former poll-loop body (one event): sidebar consume-in-rect-before-world,
      // then Input. G-01: Esc never reaches here as a quit -- ui_handle maps it to
      // the options dialog (KeyboardMD.ini Options=27); right-click cancels modes.
-@@ -6874,13 +6874,15 @@
+@@ -6884,13 +6884,15 @@ public:
          if (touch_ui_handle(ev)) return;    // W4-AM touch router (touch_ui.inc)
          if (sidebar_up_ && ev.kind == ra2engine::InputEvent::PointerDown &&
              lay_.contains(ev.x, ev.y)) {
@@ -165,7 +103,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
                          if (world_.sw_ready(local_house_, swt[k])) w2_arm_sw(swt[k]);
                          return;  // consumed by the SW slot
                      }
-@@ -7095,6 +7097,7 @@
+@@ -7105,6 +7107,7 @@ public:
          // refill ran in world_.step (World::step_player_economies); the
          // sidebar strip follows the buildable set.
          rp_refresh_sidebar();
@@ -173,7 +111,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
          // FreeUnit grand-opening spawns (a just-built refinery drops its miner).
          if (ba_.ok) spawn_free_units_on_open(world_, ba_, rules_, miners_, bstates_);
          // Chrono Miner teleport sounds.
-@@ -7382,6 +7385,7 @@
+@@ -7392,6 +7395,7 @@ public:
                                    input_.placement_active() ? &pchk : nullptr);
          }
          if (ba_.ok && ba_.sidebar_ok) {
@@ -181,28 +119,11 @@ diff --git a/engine/main.cpp b/engine/main.cpp
              for (int t = 0; t < 4; ++t) g_tab_has[t] = tab_buildable(t).empty() ? 0 : 1;   // W2-UI-06
              g_tab_flash[0] = lq().state(ra2engine::QueueCat::Structure).slot.ready ? 1 : 0;   // W5-PRES R-142
              g_tab_flash[1] = lq().state(ra2engine::QueueCat::Defense).slot.ready ? 1 : 0;
-diff --git a/engine/game_scene_play_probe.inc b/engine/game_scene_play_probe.inc
---- a/engine/game_scene_play_probe.inc
-+++ b/engine/game_scene_play_probe.inc
-@@ -384,12 +384,11 @@
-             p.targets["sell"] = rect(lay_.sell_btn);
-         }
-         if (world_.sw_state(0))
--            p.targets["sw"] = ra2play::Rect{lay_.bar.x + ra2engine::kCameoX, lay_.radar.y + 2,
--                                            ra2engine::kCameoW, ra2engine::kCameoH};
-+            p.targets["sw"] = rect(lay_.sw_slot(0));
-         {   // W2-AN-04: one target per granted SW, `sw:<TYPE>` (Nuke, IronCurtain, ...)
-             const std::vector<ra2engine::SuperweaponType> swt = world_.sw_types(local_house_);
-             for (int k = 0; k < static_cast<int>(swt.size()); ++k) {
--                const ra2engine::SbRect r = sw_slot_rect(lay_, k);
-+                const ra2engine::SbRect r = lay_.sw_slot(k);
-                 p.targets[std::string("sw:") + ra2engine::superweapon_type_name(swt[k])] =
-                     ra2play::Rect{r.x, r.y, r.w, r.h};
-             }
 diff --git a/engine/realplay_scene.inc b/engine/realplay_scene.inc
+index 9431842..f26fef2 100644
 --- a/engine/realplay_scene.inc
 +++ b/engine/realplay_scene.inc
-@@ -333,9 +333,10 @@
+@@ -333,9 +333,10 @@ private:
      void rp_refresh_sidebar() {
          if (!rp_on_) return;
          std::vector<int> now = rp_tab_buildable(active_tab_);
@@ -215,14 +136,98 @@ diff --git a/engine/realplay_scene.inc b/engine/realplay_scene.inc
          }
      }
  
+diff --git a/engine/sidebar.cpp b/engine/sidebar.cpp
+index 3492b7a..33b0f0d 100644
+--- a/engine/sidebar.cpp
++++ b/engine/sidebar.cpp
+@@ -9,7 +9,8 @@ void set_sidebar_style(int style) { g_sidebar_style = style == 1 ? 1 : 0; }
+ int sidebar_style() { return g_sidebar_style; }
+ 
+ SidebarLayout SidebarLayout::compute(int view_w, int view_h,
+-                                     const std::vector<int>& types, int top_row) {
++                                     const std::vector<int>& types, int top_row,
++                                     int sw_slots) {
+     SidebarLayout lay;
+     const bool sov = g_sidebar_style == 1;   // W2-UI-08 constant set
+     const int side3_h = sov ? 18 : kSide3H;
+@@ -57,13 +58,19 @@ SidebarLayout SidebarLayout::compute(int view_w, int view_h,
+     // 2 columns row-major — these land the 60x48 cameos INSIDE the socket
+     // recesses baked into side2.shp [RE: §11a]. Cells beyond the visible
+     // 2*N are not laid out (no strip scrolling with this roster).
++    // Superweapon cameos take whole rows at the top of the strip so a
++    // single one does not share a row with a building. sw_rows is set
++    // before max_top_row, which counts only the production rows.
++    lay.sw_slots = std::max(0, sw_slots);
++    lay.sw_rows = std::min(lay.side2_rows, (lay.sw_slots + 1) / 2);
+     // G-12: the strip starts at row top_row (clamped to the scrollable range).
+     lay.top_row = std::max(0, std::min(top_row, lay.max_top_row(static_cast<int>(types.size()))));
+     const std::size_t first = static_cast<std::size_t>(2 * lay.top_row);
+-    const std::size_t max_cells = static_cast<std::size_t>(2 * lay.side2_rows);
++    const int prod_rows = lay.side2_rows - lay.sw_rows;
++    const std::size_t max_cells = static_cast<std::size_t>(2 * std::max(0, prod_rows));
+     for (std::size_t i = 0; first + i < types.size() && i < max_cells; ++i) {
+         const int col = static_cast<int>(i % 2);
+-        const int row = static_cast<int>(i / 2);
++        const int row = lay.sw_rows + static_cast<int>(i / 2);
+         CameoCell cell;
+         cell.type = types[first + i];
+         cell.rect = {x0 + kCameoX + col * kCameoColPitch,
+diff --git a/engine/sidebar.hpp b/engine/sidebar.hpp
+index 721b29c..00a80e9 100644
+--- a/engine/sidebar.hpp
++++ b/engine/sidebar.hpp
+@@ -82,6 +82,11 @@ struct SidebarLayout {
+     int side2_rows = 0;      // N: side2 tiles / visible cameo rows
+     int power_pips = 0;      // capacity = (50*N + 3) / 3
+     std::vector<CameoCell> cameos;   // 2-column grid, row-major
++    // Superweapon cameos occupy the first sw_rows of the cameo strip (the
++    // side2 sockets). Production cameos start below them. 0 keeps the
++    // production grid where it has always been.
++    int sw_slots = 0;
++    int sw_rows = 0;
+ 
+     // view_w/view_h = window size; `types` = roster indices to show, already
+     // filtered (cameo != "" AND tech_level > 0) and ordered by tech_level
+@@ -90,15 +95,29 @@ struct SidebarLayout {
+     // laid out (G-12 strip scrolling).
+     // G-12: top_row scrolls the strip (StripClass TopRowIndex): cells start at
+     // types[2*top_row]; the caller clamps it with max_top_row().
++    // sw_slots reserves cameo sockets for superweapons (full rows).
+     static SidebarLayout compute(int view_w, int view_h,
+-                                 const std::vector<int>& types, int top_row = 0);
++                                 const std::vector<int>& types, int top_row = 0,
++                                 int sw_slots = 0);
+     // Largest useful top_row for count cameos (0 when they all fit).
+     int max_top_row(int count) const {
++        const int vis = side2_rows - sw_rows;
++        if (vis <= 0) return 0;
+         const int rows = (count + 1) / 2;
+-        return rows > side2_rows ? rows - side2_rows : 0;
++        return rows > vis ? rows - vis : 0;
+     }
+     int top_row = 0;
+ 
++    // k-th superweapon cameo (grant order), in the side2 wells. Column pitch
++    // is the socket pitch (63), not the 60px cameo width. Never the radar.
++    SbRect sw_slot(int k) const {
++        if (k < 0) k = 0;
++        const int col = k % 2;
++        const int row = k / 2;
++        return {bar.x + kCameoX + col * kCameoColPitch,
++                strip_top + 1 + row * kCameoRowPitch, kCameoW, kCameoH};
++    }
++
+     int cameo_at(int px, int py) const;   // index into cameos, or -1
+     int tab_at(int px, int py) const;     // 0..3, or -1
+     bool repair_btn_at(int px, int py) const { return repair_btn.contains(px, py); }
 diff --git a/tests/test_sidebar.cpp b/tests/test_sidebar.cpp
+index d771a5d..3c7e5c6 100644
 --- a/tests/test_sidebar.cpp
 +++ b/tests/test_sidebar.cpp
-@@ -141,3 +141,36 @@
-     auto few = SidebarLayout::compute(1280, 720, {1, 2, 3}, 3);
+@@ -142,6 +142,39 @@ TEST_CASE("sidebar layout: G-12 strip scrolling by top_row") {
      CHECK(few.top_row == 0);
  }
-+
+ 
 +TEST_CASE("sidebar: superweapon slots use the cameo sockets, not the radar") {
 +    const int x0 = 1280 - 168;
 +    auto none = SidebarLayout::compute(1280, 720, {1, 2, 3});
@@ -255,3 +260,7 @@ diff --git a/tests/test_sidebar.cpp b/tests/test_sidebar.cpp
 +    CHECK(three.sw_slot(2).y == 228 + 50);
 +    CHECK(three.cameos[0].rect.y == 228 + 100);
 +}
++
+ TEST_CASE("sidebar layout: a taller canvas stays right-anchored and adds cameo rows") {
+     auto lay = SidebarLayout::compute(1920, 1080, {1, 2, 3});
+     CHECK(lay.bar.x == 1920 - 168);

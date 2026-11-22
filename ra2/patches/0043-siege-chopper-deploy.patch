@@ -15,10 +15,10 @@ index 127cfdd..a741d1c 100644
      return !any;
  }
 diff --git a/engine/main.cpp b/engine/main.cpp
-index 3bcea30..9fd1d51 100644
+index d1c8ef5..e43cd21 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -4427,7 +4427,10 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+@@ -4486,7 +4486,10 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
              g_draw_unit_idx = idx;   // W3-B: walk stage (HVA frame)
              // W3-B [RE: FUN_0073c1cc, Harvester=yes + unloading -> UnloadingClass]:
              // a harvester dumping at the refinery draws its UnloadingClass.
@@ -30,7 +30,7 @@ index 3bcea30..9fd1d51 100644
                  auto ul = g_unloading_class.find(draw_image);
                  if (ul != g_unloading_class.end() && ul->second) va = ul->second;
              }
-@@ -6686,7 +6689,10 @@ public:
+@@ -6735,7 +6738,10 @@ public:
          g_gf_spawned.clear();
          start_vxl_prewarm();   // W2-GA-P4
          // gF G-23: clicking the selected MCV deploys it (ACTION_SELF, B's hook).
@@ -43,7 +43,7 @@ index 3bcea30..9fd1d51 100644
          // Register each infantry def's SHP + anim into the shared UnitAssets store
          // so launched infantry (player + AI-2 Soviet rosters) render. Guarded: a
 diff --git a/engine/pres_audio_events.inc b/engine/pres_audio_events.inc
-index 3cd5066..2c5254c 100644
+index 3cd5066..f4c7d99 100644
 --- a/engine/pres_audio_events.inc
 +++ b/engine/pres_audio_events.inc
 @@ -223,6 +223,12 @@ public:
@@ -54,7 +54,7 @@ index 3cd5066..2c5254c 100644
 +            // SCHPDEPL (and StartSound=SeigeChopperDeploy) on deploy and undeploy.
 +            if (rules_ini_ && u.deploy_fire && !u.is_infantry) {
 +                const std::string anim = pres_clean(rules_ini_->get(pres_type_id(u), "DeployingAnim"));
-+                if (!anim.empty()) effects_.spawn(anim, u.fx, u.fy, u.level, 0.0);
++                if (!anim.empty()) fx_.spawn(anim, u.fx, u.fy, u.level, 0.0);
 +            }
          }
          const auto& bs = w.buildings();
@@ -96,10 +96,10 @@ index 2c92487..582a6b9 100644
          const WeaponSlot& dw = tw.slot[slot];
          const bool rad = dw.valid && rules.section_double(dw.id, "RadLevel", 0.0) > 0.0;
 diff --git a/engine/world.cpp b/engine/world.cpp
-index ba1af28..d5bca93 100644
+index ac426db..56e622b 100644
 --- a/engine/world.cpp
 +++ b/engine/world.cpp
-@@ -1520,7 +1520,12 @@ void World::order_unit_move(int idx, int gx, int gy) {
+@@ -1553,7 +1553,12 @@ void World::order_unit_move(int idx, int gx, int gy) {
      // Desolator) owned by a human refuses the move (the destination is
      // cleared, it stays put); a computer-owned one undeploys first (the
      // Undeploy sequence and sound) and then walks.
