@@ -101,6 +101,18 @@ function fill(el, ...kids) {
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 }
 
+/** A page's title row: title, an optional line under it, and the page's actions on the right. */
+function pageHead(title, sub, ...actions) {
+  return h("div", { class: "page-head" }, h("div", { class: "head-text" }, h("h1", {}, title), sub ? h("p", { class: "head-sub" }, sub) : null), actions.length ? h("div", { class: "row" }, actions) : null);
+}
+/** Nothing here yet: an icon, what is missing, what to do about it. */
+function emptyState(ic, title, text, ...actions) {
+  return h("div", { class: "empty" }, icon(ic), h("strong", {}, title), text ? h("p", {}, text) : null, actions.length ? h("div", { class: "row" }, actions) : null);
+}
+/** Something went wrong, and the button that tries again or leads on. */
+const callout = (kind, text, ...actions) => h("div", { class: "callout " + kind, role: kind === "bad" ? "alert" : "status" }, h("span", {}, text), actions);
+const skeletonLines = (n) => Array.from({ length: n }, () => h("span", { class: "skeleton skelrow", "aria-hidden": "true" }));
+
 const errText = (e) => (typeof e === "string" ? e : (e && e.message) || String(e));
 
 // ---------------------------------------------------------------- state
@@ -2186,7 +2198,7 @@ function ra2CrateDensityLabel(dens, crates, min) {
 /** A remembered yes/no match option for RA2 skirmish / lobby. */
 function ra2OptCheck(label, key, fallback = true) {
   const box = h("input", { type: "checkbox", checked: ra2Flag(key, fallback), "aria-label": label, onchange: () => prefs.set({ [key]: box.checked }) });
-  return h("label", { class: "field check" }, box, h("span", {}, label));
+  return h("label", { class: "switch small" }, box, h("span", {}, label));
 }
 const fileOf = (path) => String(path).split(/[\\/]/).pop();
 const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
@@ -2312,7 +2324,8 @@ function ra2Skirmish(onChange) {
 
   async function load() {
     const file = mapSel.value, mine = ++token;
-    view = null; rows = []; fill(facts); note.textContent = file ? "Loading…" : "";
+    view = null; rows = []; fill(facts); note.textContent = file ? "Loading…" : ""; errBox.hidden = true;
+    canvas.parentNode && canvas.parentNode.classList.toggle("loading", !!file);
     draw();
     if (!file) return;
     try {
@@ -2324,15 +2337,24 @@ function ra2Skirmish(onChange) {
       const m = maps.find((x) => fileOf(x.path) === file);
       fill(facts, [`${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0)].map((b) => h("span", {}, b)));
       note.textContent = !v.rgba ? "This map has no preview picture." : "";
+      canvas.parentNode.classList.remove("loading");
       draw();
-    } catch (e) { if (mine === token) { note.textContent = "Couldn't read this map: " + errText(e); onChange && onChange(); } }
+    } catch (e) {
+      if (mine !== token) return;
+      note.textContent = ""; canvas.parentNode.classList.remove("loading");
+      errBox.hidden = false;
+      fill(errBox, callout("bad", `This map could not be read (${errText(e)}). Pick another one, or try it again.`, h("button", { class: "btn small", onclick: load }, "Try again")));
+      onChange && onChange();
+    }
   }
   async function reload() {
     maps = playable(await loadRa2Maps());
+    loaded = true;
     const want = prefs.get().ra2Map;
     fill(mapSel, maps.map((m) => new Option(`${m.name} (${m.players})`, fileOf(m.path))));
     mapSel.disabled = !maps.length;
     mapSel.value = maps.some((m) => fileOf(m.path) === want) ? want : maps.length ? fileOf(maps[0].path) : "";
+    show();
     await load();
   }
   const setup = () => ({
@@ -2343,30 +2365,32 @@ function ra2Skirmish(onChange) {
   });
   /** Why Play cannot start this setup yet ("" when it can). */
   const why = () => !store.cfg.ra2.game_dir ? "Find your game files first."
-    : !maps.length ? "Add a map first." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
+    : !loaded ? "Reading your maps…" : !maps.length ? "Add a map first." : errBox.hidden === false ? "Pick a map that can be read." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
     : !rows.some((r) => r.kind === "ai") ? "Give the computer at least one place." : "";
-  const empty = h("div", { class: "listempty" }, h("strong", {}, "No skirmish maps yet"),
-    h("span", { class: "muted small" }, "Official maps from your game install show up here once the game folder is set."),
-    h("button", { class: "btn small", onclick: () => go("maps") }, "Go to Maps"));
+  const empty = emptyState("maps", "No skirmish maps yet", "Maps with at least two start positions show up here. Add community packs or your own files.", h("button", { class: "btn", onclick: () => go("maps") }, "Open Maps"));
+  const skel = h("div", { class: "ra2setup", "aria-hidden": "true" }, h("span", { class: "skeleton sk-map" }), h("div", { class: "stack" }, h("span", { class: "skeleton sk-line" }), skeletonLines(4)));
+  const errBox = h("div", { hidden: true });
   const body = h("div", { class: "ra2setup" },
     h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts),
     h("div", { class: "mapside" },
       h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
-      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note,
-      h("div", { class: "ra2opts" },
-        h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
-        h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
-        h("label", { class: "field" }, h("span", {}, "Crates"), crateDensity),
-        h("label", { class: "field" }, h("span", {}, "Stronger AI"), strongerAi),
-        superweapons, allies, autoRepair)));
-  const el = h("div", { class: "stack" }, empty, body);
-  const show = () => { empty.hidden = !!maps.length || !store.ra2Maps; body.hidden = !maps.length; };
+      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox));
+  const rules = h("div", { class: "rules" }, h("h3", {}, "Match rules"),
+    h("div", { class: "ra2opts" },
+      h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
+      h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
+      h("label", { class: "field" }, h("span", {}, "Crates"), crateDensity),
+      h("label", { class: "field" }, h("span", {}, "Stronger AI"), strongerAi)),
+    h("div", { class: "switches" }, superweapons, allies, autoRepair));
+  const el = h("div", { class: "stack" }, skel, empty, body, rules);
+  let loaded = false;
+  const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; rules.hidden = body.hidden; };
   reload();
   return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length, aiBoost: +strongerAi.value }); } };
 }
 
 function ra2PlayPage() {
-  const status = h("span", { class: "muted small", role: "status" });
+  const status = liveStatus();
   const sk = ra2Skirmish(() => update());
   const play = h("button", { class: "btn primary big", onclick: async () => {
     play.disabled = true;
@@ -2374,27 +2398,27 @@ function ra2PlayPage() {
     const ok = await launchRa2(sk.setup());
     setTimeout(update, ok ? 5000 : 0);
   } }, icon("play"), "Play skirmish");
-  function update() {
-    const why = !store.cfg.ra2_engine ? "Engine not in this build yet." : sk.why();
-    play.disabled = !!why;
-    status.textContent = why;
-    status.hidden = !why;
-  }
-  const files = store.cfg.ra2.game_dir ? null
-    : h("div", { class: "row" }, h("p", { class: "msg bad" }, "Game files not set yet."), h("button", { class: "btn", onclick: () => openWizard() }, "Find game files"));
-  const disp = h("p", { class: "muted small" });
-  const redrawDisp = () => {
-    const change = h("button", { class: "btn small ghost", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change");
-    fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()), " — ", change);
-  };
+  const hasFiles = !!store.cfg.ra2.game_dir;
+  const chip = (text, kind) => h("span", { class: "pill " + kind }, h("i", { class: "dot" }), text);
+  const disp = h("span", { class: "pill" });
+  const redrawDisp = () => fill(disp, icon("screen"), ra2DisplayLabel(store.cfg.ra2, nativeRes()), " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change"));
   redrawDisp();
   window.addEventListener("ra2display", redrawDisp);
+  function update() {
+    const why = !store.cfg.ra2_engine ? "This build does not include the Red Alert 2 engine yet." : sk.why();
+    play.disabled = !!why;
+    status.set(why);
+  }
+  const hero = h("div", { class: "card hero ra2hero" }, gameTile("ra2"),
+    h("div", { class: "stack tight herotext" }, h("h2", {}, RA2_NAME), h("p", { class: "muted" }, "Skirmish against the computer. For games with friends, use the Online page."),
+      h("div", { class: "statrow" }, chip(hasFiles ? "Game files ready" : "Game files needed", hasFiles ? "ok" : "warn"), chip(store.cfg.ra2_engine ? "Engine ready" : "Engine not in this build", store.cfg.ra2_engine ? "ok" : "warn"), disp)),
+    h("div", { class: "stack heroact" }, play, status.el));
+  const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge (Steam and EA installs are found automatically).", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" },
-      h("div", { class: "stack tight" }, h("h1", {}, "Play"), h("p", { class: "muted small" }, RA2_NAME), disp),
-      h("div", { class: "row" }, play, status)),
-    files ? h("div", { class: "card" }, files) : null,
-    h("div", { class: "card" }, sk.el));
+    pageHead("Play"),
+    hero,
+    hasFiles ? null : setupCard,
+    h("div", { class: "card" }, h("div", { class: "sectionhead" }, h("h2", {}, "Skirmish"), h("p", {}, "Choose the map, then who plays and where they start.")), sk.el));
   update();
   return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
@@ -2445,9 +2469,10 @@ function ra2MapsPage() {
     drawChips();
     drawPacks();
     result.textContent = maps.length ? (v.length === maps.length ? `${maps.length} maps` : `${v.length} of ${maps.length} maps`) : "";
-    empty.hidden = !!v.length; list.hidden = !v.length;
-    fill(empty, maps.length ? [h("strong", {}, "No maps match"), h("button", { class: "btn small", onclick: () => { filter = "all"; draw(); } }, "Show all")]
-      : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install community packs, or add .map / .mpr / .yrm files."), h("button", { class: "btn small", onclick: openFolder }, "Open map folder")]);
+    empty.hidden = !!v.length; list.hidden = !v.length; empty.classList.toggle("listempty", false);
+    fill(empty, maps.length ? emptyState("maps", "No maps with that many players", "Try another player count.", h("button", { class: "btn", onclick: () => { filter = "all"; draw(); } }, "Show all maps"))
+      : emptyState("maps", "No maps yet", "Install the community packs for a ready-made set, or drop .map, .mpr and .yrm files into your map folder.",
+          h("button", { class: "btn primary", onclick: () => installPacks.click() }, "Install community packs"), h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")));
     if (sel && !v.includes(sel)) sel = null;
     if (!sel && v.length) { sel = v[0]; show(); }
     preview.hidden = !sel;
@@ -2483,14 +2508,15 @@ function ra2MapsPage() {
   async function openFolder() { try { await invoke("ra2_open_maps_folder"); } catch (e) { say(errText(e), "bad"); } }
   const refresh = h("button", { class: "btn small", onclick: async () => { await reload(); say(`${maps.length} map${maps.length === 1 ? "" : "s"} found`, "ok"); } }, "Look again");
   async function reload() {
-    fill(empty, h("span", { class: "muted small" }, "Reading your maps…")); empty.hidden = false; list.hidden = true;
+    fill(empty, h("div", { class: "maps-skel", "aria-hidden": "true" }, skeletonLines(6)), h("span", { class: "sr", role: "status" }, "Reading your maps"));
+    empty.hidden = false; list.hidden = true;
     try { community = await invoke("ra2_community_packs"); } catch (_) { community = null; }
     maps = await loadRa2Maps();
     draw();
   }
   reload();
   const el = h("div", { class: "page" },
-    h("div", { class: "page-head" }, h("h1", {}, "Maps"), h("button", { class: "btn", onclick: openFolder }, "Open map folder")),
+    pageHead("Maps", "Skirmish and multiplayer maps for Red Alert 2 and Yuri's Revenge.", h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder")),
     packCard,
     h("div", { class: "card" },
       h("div", { class: "row between" }, h("h2", {}, "Your maps"), refresh),
@@ -2805,7 +2831,7 @@ function ra2SettingsPage() {
       h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
   ], tab, (id) => { store.settingsTab = id; });
-  const el = h("div", { class: "page" }, h("div", { class: "page-head" }, h("h1", {}, "Settings")), t.bar, t.body);
+  const el = h("div", { class: "page" }, pageHead("Settings", "Game files, display and updates for Red Alert 2."), t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 
@@ -2872,8 +2898,8 @@ window.addEventListener("net", () => updateSidebar());
 
 // ---------------------------------------------------------------- the game card (who you are playing, and the one place to change it)
 const GAME_INFO = {
-  generals: { name: "Generals Zero Hour", kicker: "Command & Conquer", key: "1" },
-  ra2: { name: "Red Alert 2", kicker: "Yuri's Revenge", key: "2" },
+  generals: { name: "Generals Zero Hour", kicker: "Generals", short: "Zero Hour", key: "1" },
+  ra2: { name: "Red Alert 2", kicker: "Red Alert 2", short: "Yuri's Revenge", key: "2" },
 };
 const gameReady = (id) => !!(id === "ra2" ? store.cfg.ra2.game_dir : store.cfg.game_dir);
 /** The game's emblem: Generals keeps the Rallypoint badge, Red Alert 2 gets a star on its own blue. */
@@ -2883,11 +2909,11 @@ let gameCardEl = null;
 
 function gameCard() {
   const cur = store.cfg.game in GAME_INFO ? store.cfg.game : "generals";
-  const stateOf = (id) => (gameReady(id) ? ["Ready to play", "ok"] : ["Needs game files", "warn"]);
+  const stateOf = (id) => (gameReady(id) ? ["Ready", "ok"] : ["Needs files", "warn"]);
   const [st, kind] = stateOf(cur);
   const btn = h("button", { class: "gamebtn", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `Game: ${GAME_INFO[cur].name}. ${st}. Change game` },
     gameTile(cur),
-    h("span", { class: "gtext" }, h("small", {}, "Rallypoint"), h("b", {}, GAME_INFO[cur].name), h("span", { class: "gstate " + kind }, st)),
+    h("span", { class: "gtext" }, h("small", {}, GAME_INFO[cur].kicker), h("b", {}, GAME_INFO[cur].short), h("span", { class: "gstate " + kind }, st)),
     h("span", { class: "gcaret", "aria-hidden": "true" }));
   let menu = null;
   const close = (refocus) => {
@@ -2902,7 +2928,7 @@ function gameCard() {
       const [t, k] = stateOf(id);
       return h("button", { class: "gameopt", type: "button", role: "menuitemradio", "aria-checked": String(id === cur), tabindex: id === cur ? "0" : "-1",
         onclick: () => { close(true); switchGame(id); } },
-        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].name), h("span", { class: "gstate " + k }, t)), h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)));
+        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short), h("span", { class: "gstate " + k }, t)), h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)));
     });
     menu = h("div", { class: "gamemenu", role: "menu", "aria-label": "Choose the game",
       onkeydown: (e) => {
@@ -2921,6 +2947,20 @@ function gameCard() {
   gameCardEl = h("div", { class: "gamecard", "data-key": `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}` }, btn);
   return gameCardEl;
 }
+/** First run: which game is this setup for? Picking the other one swaps to its own setup. */
+function wizardGamePick(cur) {
+  return h("div", { class: "stack tight" }, h("p", { class: "muted small" }, "Playing both? Set up one now and the other any time from the game card at the top left."),
+    h("div", { class: "wizpick", role: "radiogroup", "aria-label": "Which game are you setting up?" }, Object.keys(GAME_INFO).map((id) =>
+      h("button", { class: "gameopt", type: "button", role: "radio", "aria-checked": String(id === cur), onclick: () => { if (id !== cur) { closeWizard(); switchGame(id); } } },
+        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short))))));
+}
+/** Ready step: offer the other game's setup when it has not been done. */
+function otherGameOffer(finish) {
+  const other = isRa2() ? "generals" : "ra2";
+  const done = other === "ra2" ? store.cfg.ra2.setup_done : store.cfg.setup_done;
+  return done ? null : h("p", { class: "muted small" }, `Also play ${GAME_INFO[other].name}? `, h("button", { class: "linkbtn", onclick: () => finish(() => switchGame(other)) }, "Set it up next"), ".");
+}
+
 /** Ctrl or Command with 1 or 2 changes the game from anywhere. */
 document.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || wizardEl || !store.cfg) return;
@@ -2965,10 +3005,10 @@ function openWizard() {
   function body(step) {
     w.dispose = null;
     if (step === 0) {
-      return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
+      return h("div", { class: "stack" }, h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
         h("div", { class: "stack" }, h("h1", {}, "Set up Rallypoint"),
           h("p", { class: "muted" }, "Rallypoint runs Command & Conquer: Generals – Zero Hour on your Mac or PC, at any screen size. It needs your own copy of the game. This takes about two minutes and everything can be changed later."),
-          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods and maps, if you want them"))));
+          h("ol", { class: "checklist" }, h("li", {}, "Find or download your game files"), h("li", {}, "Choose a resolution"), h("li", {}, "Add mods and maps, if you want them")))), wizardGamePick("generals"));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); });
@@ -3012,7 +3052,7 @@ function openWizard() {
         h("dt", {}, "Display"), h("dd", {}, (pr.res === "native" ? `Native ${nat.w} × ${nat.h}` : pr.res.replace("x", " × ")) + (pr.fs ? ", fullscreen" : ", windowed") + (store.mods.other.some((o) => o.folder === ICON_FOLDER) ? ", sharp icons" : "") + (pr.camera ? ", higher camera" : "")),
         h("dt", {}, "Game"), h("dd", {}, [selectedGame().name, ...selectedExtras()].join(", ")),
         h("dt", {}, "Maps"), h("dd", {}, store.maps && store.maps.count ? `${store.maps.count} installed` : "none added")),
-      h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."),
+      h("p", { class: "muted small" }, "To play with friends, open the Online tab and enter a server and room."), otherGameOffer(finish),
       h("div", { class: "row" }, h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"), h("button", { class: "btn big", onclick: () => finish(() => go("mods")) }, "Browse mods")));
   }
 
@@ -3059,13 +3099,13 @@ function openRa2Wizard() {
   function body(step) {
     w.dispose = null;
     if (step === 0) {
-      return h("div", { class: "intro" }, h("img", { src: "logo.png", alt: "" }),
+      return h("div", { class: "stack" }, h("div", { class: "intro" }, gameTile("ra2"),
         h("div", { class: "stack" }, h("h1", {}, `Set up ${RA2_NAME}`),
           h("p", { class: "muted" }, "Needs your own copy of the game. About a minute; change anything later in Settings."),
           h("ol", { class: "checklist" },
             h("li", {}, "Find or download your game files"),
             h("li", {}, "Choose a resolution"),
-            h("li", {}, "Add community maps (optional)"))));
+            h("li", {}, "Add community maps (optional)")))), wizardGamePick("ra2"));
     }
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); }, "ra2");
@@ -3110,7 +3150,7 @@ function openRa2Wizard() {
       h("dl", { class: "summary" },
         h("dt", {}, "Game files"), h("dd", {}, r.game_dir || "not set yet"),
         h("dt", {}, "Display"), h("dd", {}, ra2DisplayLabel(r, nativeRes())),
-        h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "add packs later from Maps")),
+        h("dt", {}, "Maps"), h("dd", {}, w.mapsNote || "add packs later from Maps")), otherGameOffer(finish),
       h("div", { class: "row" },
         h("button", { class: "btn primary big", onclick: () => finish() }, icon("play"), "Open Rallypoint"),
         h("button", { class: "btn big", onclick: () => finish(() => go("maps")) }, "Browse maps")));
