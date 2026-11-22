@@ -282,6 +282,206 @@
      } else {
          draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
      }
+@@ -5823,12 +5823,13 @@
+ // caller can hide the OS cursor).
+ bool draw_mode_cursor(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ModeCursor& mc,
+                       const ra2engine::World& world, const BuildingAssets& ba,
+-                      const ra2engine::Input& input, int mx, int my, std::uint64_t game_frame) {
++                      const ra2engine::Input& input, int mx, int my, std::uint64_t game_frame,
++                      int vx = -1, int vy = -1) {   // vx/vy: the pointer in world-view pixels (zoomed out)
+     const ra2engine::Input::BaseMode mode = input.base_mode();
+     if (!mc.ok || mode == ra2engine::Input::BaseMode::None || mode == ra2engine::Input::BaseMode::PowerToggle)
+         return false;   // W5-E2: no power-toggle cursor art in YR [RE-FALLBACK: the normal cursor]
+     const bool repair = (mode == ra2engine::Input::BaseMode::Repair);
+-    const int bi = input.building_under(mx, my);
++    const int bi = input.building_under(vx >= 0 ? vx : mx, vy >= 0 ? vy : my);
+     // 0 = armed over nothing, 1 = valid target, 2 = refused target.
+     int state = 0;
+     if (bi >= 0) {
+@@ -7008,6 +7009,7 @@
+         }
+     }
+     ~GameScene() override {
++        if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
+         net_teardown();   // NET-PLAY: a live session keeps flushing its EXIT
+         if (cmd_rec_) {   // NET L1 --record: the end state the replay must reach
+             const std::uint64_t h = sim_state_hash();
+@@ -7058,6 +7060,7 @@
+         // sidebar FUN_006ab0b0 ignore input -- only Esc reaches the options]:
+         // every pointer / key / touch event past the options menu is dropped.
+         if (input_locked_) return;
++        if (zoom_handle(ev)) return;   // tactical zoom: wheel, PgUp / PgDn
+         if (hotkey(ev)) return;      // G-04: KeyboardMD.ini [Hotkey] commands
+         if (touch_bar_handle(ev)) return;   // W2-AR-08 touch command bar (touch_bar.inc)
+         if (touch_ui_handle(ev)) return;    // W4-AM touch router (touch_ui.inc)
+@@ -7115,6 +7118,12 @@
+         // one-mode cancel chain is the RIGHT-click-up handler (Input owns it);
+         // Esc is the Options hotkey (FUN_00646AE0 queues the options event and
+         // cancels nothing), handled in ui_handle.
++        if (zoom_ < 1.0 && !ev.touch && ev.x < playfield_w_ &&
++            (ev.kind == ra2engine::InputEvent::PointerMove || ev.kind == ra2engine::InputEvent::PointerDown ||
++             ev.kind == ra2engine::InputEvent::PointerUp)) {
++            ev.x = zx(ev.x);   // Input works in world-view pixels (the zoomed canvas)
++            ev.y = zy(ev.y);
++        }
+         input_.handle(ev);
+     }
+ 
+@@ -7374,7 +7383,8 @@
+         pres_.observe_selection(input_.selection(), input_);   // W7-12-26 first-selected speaker / W7-12-04 groups
+         pres_.observe_mind_control(world_, campaign_ ? campaign_->mind_control_pairs()
+                                                      : world_.mind_control_pairs());   // W7-10-05 / W7-08-14
+-        pres_.update(dt, world_, lq(), ba_, lcredits(), act, cam_, playfield_w_, kWinH,
++        pres_.set_zoom(zoom_);
++        pres_.update(dt, world_, lq(), ba_, lcredits(), act, cam_, ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_),
+                      pres_vet_, net_ ? net_take(net_proj_buf_) : world_.take_projectile_events());   // (W3-B: drained per tick; normally empty)
+         pres_vet_.clear();
+         // (L2: the win-time cheer is a sim rule now -- World::step_house_outcomes
+@@ -7555,26 +7565,35 @@
+     void render(ra2engine::Platform& plat, ra2engine::TextureCache& tc) override {
+         NetRenderClock net_rclock_(net_render_ms_);   // W9-01-03: render CPU time for PROCESS_TIME
+         SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
+-        radar_.set_view(cam_, playfield_w_, kWinH);   // G-09 viewport box
++        radar_.set_view(cam_, ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));   // G-09 viewport box
+         update_light_sources();   // W3-FIX-A
+         // W6-05-07: the hovered unit's health pips (a real mouse over the
+         // tactical view; a touch has no hover).
+-        g_hover_unit = (mouse_present_ && mx_ < playfield_w_ && !input_locked_) ? input_.pick_unit_at(mx_, my_) : -1;
++        g_hover_unit = (mouse_present_ && mx_ < playfield_w_ && !input_locked_) ? input_.pick_unit_at(zx(mx_), zy(my_)) : -1;
++        // Zoomed out the world and its overlays are drawn into a smaller
++        // texture (the world view) and scaled onto the playfield.
++        const bool zoomed = zoom_begin(ren);
++        const int vw = zoomed ? zoom_tw_ : playfield_w_, vh = zoomed ? zoom_th_ : kWinH;
++        pip_tc_ = &tc;
+         {
+             ra2engine::PresentScope present_scope(motion_, world_.units());
+-            render_world(ren, tc, a_, ua_, world_, cam_, kWinW, kWinH, &input_,
++            render_world(ren, tc, a_, ua_, world_, cam_, zoomed ? vw : kWinW, vh, &input_,
+                          &vlist_, ba_.ok ? &ba_ : nullptr, ore_art_.any ? &ore_art_ : nullptr);
+         }
+         hidden_.rules = &rules_ini_;   // W5-E2 R-146: the Behind= marker over occluded objects
+-        hidden_.draw(ren, tc, world_, ba_, cam_, playfield_w_, kWinH, g_user_settings && g_user_settings->show_hidden);
++        hidden_.draw(ren, tc, world_, ba_, cam_, vw, vh, g_user_settings && g_user_settings->show_hidden);
+         if (!(sidebar_up_ && lay_.contains(mx_, my_))) {
+             int pcx = 0, pcy = 0;
+             input_.placement_cell(pcx, pcy);
+             const ra2engine::PlacementCheck pchk =
+                 placement_eval(input_.placement_type(), pcx, pcy);   // gap owner A rules
+-            draw_placement_cursor(ren, tc, world_, ba_, input_, a_, cam_, kWinW, kWinH,
++            draw_placement_cursor(ren, tc, world_, ba_, input_, a_, cam_, zoomed ? vw : kWinW, vh,
+                                   input_.placement_active() ? &pchk : nullptr);
+         }
++        draw_production_chrome(ren, world_, input_, a_, cam_, vw, &tc);
++        draw_selected_building(ren);   // G-10 / W2-UI-11
++        draw_beacons(ren, tc);         // W9-05-08: own + mutual allies' beacons
++        if (zoomed) zoom_end(ren);
+         if (ba_.ok && ba_.sidebar_ok) {
+             for (int t = 0; t < 4; ++t) g_tab_has[t] = tab_buildable(t).empty() ? 0 : 1;   // W2-UI-06
+             g_tab_flash[0] = lq().state(ra2engine::QueueCat::Structure).slot.ready ? 1 : 0;   // W5-PRES R-142
+@@ -7593,9 +7612,6 @@
+                          bm == ra2engine::Input::BaseMode::Repair ? 1
+                          : bm == ra2engine::Input::BaseMode::Sell ? 2 : 0);
+         }
+-        draw_production_chrome(ren, world_, input_, a_, cam_, playfield_w_, &tc);
+-        pip_tc_ = &tc;
+-        draw_selected_building(ren);   // G-10 / W2-UI-11
+         draw_queue_badges(ren, tc);    // G-07 / W2-UI-03/04
+         draw_tooltip(ren, tc);         // W2-UI-07
+         // Repair / Sell software cursor over the playfield [RE: §D8]; the OS
+@@ -7607,7 +7623,7 @@
+         bool drew = input_locked_ ||
+                     (mouse_present_ && !(sidebar_up_ && lay_.contains(mx_, my_)) && ba_.ok &&
+                      draw_mode_cursor(ren, tc, mouse_, world_, ba_, input_, mx_, my_,
+-                                      world_.repair_frame()));
++                                      world_.repair_frame(), zx(mx_), zy(my_)));
+         // G-08 (draw half): every other pointer is the MOUSE.SHP action cursor.
+         if (!drew && mouse_present_)
+             drew = pres_.draw_cursor(ren, tc, mouse_, world_, input_, mx_, my_,
+@@ -7617,7 +7633,6 @@
+             SDL_ShowCursor(drew ? SDL_DISABLE : SDL_ENABLE);
+             os_cursor_hidden_ = drew;
+         }
+-        draw_beacons(ren, tc);    // W9-05-08: own + mutual allies' beacons
+         draw_messages(ren, tc);   // W2-UI-21 (game saved, defeated, low power)
+         draw_timer_stack(ren, tc);   // W6-05-04/05 mission timer + SW countdowns
+         draw_touch_bar(ren);      // W2-AR-08 (touch only)
+@@ -8064,6 +8079,76 @@
+     // W2-AR-07: 720 until the first layout; ~480 on a phone (touch canvas:
+     // every sidebar button and cameo ~1.5x bigger, >= 40 dp).
+     static inline int kWinH = 720;
++    // Tactical zoom (presentation only): canvas pixels per world pixel, 1 =
++    // normal, down to zoom_min(). Nothing of it reaches the simulation, the
++    // commands or the saves; Input, the camera and the radar box work in
++    // world-view pixels (the canvas divided by zoom), see logical_canvas.hpp.
++    double zoom_ = 1.0;
++    SDL_Texture* zoom_tex_ = nullptr;
++    int zoom_tw_ = 0, zoom_th_ = 0;
++    SDL_Texture* zoom_prev_ = nullptr;
++    int zx(int canvas_x) const { return ra2engine::zoom_to_view(canvas_x, zoom_); }
++    int zy(int canvas_y) const { return ra2engine::zoom_to_view(canvas_y, zoom_); }
++    double zoom_limit() const {
++        return ra2engine::zoom_min(g_platform ? g_platform->present_fit() : 1.0);
++    }
++    // Re-fit Input and the camera to the world view after the zoom (or the
++    // canvas) changed; keeps the campaign's LocalSize clamp.
++    void zoom_apply_view() {
++        input_.set_viewport(ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));
++        if (campaign_ && local_.valid) {
++            const int W = local_.size_w;
++            const int top = 15 * (W - 5 + 2 * local_.y);
++            input_.set_view_limits(30 * (2 * local_.x - W) + 30, top, 30 * (2 * (local_.x + local_.w) - W) + 30,
++                                   top + 30 * local_.h + 135);
++        }
++        input_.pan(0, 0);   // clamp
++    }
++    // Zoom to `z` keeping the world point under canvas pixel (ax, ay) fixed.
++    void zoom_to(double z, int ax, int ay) {
++        z = std::max(zoom_limit(), std::min(1.0, z));
++        if (z == zoom_) return;
++        cam_.x = ra2engine::zoom_keep_point(cam_.x, ax, zoom_, z);
++        cam_.y = ra2engine::zoom_keep_point(cam_.y, ay, zoom_, z);
++        zoom_ = z;
++        zoom_apply_view();
++    }
++    bool zoom_handle(const ra2engine::InputEvent& ev) {
++        int dir = 0, ax = playfield_w_ / 2, ay = kWinH / 2;
++        if (ev.kind == ra2engine::InputEvent::Wheel && !ev.touch && ev.x < playfield_w_) {
++            dir = ev.dy > 0 ? 1 : -1;   // wheel away = zoom in
++            ax = ev.x;
++            ay = ev.y;
++        } else if (ev.kind == ra2engine::InputEvent::Key && !ev.ctrl && !ev.alt && (ev.vk == 33 || ev.vk == 34)) {
++            dir = ev.vk == 33 ? 1 : -1;   // PgUp in, PgDn out
++        } else {
++            return false;
++        }
++        zoom_to(ra2engine::zoom_step(zoom_, dir, zoom_limit()), ax, ay);
++        return true;
++    }
++    bool zoom_begin(SDL_Renderer* ren) {
++        if (zoom_ >= 1.0) return false;
++        const int tw = ra2engine::zoom_view(playfield_w_, zoom_), th = ra2engine::zoom_view(kWinH, zoom_);
++        if (!zoom_tex_ || zoom_tw_ != tw || zoom_th_ != th) {
++            if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
++            zoom_tex_ = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, tw, th);
++            zoom_tw_ = zoom_tex_ ? tw : 0;
++            zoom_th_ = zoom_tex_ ? th : 0;
++        }
++        if (!zoom_tex_) return false;
++        zoom_prev_ = SDL_GetRenderTarget(ren);
++        if (SDL_SetRenderTarget(ren, zoom_tex_) != 0) return false;
++        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
++        SDL_RenderClear(ren);
++        return true;
++    }
++    void zoom_end(SDL_Renderer* ren) {
++        SDL_SetRenderTarget(ren, zoom_prev_);
++        SDL_SetTextureScaleMode(zoom_tex_, SDL_ScaleModeLinear);
++        const SDL_Rect dst{0, 0, playfield_w_, kWinH};
++        SDL_RenderCopy(ren, zoom_tex_, nullptr, &dst);
++    }
+     int logical_width() const override { return kWinW; }
+     int logical_height() const override { return kWinH; }
+ public:
 --- a/engine/hud_text.inc
 +++ b/engine/hud_text.inc
 @@ -224,18 +224,6 @@
@@ -408,3 +608,185 @@
 +}
 +
  }  // namespace ra2engine
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -11,7 +11,7 @@
+     // Agent E draws the cursor art from this; over the sidebar it is None.
+     ra2engine::Input::Action cursor_action() const {
+         if (sidebar_up_ && lay_.contains(mx_, my_)) return ra2engine::Input::Action::None;
+-        return input_.action_at(mx_, my_);
++        return input_.action_at(zx(mx_), zy(my_));
+     }
+ 
+     // G-10: selection bracket + health bar over the selected own building.
+@@ -23,7 +23,7 @@
+         int sb = input_.selected_building();
+         // W6-05-07 parity: hovered own buildings show pips when none is selected.
+         if (sb < 0 && mouse_present_ && mx_ < playfield_w_ && !input_locked_) {
+-            const int hb = input_.building_under(mx_, my_);
++            const int hb = input_.building_under(zx(mx_), zy(my_));
+             if (hb >= 0 && hb < static_cast<int>(world_.buildings().size())) {
+                 const ra2engine::Building& hbld = world_.buildings()[hb];
+                 if (hbld.alive && hbld.state != ra2engine::Building::State::Dead &&
+--- a/engine/game_scene_lifecycle.inc
++++ b/engine/game_scene_lifecycle.inc
+@@ -78,19 +78,13 @@
+     int gw = kWinW, gh = kWinH;
+     game_logical_size(gw, gh);
+     if (gw == kWinW && gh == kWinH) return;
+-    const int cx = -cam_.x + playfield_w_ / 2, cy = -cam_.y + kWinH / 2;   // world centre
++    const int cx = -cam_.x + ra2engine::zoom_view(playfield_w_, zoom_) / 2, cy = -cam_.y + ra2engine::zoom_view(kWinH, zoom_) / 2;   // world centre
+     SDL_Log("[lifecycle] resize: canvas %dx%d -> %dx%d", kWinW, kWinH, gw, gh);
+     set_canvas_size(gw, gh);
+     lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_);
+     playfield_w_ = kWinW - (sidebar_up_ ? lay_.bar.w : 0);
+-    input_.set_viewport(playfield_w_, kWinH);
+-    if (campaign_ && local_.valid) {   // the LocalSize clamp (campaign_view_setup)
+-        const int W = local_.size_w;
+-        const int top = 15 * (W - 5 + 2 * local_.y);
+-        input_.set_view_limits(30 * (2 * local_.x - W) + 30, top, 30 * (2 * (local_.x + local_.w) - W) + 30,
+-                               top + 30 * local_.h + 135);
+-    }
+-    cam_.x = playfield_w_ / 2 - cx;
+-    cam_.y = kWinH / 2 - cy;
+-    input_.pan(0, 0);   // clamp
++    zoom_ = std::max(zoom_limit(), zoom_);   // a monitor / canvas change moves the limit
++    cam_.x = ra2engine::zoom_view(playfield_w_, zoom_) / 2 - cx;
++    cam_.y = ra2engine::zoom_view(kWinH, zoom_) / 2 - cy;
++    zoom_apply_view();   // viewport, the campaign's LocalSize clamp, camera clamp
+ }
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -368,10 +368,17 @@
+     // Fallback "what would a click do" probe [G-08: B owns the authoritative
+     // cursor state; this mirrors the current Input order semantics so the
+     // pointer never lies about them]. Returns a MouseCursorType id.
+-    int probe_cursor(const ra2engine::World& w, const ra2engine::Input& in, int mx, int my,
++    // Tactical zoom (GameScene::zoom_): picks use the pointer in world-view
++    // pixels, the edge-scroll band and the cursor sprite the canvas ones.
++    double zoom_ = 1.0;
++public:
++    void set_zoom(double z) { zoom_ = z; }
++private:
++    int probe_cursor(const ra2engine::World& w, const ra2engine::Input& in, int cmx, int cmy,
+                      bool over_sidebar, int view_w, int win_w, int win_h) const {
++        const int mx = ra2engine::zoom_to_view(cmx, zoom_), my = ra2engine::zoom_to_view(cmy, zoom_);
+         constexpr int kEdge = 24;   // GameScene's edge-scroll band
+-        int dx = (mx >= win_w - kEdge) - (mx <= kEdge), dy = (my >= win_h - kEdge) - (my <= kEdge);
++        int dx = (cmx >= win_w - kEdge) - (cmx <= kEdge), dy = (cmy >= win_h - kEdge) - (cmy <= kEdge);
+         if (dx || dy) {
+             static const int dir[3][3] = {{7, 0, 1}, {6, -1, 2}, {5, 4, 3}};   // [dy+1][dx+1]
+             return kScrollN + dir[dy + 1][dx + 1];
+@@ -417,7 +424,7 @@
+             if (b.house == g_local_house) return any_sel ? kNoMove : kDefault;
+         }
+         if (!any_sel) return kDefault;
+-        if (mx >= view_w) return kDefault;
++        if (cmx >= view_w) return kDefault;
+         // Ground: move where passable (or unexplored -- the original lets you
+         // order into the shroud), no-move otherwise.
+         int cx = 0, cy = 0;
+@@ -433,8 +440,9 @@
+     // FUN_004aada0]: Attack shows AttackOutOfRange when the selection cannot
+     // reach; over a shrouded cell Attack and Move both show Move.
+     int cursor_for_action(ra2engine::Input::Action a, const ra2engine::World& w, const ra2engine::Input& in,
+-                          int mx, int my) const {
++                          int cmx, int cmy) const {
+         using A = ra2engine::Input::Action;
++        const int mx = ra2engine::zoom_to_view(cmx, zoom_), my = ra2engine::zoom_to_view(cmy, zoom_);
+         int cx = 0, cy = 0;
+         ra2engine::screen_to_cell(mx - cam_.x, my - cam_.y, 60, 30, cx, cy);
+         const bool shrouded = !w.explored_at(g_local_house, cx, cy);
+--- a/tests/test_logical_canvas.cpp
++++ b/tests/test_logical_canvas.cpp
+@@ -2,7 +2,7 @@
+ #include "../engine/logical_canvas.hpp"
+ 
+ static void canvas(int ww, int wh, int& w, int& h) {
+-    ra2engine::logical_size_for_height(ra2engine::desktop_logical_height(wh), ww, wh, w, h);
++    ra2engine::desktop_canvas(ww, wh, w, h);
+ }
+ 
+ TEST_CASE("desktop logical canvas follows the window, 720..1440") {
+@@ -22,13 +22,77 @@
+     canvas(2560, 1440, w, h);
+     CHECK(w == 2560);
+     CHECK(h == 1440);
+-    canvas(3840, 2160, w, h);
+-    CHECK(w == 2560);
+-    CHECK(h == 1440);
+     canvas(3440, 1440, w, h);
+     CHECK(w == 3440);
+     CHECK(h == 1440);
+-    canvas(5120, 1440, w, h);
++    canvas(5120, 1440, w, h);   // wider than ~21:9 stops gaining map
+     CHECK(w == 1440 * 239 / 100);
+     CHECK(h == 1440);
++    // RA2_LOGICAL_HEIGHT path
++    ra2engine::logical_size_for_height(900, 1920, 1080, w, h);
++    CHECK((w == 1600 && h == 900));
++}
++
++using namespace ra2engine;
++
++TEST_CASE("HiDPI canvas is the window over a whole number") {
++    int w = 0, h = 0;
++    desktop_canvas(1920, 1080, w, h);
++    CHECK((w == 1920 && h == 1080));
++    desktop_canvas(3840, 2160, w, h);   // 4K: 2x, a 1080-line canvas
++    CHECK((w == 1920 && h == 1080));
++    desktop_canvas(2880, 1864, w, h);   // 14" Retina: 2x
++    CHECK((w == 932 * 16 / 9 && h == 932));   // 16:10 panel: 16:9 floor, letterboxed
++    desktop_canvas(5120, 2880, w, h);   // 5K: 2x, 1440 lines
++    CHECK((w == 2560 && h == 1440));
++    desktop_canvas(1024, 600, w, h);    // small: the 720 floor
++    CHECK(h == 720);
++    CHECK(desktop_pixel_scale(1440) == 1);
++    CHECK(desktop_pixel_scale(1441) == 2);
++    CHECK(desktop_pixel_scale(4320) == 3);
++}
++
++TEST_CASE("present mode: whole scale is exact, fractional pre-scales") {
++    PresentMode m = present_mode(1920, 1080, 1920, 1080);
++    CHECK((m.exact && m.scale == 1));
++    m = present_mode(3840, 2160, 1920, 1080);
++    CHECK((m.exact && m.scale == 2));
++    m = present_mode(2880, 1864, 1440, 932);   // 1864 = 2 * 932
++    CHECK((m.exact && m.scale == 2));
++    m = present_mode(1920, 1080, 1280, 720);   // menus on 1080p: 1.5x
++    CHECK(!m.exact);
++    CHECK(m.prescale == 2);
++    m = present_mode(1000, 600, 1280, 720);    // window smaller than the canvas
++    CHECK(!m.exact);
++    CHECK(m.prescale == 1);
++}
++
++TEST_CASE("tactical zoom limits and steps") {
++    CHECK(zoom_min(1.0) == doctest::Approx(0.75));
++    CHECK(zoom_min(2.0) == doctest::Approx(0.5));
++    CHECK(zoom_min(1.5) == doctest::Approx(0.6666).epsilon(0.01));
++    CHECK(zoom_min(4.0) == doctest::Approx(0.5));
++    CHECK(zoom_min(0.5) == doctest::Approx(0.75));
++    CHECK(zoom_step(1.0, -1, 0.75) == doctest::Approx(0.875));
++    CHECK(zoom_step(0.875, -1, 0.75) == doctest::Approx(0.75));
++    CHECK(zoom_step(0.75, -1, 0.75) == doctest::Approx(0.75));
++    CHECK(zoom_step(0.75, 1, 0.75) == doctest::Approx(0.875));
++    CHECK(zoom_step(1.0, 1, 0.5) == doctest::Approx(1.0));
++    CHECK(zoom_step(0.5, -1, 0.5) == doctest::Approx(0.5));
++}
++
++TEST_CASE("tactical zoom coordinates") {
++    CHECK(zoom_view(1920, 1.0) == 1920);
++    CHECK(zoom_view(1920, 0.5) == 3840);
++    CHECK(zoom_view(1000, 0.75) == 1334);
++    CHECK(zoom_to_view(960, 0.5) == 1920);
++    CHECK(zoom_to_view(100, 1.0) == 100);
++    // The world point under the anchor stays put: screen = world + cam in view px.
++    const int cam = -500, ax = 400;
++    const double z0 = 1.0, z1 = 0.5;
++    const int cam2 = zoom_keep_point(cam, ax, z0, z1);
++    const double world_before = ax / z0 - cam, world_after = ax / z1 - cam2;
++    CHECK(world_before == doctest::Approx(world_after).epsilon(0.001));
++    // zoom in again returns to the same camera
++    CHECK(zoom_keep_point(cam2, ax, z1, z0) == cam);
+ }
