@@ -200,7 +200,7 @@
  private:
 --- a/engine/app_robust.inc
 +++ b/engine/app_robust.inc
-@@ -21,14 +21,14 @@
+@@ -21,10 +21,11 @@
  // canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi phone -> ~548, clamped
  // 520..720 -- tablets keep 720; it was 0.85 dp / 484 px, which showed only
  // 42% of the desktop's map area), so the sidebar's 60x48 cameos stay ~45x36
@@ -216,11 +216,7 @@
  // panels letterbox) and at most ~21:9. Menus stay 1280x720 (Scene's own
  // logical size). --play `set canvas` wins; otherwise a hidden 1280x720
  // harness window stays 1280x720.
--#include "logical_canvas.hpp"
- void game_logical_size(int& out_w, int& out_h) {
-     out_w = 1280;
-     out_h = 720;
-@@ -50,7 +50,16 @@
+@@ -49,7 +50,16 @@
          lh = std::max(520, std::min(720, lh)) & ~1;
      }
  #else
@@ -238,7 +234,7 @@
  #endif
      ra2engine::logical_size_for_height(lh, w, h, out_w, out_h);
  }
-@@ -83,7 +92,12 @@
+@@ -82,7 +92,12 @@
      const std::string dir = autoshot_dir();
      if (dir.empty()) return;
      g_autoshot_done.insert(tag);
@@ -254,15 +250,7 @@
  
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -101,6 +101,7 @@
- #include <filesystem>        // P7: temp save dir for --demo-saveload
- #include <ctime>             // P7: save timestamps
- #include "sidebar.hpp"
-+#include "logical_canvas.hpp"  // desktop canvas size and the HiDPI present scale
- #include "texture_cache.hpp"
- #include "skirmish.hpp"
- #include "skirmish_lobby.hpp"
-@@ -5557,14 +5558,13 @@
+@@ -5556,14 +5556,13 @@
          // W5-PRES R-142 [RE: credits draw 0x4A2280, colour 0xB0E98C by side
          // FUN_0072E520]: Allied RGB(164,210,255), Soviet/other RGB(255,255,0).
          const bool allied = std::string(g_sidebar_mix) == "sidec01.mix";
@@ -282,7 +270,7 @@
      } else {
          draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
      }
-@@ -5823,12 +5823,13 @@
+@@ -5819,12 +5818,13 @@
  // caller can hide the OS cursor).
  bool draw_mode_cursor(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ModeCursor& mc,
                        const ra2engine::World& world, const BuildingAssets& ba,
@@ -298,7 +286,7 @@
      // 0 = armed over nothing, 1 = valid target, 2 = refused target.
      int state = 0;
      if (bi >= 0) {
-@@ -7008,6 +7009,7 @@
+@@ -7004,6 +7004,7 @@
          }
      }
      ~GameScene() override {
@@ -306,7 +294,7 @@
          net_teardown();   // NET-PLAY: a live session keeps flushing its EXIT
          if (cmd_rec_) {   // NET L1 --record: the end state the replay must reach
              const std::uint64_t h = sim_state_hash();
-@@ -7058,6 +7060,7 @@
+@@ -7064,6 +7065,7 @@
          // sidebar FUN_006ab0b0 ignore input -- only Esc reaches the options]:
          // every pointer / key / touch event past the options menu is dropped.
          if (input_locked_) return;
@@ -314,7 +302,7 @@
          if (hotkey(ev)) return;      // G-04: KeyboardMD.ini [Hotkey] commands
          if (touch_bar_handle(ev)) return;   // W2-AR-08 touch command bar (touch_bar.inc)
          if (touch_ui_handle(ev)) return;    // W4-AM touch router (touch_ui.inc)
-@@ -7115,6 +7118,12 @@
+@@ -7123,6 +7125,12 @@
          // one-mode cancel chain is the RIGHT-click-up handler (Input owns it);
          // Esc is the Options hotkey (FUN_00646AE0 queues the options event and
          // cancels nothing), handled in ui_handle.
@@ -327,7 +315,7 @@
          input_.handle(ev);
      }
  
-@@ -7374,7 +7383,8 @@
+@@ -7383,7 +7391,8 @@
          pres_.observe_selection(input_.selection(), input_);   // W7-12-26 first-selected speaker / W7-12-04 groups
          pres_.observe_mind_control(world_, campaign_ ? campaign_->mind_control_pairs()
                                                       : world_.mind_control_pairs());   // W7-10-05 / W7-08-14
@@ -337,7 +325,7 @@
                       pres_vet_, net_ ? net_take(net_proj_buf_) : world_.take_projectile_events());   // (W3-B: drained per tick; normally empty)
          pres_vet_.clear();
          // (L2: the win-time cheer is a sim rule now -- World::step_house_outcomes
-@@ -7555,26 +7565,35 @@
+@@ -7564,26 +7573,35 @@
      void render(ra2engine::Platform& plat, ra2engine::TextureCache& tc) override {
          NetRenderClock net_rclock_(net_render_ms_);   // W9-01-03: render CPU time for PROCESS_TIME
          SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
@@ -376,9 +364,9 @@
 +        draw_beacons(ren, tc);         // W9-05-08: own + mutual allies' beacons
 +        if (zoomed) zoom_end(ren);
          if (ba_.ok && ba_.sidebar_ok) {
+             sync_sw_sidebar();
              for (int t = 0; t < 4; ++t) g_tab_has[t] = tab_buildable(t).empty() ? 0 : 1;   // W2-UI-06
-             g_tab_flash[0] = lq().state(ra2engine::QueueCat::Structure).slot.ready ? 1 : 0;   // W5-PRES R-142
-@@ -7593,9 +7612,6 @@
+@@ -7603,9 +7621,6 @@
                           bm == ra2engine::Input::BaseMode::Repair ? 1
                           : bm == ra2engine::Input::BaseMode::Sell ? 2 : 0);
          }
@@ -388,7 +376,7 @@
          draw_queue_badges(ren, tc);    // G-07 / W2-UI-03/04
          draw_tooltip(ren, tc);         // W2-UI-07
          // Repair / Sell software cursor over the playfield [RE: §D8]; the OS
-@@ -7607,7 +7623,7 @@
+@@ -7617,7 +7632,7 @@
          bool drew = input_locked_ ||
                      (mouse_present_ && !(sidebar_up_ && lay_.contains(mx_, my_)) && ba_.ok &&
                       draw_mode_cursor(ren, tc, mouse_, world_, ba_, input_, mx_, my_,
@@ -397,7 +385,7 @@
          // G-08 (draw half): every other pointer is the MOUSE.SHP action cursor.
          if (!drew && mouse_present_)
              drew = pres_.draw_cursor(ren, tc, mouse_, world_, input_, mx_, my_,
-@@ -7617,7 +7633,6 @@
+@@ -7627,7 +7642,6 @@
              SDL_ShowCursor(drew ? SDL_DISABLE : SDL_ENABLE);
              os_cursor_hidden_ = drew;
          }
@@ -405,7 +393,7 @@
          draw_messages(ren, tc);   // W2-UI-21 (game saved, defeated, low power)
          draw_timer_stack(ren, tc);   // W6-05-04/05 mission timer + SW countdowns
          draw_touch_bar(ren);      // W2-AR-08 (touch only)
-@@ -8064,6 +8079,76 @@
+@@ -8074,6 +8088,76 @@
      // W2-AR-07: 720 until the first layout; ~480 on a phone (touch canvas:
      // every sidebar button and cameo ~1.5x bigger, >= 40 dp).
      static inline int kWinH = 720;
@@ -484,7 +472,7 @@
  public:
 --- a/engine/hud_text.inc
 +++ b/engine/hud_text.inc
-@@ -224,18 +224,6 @@
+@@ -224,19 +224,6 @@
      return s;
  }
  
@@ -492,7 +480,8 @@
 -inline int hud_present_scale(SDL_Renderer* ren) {
 -    int ow = 0, oh = 0, lw = 0, lh = 0;
 -    if (SDL_GetRendererOutputSize(ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return 1;
--    if (SDL_RenderGetLogicalSize(ren, &lw, &lh) != 0 || lw <= 0 || lh <= 0) {
+-    SDL_RenderGetLogicalSize(ren, &lw, &lh);   // void in SDL2
+-    if (lw <= 0 || lh <= 0) {
 -        lw = 1280;
 -        lh = 720;
 -    }
