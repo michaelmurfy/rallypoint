@@ -32,6 +32,7 @@ reference (never a substitute for gamemd behaviour).
 | T2.4 AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | `0049-ai-slave-miner-scoot` | [#192](https://github.com/michaelmurfy/rallypoint/pull/192) |
 | T2.3 / T4.2 Spy Plane SW Approach→Overfly fog reveal | `0050-spy-plane-sw` | [#191](https://github.com/michaelmurfy/rallypoint/pull/191) |
 | T2.4 SMIN↔YAREFN SlaveManager deploy transplant | `0051-smin-yarefn-deploy-transplant` | (this PR) |
+| T3.3 turret AI + T3.1 damage fires + T3.2 fear gate | `0055-vehicle-turret-deploy-damage-fires` | (this PR) |
 
 ---
 
@@ -242,7 +243,7 @@ Buildup + SuperAnim hold (`0024`) and charge-phase SuperAnim (`0033`) exist.
 ([#179](https://github.com/michaelmurfy/rallypoint/pull/179)) —
 art `AnimActive` cycles the main SHP with SimpleDamage (`Shape_Number`
 **FUN_0043ef90**); Tesla/Prism `IsAnimDelayedFire` SpecialAnim; Idle resumes
-after finite Active*. Damage-fire overlays and remaining mis-bound SW art
+after finite Active*. Damage fires landed in `0055` (`FUN_0043c0d0`: random type + start frame, Yellow, or Red for CanBeOccupied, offset list ends at first unset). Remaining mis-bound SW art
 sequences still need a pass — do not re-do the AnimActive / SpecialAnim core.
 
 | | |
@@ -258,9 +259,10 @@ sequences still need a pass — do not re-do the AnimActive / SpecialAnim core.
 DoControls rows + deploy edges (GI / Guardian GI) are in `inf_anim`.
 **Partial land:** patch `0041`
 ([#179](https://github.com/michaelmurfy/rallypoint/pull/179)) —
-Undeploy stays locked until done and can finish into Walk. Prone / crawl /
-fire / idle transitions still need parity proof vs SHP sequences for Yuri and
-country uniques — do not re-patch the Undeploy lock.
+Undeploy stays locked until done and can finish into Walk. `0055` proved against the binary: the DoControls table matches byte for byte (at
+0x7EAF7C in the Steam exe), the fire sequence choice (`@0x520886` stand/prone/deploy,
+`@0x520D45` secondary) and the Down/Up gate (`FUN_005200B0`; Down/Up only while fear>0 on
+entry, now matched). Unit-specific SHP rows are art data. Do not re-patch the Undeploy lock.
 
 | | |
 |---|---|
@@ -278,8 +280,15 @@ country uniques — do not re-patch the Undeploy lock.
 `DeployingAnim=SCHPDEPL` (deploy mission, landed-body draw, anim). Do not
 re-implement Siege Chopper deploy.
 
-**Still open:** turret facings and deploy SHPs for other vehicles may still
-diverge.
+**Landed in `0055` (turret AI `FUN_00736990`):** idle turret holds until
+`GuardAreaTargetingDelay`+5 frames after the last shot, then faces the
+Destination (moving) or the hull; `TurretSpins` (Floating Disc, `+0xD21`) keeps
+turning; an OmniFire weapon never chases the target with the turret.
+**Could not be resolved from the binary:** the per-type turret ROT source
+(`FacingClass` is block-copied, no named setter) stays as the clone's ROT.
+Deploy SHPs: the only retail vehicle deployers are SCHP/SCHD (`IsSimpleDeployer`,
+`0043`); `Deployer=yes` is infantry-only and MCV/SMIN deploy into buildings
+(buildup art), so there are no other vehicle deploy SHPs to match.
 
 | | |
 |---|---|
