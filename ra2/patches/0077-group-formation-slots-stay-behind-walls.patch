@@ -1,0 +1,217 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c1a31be..9c4a389 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -99,7 +99,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_projection.cpp engine/iso_proj
+ # pathfind.cpp is pure C++17 (no SDL) and lives under engine/ so it can be
+ # compiled into BOTH this test binary and the ra2engine executable below
+ # from a single source of truth (same pattern as iso_project.cpp above).
+-target_sources(ra2assets_tests PRIVATE tests/test_pathfind.cpp tests/test_bridge_cliff.cpp engine/pathfind.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_pathfind.cpp tests/test_pathfind_scenarios.cpp tests/test_bridge_cliff.cpp engine/pathfind.cpp)
+ # Net L0: the original FastMath / _ftol port + its emulator oracle + the sim libm ban.
+ target_sources(ra2assets_tests PRIVATE tests/test_orig_math.cpp engine/orig_math.cpp tests/test_net_l0.cpp)
+ # world.cpp is pure C++17 (no SDL) -- its passability-grid builder + coordinate
+diff --git a/engine/group_move.cpp b/engine/group_move.cpp
+index a34e918..5a363f2 100644
+--- a/engine/group_move.cpp
++++ b/engine/group_move.cpp
+@@ -2,6 +2,7 @@
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ 
+ #include <cmath>
++#include <cstdlib>
+ 
+ namespace ra2engine {
+ 
+@@ -23,18 +24,48 @@ std::vector<Cellxy> nearest_free_cells(Cellxy center, int count,
+ 
+     // Ring 0 is the center; ring r is the square border at Chebyshev distance r.
+     // The maximum Chebyshev distance inside a w*h grid is max(w,h)-1 < w+h, so every cell is reachable before the loop ends.
+-    const int kMaxRing = w + h;
+-    consider(center.x, center.y);
+-    for (int r = 1; r <= kMaxRing && (int)out.size() < count; ++r) {
+-        // Top and bottom edges of the ring.
+-        for (int x = center.x - r; x <= center.x + r; ++x) {
+-            consider(x, center.y - r);
+-            consider(x, center.y + r);
++    // Pass 0 only takes cells walkable-connected to the centre within a 12-cell
++    // box (so a slot is never on the far side of a wall); pass 1 falls back to
++    // any walkable cell when that region is too small.
++    constexpr int kBox = 12;
++    std::vector<uint8_t> region;   // 1 = connected to the centre inside the box
++    if (walkable(center.x, center.y)) {
++        region.assign(static_cast<std::size_t>(w) * h, 0);
++        std::vector<Cellxy> q{center};
++        region[static_cast<std::size_t>(center.y) * w + center.x] = 1;
++        for (std::size_t i = 0; i < q.size(); ++i) {
++            for (int dy = -1; dy <= 1; ++dy)
++                for (int dx = -1; dx <= 1; ++dx) {
++                    const int nx = q[i].x + dx, ny = q[i].y + dy;
++                    if (!walkable(nx, ny) || std::abs(nx - center.x) > kBox || std::abs(ny - center.y) > kBox) continue;
++                    uint8_t& f = region[static_cast<std::size_t>(ny) * w + nx];
++                    if (!f) { f = 1; q.push_back({nx, ny}); }
++                }
+         }
+-        // Left and right edges (excluding the corners already done above).
+-        for (int y = center.y - r + 1; y <= center.y + r - 1; ++y) {
+-            consider(center.x - r, y);
+-            consider(center.x + r, y);
++    }
++    auto taken = [&](int x, int y) {
++        for (const Cellxy& c : out) if (c.x == x && c.y == y) return true;
++        return false;
++    };
++    const int kMaxRing = w + h;
++    for (int pass = region.empty() ? 1 : 0; pass < 2 && (int)out.size() < count; ++pass) {
++        auto cand = [&](int x, int y) {
++            if ((int)out.size() >= count) return;
++            if (pass == 0 && !(x >= 0 && y >= 0 && x < w && y < h && region[static_cast<std::size_t>(y) * w + x])) return;
++            if (pass == 1 && taken(x, y)) return;
++            consider(x, y);
++        };
++        cand(center.x, center.y);
++        for (int r = 1; r <= kMaxRing && (int)out.size() < count; ++r) {
++            if (pass == 0 && r > kBox) break;
++            for (int x = center.x - r; x <= center.x + r; ++x) {
++                cand(x, center.y - r);
++                cand(x, center.y + r);
++            }
++            for (int y = center.y - r + 1; y <= center.y + r - 1; ++y) {
++                cand(center.x - r, y);
++                cand(center.x + r, y);
++            }
+         }
+     }
+     return out;
+diff --git a/tests/test_group_move.cpp b/tests/test_group_move.cpp
+index 73f0a61..4c06824 100644
+--- a/tests/test_group_move.cpp
++++ b/tests/test_group_move.cpp
+@@ -107,3 +107,13 @@ TEST_CASE("assign_formation: a mover with no available slot keeps its own cell")
+     CHECK(targets[1].x == 1);   // unassigned mover keeps its own cell
+     CHECK(targets[1].y == 0);
+ }
++
++TEST_CASE("group move: formation slots stay on the goal's side of a wall") {
++    const int W = 20, H = 10;
++    std::vector<uint8_t> pass(W * H, 1);
++    for (int y = 0; y < H; ++y) pass[y * W + 10] = 0;   // full wall at x=10
++    ra2engine::Occupancy occ(W, H);
++    auto s = ra2engine::nearest_free_cells({9, 5}, 12, pass, W, H, occ);
++    REQUIRE(s.size() == 12);
++    for (auto c : s) CHECK(c.x < 10);
++}
+diff --git a/rp-beta5/ra2/engine/tests/test_pathfind_scenarios.cpp b/tests/test_pathfind_scenarios.cpp
+new file mode 100644
+index 0000000..9b061fe
+--- /dev/null
++++ b/tests/test_pathfind_scenarios.cpp
+@@ -0,0 +1,108 @@
++// Blocking scenarios for the A* (wall with a gap, dead end, unreachable goal,
++// cost-avoided cells, large map under a budget, repeatability).
++#include "doctest.h"
++#include "pathfind.hpp"
++
++#include <cstdlib>
++
++using namespace ra2engine;
++
++namespace {
++using Grid = std::vector<uint8_t>;
++bool same(const std::vector<Cellxy>& a, const std::vector<Cellxy>& b) {
++    if (a.size() != b.size()) return false;
++    for (size_t i = 0; i < a.size(); ++i) if (a[i].x != b[i].x || a[i].y != b[i].y) return false;
++    return true;
++}
++bool steps_ok(const std::vector<Cellxy>& p, const Grid& g, int w) {
++    for (size_t i = 0; i < p.size(); ++i) {
++        if (!g[p[i].y * w + p[i].x]) return false;
++        if (i == 0) continue;
++        const int dx = p[i].x - p[i - 1].x, dy = p[i].y - p[i - 1].y;
++        if (std::abs(dx) > 1 || std::abs(dy) > 1 || (!dx && !dy)) return false;
++        if (dx && dy && (!g[p[i - 1].y * w + p[i].x] || !g[p[i].y * w + p[i - 1].x])) return false;
++    }
++    return true;
++}
++}  // namespace
++
++TEST_CASE("scenario: wall with a gap is crossed only through the gap") {
++    const int W = 20, H = 20;
++    Grid g(W * H, 1);
++    for (int y = 0; y < H; ++y) g[y * W + 10] = 0;
++    g[17 * W + 10] = 1;
++    auto p = find_path(g, W, H, {2, 2}, {18, 3});
++    REQUIRE(!p.empty());
++    CHECK(steps_ok(p, g, W));
++    bool through = false;
++    for (auto c : p) if (c.x == 10) { CHECK(c.y == 17); through = true; }
++    CHECK(through);
++}
++
++TEST_CASE("scenario: dead end, exact refuses, nearest goes to the closest reachable cell") {
++    const int W = 15, H = 15;
++    Grid g(W * H, 1);
++    for (int x = 0; x < W; ++x) g[7 * W + x] = 0;   // full wall
++    CHECK(find_path(g, W, H, {2, 2}, {12, 12}).empty());
++    auto p = find_path_nearest(g, W, H, {2, 2}, {12, 12}, 0);
++    REQUIRE(!p.empty());
++    CHECK(steps_ok(p, g, W));
++    CHECK(p.back().y == 6);
++    CHECK(p.back().x >= 11);   // the wall face nearest the goal, not the start
++}
++
++TEST_CASE("scenario: goal inside a sealed room") {
++    const int W = 15, H = 15;
++    Grid g(W * H, 1);
++    for (int i = 8; i <= 12; ++i) { g[8 * W + i] = g[12 * W + i] = g[i * W + 8] = g[i * W + 12] = 0; }
++    auto p = find_path_nearest(g, W, H, {1, 1}, {10, 10}, 0);
++    REQUIRE(!p.empty());
++    CHECK(steps_ok(p, g, W));
++    const Cellxy e = p.back();
++    CHECK(std::max(std::abs(e.x - 10), std::abs(e.y - 10)) >= 2);   // outside the walls' ring
++    CHECK(e.x <= 7 + 5);
++    CHECK(find_path(g, W, H, {1, 1}, {10, 10}).empty());
++}
++
++TEST_CASE("scenario: a diagonal squeeze between two blocked corners is refused") {
++    const int W = 6, H = 6;
++    Grid g(W * H, 1);
++    for (int x = 0; x < W; ++x) g[3 * W + x] = 0;
++    g[3 * W + 3] = 1;
++    g[2 * W + 3] = 0; g[4 * W + 3] = 0;   // a single-cell hole whose neighbours above and below are blocked
++    auto p = find_path(g, W, H, {0, 0}, {5, 5});
++    CHECK(p.empty());
++}
++
++TEST_CASE("scenario: unit costs steer round a crowded cell when a short detour exists") {
++    const int W = 12, H = 5;
++    Grid g(W * H, 1);
++    for (int y = 0; y < H; ++y) if (y != 2) g[y * W + 6] = 0;   // corridor at y=2 through x=6
++    // widen: a side lane around the choke at y=0..1 is walled, so only y=2 passes.
++    std::vector<std::uint16_t> cost(W * H, 1);
++    cost[2 * W + 6] = 8;   // a parked friendly in the only gap
++    auto p = find_path_bounded_t(g, W, H, {0, 2}, {11, 2}, 0, nullptr, nullptr, &cost);
++    REQUIRE(!p.empty());   // still routed through: the cost is not a wall
++    bool via = false;
++    for (auto c : p) if (c.x == 6 && c.y == 2) via = true;
++    CHECK(via);
++    // With a second, clear gap three cells away the busy one is avoided.
++    g[4 * W + 6] = 1;
++    auto q = find_path_bounded_t(g, W, H, {0, 2}, {11, 2}, 0, nullptr, nullptr, &cost);
++    REQUIRE(!q.empty());
++    for (auto c : q) CHECK(!(c.x == 6 && c.y == 2));
++}
++
++TEST_CASE("scenario: big map, budgeted search is bounded and repeatable") {
++    const int W = 512, H = 512;
++    Grid g(W * H, 1);
++    for (int y = 0; y < H - 1; ++y) g[y * W + 256] = 0;   // wall, gap at the bottom row
++    auto a = find_path_nearest(g, W, H, {10, 10}, {500, 10}, 3000);
++    REQUIRE(!a.empty());
++    CHECK(steps_ok(a, g, W));
++    CHECK(a.back().x <= 255);   // ran out of budget on this side, headed for the goal
++    auto b = find_path_nearest(g, W, H, {10, 10}, {500, 10}, 3000);
++    CHECK(same(a, b));
++    CHECK(find_path_bounded(g, W, H, {10, 10}, {500, 10}, 3000).empty());
++    CHECK(!find_path_bounded(g, W, H, {10, 10}, {500, 10}, 0 + 400000).empty());
++}

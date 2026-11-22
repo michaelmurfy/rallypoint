@@ -1,0 +1,282 @@
+diff --git a/engine/logical_canvas.hpp b/engine/logical_canvas.hpp
+index a661bde..7e04c43 100644
+--- a/engine/logical_canvas.hpp
++++ b/engine/logical_canvas.hpp
+@@ -15,15 +15,17 @@ inline void logical_size_for_height(int lh, int window_w, int window_h, int& out
+ 
+ // HiDPI: the desktop match canvas is the window's pixels divided by a whole
+ // number k, so every canvas pixel is exactly k x k screen pixels (bitmap fonts
+-// and SHP art stay crisp, never 1.36 px wide). k is the smallest that keeps
+-// the canvas at most 1440 lines: 1080p / 1440p k = 1, a 2160-line 4K screen
+-// or a 1964-line Retina panel k = 2 (1080 / 982 lines, the size the art was
+-// made for), 5K k = 2 (1440). Below 720 lines the canvas stays 720 (scaled
+-// down). Width as logical_size_for_height, without its rounding to even, so
+-// k * canvas is the window to within k - 1 pixels.
++// and SHP art stay crisp, never 1.36 px wide). The sidebar is a fixed 168-pixel
++// column made for 640x480 to 1024x768, so k keeps the canvas near 1080 lines:
++// k = 1 up to 1299 lines (1080p, 1366x768, 1200p), k = 2 from 1300 to 2200
++// (1440p and ultrawide 3440x1440: sidebar 336 screen pixels, 4K, Retina), k = 3
++// from 2201 (5K 2880: 960 lines). Tactical zoom-out (zoom_min) gives back the
++// wider world view. Below 720 lines the canvas stays 720 (scaled down). Width as
++// logical_size_for_height, without its rounding to even, so k * canvas is the
++// window to within k - 1 pixels.
+ inline int desktop_pixel_scale(int output_h) {
+-    if (output_h <= 1440) return 1;
+-    return (output_h + 1439) / 1440;
++    if (output_h < 1300) return 1;
++    return (output_h + 1099) / 1100;
+ }
+ inline void desktop_canvas(int output_w, int output_h, int& out_w, int& out_h) {
+     const int k = desktop_pixel_scale(output_h);
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 4c9f2a8..2ba5664 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -5361,6 +5361,14 @@ ra2assets::Palette make_font_palette_tinted(int r, int g, int b) {
+     return p;
+ }
+ 
++// Menu art is 640x480 (the shell) drawn 1.5x to 3x+ on a modern display: draw it
++// and the shell font with linear filtering, not as blocky nearest pixels. At 1:1
++// (scale 1) the two are identical, so this is only ever softer where the art grows.
++inline void render_copy_smooth(SDL_Renderer* r, SDL_Texture* t, const SDL_Rect* dst) {
++    SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
++    SDL_RenderCopy(r, t, nullptr, dst);
++}
++
+ // [Task 5] Pixel width of a string in the shell font (for centering labels).
+ int fnt_text_width(const ra2assets::Font& font, const std::string& s) {
+     int w = 0;
+@@ -5392,25 +5400,26 @@ void draw_fnt_text(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2asse
+                 if (!tex)
+                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
+                 SDL_Rect dst{cx, y, g.w * sc, g.h * sc};
+-                SDL_RenderCopy(ren, tex, nullptr, &dst);
++                render_copy_smooth(ren, tex, &dst);
+             }
+         }
+         cx += adv;
+     }
+ }
+ 
+-// [P8] draw_fnt_text with a FRACTIONAL scale (the options controls use a ~12px
+-// face inside 16px logical rows, scaled by the letterbox factor). Scale snaps
+-// to an integer pixel size so dst widths stay whole-pixel (no soft bevel blur).
++// [P8] draw_fnt_text with a FRACTIONAL scale: the glyphs are enlarged by exactly
++// `scale` (no rounding to a whole number, which made a 12 px label jump from 16
++// to 32 px tall between 1.4x and 1.5x) and drawn with linear filtering, each
++// glyph placed on the pixel its running advance falls on.
+ void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
+                      const ra2assets::Palette& pal, const std::string& s, double x, double y,
+                      const std::string& keypfx, double scale) {
+-    const int sc = std::max(1, static_cast<int>(std::lround(scale)));
+-    int cx = static_cast<int>(std::lround(x));
++    const double sc = std::max(1.0, scale);
++    double cx = x;
+     const int y0 = static_cast<int>(std::lround(y));
+     for (unsigned char ch : s) {
+         const int w = font.width(ch);
+-        const int adv = (w > 0 ? w : font.height() / 2) * sc;
++        const double adv = (w > 0 ? w : font.height() / 2) * sc;
+         if (ch != ' ' && ch >= font.first() && ch <= font.last() && w > 0) {
+             const ra2assets::FntGlyph& g = font.glyph(ch);
+             if (g.w > 0 && g.h > 0) {
+@@ -5418,8 +5427,10 @@ void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2as
+                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
+                 if (!tex)
+                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
+-                SDL_Rect dst{cx, y0, g.w * sc, g.h * sc};
+-                SDL_RenderCopy(ren, tex, nullptr, &dst);
++                const int dx = static_cast<int>(std::lround(cx));
++                SDL_Rect dst{dx, y0, static_cast<int>(std::lround(cx + g.w * sc)) - dx,
++                             static_cast<int>(std::lround(g.h * sc))};
++                render_copy_smooth(ren, tex, &dst);
+             }
+         }
+         cx += adv;
+@@ -6535,7 +6546,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+         if (!t) return;
+         SDL_Rect d = dev(lx, ly, lw, lh);
+         SDL_SetTextureColorMod(t, 255, 255, 255);
+-        SDL_RenderCopy(ren, t, nullptr, &d);
++        render_copy_smooth(ren, t, &d);
+     };
+ 
+     // 1. Backdrop: mnscrns red radar map (472x448) under shell.pal.
+@@ -6561,7 +6572,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+         if (mt) {
+             SDL_SetTextureColorMod(mt, 255, 255, 255);
+             SDL_Rect md = dev(508, 47, 92, 53);
+-            SDL_RenderCopy(ren, mt, nullptr, &md);
++            render_copy_smooth(ren, mt, &md);
+         }
+     }
+     // 4. Sidebar bottom: V-console + cables (bottom-anchored).
+@@ -6586,7 +6597,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+             if (et) {
+                 SDL_SetTextureColorMod(et, 255, 255, 255);
+                 SDL_Rect ed = dev(484, ry, 156, 42);
+-                SDL_RenderCopy(ren, et, nullptr, &ed);
++                render_copy_smooth(ren, et, &ed);
+             }
+         }
+     }
+@@ -6610,7 +6621,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+             if (b.enabled) SDL_SetTextureColorMod(bt, 255, 255, 255);
+             else           SDL_SetTextureColorMod(bt, 120, 120, 130);   // disabled = dimmed
+             SDL_Rect d = dev(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
+-            SDL_RenderCopy(ren, bt, nullptr, &d);
++            render_copy_smooth(ren, bt, &d);
+         } else if (art.btn) {                                    // legacy mnbttn fallback
+             int frame = 0;
+             if (b.enabled && i == pressed_ix)    frame = 2;
+@@ -6622,7 +6633,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+             SDL_SetTextureColorMod(bt, b.enabled ? 255 : 120, b.enabled ? 255 : 120,
+                                    b.enabled ? 255 : 130);
+             SDL_Rect d = dev(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
+-            SDL_RenderCopy(ren, bt, nullptr, &d);
++            render_copy_smooth(ren, bt, &d);
+         }
+     }
+ 
+@@ -6640,7 +6651,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+     if (bink_tex) {
+         SDL_SetTextureColorMod(bink_tex, 255, 255, 255);
+         SDL_Rect crt = dev(0, 0, 472, 448);
+-        SDL_RenderCopy(ren, bink_tex, nullptr, &crt);
++        render_copy_smooth(ren, bink_tex, &crt);
+     }
+ 
+     // 8. Gold 12metfnt labels centered in each button + "Main Menu" header +
+diff --git a/engine/mp_pages.inc b/engine/mp_pages.inc
+index d8b7ae6..2a1d60a 100644
+--- a/engine/mp_pages.inc
++++ b/engine/mp_pages.inc
+@@ -1619,7 +1619,7 @@ private:
+             const double sc = std::min(double(pr.w - 2) / pw, double(pr.h - 2) / ph);
+             const int w = std::max(1, int(pw * sc)), h = std::max(1, int(ph * sc));
+             const SDL_Rect d = p.dev(pr.x + (pr.w - w) / 2, pr.y + (pr.h - h) / 2, w, h);
+-            SDL_RenderCopy(p.ren, t, nullptr, &d);
++            render_copy_smooth(p.ren, t, &d);
+             preview_w_ = w;
+         }
+         if (choosing_) {
+diff --git a/engine/shell_pages.inc b/engine/shell_pages.inc
+index 4e367d8..8f47e51 100644
+--- a/engine/shell_pages.inc
++++ b/engine/shell_pages.inc
+@@ -45,7 +45,7 @@ inline void shell_small_button(const ShellPainter& p, const ra2engine::SbRect& r
+         if (SDL_Texture* t = shp_frame_tex(p.tc, "shell:mnbtn" + std::to_string(frame), *art.btn, frame, *pal)) {
+             SDL_SetTextureColorMod(t, en ? 255 : 120, en ? 255 : 120, en ? 255 : 130);
+             const SDL_Rect d = p.dev(r);
+-            SDL_RenderCopy(p.ren, t, nullptr, &d);
++            render_copy_smooth(p.ren, t, &d);
+             SDL_SetTextureColorMod(t, 255, 255, 255);
+             drawn = true;
+         }
+@@ -102,7 +102,7 @@ void popup_render(SDL_Renderer* ren, ra2engine::TextureCache& tc, const std::str
+         if (SDL_Texture* t = shp_frame_tex(tc, soviet && art.pudlg_s ? "shell:pudlgs" : "shell:pudlga",
+                                            *bg, 0, *art.dialog_pal)) {
+             const SDL_Rect d = p.dev(b);
+-            SDL_RenderCopy(ren, t, nullptr, &d);
++            render_copy_smooth(ren, t, &d);
+             drawn = true;
+         }
+     }
+diff --git a/engine/shell_widgets.inc b/engine/shell_widgets.inc
+index 2716fb0..8764ebd 100644
+--- a/engine/shell_widgets.inc
++++ b/engine/shell_widgets.inc
+@@ -48,13 +48,13 @@ struct ShellPainter {
+             if (t && key_magenta) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+         }
+         if (!t) return false;
+-        SDL_RenderCopy(ren, t, nullptr, &d);
++        render_copy_smooth(ren, t, &d);
+         return true;
+     }
+     bool fnt() const { return art.font && art.fnt_ok; }
+     double text_w(const std::string& s, double logical_px) const {
+         if (!fnt()) return 0.0;
+-        const double sc = std::max(1.0, std::round(xf.s * logical_px / 16.0));
++        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
+         return fnt_text_width(*art.font, s) * sc / xf.s;   // in LOGICAL px
+     }
+     // align: 0 = left, 1 = centre, 2 = right; vertically centred in the rect.
+@@ -62,9 +62,8 @@ struct ShellPainter {
+               const ra2assets::Palette* pal, const char* keypfx, double logical_px) const {
+         if (!fnt() || !pal || s.empty()) return;
+         const ra2assets::Font& f = *art.font;
+-        // 12metfnt cell = 16 px; snap to an integer glyph scale (fractional
+-        // nearest-neighbour scaling visibly mangles the 1-px bevel strokes).
+-        const double sc = std::max(1.0, std::round(xf.s * logical_px / 16.0));
++        // 12metfnt cell = 16 px; scaled by the exact factor, drawn linear.
++        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
+         const SDL_Rect box = dev(lx, ly, lw, lh);
+         const double tw = fnt_text_width(f, s) * sc;
+         const double th = f.height() * sc;
+diff --git a/engine/skirmish_page.inc b/engine/skirmish_page.inc
+index f9ad87d..1330c24 100644
+--- a/engine/skirmish_page.inc
++++ b/engine/skirmish_page.inc
+@@ -773,7 +773,7 @@ void SkirmishSetupScene::render(ra2engine::Platform& plat, ra2engine::TextureCac
+             const int h = std::max(1, static_cast<int>(sz.second * sc));
+             const SDL_Rect d = xf.dev(pr.x + (pr.w - w) / 2, pr.y + (pr.h - h) / 2, w, h);
+             SDL_SetTextureColorMod(t, 255, 255, 255);
+-            SDL_RenderCopy(ren, t, nullptr, &d);
++            render_copy_smooth(ren, t, &d);
+         }
+     }
+     if (mode_ == MODE_SETUP) {
+diff --git a/tests/test_logical_canvas.cpp b/tests/test_logical_canvas.cpp
+index 1194708..36df499 100644
+--- a/tests/test_logical_canvas.cpp
++++ b/tests/test_logical_canvas.cpp
+@@ -19,15 +19,15 @@ TEST_CASE("desktop logical canvas follows the window, 720..1440") {
+     canvas(1920, 1080, w, h);
+     CHECK(w == 1920);
+     CHECK(h == 1080);
+-    canvas(2560, 1440, w, h);
+-    CHECK(w == 2560);
+-    CHECK(h == 1440);
+-    canvas(3440, 1440, w, h);
+-    CHECK(w == 3440);
+-    CHECK(h == 1440);
++    canvas(2560, 1440, w, h);   // 1440p: 2x, so the sidebar is 336 screen pixels
++    CHECK(w == 1280);
++    CHECK(h == 720);
++    canvas(3440, 1440, w, h);   // ultrawide: 2x, 1720x720, the sidebar 336 of 3440
++    CHECK(w == 1720);
++    CHECK(h == 720);
+     canvas(5120, 1440, w, h);   // wider than ~21:9 stops gaining map
+-    CHECK(w == 1440 * 239 / 100);
+-    CHECK(h == 1440);
++    CHECK(w == 720 * 239 / 100);
++    CHECK(h == 720);
+     // RA2_LOGICAL_HEIGHT path
+     ra2engine::logical_size_for_height(900, 1920, 1080, w, h);
+     CHECK((w == 1600 && h == 900));
+@@ -43,13 +43,18 @@ TEST_CASE("HiDPI canvas is the window over a whole number") {
+     CHECK((w == 1920 && h == 1080));
+     desktop_canvas(2880, 1864, w, h);   // 14" Retina: 2x
+     CHECK((w == 932 * 16 / 9 && h == 932));   // 16:10 panel: 16:9 floor, letterboxed
+-    desktop_canvas(5120, 2880, w, h);   // 5K: 2x, 1440 lines
+-    CHECK((w == 2560 && h == 1440));
++    desktop_canvas(5120, 2880, w, h);   // 5K: 3x, 960 lines
++    CHECK((w == 1706 && h == 960));
+     desktop_canvas(1024, 600, w, h);    // small: the 720 floor
+     CHECK(h == 720);
+-    CHECK(desktop_pixel_scale(1440) == 1);
+-    CHECK(desktop_pixel_scale(1441) == 2);
+-    CHECK(desktop_pixel_scale(4320) == 3);
++    CHECK(desktop_pixel_scale(1080) == 1);
++    CHECK(desktop_pixel_scale(1299) == 1);
++    CHECK(desktop_pixel_scale(1300) == 2);
++    CHECK(desktop_pixel_scale(1440) == 2);
++    CHECK(desktop_pixel_scale(2160) == 2);
++    CHECK(desktop_pixel_scale(2880) == 3);
++    // the sidebar is never smaller than 2x on a 1440-line screen
++    CHECK(168 * (1440 / desktop_pixel_scale(1440) > 0 ? desktop_pixel_scale(1440) : 1) >= 2 * 168);
+ }
+ 
+ TEST_CASE("present mode: whole scale is exact, fractional pre-scales") {

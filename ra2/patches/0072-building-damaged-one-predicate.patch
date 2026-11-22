@@ -1,0 +1,88 @@
+diff --git a/engine/building.cpp b/engine/building.cpp
+index 94be112..fea6d0a 100644
+--- a/engine/building.cpp
++++ b/engine/building.cpp
+@@ -106,11 +106,14 @@ std::vector<std::uint8_t> buildable_static(const std::vector<std::uint8_t>& land
+     return out;
+ }
+ 
++bool building_damaged(const Building& b, double condition_yellow) {
++    return b.max_hp > 0 && static_cast<double>(b.hp) / b.max_hp <= condition_yellow;
++}
++
+ int building_frame(const Building& b, int shp_frame_count, double condition_yellow) {
+     int image_frames = shp_frame_count / 2;   // [RE: building-render.md §4] shadows = 2nd half
+     if (image_frames < 2) return 0;
+-    double frac = b.max_hp > 0 ? (double)b.hp / b.max_hp : 0.0;
+-    return frac <= condition_yellow ? 1 : 0;
++    return building_damaged(b, condition_yellow) ? 1 : 0;
+ }
+ 
+ int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames) {
+diff --git a/engine/building.hpp b/engine/building.hpp
+index 0225067..79c844a 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -326,6 +326,10 @@ std::vector<std::uint8_t> buildable_static(const std::vector<std::uint8_t>& land
+ // unit SHPs); frame 0 = healthy, frame 1 = damaged, shown when
+ // hp/max_hp <= condition_yellow (0..1 fraction). Returns 0 when the SHP has
+ // fewer than 2 image frames. Only meaningful in State::Idle.
++// The ONE damaged-art predicate (hp/max_hp <= ConditionYellow): main frame, gate/
++// garrison frames and every overlay layer (anims, bib, fire) must use this, not
++// their own float expression, or layers disagree at the threshold.
++bool building_damaged(const Building& b, double condition_yellow);
+ int building_frame(const Building& b, int shp_frame_count, double condition_yellow);
+ 
+ // Art AnimActive=start,count,rate on the building's own SHP [RE: Shape_Number
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 2ba5664..adbe4cf 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3565,7 +3565,7 @@ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engi
+     if (frame < 0 || frame >= shp.count()) return;
+     // G-85: ActiveAnim/Bib/damage-fire overlays (live game only; g_fx null in gates).
+     const bool overlay = g_fx && !buildup && b.state == ra2engine::Building::State::Idle;
+-    const bool bdamaged = b.max_hp > 0 && b.hp <= condition_yellow * b.max_hp;
++    const bool bdamaged = ra2engine::building_damaged(b, condition_yellow);
+     const bool bfires = overlay && ra2engine::building_damage_fires_on(
+                                        b.hp, b.max_hp, g_fx->building_rules(def.id).occupiable,
+                                        condition_yellow, ba.condition_red);
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+index 32004a7..ed7d36a 100644
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -293,7 +293,7 @@ int pres_building_main_frame(const ra2engine::Building& b, const std::string& id
+     if (!g_fx || id.empty()) return frame;
+     const PresFx::BldRules& r = g_fx->building_rules(id);
+     const int images = std::max(1, count / 2);
+-    const bool damaged = b.max_hp > 0 && b.hp <= yellow * b.max_hp;
++    const bool damaged = ra2engine::building_damaged(b, yellow);
+     if (r.occupiable && images >= 4) {
+         const int f = (b.occupants.empty() ? 0 : 2) + (damaged ? 1 : 0);
+         return std::min(f, images - 1);
+diff --git a/tests/test_building.cpp b/tests/test_building.cpp
+index 64c6df0..67af9cd 100644
+--- a/tests/test_building.cpp
++++ b/tests/test_building.cpp
+@@ -99,6 +99,21 @@ TEST_CASE("building_anim_active_frame: AnimActive stage + SimpleDamage") {
+     CHECK(building_anim_active_frame(3, 0, 1, false, 2) == 0);   // stage wraps
+ }
+ 
++TEST_CASE("building_damaged: one predicate, flips once while hp rises through the threshold") {
++    Building b = mk(0, 0, 2, 2);
++    b.max_hp = 1000;
++    int flips = 0; bool prev = true;
++    for (int hp = 0; hp <= 1000; ++hp) {
++        b.hp = hp;
++        const bool d = building_damaged(b, 0.3);
++        CHECK(d == (building_frame(b, 4, 0.3) == 1));   // main frame and overlays agree
++        if (d != prev) ++flips;
++        prev = d;
++    }
++    CHECK(flips == 1);
++    b.max_hp = 0; CHECK(!building_damaged(b, 0.5));
++}
++
+ TEST_CASE("buildup_frame + step_buildings: plays once then Idle") {
+     Building b = mk(0, 0, 2, 2);
+     b.state = Building::State::Buildup;

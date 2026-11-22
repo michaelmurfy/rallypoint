@@ -1,0 +1,70 @@
+diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
+index 0a223cc..f6d2d71 100644
+--- a/engine/iso_renderer.cpp
++++ b/engine/iso_renderer.cpp
+@@ -451,10 +451,9 @@ int draw_terrain(void* sdl_renderer, TextureCache& tc,
+     // Shroud [RE: presentation.md §4, W2-GA-02]: with a World whose shroud is
+     // on, a cell the viewing house has never explored is not drawn at all -- neither its
+     // diamond nor its cliff/slope extra -- so the black map hides the layout
+-    // (the SHROUD.SHP post-pass then softens the edges). FogOfWar (W2-GA-03,
+-    // off by default as in the original) dims explored-but-not-visible cells.
++    // (the SHROUD.SHP post-pass then softens the edges). Fog is drawn only by
++    // that post-pass (FOG.SHP); dimming the tiles here too darkened it twice.
+     const bool shroud = vis && vis->shroud_enabled();
+-    const bool fog = shroud && vis->fog_of_war();
+     int r0 = 0, r1 = -1;
+     visible_rows(idx, cam, view_h, L.top_px, L.bottom_px, r0, r1);
+     int drawn = 0;
+@@ -477,11 +476,6 @@ int draw_terrain(void* sdl_renderer, TextureCache& tc,
+                     if (SDL_Texture* et = extra_texture(tc, theater, pal, s))
+                         SDL_RenderCopy(renderer, et, nullptr, &edst);
+             }
+-            if (fog && !vis->visible_at(viewer, it.cx, it.cy)) {
+-                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+-                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 128);
+-                SDL_RenderFillRect(renderer, &dst);
+-            }
+         }
+     return drawn;
+ }
+diff --git a/engine/world.cpp b/engine/world.cpp
+index e14333a..83386e8 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -3724,6 +3724,9 @@ void World::step_visibility() {
+     // 2) Reveal from every ALIVE unit (near-circular, radius = its sight).
+     for (const Unit& u : units_) {
+         if (!u.alive) continue;
++        // A passenger or garrisoned infantry is off the map: only its carrier /
++        // building sees. (A parachutist under its canopy is in the air: sees.)
++        if (u.cargo_of >= 0 && u.cargo_of != kParachuteCargo) continue;
+         reveal_source(u.house, u.cell_x, u.cell_y, u.sight);
+     }
+     // 3) Reveal from every ALIVE building, ONCE PER FOOTPRINT CELL (§3).
+diff --git a/tests/test_world.cpp b/tests/test_world.cpp
+index ac4f38a..f1e6fc4 100644
+--- a/tests/test_world.cpp
++++ b/tests/test_world.cpp
+@@ -5148,3 +5148,22 @@ TEST_CASE("W9-02-02: an engineer that cannot reach its target abandons the captu
+     CHECK_FALSE(world.units()[0].moving());
+     CHECK(world.buildings()[bi].house == 1);
+ }
++
++TEST_CASE("World shroud: a passenger or garrisoned infantry reveals nothing; a parachutist does") {
++    ra2assets::MapFile map;
++    if (!load_real_map_w(map)) { MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR"); return; }
++    ra2engine::World world(map);
++    ra2engine::UnitCombat c;
++    c.image = "E1"; c.strength = 100; c.armor = "none"; c.sight = 3;
++    world.add_combat_unit(6, 6, 0, c);
++    world.enable_shroud(true);
++    world.units()[0].cargo_of = ra2engine::kGarrisonCargo;
++    world.step_visibility();
++    CHECK_FALSE(world.explored_at(0, 6, 6));              // garrisoned: building sees, not the stale cell
++    world.units()[0].cargo_of = 0;                        // passenger of unit 0
++    world.step_visibility();
++    CHECK_FALSE(world.explored_at(0, 6, 6));
++    world.units()[0].cargo_of = ra2engine::kParachuteCargo;
++    world.step_visibility();
++    CHECK(world.visible_at(0, 6, 6));
++}

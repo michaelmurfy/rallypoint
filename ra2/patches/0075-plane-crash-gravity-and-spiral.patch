@@ -1,0 +1,112 @@
+diff --git a/engine/pres_effects.inc b/engine/pres_effects.inc
+index 614a0c1..98c3275 100644
+--- a/engine/pres_effects.inc
++++ b/engine/pres_effects.inc
+@@ -337,8 +337,9 @@ public:
+         if (ucond_.size() < us.size()) { ucond_.resize(us.size(), -1); usmoke_.resize(us.size(), 0); }
+         for (std::size_t i = 0; i < us.size(); ++i) {
+             const ra2engine::Unit& u = us[i];
+-            const bool live = u.alive && u.die_time < 0.0 && u.cargo_of < 0;
+-            const int cond = !live ? 3 : condition(u.hp, u.max_hp);
++            const bool live = u.alive && (u.die_time < 0.0 || u.an.crashing) && u.cargo_of < 0;
++            // a falling wreck trails the red damage smoke until impact
++            const int cond = !live ? 3 : u.an.crashing ? 2 : condition(u.hp, u.max_hp);
+             int& prev = ucond_[i];
+             if (seed && prev < 0 && live) prev = 0;
+             if (prev >= 0 && cond != prev) {
+diff --git a/engine/world_an.cpp b/engine/world_an.cpp
+index ef2df42..40666e9 100644
+--- a/engine/world_an.cpp
++++ b/engine/world_an.cpp
+@@ -20,6 +20,9 @@ namespace ra2engine {
+ 
+ namespace {
+ constexpr double kLept = 256.0;
++constexpr double kCrashGravityLps2 = 600.0;    // leptons/s^2, a plane shot down
++constexpr double kCrashMaxFallLps = 1500.0;
++constexpr double kCrashSpinU16Ps = 9000.0;     // facing units/s while spiralling down
+ constexpr double kFlyClimbLps = 100.0 * 15.0;   // [RE-FALLBACK roster2.md §C] 100 leptons/frame
+ // W4: a rocket on its launcher sits this high (the deck) [RE-FALLBACK: the
+ // spawn's coords on the launcher were not traced]; the safety lifetime.
+@@ -1178,17 +1181,26 @@ void World::an_step_deaths(double dt) {
+             continue;
+         if (u.is_aircraft && u.altitude > 0.0 && (u.an.t.crashable || u.an.t.fixed_wing) &&
+             !u.an.t.missile) {
++            if (!u.an.crashing && u.an.t.fixed_wing) u.an.jj_speed = 0.0;   // jj_speed = fall speed of a plane
+             u.an.crashing = true;
+             u.die_time = 0.0;   // hold the death anim until impact
+             const double rate = u.descend_rate > 0.0 ? u.descend_rate : kFlyClimbLps;
+             const double alt0 = u.altitude;
+-            u.altitude = std::max(0.0, u.altitude - std::max(rate, 12.0 * 15.0) * dt);
++            if (u.an.t.fixed_wing) {
++                // A shot-down plane accelerates under gravity instead of dropping at a
++                // constant rate (which put it on the ground in under a second).
++                u.an.jj_speed = std::min(u.an.jj_speed + kCrashGravityLps2 * dt, kCrashMaxFallLps);
++                u.altitude = std::max(0.0, u.altitude - u.an.jj_speed * dt);
++            } else {
++                u.altitude = std::max(0.0, u.altitude - std::max(rate, 12.0 * 15.0) * dt);
++            }
+             u.flight_state = FlightState::Descending;
+             u.has_flight_goal = false;
+-            if (u.an.t.fixed_wing) {   // keeps gliding forward while falling
++            if (u.an.t.fixed_wing) {   // keeps its forward speed and spirals while falling
++                u.body_facing = std::fmod(u.body_facing + ((i & 1) ? 1.0 : -1.0) * kCrashSpinU16Ps * dt + 65536.0, 65536.0);
+                 const double a = u.body_facing / 65536.0 * 2.0 * 3.14159265358979;
+-                u.fx += om::sin(a) * u.an.t.fly_speed_cps * 0.5 * dt;
+-                u.fy -= om::cos(a) * u.an.t.fly_speed_cps * 0.5 * dt;
++                u.fx += om::sin(a) * u.an.t.fly_speed_cps * dt;
++                u.fy -= om::cos(a) * u.an.t.fly_speed_cps * dt;
+                 u.cell_x = std::max(0, std::min(grid_w_ - 1, static_cast<int>(om::lround(u.fx))));
+                 u.cell_y = std::max(0, std::min(grid_h_ - 1, static_cast<int>(om::lround(u.fy))));
+             } else {
+diff --git a/tests/test_w7_airnav.cpp b/tests/test_w7_airnav.cpp
+index be03a70..8b4a55f 100644
+--- a/tests/test_w7_airnav.cpp
++++ b/tests/test_w7_airnav.cpp
+@@ -194,3 +194,46 @@ TEST_CASE("w7airnav W7-06-06/08/16: missiles 10 frames apart, per-node rebuild a
+     CHECK(ready_frame - regen_frame < 90);
+     if (launch_frames.size() > 2) CHECK(launch_frames[2] >= ready_frame);
+ }
++
++TEST_CASE("w7airnav crash: a shot-down plane keeps flying forward, spirals and accelerates down") {
++    ra2assets::MapFile map;
++    if (!w7_map(map)) {
++        MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR");
++        return;
++    }
++    World w(map);
++    const ra2assets::MapCell* c = pick_start_cell(map);
++    REQUIRE(c != nullptr);
++    UnitCombat jet;
++    jet.strength = 100;
++    jet.image = "W7JET";
++    jet.is_aircraft = true;
++    jet.is_vehicle = true;
++    jet.verses = std::vector<int>(11, 0);
++    jet.an.fixed_wing = true;
++    jet.an.fly_speed_cps = 2.0;
++    w.register_an_type("W7JET", jet);
++    w.add_combat_unit(c->x, c->y, 0, jet);
++    Unit& u = w.units()[0];
++    u.altitude = 1000.0;
++    u.flight_state = FlightState::Cruising;
++    u.body_facing = 0.0;   // north
++    u.hp = 0;
++    u.die_time = 0.0;
++    const double x0 = u.fx, y0 = u.fy;
++    double prev_alt = u.altitude, prev_drop = 0.0;
++    int frames = 0;
++    for (; frames < 200 && w.units()[0].altitude > 0.0; ++frames) {
++        w.step(1.0 / 15.0);
++        const Unit& v = w.units()[0];
++        const double drop = prev_alt - v.altitude;
++        if (frames > 0 && v.altitude > 0.0) CHECK(drop > prev_drop);   // gravity: each frame drops more
++        prev_drop = drop;
++        prev_alt = v.altitude;
++        if (frames == 3) CHECK(v.an.crashing);
++    }
++    CHECK(frames > 15);   // not a one-second plunge
++    CHECK(frames < 200);
++    const Unit& v = w.units()[0];
++    CHECK(std::hypot(v.fx - x0, v.fy - y0) > 1.0);   // travelled on, not straight down
++}

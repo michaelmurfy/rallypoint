@@ -1,0 +1,241 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 35a08a4..c1a31be 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -68,6 +68,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_theater_name.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_asset_fs.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_sounds.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_map.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_radar_map.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_pkt.cpp)
+ # maplist.cpp is pure C++17 (no SDL): the pkt -> existence -> mode -> CSF map
+ # catalog. Reached only by the skirmish setup UI and --demo-maps, never by a
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index ade5c16..608383e 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -525,6 +525,17 @@
+         cy = std::min(world_.grid_h() - 1, static_cast<int>((py - r.y) / sy));
+         return true;
+     }
++    bool radar_drag_ = false;
++    // Right click on the radar: the order a main-view click gives when something is
++    // selected and no mode is armed; otherwise it cancels as on the map.
++    bool radar_right_click(const ra2engine::InputEvent& ev) {
++        int cx = 0, cy = 0;
++        const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
++        if (!armed && !input_.selection().ids().empty() && radar_active() && radar_cell_at(ev.x, ev.y, cx, cy))
++            input_.radar_order(cx, cy, ev);
++        else input_.handle(ev);   // cancel chain / deselect, as on the map
++        return true;
++    }
+     bool radar_click(const ra2engine::InputEvent& ev) {
+         if (!lay_.radar.contains(ev.x, ev.y)) return false;
+         int cx = 0, cy = 0;
+@@ -536,12 +547,11 @@
+         // the radar, so a finger tap always centres the view; a radar MOVE
+         // order by touch needs [MOVE] armed in the command column (one-shot).
+         // A mouse keeps the original rule (selection -> move, else centre).
+-        const bool order = any && (!ev.touch || touch_move_);
++        // An armed superweapon / repair / sell mode takes the click as on the map.
++        const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
++        const bool order = armed || (any && (!ev.touch || touch_move_));
+         if (ev.touch && touch_move_) touch_move_ = false;
+-        if (order)   // NET L1: MEGAMISSION(Move) with the selection as Whom
+-            issue(ra2engine::make_mega(world_, input_.selection().ids(), ra2engine::Mission::Move,
+-                                       ra2engine::Target{}, ra2engine::Target::cell(cx, cy)));
+-
+-        else input_.center_on_cell(cx, cy);
++        if (order) input_.radar_order(cx, cy, ev);   // NET L1: MEGAMISSION through the sink
++        else { input_.center_on_cell(cx, cy); radar_drag_ = !ev.touch; }   // hold + drag keeps scrolling
+         return true;
+     }
+diff --git a/engine/input.cpp b/engine/input.cpp
+index 2993a76..21fac1c 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -191,6 +191,40 @@ void Input::resolve_ground_cell(int px, int py, int& cx, int& cy) const {
+     }
+ }
+ 
++void Input::radar_order(int cx, int cy, const InputEvent& ev_in) {
++    const ra2assets::MapCell* c = world_.map().at(cx, cy);
++    InputEvent ev = ev_in;
++    ev.x = cam_.x + (cx - cy) * (kTileW / 2) + kTileW / 2;
++    ev.y = cam_.y + (cx + cy) * (kTileH / 2) + kTileH / 2 - (c ? c->level : 0) * kLevelPx;
++    mod_shift_ = ev.shift;
++    mod_ctrl_ = ev.ctrl;
++    mod_alt_ = ev.alt;
++    ev_touch_ = ev.touch;
++    if (sw_targeting_ || mode_ != BaseMode::None || placement_active()) {
++        ev.button = InputEvent::Left;
++        ev.kind = InputEvent::PointerDown;
++        handle(ev);
++        ev.kind = InputEvent::PointerUp;
++        handle(ev);
++        return;
++    }
++    sel_.prune(world_);
++    if (sel_.ids().empty()) return;
++    if (mod_ctrl_ && mod_shift_) {
++        const int actor = lowest_selected();
++        emit(make_mega(world_, sel_.ids(), Mission::AttackMove, Target{}, Target::cell(cx, cy)));
++        actions_.move_ordered = true;
++        actions_.actor = actor;
++    } else if (mod_alt_) {
++        const int actor = lowest_selected();
++        emit(make_mega(world_, sel_.ids(), Mission::Move, Target{}, Target::cell(cx, cy)));
++        actions_.move_ordered = true;
++        actions_.actor = actor;
++    } else {
++        issue_order(ev.x, ev.y);
++    }
++}
++
+ void Input::begin_placement(int roster_type, int fw, int fh) {
+     place_type_ = roster_type;
+     place_fw_ = fw > 0 ? fw : 1;
+diff --git a/engine/input.hpp b/engine/input.hpp
+index 91461c0..7d974d2 100644
+--- a/engine/input.hpp
++++ b/engine/input.hpp
+@@ -210,6 +210,11 @@ public:
+     // Centre the camera on (fractional) map cell (cx, cy); `level` lifts the
+     // point by the cell height (W4-MC-03: the home waypoint's ground point).
+     void center_on_cell(double cx, double cy, int level = 0);
++    // A minimap click at map cell (cx, cy): the same order a click on that
++    // cell in the main view gives (armed superweapon / repair / sell first,
++    // then attack-move with Ctrl+Shift, force-move with Alt, else the plain
++    // order). Resolved through a synthetic pixel on the cell centre.
++    void radar_order(int cx, int cy, const InputEvent& ev);
+     // W4-MC-04 [RE: FUN_00577e90 IsWithinUsableArea, [Map] LocalSize]: keep
+     // the view inside a WORLD-pixel rectangle (screen = world + cam). A view
+     // larger than the rectangle is centred on it (TacticalClass clamp
+diff --git a/engine/main.cpp b/engine/main.cpp
+index adbe4cf..4018638 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -83,6 +83,7 @@ static char* ra2_cli_pref_path() {
+ #include "harvest.hpp"     // OreValues/HarvestEvent/dock_cell + step_harvest (Economy phase)
+ #include "slave_miner.hpp" // Rallypoint: Yuri Enslaves=
+ #include "input.hpp"
++#include "radar_map.hpp"   // radar pixel <-> cell
+ #include "hotkeys.hpp"       // G-04 KeyboardMD.ini command table
+ #include "bink_async.hpp"     // W5-E2 R-173: Bink decoding off the main thread
+ #include "touch_gestures.hpp" // G-70 (controls self-test drives the real gesture layer)
+@@ -7085,6 +7086,15 @@ public:
+         // sidebar FUN_006ab0b0 ignore input -- only Esc reaches the options]:
+         // every pointer / key / touch event past the options menu is dropped.
+         if (input_locked_) return;
++        if (radar_drag_) {   // left-drag on the radar keeps scrolling the view
++            if (ev.kind == ra2engine::InputEvent::PointerUp && ev.button == ra2engine::InputEvent::Left) radar_drag_ = false;
++            else if (ev.kind == ra2engine::InputEvent::PointerMove) {
++                int cx = 0, cy = 0;
++                if (radar_cell_at(ev.x, ev.y, cx, cy)) input_.center_on_cell(cx, cy);
++                return;
++            }
++            if (ev.kind == ra2engine::InputEvent::PointerUp) return;
++        }
+         if (zoom_handle(ev)) return;   // tactical zoom: wheel, PgUp / PgDn
+         if (hotkey(ev)) return;      // G-04: KeyboardMD.ini [Hotkey] commands
+         if (touch_bar_handle(ev)) return;   // W2-AR-08 touch command bar (touch_bar.inc)
+@@ -7130,6 +7140,7 @@ public:
+                 if (ci >= 0 && ci < static_cast<int>(lay_.cameos.size()))
+                     cameo_click(lay_.cameos[ci].type, /*right=*/false, ev.shift);
+             } else {
++                if (lay_.radar.contains(ev.x, ev.y)) { radar_right_click(ev); return; }
+                 // G-07: cameo RIGHT click: hold, then abandon (Shift: abandon all).
+                 // W6-01-03: a finger HOLD is the tooltip gesture -- it never
+                 // suspends / abandons; it opens the cameo popup instead.
+diff --git a/engine/pres_radar.inc b/engine/pres_radar.inc
+index d01c5ff..f9274f7 100644
+--- a/engine/pres_radar.inc
++++ b/engine/pres_radar.inc
+@@ -45,12 +45,9 @@ public:
+     // radar click uses this so a click lands on the cell drawn under it).
+     bool cell_at(int px, int py, int& cx, int& cy) const {
+         if (!ok_ || !laid_ || !lr_.contains(px, py) || ls_ <= 0) return false;
+-        const double u = (px - lx_) / ls_ + u0_, v = (py - ly_) / (0.5 * ls_) + v0_;
+-        cx = static_cast<int>(std::floor((u + v) / 2.0));
+-        cy = static_cast<int>(std::floor((v - u) / 2.0));
+-        cx = std::clamp(cx, 0, std::max(0, gw_ - 1));
+-        cy = std::clamp(cy, 0, std::max(0, gh_ - 1));
+-        return true;
++        ra2engine::RadarMap m;
++        m.ox = lx_; m.oy = ly_; m.s = ls_; m.u0 = u0_; m.v0 = v0_; m.gw = gw_; m.gh = gh_;
++        return m.cell_at(px, py, cx, cy);
+     }
+     // Radar power-up: radar.shp frames 1..count-2 play once each time the radar
+     // comes online at a 4-tick frame timer (W2-UI-09 [RE: construction.md
+diff --git a/rp-beta5/ra2/engine/engine/radar_map.hpp b/engine/radar_map.hpp
+new file mode 100644
+index 0000000..b5137a1
+--- /dev/null
++++ b/engine/radar_map.hpp
+@@ -0,0 +1,31 @@
++// Radar minimap pixel <-> map cell (pure maths, shared by PresRadar and tests).
++// The radar draws cell (x, y) as the unit square at u = x - y - u0, v = x + y - v0
++// (v half height), scaled by `s` from the letterboxed origin (ox, oy).
++#pragma once
++#include <algorithm>
++#include <cmath>
++
++namespace ra2engine {
++
++struct RadarMap {
++    int ox = 0, oy = 0;      // pixel of the picture's top-left corner
++    double s = 0;            // pixels per u unit (v is half of it)
++    int u0 = 0, v0 = 0;      // projection origin (min x-y, min x+y over the map)
++    int gw = 0, gh = 0;      // grid size in cells
++
++    // Cell centre -> radar pixel.
++    void cell_to_pixel(int cx, int cy, double& px, double& py) const {
++        px = ox + (cx - cy - u0 + 0.5) * s;
++        py = oy + (cx + cy - v0 + 0.5) * 0.5 * s;
++    }
++    // Radar pixel -> the nearest cell centre, clamped into the grid.
++    bool cell_at(int px, int py, int& cx, int& cy) const {
++        if (s <= 0 || gw <= 0 || gh <= 0) return false;
++        const double u = (px - ox) / s + u0 - 0.5, v = (py - oy) / (0.5 * s) + v0 - 0.5;
++        cx = std::clamp(static_cast<int>(std::lround((u + v) / 2.0)), 0, gw - 1);
++        cy = std::clamp(static_cast<int>(std::lround((v - u) / 2.0)), 0, gh - 1);
++        return true;
++    }
++};
++
++}  // namespace ra2engine
+diff --git a/rp-beta5/ra2/engine/tests/test_radar_map.cpp b/tests/test_radar_map.cpp
+new file mode 100644
+index 0000000..d4f22c1
+--- /dev/null
++++ b/tests/test_radar_map.cpp
+@@ -0,0 +1,29 @@
++// Rallypoint: radar minimap pixel -> cell mapping (minimap orders).
++#include "doctest.h"
++#include "radar_map.hpp"
++
++using ra2engine::RadarMap;
++
++TEST_CASE("radar map: every cell's centre pixel maps back to that cell") {
++    RadarMap m;
++    m.ox = 10; m.oy = 20; m.s = 3.0; m.u0 = -39; m.v0 = 0; m.gw = 40; m.gh = 40;
++    for (int y = 0; y < m.gh; ++y)
++        for (int x = 0; x < m.gw; ++x) {
++            double px, py;
++            m.cell_to_pixel(x, y, px, py);
++            int cx = -1, cy = -1;
++            REQUIRE(m.cell_at(static_cast<int>(px), static_cast<int>(py), cx, cy));
++            CHECK(cx == x);
++            CHECK(cy == y);
++        }
++}
++
++TEST_CASE("radar map: pixels outside the diamond clamp into the grid; no map is refused") {
++    RadarMap m;
++    m.s = 2.0; m.gw = 10; m.gh = 8;
++    int cx = 0, cy = 0;
++    REQUIRE(m.cell_at(-500, 900, cx, cy));
++    CHECK(cx >= 0); CHECK(cx < 10); CHECK(cy >= 0); CHECK(cy < 8);
++    RadarMap none;
++    CHECK_FALSE(none.cell_at(1, 1, cx, cy));
++}
