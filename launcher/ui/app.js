@@ -2878,8 +2878,14 @@ function ra2ResolutionPick(onSave) {
 function ra2DisplayFields(fb) {
   const r = store.cfg.ra2;
   const save = (patch) => ra2SaveSettings(patch, fb);
-  const res = ra2ResolutionPick(save);
   const win = h("input", { type: "checkbox", checked: r.windowed, "aria-label": "Windowed", onchange: () => save({ windowed: win.checked }) });
+  const res = ra2ResolutionPick((patch) => {
+    if (patch.width > 0 && !win.checked) {
+      win.checked = true;
+      patch.windowed = true;
+    }
+    save(patch);
+  });
   const ui = pick("Interface size", RA2_UI_SCALES, r.ui_scale || 0, (v) => save({ ui_scale: +v }));
   const zoom = pick("World zoom", RA2_WORLD_ZOOMS, r.world_zoom || 0, (v) => save({ world_zoom: +v }));
   return h("div", { class: "settings" },
