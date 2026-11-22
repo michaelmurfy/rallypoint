@@ -2405,25 +2405,21 @@ function ra2Skirmish(onChange) {
   return { el, setup, why, what, reload, remember: () => prefs.set({ ra2Ai: rows.filter((r) => r.kind === "ai").length }) };
 }
 
-/** A remembered select beside the Quick Skirmish button, lit when it is not the default (like speedSelect and cashSelect). */
-function ra2PrefSelect(iconName, label, options, current, def, onPick) {
-  const sel = h("select", { class: "speedsel", "aria-label": label, title: label }, ...options.map(([v, t]) => new Option(t, String(v))));
-  sel.value = String(current);
-  const wrap = h("div", { class: "speedpick" }, icon(iconName), sel);
-  const mark = () => wrap.classList.toggle("changed", sel.value !== String(def));
-  mark();
-  sel.addEventListener("change", () => { onPick(sel.value); mark(); });
-  return wrap;
-}
-
-/** Your country as a row of tiles: Random first, then the ten countries. */
-function ra2CountryPicker(current, onPick) {
-  const opts = [[-1, "Random"], ...RA2_SIDES.map((s, i) => [i, s])];
-  const btns = opts.map(([v, t]) => h("button", { class: "ctile", type: "button", "aria-pressed": String(v === current), "aria-label": t, title: t,
-    onclick: () => { btns.forEach((b, i) => b.setAttribute("aria-pressed", String(opts[i][0] === v))); onPick(v); } },
-  h("span", { class: `modtile ${v < 0 ? "hue5" : modHue(t)}`, "aria-hidden": "true" }, v < 0 ? "?" : modInitials(t)), h("span", { class: "small" }, t)));
-  return h("div", { class: "countrypick", role: "group", "aria-label": "Your country" }, ...btns);
-}
+/** Drawn flags for the ten countries (index = RA2_SIDES); -1 is Random. Our own SVG, nothing from the game's files. */
+const RA2_FLAGS = {
+  "-1": '<rect width="60" height="40" fill="#5b6478"/><text x="30" y="29" font-size="26" font-family="sans-serif" font-weight="700" fill="#fff" text-anchor="middle">?</text>',
+  0: '<rect width="60" height="40" fill="#fff"/>' + [0, 2, 4, 6].map((i) => `<rect y="${i * 40 / 7}" width="60" height="${40 / 7}" fill="#b22234"/>`).join("") + '<rect width="27" height="22.9" fill="#3c3b6e"/>' + [0, 1, 2].flatMap((r) => [0, 1, 2, 3].map((c) => `<circle cx="${5 + c * 6 + (r % 2) * 3}" cy="${5 + r * 6}" r="1.3" fill="#fff"/>`)).join(""),
+  1: '<rect width="60" height="40" fill="#fff"/><path d="M21 20a9 9 0 0 1 18 0z" fill="#cd2e3a"/><path d="M39 20a9 9 0 0 1-18 0z" fill="#0047a0"/><g stroke="#111" stroke-width="2"><path d="M7 8l6-4M9 11l6-4M47 4l6 4M45 7l6 4M7 32l6 4M9 29l6 4M47 36l6-4M45 33l6-4"/></g>',
+  2: '<rect width="20" height="40" fill="#0055a4"/><rect x="20" width="20" height="40" fill="#fff"/><rect x="40" width="20" height="40" fill="#ef4135"/>',
+  3: '<rect width="60" height="40" fill="#ffce00"/><rect width="60" height="26.7" fill="#dd0000"/><rect width="60" height="13.3" fill="#000"/>',
+  4: '<rect width="60" height="40" fill="#012169"/><path d="M0 0L60 40M60 0L0 40" stroke="#fff" stroke-width="8"/><path d="M0 0L60 40M60 0L0 40" stroke="#c8102e" stroke-width="3"/><path d="M30 0v40M0 20h60" stroke="#fff" stroke-width="12"/><path d="M30 0v40M0 20h60" stroke="#c8102e" stroke-width="7"/>',
+  5: '<rect width="60" height="40" fill="#239e46"/><circle cx="28" cy="20" r="8" fill="#fff"/><circle cx="31" cy="20" r="6.6" fill="#239e46"/><path d="M36 20l4 1.5-2.5-3.2v3.4z" fill="#fff"/>',
+  6: '<rect width="60" height="40" fill="#fff"/><rect width="60" height="13.3" fill="#ce1126"/><rect y="26.7" width="60" height="13.3" fill="#000"/><g fill="#007a3d"><rect x="14" y="17" width="6" height="6"/><rect x="27" y="17" width="6" height="6"/><rect x="40" y="17" width="6" height="6"/></g>',
+  7: '<rect width="60" height="40" fill="#fff"/>' + [0, 2, 4].map((i) => `<rect y="${i * 8}" width="60" height="8" fill="#002a8f"/>`).join("") + '<path d="M0 0L26 20 0 40z" fill="#cf142b"/><circle cx="8" cy="20" r="4" fill="#fff"/>',
+  8: '<rect width="60" height="40" fill="#fff"/><rect y="13.3" width="60" height="13.3" fill="#0039a6"/><rect y="26.7" width="60" height="13.3" fill="#d52b1e"/>',
+  9: '<rect width="60" height="40" fill="#3b1a5e"/><circle cx="30" cy="20" r="12" fill="none" stroke="#c9a6ff" stroke-width="2.5"/><path d="M30 10l8.7 15h-17.4z" fill="#c9a6ff"/><circle cx="30" cy="20" r="2.5" fill="#3b1a5e"/>',
+};
+const ra2FlagUrl = (v) => "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice">${RA2_FLAGS[v] || RA2_FLAGS[-1]}</svg>`);
 
 /** Quick Skirmish for Red Alert 2: the same card as Generals (opponents, difficulty, one button), with your country,
  *  the map, your start, speed and starting credits beside them. Everything is remembered. */
@@ -2431,16 +2427,27 @@ function ra2PlayPage() {
   const status = liveStatus();
   let maps = null; // null while they are being read
   const p = prefs.get();
-  const skAi = segmented("Quick Skirmish opponents", [1, 2, 3, 4, 5, 6, 7].map((n) => [String(n), String(n)]), String(Math.min(7, Math.max(1, p.ra2Ai || 1))), (v) => prefs.set({ ra2Ai: +v }));
+  const skAi = segmented("Quick Skirmish opponents", [1, 2, 3].map((n) => [String(n), String(n)]), String(Math.min(3, Math.max(1, p.ra2Ai || 1))), (v) => prefs.set({ ra2Ai: +v }));
   const skDiff = segmented("Quick Skirmish difficulty", RA2_DIFFS, RA2_DIFFS.some(([d]) => d === p.ra2Diff) ? p.ra2Diff : "medium", (v) => { prefs.set({ ra2Diff: v }); update(); });
   const side = () => (typeof prefs.get().ra2QuickSide === "number" ? prefs.get().ra2QuickSide : store.cfg.ra2.side);
-  const country = ra2CountryPicker(side(), (v) => prefs.set({ ra2QuickSide: v }));
+  const country = h("select", { "aria-label": "Your country", onchange: () => { prefs.set({ ra2QuickSide: +country.value }); paintFlag(); } },
+    new Option("Random", "-1"), ...RA2_SIDES.map((t, i) => new Option(t, String(i))));
+  country.value = String(side());
+  const flagBig = h("img", { class: "flagcard", alt: "", "aria-hidden": "true" });
+  const heroArt = h("img", { class: "heroart shown", alt: "", "aria-hidden": "true" });
+  function paintFlag() {
+    flagBig.src = ra2FlagUrl(+country.value);
+    // Random has no flag worth blowing up: the hero gets plain rays instead
+    heroArt.src = +country.value < 0 ? "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice"><rect width="60" height="40" fill="#5b6478"/><path d="M60 20L0 0v6zM60 20L0 14v6zM60 20L0 28v6z" fill="#fff" opacity=".25"/></svg>') : flagBig.src;
+  }
+  paintFlag();
   const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2QuickMap: mapSel.value }); update(); } });
   const startSel = h("select", { "aria-label": "Your start position", onchange: () => prefs.set({ ra2QuickStart: +startSel.value }) },
     new Option("Random start", "0"), ...Array.from({ length: 8 }, (_, n) => new Option(`Start ${n + 1}`, String(n + 1))));
   startSel.value = String(Math.min(8, Math.max(0, prefs.get().ra2QuickStart || 0)));
-  const speed = ra2PrefSelect("speed", "Game speed", RA2_SPEEDS, ra2Speed(), 2, (v) => ra2SaveRules({ speed: +v }));
-  const credits = ra2PrefSelect("cash", "Starting credits", RA2_CREDIT_OPTS, ra2Credits(), 10000, (v) => ra2SaveRules({ credits: +v }));
+  const selOf = (label, opts, cur, key) => { const el = h("select", { "aria-label": label, onchange: () => ra2SaveRules({ [key]: +el.value }) }, ...opts.map(([v, t]) => new Option(t, String(v)))); el.value = String(cur); return el; };
+  const speed = selOf("Game speed", RA2_SPEEDS, ra2Speed(), "speed");
+  const credits = selOf("Starting credits", RA2_CREDIT_OPTS, ra2Credits(), "credits");
 
   /** The map and places for this click: the chosen map, or a random one with room for everyone. */
   function pick() {
@@ -2483,19 +2490,24 @@ function ra2PlayPage() {
   const redrawDisp = () => fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()));
   redrawDisp();
   window.addEventListener("ra2display", redrawDisp);
-  const hero = h("div", { class: "card hero slim ra2art" },
-    h("div", { class: "stack tight herotext" }, h("h2", { title: store.cfg.ra2.game_dir || "" }, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2")),
-    h("div", { class: "herodisp" }, disp, h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")));
+  const hero = h("div", { class: "card hero" }, heroArt,
+    h("div", { class: "stack tight herotext" }, h("h2", { title: store.cfg.ra2.game_dir || "" }, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
+      h("div", { class: "row between" }, h("p", { class: "muted small gamepath" }, disp, " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")))));
   const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge. Steam and EA installs are found for you.", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
   const skOptions = h("div", { class: "card skcard" },
-    h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "You against the computer on the map you choose, or a random one, started straight away.")),
-    country,
+    h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "A match against the computer, started straight away.")),
     h("div", { class: "skoptions" },
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
-      h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el)),
-    h("div", { class: "skoptions" }, mapSel, startSel, speed, credits, h("div", { class: "row skplay" }, status.el, play)),
-    h("p", { class: "tip" }, h("b", {}, "Tip"), h("span", {}, "To set up each player's country, colour, team and start, press Skirmish on a map under ", h("button", { class: "linkbtn", onclick: () => go("maps") }, "Maps"), ".")));
-  const el = h("div", { class: "page" }, pageHead("Play"), hero, hasFiles ? skOptions : setupCard);
+      h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el),
+      h("div", { class: "row skplay" }, status.el, play)));
+  const optCard = h("div", { class: "card" }, h("h3", {}, "Options"),
+    h("div", { class: "grid2" },
+      h("label", { class: "field" }, h("span", {}, "Country"), h("div", { class: "countryrow" }, flagBig, country)),
+      h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
+      h("label", { class: "field" }, h("span", {}, "Your start"), startSel),
+      h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
+      h("label", { class: "field" }, h("span", {}, "Game speed"), speed)));
+  const el = h("div", { class: "page" }, pageHead("Play"), hero, ...(hasFiles ? [skOptions, optCard] : [setupCard]));
   update();
   return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
