@@ -1,0 +1,769 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9c4a389..f80481c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -301,7 +301,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_roster2.cpp engine/roster2.cpp
+ # the radiation field (engine/abilities.cpp, World-free) and the World-side
+ # ability pass + orders (engine/world_abilities.cpp, a World member TU split out
+ # of world.cpp), exercised by test_abilities.cpp.
+-target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_grinder_bio.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp tests/test_grinder_bio.cpp
++target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_yuri.cpp engine/world_grinder_bio.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp tests/test_yuri_specials.cpp tests/test_grinder_bio.cpp
+                  engine/world_sw.cpp engine/world_an.cpp engine/ai_unit.cpp tests/test_ai_w7.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_w7r2.cpp)   # w7r2: wave-7 mission-script restore fixes
+ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer: deck / ground layers
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 8599281..0d51083 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -159,6 +159,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/abilities.cpp
+     ${RA2_ROOT}/engine/world_abilities.cpp
+     ${RA2_ROOT}/engine/world_mind_control.cpp
++    ${RA2_ROOT}/engine/world_yuri.cpp           # Yuri: chaos gas, Mutator, Dominator
+     ${RA2_ROOT}/engine/world_grinder_bio.cpp
+     ${RA2_ROOT}/engine/world_w5.cpp
+     ${RA2_ROOT}/engine/world_w6.cpp
+diff --git a/engine/air_naval.hpp b/engine/air_naval.hpp
+index ed4a5ea..4e0a66a 100644
+--- a/engine/air_naval.hpp
++++ b/engine/air_naval.hpp
+@@ -292,11 +292,42 @@ struct SwParams {
+     std::vector<int> c4_verses = std::vector<int>(11, 100);
+     double c4_spread = 0.0;
+     double c4_pmax = 1.0;
++    // --- Yuri (save v48) ---
++    // Psychic Dominator [General] DominatorWarhead / DominatorDamage /
++    // DominatorCaptureRange / DominatorFireAtPercentage. [RE-FALLBACK: the
++    // length of the PDFXCLD head animation (art Rate=300, frame count not
++    // read) and how long the captured units stay captured are not recovered:
++    // the effect fires at fire_percent of dominator_anim_frames and the units
++    // go back after dominator_hold_frames.]
++    int dominator_damage = 1000;
++    double dominator_spread = 7.0;
++    double dominator_pmax = 0.2;
++    std::array<int, 11> dominator_verses{};
++    int dominator_capture_range = 1;
++    int dominator_fire_percent = 20;
++    int dominator_anim_frames = 150;
++    int dominator_hold_frames = 450;
++    // Genetic Mutator [General] MutateExplosion / MutateExplosionWarhead /
++    // MutateWarhead: infantry the warhead's Verses reach turn into mutant_type.
++    bool mutate_explosion = true;
++    double mutate_spread = 5.0;
++    std::array<int, 11> mutate_verses{};
++    int mutate_delay_frames = 30;   // [RE-FALLBACK] flash before the change
++    std::string mutant_type = "BRUTE";
++    // Chaos gas: a Psychedelic=yes warhead confuses its victims this long.
++    // [RE-FALLBACK: duration not recovered.]
++    int psychedelic_frames = 300;
++    int reveal_radius = 15;         // [General] PsychicRevealRadius (cells)
++    // Master Mind overload [General] OverloadCount/Damage/Frames: a controller
++    // holding n victims takes the first row whose count >= n.
++    std::vector<int> overload_count;
++    std::vector<int> overload_damage;
++    std::vector<int> overload_frames;
+ };
+ 
+ // One superweapon effect in progress (a nuke in flight or a lightning storm).
+ struct SwStrike {
+-    int kind = 0;          // 1 = nuke, 2 = lightning storm, 3 = chrono freeze
++    int kind = 0;          // 1 = nuke, 2 = lightning storm, 3 = Psychic Dominator, 4 = Genetic Mutator
+     int house = -1;
+     int x = 0, y = 0;      // target cell
+     int ox = 0, oy = 0;    // origin (silo) cell
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index f2589f4..c0a8615 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -65,7 +65,9 @@ bool valid_target(const std::vector<Unit>& units, const World& world, const Unit
+     const Unit& v = units[idx];
+     // W2-AN-13: a submerged sub no sonar of self's house has found is not a
+     // target (its cell is not "seen" in the water layer).
+-    return v.alive && v.die_time < 0.0 && v.cargo_of < 0 && world.is_enemy(self.house, v.house) &&
++    // Chaos gas (Psychedelic warhead): a confused unit takes every other unit for an enemy.
++    const bool hostile = world.is_enemy(self.house, v.house) || (&v != &self && world.unit_confused(self));
++    return v.alive && v.die_time < 0.0 && v.cargo_of < 0 && hostile &&
+            !world.unit_hidden_from(self.house, v) && unit_weapon_for_unit(self, v) >= 0;
+     // Multi-house/Alliances [RE: multihouse.md §3/§4]: hostility routes through
+     // World::is_enemy. carried: untargetable (CB-1).
+@@ -191,6 +193,12 @@ void try_fire(const World& world, std::vector<Unit>& units, std::vector<Building
+         u.w7.mc_shot = victim_idx;
+         return;
+     }
++    // Chaos gas: a Psychedelic=yes warhead confuses the area, it never damages
++    // (World::step_psychedelic reads the shot).
++    if (u.w7.t.psychedelic && u.w_active == 0) {
++        u.w7.psy_shot = victim_idx;
++        return;
++    }
+     // W7-07-26 [RE: InfantryClass::Fire 0x5203E0 @0x5207A0..0x5207F7]: after
+     // an infantry shot whose weapon Speed (+0xA8 [SUSPECTED]) is below
+     // [CombatDamage] Incoming=10, CellClass::Incoming(shooter, 1, 0) warns the
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 4018638..fbc5681 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3082,7 +3082,10 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+             {ra2engine::SuperweaponType::ChronoWarp, "chroicon"},
+             {ra2engine::SuperweaponType::ParaDrop, "paraicon"},
+             {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"},
+-            {ra2engine::SuperweaponType::SpyPlane, "spypicon"}};  // [SpyPlaneSpecial] SidebarImage
++            {ra2engine::SuperweaponType::SpyPlane, "spypicon"},   // [SpyPlaneSpecial] SidebarImage
++            {ra2engine::SuperweaponType::PsychicDominator, "pdomicon"},
++            {ra2engine::SuperweaponType::GeneticConverter, "muteicon"},
++            {ra2engine::SuperweaponType::PsychicReveal, "psyricon"}};
+         for (const auto& kv : kSwIcons)
+             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
+                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
+diff --git a/engine/realplay_economy.inc b/engine/realplay_economy.inc
+index d3bdcc0..0c04586 100644
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -70,7 +70,9 @@ bool rp_classic_sw_type(const std::string& type_upper) {
+     return type_upper == "MULTIMISSILE" || type_upper == "IRONCURTAIN" ||
+            type_upper == "LIGHTNINGSTORM" || type_upper == "CHRONOSPHERE" ||
+            type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP" ||
+-           type_upper == "SPYPLANE";
++           type_upper == "SPYPLANE" ||
++           type_upper == "PSYCHICDOMINATOR" || type_upper == "GENETICCONVERTER" ||   // Yuri's own
++           type_upper == "PSYCHICREVEAL";
+ }
+ 
+ // The classic SW section a building grants ("" when its SuperWeapon= is
+@@ -214,6 +216,9 @@ ra2engine::SuperweaponType rp_sw_type_of(const std::string& type_upper) {
+     if (type_upper == "CHRONOSPHERE") return T::ChronoSphere;
+     if (type_upper == "PARADROP") return T::ParaDrop;
+     if (type_upper == "AMERPARADROP") return T::AmerParaDrop;
++    if (type_upper == "PSYCHICDOMINATOR") return T::PsychicDominator;   // YAPPET
++    if (type_upper == "GENETICCONVERTER") return T::GeneticConverter;   // YAGNTC
++    if (type_upper == "PSYCHICREVEAL") return T::PsychicReveal;         // NAPSIS
+     if (type_upper == "SPYPLANE") return T::SpyPlane;  // [SpyPlaneSpecial] NARADR
+     return T::None;
+ }
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 42b0646..5f8d245 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -422,6 +422,12 @@ template <class Ar> void fields(Ar& ar, SwParams& v) {   // W2-AN (save v9)
+     io(ar, v.reload_frames); io(ar, v.flight_level); io(ar, v.rockets);   // W4 (v15)
+     io(ar, v.repair_step);
+     io(ar, v.repair_rate_frames); io(ar, v.repair_percent);
++    io(ar, v.dominator_damage); io(ar, v.dominator_spread); io(ar, v.dominator_pmax);   // v66: Yuri specials
++    io(ar, v.dominator_verses); io(ar, v.dominator_capture_range); io(ar, v.dominator_fire_percent);
++    io(ar, v.dominator_anim_frames); io(ar, v.dominator_hold_frames); io(ar, v.mutate_explosion);
++    io(ar, v.mutate_spread); io(ar, v.mutate_verses); io(ar, v.mutate_delay_frames);
++    io(ar, v.mutant_type); io(ar, v.psychedelic_frames); io(ar, v.reveal_radius); io(ar, v.overload_count);
++    io(ar, v.overload_damage); io(ar, v.overload_frames);
+     io(ar, v.parachute_fall);   // W4-SQ-06 (save v16)
+     io(ar, v.storm_wall_flags); io(ar, v.nuke_wall_flags);   // v25: W6-04-04
+     io(ar, v.c4_verses); io(ar, v.c4_spread); io(ar, v.c4_pmax);   // v35: W7-05-09
+@@ -887,7 +893,7 @@ template <class Ar> void fields(Ar& ar, UnitTypeW7& v) {
+     io(ar, v.detect_disguise); io(ar, v.selectable_combatant); io(ar, v.move_to_shroud);
+     io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.turret_spins); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
+     io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mind_control);
+-    io(ar, v.mc_capacity); io(ar, v.mc_infinite);
++    io(ar, v.mc_capacity); io(ar, v.mc_infinite); io(ar, v.psychedelic);   // v66: Chaos gas
+     io(ar, v.build_time_mult);
+ }
+ template <class Ar> void fields(Ar& ar, UnitW7& v) {
+@@ -895,6 +901,7 @@ template <class Ar> void fields(Ar& ar, UnitW7& v) {
+     io(ar, v.paralysed_until); io(ar, v.host_raw_hit); io(ar, v.deploy_ready_at); io(ar, v.undeploy_at); io(ar, v.erased_by);
+     io(ar, v.depot_target); io(ar, v.mc_controller); io(ar, v.mc_victims); io(ar, v.mc_shot);
+     io(ar, v.mc_orig_house);   // v48: skirmish/MP mind-control original house
++    io(ar, v.psy_shot); io(ar, v.confused_until);   // v66: Chaos gas
+ }
+ template <class Ar> void fields(Ar& ar, BldW7& v) {
+     io(ar, v.depot_next); io(ar, v.depot_client); io(ar, v.warp_unpowered); io(ar, v.garrison_target_building);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index d17b85a..c9d4262 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 65;   // 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 66;   // 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/unit_w7.hpp b/engine/unit_w7.hpp
+index 04f1913..9a9f8c3 100644
+--- a/engine/unit_w7.hpp
++++ b/engine/unit_w7.hpp
+@@ -54,6 +54,8 @@ struct UnitTypeW7 {
+     bool mind_control = false;
+     int mc_capacity = 1;
+     bool mc_infinite = false;
++    // Primary weapon's warhead has Psychedelic=yes (Chaos Drone gas): confuses, never damages.
++    bool psychedelic = false;
+     // W7-04-03 [RE: Time_To_Build FUN_006F3D00 @0x6F3D4E, type +0x608]:
+     // BuildTimeMultiplier= (HTNK / MTNK / LTNK 1.5, TTNK / ROBO 1.3).
+     double build_time_mult = 1.0;
+@@ -94,6 +96,10 @@ struct UnitW7 {
+     // House the victim had when first captured (World skirmish/MP path; campaign
+     // keeps the same value on its Track::mc_orig for save/load).
+     int mc_orig_house = -1;
++    int psy_shot = -1;   // victim of this frame's Psychedelic shot (World::step_psychedelic)
++    // Psychedelic warhead (Chaos gas): until this repair_frame() the unit takes
++    // every other unit for an enemy. -1 none.
++    std::int64_t confused_until = -1;
+     // (W7-04-08's per-unit missile_holds list was removed in fv7c / save v40:
+     // the PauseFrames + TiltFrames hold lives in the spawn-manager node,
+     // AnUnit::sp_state / sp_timer [RE: SpawnManagerClass::AI FUN_006B68B0 / 0x6B72E0].)
+diff --git a/engine/w2air_main.inc b/engine/w2air_main.inc
+index 36afee8..99d8908 100644
+--- a/engine/w2air_main.inc
++++ b/engine/w2air_main.inc
+@@ -205,6 +205,36 @@ ra2engine::SwParams resolve_sw_params(const Rules& rules) {
+         p.c4_spread = rules.section_double(c4, "CellSpread", 0.0);
+         p.c4_pmax = rules.section_double(c4, "PercentAtMax", 1.0);
+     }
++    {   // Yuri's Revenge [General] keys; absent in a classic rules.ini (defaults stay).
++        const std::string dwh = gs("DominatorWarhead", "DominatorWH");
++        p.dominator_damage = static_cast<int>(gd("DominatorDamage", 1000.0));
++        p.dominator_spread = rules.section_double(dwh, "CellSpread", 7.0);
++        p.dominator_pmax = rules.section_double(dwh, "PercentAtMax", 0.2);
++        p.dominator_verses = w2_verses11(rules, dwh);
++        p.dominator_capture_range = static_cast<int>(gd("DominatorCaptureRange", 1.0));
++        p.dominator_fire_percent = static_cast<int>(gd("DominatorFireAtPercentage", 20.0));
++        p.mutate_explosion = rules.section_flag("General", "MutateExplosion", true);
++        const std::string mwh = gs(p.mutate_explosion ? "MutateExplosionWarhead" : "MutateWarhead",
++                                   p.mutate_explosion ? "MutateExplosion" : "Mutate");
++        p.mutate_spread = p.mutate_explosion ? rules.section_double(mwh, "CellSpread", 5.0) : 1.0;
++        p.mutate_verses = w2_verses11(rules, mwh);
++        auto list = [&](const char* k) {
++            std::vector<int> out;
++            std::string s = rules.section_string("General", k, ""), cur;
++            const std::size_t sc = s.find(';');
++            if (sc != std::string::npos) s.erase(sc);
++            for (char ch : s + ",") {
++                if (ch != ',') { cur.push_back(ch); continue; }
++                if (!cur.empty()) out.push_back(std::atoi(cur.c_str()));
++                cur.clear();
++            }
++            return out;
++        };
++        p.reveal_radius = static_cast<int>(gd("PsychicRevealRadius", 15.0));
++        p.overload_count = list("OverloadCount");
++        p.overload_damage = list("OverloadDamage");
++        p.overload_frames = list("OverloadFrames");
++    }
+     const std::string payload = "NukePayload";
+     p.nuke_rad_level = static_cast<int>(rules.section_double(payload, "RadLevel", 500.0));
+     p.nuke_wall_flags = ra2engine::warhead_wall_flags(   // W6-04-04: [NUKE] WallAbsoluteDestroyer
+diff --git a/engine/w2air_play.inc b/engine/w2air_play.inc
+index 536e013..ada801d 100644
+--- a/engine/w2air_play.inc
++++ b/engine/w2air_play.inc
+@@ -306,7 +306,8 @@
+                                         rules_.section_string("General", "DMislType", "DMISL"),
+                                         rules_.section_string("General", "V3RocketType", "V3ROCKET"),
+                                         "HORNET", "ASW",   // any side's spawns (captured / cheat units)
+-                                        "BPLN"};           // wave-5 R-046: the AirstrikeTeamType
++                                        "BPLN",            // wave-5 R-046: the AirstrikeTeamType
++                                        sp.mutant_type};   // Genetic Mutator result (absent in classic rules)
+         for (const UnitRoster* r : {&ur_, &ur_ai_})
+             for (const ra2engine::UnitTypeDef& d : r->defs)
+                 if (!d.combat.an.spawns.empty()) ids.push_back(d.combat.an.spawns);
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 2c953f3..a550846 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -226,6 +226,9 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
+         w.mc_capacity = std::max(1, om::ftol(rules.section_double(tw.slot[0].id, "Damage", 1.0)));
+         w.mc_infinite = rules.section_flag(tw.slot[0].id, "InfiniteMindControl", false);
+     }
++    if (tw.slot[0].valid &&
++        rules.section_flag(rules.section_string(tw.slot[0].id, "Warhead", ""), "Psychedelic", false))
++        w.psychedelic = true;
+ }
+ 
+ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& type_id,
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 83386e8..7b089f8 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -6279,6 +6279,7 @@ void World::step(double dt) {
+     // frame's Controller shots before combat stamps new ones (campaign owns
+     // its own poll and sets campaign_mind_control_).
+     step_mind_control();
++    step_psychedelic();   // Yuri: this frame's Chaos gas shots
+ 
+     // Projectile phase (P2) [RE: projectile.md §6/§7]: advance every projectile
+     // in flight one logic frame per accumulated 1/15 s, detonating through the
+diff --git a/engine/world.hpp b/engine/world.hpp
+index cb7e5ab..0536a29 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -2675,6 +2675,10 @@ public:
+     void set_campaign_mind_control(bool on);
+     bool campaign_mind_control() const { return campaign_mind_control_; }
+     void step_mind_control();
++    // Chaos gas (Psychedelic=yes warhead): the unit shoots at anything for `frames`.
++    void confuse_unit(int unit_idx, int frames);
++    void step_psychedelic();   // consumes this frame's psy_shot of every Chaos Drone
++    bool unit_confused(const Unit& u) const { return u.w7.confused_until > static_cast<std::int64_t>(repair_frame_); }
+     void mc_release(int ctl, int vi);
+     void mc_release_all(int ctl);
+     bool mc_capture(int ctl, int vi);
+@@ -3027,6 +3031,9 @@ private:
+     void an_step_pad_repair();                       // W7-05-07
+     void an_step_strikes(double dt);
+     void an_nuke_detonate(const SwStrike& s);
++    void an_mutate_detonate(const SwStrike& s);     // Genetic Mutator (kind 4)
++    void an_dominator_fire(SwStrike& s);            // Psychic Dominator (kind 3)
++    void an_dominator_release(SwStrike& s);
+     void an_storm_bolt(SwStrike& s, int x, int y);
+     void an_paradrop(int house, SuperweaponType type, int cx, int cy);
+     // [RE: FUN_006CD66F / FUN_004155F0 / FUN_004157C0]: SPYP Approach → Overfly
+diff --git a/engine/world_mind_control.cpp b/engine/world_mind_control.cpp
+index 397eb71..0fe076a 100644
+--- a/engine/world_mind_control.cpp
++++ b/engine/world_mind_control.cpp
+@@ -189,6 +189,18 @@ void World::step_mind_control() {
+         }
+         u.w_mind_control = u.w7.t.mind_control;
+         if (!u.w_mind_control) continue;
++        // Master Mind overload [General] OverloadCount/Damage/Frames: past its
++        // pips an InfiniteMindControl unit hurts itself, the more the worse.
++        if (u.w7.t.mc_infinite && !u.w7.mc_victims.empty()) {
++            const SwParams& P = an_.sw;
++            const int n = static_cast<int>(u.w7.mc_victims.size());
++            std::size_t row = 0;
++            while (row + 1 < P.overload_count.size() && n > P.overload_count[row]) ++row;
++            if (row < P.overload_damage.size() && row < P.overload_frames.size() &&
++                P.overload_damage[row] > 0 && P.overload_frames[row] > 0 &&
++                repair_frame_ % static_cast<std::uint64_t>(P.overload_frames[row]) == 0)
++                an_damage_unit(ci, P.overload_damage[row], -1);
++        }
+         const int cap = std::max(1, u.w7.t.mc_capacity);
+         const bool infinite = u.w7.t.mc_infinite;
+         const bool full = !infinite && static_cast<int>(u.w7.mc_victims.size()) >= cap;
+diff --git a/engine/world_sw.cpp b/engine/world_sw.cpp
+index b890d33..a154c41 100644
+--- a/engine/world_sw.cpp
++++ b/engine/world_sw.cpp
+@@ -258,6 +258,21 @@ bool World::fire_superweapon_at(int house, SuperweaponType type, int cx, int cy,
+             an_spyplane(house, cx, cy);
+             an_event(SwEvent::Activated, house, type, cx, cy);
+             break;
++        case SuperweaponType::PsychicDominator:
++        case SuperweaponType::GeneticConverter: {   // Yuri: strike kinds 3 / 4 (world_yuri.cpp)
++            SwStrike s;
++            s.kind = type == SuperweaponType::PsychicDominator ? 3 : 4;
++            s.house = house;
++            s.x = cx;
++            s.y = cy;
++            an_.strikes.push_back(s);
++            an_event(SwEvent::Activated, house, type, cx, cy);
++            break;
++        }
++        case SuperweaponType::PsychicReveal:   // clears the shroud in PsychicRevealRadius for good
++            reveal_source(house, cx, cy, an_.sw.reveal_radius);
++            an_event(SwEvent::Activated, house, type, cx, cy);
++            break;
+         default:
+             return false;   // other YR-only types (ForceShield, …) still unwired
+     }
+@@ -646,6 +661,19 @@ void World::an_step_strikes(double dt) {
+                     an_.strikes[k].done = true;
+                     an_nuke_detonate(copy);
+                 }
++            } else if (s.kind == 3) {   // Psychic Dominator (world_yuri.cpp)
++                const int fire = std::max(1, P.dominator_anim_frames * P.dominator_fire_percent / 100);
++                if (s.frame == fire) an_dominator_fire(s);
++                if (s.frame >= fire + P.dominator_hold_frames) {
++                    an_dominator_release(s);
++                    s.done = true;
++                }
++            } else if (s.kind == 4) {   // Genetic Mutator
++                if (s.frame >= std::max(1, P.mutate_delay_frames)) {
++                    const SwStrike copy = s;
++                    s.done = true;
++                    an_mutate_detonate(copy);
++                }
+             } else if (s.kind == 2) {   // lightning storm
+                 // [RE-FALLBACK: FUN_00539be0/00539e10 scheduler not unwound]
+                 // LightningDeferment frames of gathering clouds, then
+diff --git a/rp-beta5/ra2/engine/engine/world_yuri.cpp b/engine/world_yuri.cpp
+new file mode 100644
+index 0000000..b0583b0
+--- /dev/null
++++ b/engine/world_yuri.cpp
+@@ -0,0 +1,128 @@
++// Yuri's specials that act on the World: Chaos gas confusion (Psychedelic=yes
++// warhead), the Genetic Mutator and Psychic Dominator superweapons (SwStrike
++// kinds 4 and 3), and Psychic Reveal. Mind control lives in
++// world_mind_control.cpp, Grinder / Bio Reactor in world_grinder_bio.cpp.
++// Everything is saved: the Dominator's victims ride in SwStrike::recent, the
++// confusion in UnitW7::confused_until, so no state is lost across a save.
++#include <algorithm>
++#include <cmath>
++
++#include "orig_math.hpp"
++#include "world.hpp"
++
++namespace ra2engine {
++
++namespace {
++constexpr double kLept = 256.0;
++}
++
++void World::confuse_unit(int idx, int frames) {
++    if (idx < 0 || idx >= static_cast<int>(units_.size()) || frames <= 0) return;
++    Unit& u = units_[static_cast<std::size_t>(idx)];
++    if (!u.alive || u.die_time >= 0.0) return;
++    u.w7.confused_until = static_cast<std::int64_t>(repair_frame_) + frames;
++    u.target = -1;            // pick a fresh victim, friend or foe
++    u.attack_order = false;
++}
++
++// Chaos gas: every unit within round(CellSpread) cells of the shot, whose armor
++// the warhead's Verses reach, goes mad for psychedelic_frames. The shooter
++// itself is left alone; the gas does no damage.
++void World::step_psychedelic() {
++    for (std::size_t i = 0; i < units_.size(); ++i) {
++        Unit& u = units_[i];
++        const int vi = u.w7.psy_shot;
++        if (vi < 0) continue;
++        u.w7.psy_shot = -1;
++        if (vi >= static_cast<int>(units_.size()) || !u.alive || u.die_time >= 0.0) continue;
++        const double cx = units_[static_cast<std::size_t>(vi)].fx, cy = units_[static_cast<std::size_t>(vi)].fy;
++        const double radius = std::max(0.5, std::round(u.w_cell_spread)) * kLept;
++        for (int j = 0; j < static_cast<int>(units_.size()); ++j) {
++            if (j == static_cast<int>(i)) continue;
++            const Unit& w = units_[static_cast<std::size_t>(j)];
++            if (!w.alive || w.die_time >= 0.0 || w.cargo_of >= 0) continue;
++            if (w.armor_ix < 0 || w.armor_ix >= static_cast<int>(u.w_verses.size()) ||
++                u.w_verses[static_cast<std::size_t>(w.armor_ix)] <= 0)
++                continue;
++            if (om::hypot((w.fx - cx) * kLept, (w.fy - cy) * kLept) > radius) continue;
++            confuse_unit(j, an_.sw.psychedelic_frames);
++        }
++    }
++}
++
++// ---- Genetic Mutator: infantry the MutateExplosion warhead reaches become the
++// mutant type (Brute) in the same house, same cell, same health fraction;
++// ImmuneToPsionics infantry (Yuri, Brutes) and everything that is not infantry
++// are left alone.
++void World::an_mutate_detonate(const SwStrike& s) {
++    const SwParams& P = an_.sw;
++    if (!an_.types.count(P.mutant_type)) return;
++    const double radius = std::max(0.5, std::round(P.mutate_spread)) * kLept;
++    const int n = static_cast<int>(units_.size());
++    for (int j = 0; j < n; ++j) {
++        const Unit& w = units_[static_cast<std::size_t>(j)];
++        if (!w.alive || w.die_time >= 0.0 || w.cargo_of >= 0 || w.is_vehicle || w.is_aircraft || w.is_naval)
++            continue;
++        if (w.tg.t.immune_psionics || w.image == an_.types[P.mutant_type].image) continue;
++        if (w.armor_ix < 0 || w.armor_ix >= static_cast<int>(P.mutate_verses.size()) ||
++            P.mutate_verses[static_cast<std::size_t>(w.armor_ix)] <= 0)
++            continue;
++        if (om::hypot((w.fx - s.x) * kLept, (w.fy - s.y) * kLept) > radius) continue;
++        const int house = w.house, cx = w.cell_x, cy = w.cell_y, facing = w.facing;
++        const double fx = w.fx, fy = w.fy;
++        const double frac = w.max_hp > 0 ? static_cast<double>(w.hp) / w.max_hp : 1.0;
++        occ_.release_all_of(j, -1, -1);
++        Unit& old = units_[static_cast<std::size_t>(j)];
++        old.alive = false;   // replaced, not killed: no corpse, no kill credit
++        old.target = -1;
++        old.target_building = -1;
++        old.path.clear();
++        old.path_idx = 0;
++        const int ni = an_spawn(P.mutant_type, house, cx, cy);
++        if (ni < 0) continue;
++        Unit& b = units_[static_cast<std::size_t>(ni)];
++        b.facing = facing;
++        b.fx = fx;
++        b.fy = fy;
++        b.hp = std::max(1, om::ftol(frac * b.max_hp));
++    }
++}
++
++// ---- Psychic Dominator: at fire_percent of the head animation the warhead
++// damages (buildings: Verses 0 on every unit armor) and every non-allied unit
++// within DominatorCaptureRange that can be mind controlled changes sides; they
++// go back dominator_hold_frames later. Victims live in s.recent.
++void World::an_dominator_fire(SwStrike& s) {
++    const SwParams& P = an_.sw;
++    an_area_damage(s.house, s.x, s.y, P.dominator_damage, P.dominator_spread, P.dominator_pmax,
++                   P.dominator_verses, /*hit_air=*/false, /*spare_house=*/false, 0.0, 0, -1);
++    const double radius = std::max(0.5, static_cast<double>(P.dominator_capture_range)) * kLept;
++    for (int j = 0; j < static_cast<int>(units_.size()); ++j) {
++        const Unit& v = units_[static_cast<std::size_t>(j)];
++        if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0 || v.garrison_of >= 0 || v.is_aircraft) continue;
++        if (v.house == s.house || !is_enemy(s.house, v.house)) continue;
++        if (!psionic_target_ok(j) || v.an.iron_left_frames > 0.0 || v.w7.mc_controller >= 0 ||
++            v.w7.mc_orig_house >= 0)
++            continue;
++        if (om::hypot((v.fx - s.x) * kLept, (v.fy - s.y) * kLept) > radius) continue;
++        units_[static_cast<std::size_t>(j)].w7.mc_orig_house = v.house;
++        set_unit_owner(j, s.house);
++        units_[static_cast<std::size_t>(j)].target = -1;
++        units_[static_cast<std::size_t>(j)].attack_order = false;
++        s.recent.push_back(j);
++    }
++}
++
++void World::an_dominator_release(SwStrike& s) {
++    for (int j : s.recent) {
++        if (j < 0 || j >= static_cast<int>(units_.size())) continue;
++        Unit& v = units_[static_cast<std::size_t>(j)];
++        const int orig = v.w7.mc_orig_house;
++        v.w7.mc_orig_house = -1;
++        if (orig < 0 || !v.alive || v.die_time >= 0.0 || v.house != s.house) continue;
++        set_unit_owner(j, orig);
++    }
++    s.recent.clear();
++}
++
++}  // namespace ra2engine
+diff --git a/include/ra2assets/map.hpp b/include/ra2assets/map.hpp
+index 0862b1b..af894c2 100644
+--- a/include/ra2assets/map.hpp
++++ b/include/ra2assets/map.hpp
+@@ -92,6 +92,8 @@ public:
+     // A missing `[IsoMapPack5]` section is NOT an error -- cells() is simply
+     // empty in that case.
+     static MapFile parse(const std::string& ini_text);
++    // A flat w x h ground diamond with no [IsoMapPack5] (synthetic worlds in tests).
++    static MapFile blank(int w, int h);
+ 
+     // Playable map dimensions, from `[Map] Size=x,y,w,h` (width is the 3rd
+     // comma-separated field, height the 4th). 0 if `[Map]`/`Size=` is
+diff --git a/src/map.cpp b/src/map.cpp
+index 5960552..b931810 100644
+--- a/src/map.cpp
++++ b/src/map.cpp
+@@ -114,6 +114,22 @@ void fill_missing_diamond(std::vector<MapCell>& cells, int w, int h, uint8_t lev
+ 
+ } // namespace detail
+ 
++MapFile MapFile::blank(int w, int h) {
++    MapFile map;
++    map.width_ = w;
++    map.height_ = h;
++    map.theater_ = "TEMPERATE";
++    detail::fill_missing_diamond(map.cells_, w, h, 0);
++    map.index_.assign((size_t)512 * 512, -1);
++    for (size_t i = 0; i < map.cells_.size(); ++i) {
++        const MapCell& c = map.cells_[i];
++        if (c.x < 0 || c.y < 0 || c.x >= 512 || c.y >= 512) { map.index_.clear(); break; }
++        int32_t& slot = map.index_[(size_t)c.y * 512 + (size_t)c.x];
++        if (slot < 0) slot = (int32_t)i;
++    }
++    return map;
++}
++
+ MapFile MapFile::parse(const std::string& ini_text) {
+     Ini ini = Ini::parse(ini_text);
+     if (!ini.has("Map"))
+diff --git a/rp-beta5/ra2/engine/tests/test_yuri_specials.cpp b/tests/test_yuri_specials.cpp
+new file mode 100644
+index 0000000..7e90e9a
+--- /dev/null
++++ b/tests/test_yuri_specials.cpp
+@@ -0,0 +1,201 @@
++// Yuri's specials on the World: Genetic Mutator, Psychic Dominator, Psychic Reveal
++// (superweapons, world_yuri.cpp), Master Mind overload (world_mind_control.cpp),
++// Chaos gas confusion. Synthetic types and an empty map: no game data needed.
++#include "doctest.h"
++
++#include "combat.hpp"
++#include "world.hpp"
++
++using namespace ra2engine;
++
++namespace {
++
++UnitCombat mk_inf(const char* image, const char* armor = "none") {
++    UnitCombat c;
++    c.image = image;
++    c.strength = 100;
++    c.armor = armor;
++    c.damage = 10;
++    c.rof = 15;
++    c.range = 5.0;
++    c.verses = std::vector<int>(11, 100);
++    c.is_infantry = true;
++    return c;
++}
++
++// The rules' Mutate verses: none / flak / plate only.
++std::array<int, 11> inf_only() {
++    std::array<int, 11> a{};
++    a[0] = a[1] = a[2] = 100;
++    return a;
++}
++
++void run(World& w, int frames) {
++    for (int i = 0; i < frames; ++i) w.step(1.0 / 15.0);
++}
++
++void arm_sw(World& w, int house, SuperweaponType t) {
++    w.grant_superweapon_type(house, t, /*recharge_secs=*/0.5, /*is_powered=*/false, 0, 0.0, 1.0, {});
++    for (int i = 0; i < 15 && !w.sw_ready(house, t); ++i) w.step(1.0 / 15.0);
++    REQUIRE(w.sw_ready(house, t));
++}
++
++}  // namespace
++
++TEST_CASE("genetic mutator: infantry become Brutes, vehicles and psi-immune infantry stay") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.mutate_verses = inf_only();
++    p.mutate_spread = 5.0;
++    p.mutate_delay_frames = 4;
++    w.set_sw_params(p);
++    w.register_an_type("BRUTE", mk_inf("BRUTE", "plate"));
++    w.add_combat_unit(10, 10, 1, mk_inf("E1"));
++    UnitCombat tank = mk_inf("MTNK", "heavy");
++    tank.is_vehicle = true;
++    w.add_combat_unit(11, 10, 1, tank);
++    UnitCombat yuri = mk_inf("YURI");
++    yuri.tg.immune_psionics = true;
++    w.add_combat_unit(12, 10, 1, yuri);
++    w.add_combat_unit(30, 30, 1, mk_inf("E2"));   // out of range
++    w.units()[0].hp = 50;
++    arm_sw(w, 0, SuperweaponType::GeneticConverter);
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::GeneticConverter, 10, 10));
++    CHECK_FALSE(w.sw_ready(0, SuperweaponType::GeneticConverter));
++    run(w, 8);
++    int brutes = 0;
++    for (const Unit& u : w.units())
++        if (u.alive && u.image == "BRUTE") {
++            ++brutes;
++            CHECK(u.house == 1);          // stays with its owner
++            CHECK(u.hp == 50);            // same health fraction (50/100 of a 100 HP Brute)
++        }
++    CHECK(brutes == 1);
++    CHECK_FALSE(w.units()[0].alive);      // the GI is replaced, not left behind
++    CHECK(w.units()[1].alive);            // tank untouched
++    CHECK(w.units()[1].image == "MTNK");
++    CHECK(w.units()[2].image == "YURI");  // ImmuneToPsionics
++    CHECK(w.units()[3].image == "E2");    // out of the explosion
++}
++
++TEST_CASE("psychic dominator: enemies in capture range change sides, then come back") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.dominator_capture_range = 2;
++    p.dominator_anim_frames = 20;
++    p.dominator_fire_percent = 50;   // fires at frame 10
++    p.dominator_hold_frames = 30;
++    p.dominator_damage = 0;
++    w.set_sw_params(p);
++    w.add_combat_unit(10, 10, 1, mk_inf("E1"));           // near: taken
++    UnitCombat dog = mk_inf("DOG");
++    dog.tg.immune_psionics = true;
++    w.add_combat_unit(11, 10, 1, dog);                    // ImmuneToPsionics: refused
++    w.add_combat_unit(20, 20, 1, mk_inf("E2"));           // far: untouched
++    w.add_combat_unit(10, 11, 0, mk_inf("E1"));           // the firer's own unit
++    arm_sw(w, 0, SuperweaponType::PsychicDominator);
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::PsychicDominator, 10, 10));
++    run(w, 5);
++    CHECK(w.units()[0].house == 1);   // not yet: the head is still coming down
++    run(w, 8);
++    CHECK(w.units()[0].house == 0);
++    CHECK(w.units()[0].w7.mc_orig_house == 1);
++    CHECK(w.units()[1].house == 1);
++    CHECK(w.units()[2].house == 1);
++    CHECK(w.units()[3].house == 0);
++    run(w, 40);
++    CHECK(w.units()[0].house == 1);   // released
++    CHECK(w.units()[0].w7.mc_orig_house == -1);
++}
++
++TEST_CASE("psychic dominator: a victim killed meanwhile is not resurrected into the firer's house") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.dominator_capture_range = 2;
++    p.dominator_anim_frames = 10;
++    p.dominator_fire_percent = 10;
++    p.dominator_hold_frames = 20;
++    p.dominator_damage = 0;
++    w.set_sw_params(p);
++    w.add_combat_unit(10, 10, 1, mk_inf("E1"));
++    arm_sw(w, 0, SuperweaponType::PsychicDominator);
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::PsychicDominator, 10, 10));
++    run(w, 3);
++    REQUIRE(w.units()[0].house == 0);
++    w.units()[0].alive = false;
++    run(w, 30);   // release must not touch a dead unit
++    CHECK_FALSE(w.units()[0].alive);
++}
++
++TEST_CASE("psychic reveal: reveals around the target without a strike") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    arm_sw(w, 0, SuperweaponType::PsychicReveal);
++    CHECK(w.fire_superweapon_at(0, SuperweaponType::PsychicReveal, 5, 5));
++    CHECK_FALSE(w.sw_ready(0, SuperweaponType::PsychicReveal));
++}
++
++TEST_CASE("master mind overload: damage grows with the number of victims") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.overload_count = {3, 6};
++    p.overload_damage = {0, 20};
++    p.overload_frames = {30, 10};
++    w.set_sw_params(p);
++    UnitCombat mm = mk_inf("MIND", "heavy");
++    mm.strength = 1000;
++    mm.is_vehicle = true;
++    mm.w7.mind_control = true;
++    mm.w7.mc_capacity = 3;
++    mm.w7.mc_infinite = true;
++    w.add_combat_unit(10, 10, 0, mm);
++    for (int i = 0; i < 5; ++i) w.add_combat_unit(12 + i, 10, 1, mk_inf("E1"));
++    for (int i = 0; i < 3; ++i) REQUIRE(w.mc_capture(0, 1 + i));
++    for (int i = 0; i < 20; ++i) w.step_mind_control();   // 3 victims: free
++    CHECK(w.units()[0].hp == 1000);
++    REQUIRE(w.mc_capture(0, 4));
++    REQUIRE(w.mc_capture(0, 5));   // infinite: beyond its pips
++    CHECK(w.units()[0].w7.mc_victims.size() == 5);
++    const int hp0 = w.units()[0].hp;
++    for (int i = 0; i < 50; ++i) {
++        w.step(1.0 / 15.0);
++        if (w.units()[0].hp < hp0) break;
++    }
++    CHECK(w.units()[0].hp < hp0);   // 4..6 victims: the second row hurts it
++}
++
++TEST_CASE("chaos gas: a confused unit takes its own side for an enemy; others are left alone") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.psychedelic_frames = 100;
++    w.set_sw_params(p);
++    UnitCombat drone = mk_inf("CAOS", "light");
++    drone.w7.psychedelic = true;
++    drone.is_vehicle = true;
++    drone.cell_spread = 3.0;
++    w.add_combat_unit(10, 10, 1, drone);
++    w.add_combat_unit(11, 10, 0, mk_inf("E1"));   // in the cloud
++    w.add_combat_unit(12, 10, 0, mk_inf("E1"));
++    w.units()[0].w_cell_spread = 3.0;
++    w.units()[0].w_verses = std::vector<int>(11, 100);
++    w.add_combat_unit(25, 25, 0, mk_inf("E1"));   // far away (index 3)
++    w.units()[0].w7.psy_shot = 1;
++    w.step_psychedelic();
++    CHECK(w.unit_confused(w.units()[1]));
++    CHECK(w.unit_confused(w.units()[2]));
++    CHECK_FALSE(w.unit_confused(w.units()[3]));   // out of the cloud
++    CHECK_FALSE(w.unit_confused(w.units()[0]));   // the drone itself
++    // A confused unit's own side is fair game: everything is house 0 and unit 1 picks a target.
++    w.units()[0].house = 0;
++    w.step(1.0 / 15.0);
++    CHECK(w.units()[1].target >= 0);
++    CHECK(w.units()[1].house == w.units()[w.units()[1].target].house);
++    CHECK(w.units()[3].target < 0);   // a sane unit has nobody to shoot
++    run(w, 120);
++    CHECK_FALSE(w.unit_confused(w.units()[1]));   // wears off
++}

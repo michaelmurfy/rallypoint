@@ -1,0 +1,27 @@
+diff --git a/engine/campaign_runtime.inc b/engine/campaign_runtime.inc
+index e15898b..544360d 100644
+--- a/engine/campaign_runtime.inc
++++ b/engine/campaign_runtime.inc
+@@ -1016,7 +1016,7 @@ private:
+         const ra2engine::AiCatalog full = make_ai_config(ba_, rules, cfg.difficulty, 0.0, side, own).catalog;
+         cfg.team.inf_factory_types = factory_types_for(ba_, id_of(full.barracks));
+         cfg.team.veh_factory_types = factory_types_for(ba_, id_of(full.war_factory));
+-        cfg.team.trigger_side = side == ra2engine::World::Side::Soviet ? 2 : 1;
++        cfg.team.trigger_side = ra2engine::yuri::trigger_side(side);
+         cfg.team.trigger_tech_level = map_.get_int(house_names_[(std::size_t)h], "TechLevel", 10);
+         cfg.team.house_name = country;
+         fill_ai_building_maps(cfg.team, ba_, rules, rules_ini_);
+diff --git a/engine/skirmish_load.inc b/engine/skirmish_load.inc
+index 7483644..a09d4ee 100644
+--- a/engine/skirmish_load.inc
++++ b/engine/skirmish_load.inc
+@@ -39,7 +39,8 @@ struct SkirmishLoadArt {
+         static const std::pair<const char*, const char*> kPal[] = {
+             {"ustates", "mplsu.pal"}, {"ukingdom", "mplsuk.pal"}, {"russia", "mplsr.pal"}, {"libya", "mplsl.pal"},
+             {"korea", "mplsk.pal"},   {"iraq", "mplsi.pal"},      {"germany", "mplsg.pal"}, {"france", "mplsf.pal"},
+-            {"cuba", "mplsc.pal"}};
++            {"cuba", "mplsc.pal"},
++            {"yuri", "mplsobs.pal"}};   // loadmd.mix has no mplsy*.pal: the observer palette
+         std::string pal_name = "mpls.pal";
+         for (const auto& e : kPal)
+             if (art_name == std::string("ls800") + e.first + ".shp") pal_name = e.second;

@@ -1,0 +1,73 @@
+diff --git a/engine/game_scene_net.inc b/engine/game_scene_net.inc
+index 469d347..e76539a 100644
+--- a/engine/game_scene_net.inc
++++ b/engine/game_scene_net.inc
+@@ -584,7 +584,7 @@
+             if ((down && net_hit(net_btn_ok_, ev.x, ev.y)) ||
+                 (ev.kind == ra2engine::InputEvent::Key &&
+                  (ev.key == ra2engine::kKeyEnter || ev.key == ra2engine::kKeyEscape))) {
+-                if (!next_scene_) next_scene_ = make_main_menu_scene(no_audio_);
++                if (!next_scene_) next_scene_ = gf_leave_scene();
+             }
+             return ev.kind != ra2engine::InputEvent::Quit;
+         }
+diff --git a/engine/gf_play.inc b/engine/gf_play.inc
+index 73cbddf..2548e0e 100644
+--- a/engine/gf_play.inc
++++ b/engine/gf_play.inc
+@@ -298,6 +298,27 @@ int run_gf_play(const std::string& scenario, const std::string& out_dir) {
+         click(*g, row(0));
+         c.check(g->gf_peek_next() != nullptr && dynamic_cast<ShellScene*>(g->gf_peek_next()) != nullptr,
+                 "Abort returns to the main menu");
++        // --launch games have no shell: Abort shows the score page, whose Continue quits.
++        const Rules* saved_rules = g_menu_rules;
++        g_menu_rules = nullptr;
++        std::unique_ptr<GameScene> g2(start_from_lobby(c, rules, store.art));
++        if (g2) {
++            g2->gf_open_menu();
++            click(*g2, abort_btn);
++            click(*g2, row(0));
++            std::unique_ptr<Scene> res(g2->next());
++            c.check(res && dynamic_cast<GfSkirmishResultScene*>(res.get()) && !res->wants_quit(),
++                    "Abort without a shell shows the score page");
++            if (res) {
++                ra2engine::InputEvent k;
++                k.kind = ra2engine::InputEvent::Key;
++                k.key = ra2engine::kKeyEnter;
++                res->handle(k);
++                (void)res->next();
++                c.check(res->wants_quit(), "Continue on the score page quits");
++            }
++        }
++        g_menu_rules = saved_rules;
+     } else if (scenario.rfind("campaign:", 0) == 0) {
+         std::string map = scenario.substr(9), side = "GDI";
+         const std::size_t colon = map.find(':');
+diff --git a/engine/gf_scene.inc b/engine/gf_scene.inc
+index cdccd25..57e13e4 100644
+--- a/engine/gf_scene.inc
++++ b/engine/gf_scene.inc
+@@ -48,6 +48,13 @@ private:
+         b.push_back(gf_csf("GUI:ResumeMission", "Resume Mission"));
+         gf_abort_.ask(gf_csf("GUI:AskAbortMission", "What would you like to do?"), b);
+     }
++    // Where a player who leaves goes: the shell, or in a --launch game (no shell)
++    // the score page, whose Continue ends the process.
++    Scene* gf_leave_scene() {
++        if (Scene* m = make_main_menu_scene(no_audio_)) return m;
++        if (gf_outcome_ == 0) gf_outcome_ = -1;
++        return gf_make_skirmish_result_scene(no_audio_, cfg_, gf_outcome_, gf_frames_, gf_stats());
++    }
+     void gf_abort_answer(int c) {
+         if (c < 0) return;
+         if (mp_leave_confirm_) { mp_leave_answer(c); return; }   // W9-05-06: the Leave OK / Cancel
+@@ -62,8 +69,7 @@ private:
+                 next_scene_ = gf_make_skirmish_result_scene(no_audio_, cfg_, gf_outcome_, gf_frames_, gf_stats());
+                 return;
+             }
+-            if (Scene* m = make_main_menu_scene(no_audio_)) next_scene_ = m;
+-            else abort_ = true;
++            next_scene_ = gf_leave_scene();
+         } else if (campaign_ && c == 1) {   // Restart the campaign mission
+             menu_.open_ = false;
+             next_scene_ = gf_make_restart_scene(no_audio_, cfg_);
