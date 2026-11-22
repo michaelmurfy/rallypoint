@@ -65,7 +65,7 @@ a { color: var(--rose); }
 progress, .pct { font-variant-numeric: tabular-nums; }
 
 /* ---- shell ---- */
-.app { display: grid; grid-template-columns: 200px 1fr; height: 100vh; }
+.app { display: grid; grid-template-columns: 56px 200px 1fr; height: 100vh; }
 .sidebar { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface) 46%); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 16px 10px 12px; gap: 4px; }
 /* The brand block: the icon with a gold edge, the name, and the icon's rank chevrons running off to the right. */
 .brand { position: relative; display: flex; align-items: center; gap: 12px; padding: 4px 8px 18px; margin-bottom: 10px; }
@@ -270,7 +270,7 @@ details[open] > :not(summary) { animation: rise .18s var(--ease); }
 @keyframes pulse { 50% { opacity: .35; } }
 
 @media (max-width: 760px) {
-  .app { grid-template-columns: 64px 1fr; }
+  .app { grid-template-columns: 48px 64px 1fr; } .rail { padding-top: 12px; } .railbtn { width: 48px; } .railbtn .need { right: 4px; }
   .brand-text, .brand::before, .nav span, .side-foot { display: none; }
   .brand { padding: 2px 0 16px; justify-content: center; } .brand::after { left: 0; right: 0; }
   .nav { justify-content: center; }
@@ -668,58 +668,37 @@ input:disabled { opacity: .55; cursor: not-allowed; }
     --c-settings: #5c5238; --shadow: 0 14px 36px rgba(13, 40, 74, .2);
   }
 }
-:root[data-game="ra2"] .card.hero { --accent: #2f7de1; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 20%, var(--surface)), var(--surface) 68%); }
 body, .sidebar, .card, main { transition: background-color .3s var(--ease), border-color .3s var(--ease); }
-.app.entering > * { animation: gameswap .26s var(--ease); }
+.app.entering > :not(.rail) { animation: gameswap .26s var(--ease); }
 @keyframes gameswap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-/* ---- the game card: who you are playing, and the one place to change it ---- */
-.gamecard { position: relative; margin-bottom: 10px; }
-.gamebtn { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 11px; width: 100%; padding: 8px 10px 8px 8px; border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface-2)), var(--surface-2)); color: var(--text); font: inherit; text-align: left; cursor: pointer; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 16%, transparent); transition: border-color .12s var(--ease), transform .08s var(--ease); }
-.gamebtn:hover { border-color: color-mix(in srgb, var(--gold) 50%, transparent); }
-.gamebtn:active { transform: scale(.985); }
-.gtile { width: 44px; height: 44px; border-radius: 11px; flex: none; display: grid; place-items: center; overflow: hidden; color: var(--gold); background: linear-gradient(150deg, color-mix(in srgb, var(--accent) 80%, #000), color-mix(in srgb, var(--accent) 35%, #000)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 55%, transparent), 0 8px 18px rgba(0, 0, 0, .38); }
+/* ---- the game rail: the games are always in view, one tile each; the current one has a gold marker ---- */
+.rail { position: relative; z-index: 20; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 16px 0; background: color-mix(in srgb, var(--bg) 80%, #000); border-right: 1px solid var(--line); }
+.railbtn { position: relative; width: 56px; padding: 0; border: 0; background: none; display: grid; place-items: center; cursor: pointer; }
+.railbtn .gtile { opacity: .55; filter: saturate(.6); transition: opacity .15s var(--ease), filter .15s var(--ease), border-radius .15s var(--ease); }
+.railbtn:hover .gtile, .railbtn:focus-visible .gtile, .railbtn[aria-current] .gtile { opacity: 1; filter: none; }
+.railbtn[aria-current] .gtile { border-radius: 14px; }
+.railbtn::before { content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: 0; border-radius: 0 3px 3px 0; background: var(--gold); transform: translateY(-50%); transition: height .15s var(--ease); }
+.railbtn[aria-current]::before { height: 28px; } .railbtn:hover:not([aria-current])::before { height: 10px; }
+.railbtn:focus-visible { outline: none; } .railbtn:focus-visible .gtile { outline: 2px solid var(--text); outline-offset: 2px; }
+.railbtn .need { position: absolute; top: -2px; right: 8px; width: 10px; height: 10px; border-radius: 50%; background: var(--warn-ink); border: 2px solid var(--bg); }
+.railbtn::after { content: attr(data-tip); position: absolute; left: calc(100% - 2px); top: 50%; transform: translateY(-50%); padding: 5px 9px; border-radius: 7px; background: var(--text); color: var(--bg); font-size: 12px; font-weight: 650; white-space: pre; pointer-events: none; opacity: 0; transition: opacity .12s var(--ease); }
+.railbtn:hover::after, .railbtn:focus-visible::after { opacity: 1; }
+.gtile { width: 40px; height: 40px; border-radius: 11px; flex: none; display: grid; place-items: center; overflow: hidden; font-weight: 850; font-size: 14px; letter-spacing: -.02em; }
 .gtile img { width: 100%; height: 100%; display: block; }
-.gtile svg { width: 26px; height: 26px; }
+.gtile.t-ra2 { background: #1d4d8f; color: #f0b429; box-shadow: inset 0 0 0 1px rgba(240, 180, 41, .5); }
 .gtext { display: grid; gap: 1px; min-width: 0; }
-.gtext small { font-size: 11px; font-weight: 650; color: var(--muted); white-space: nowrap; }
-.gtext b { font-size: 15px; font-weight: 780; letter-spacing: -.015em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gtext .gstate { white-space: nowrap; display: flex; min-width: 0; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; color: var(--muted); }
-.gstate::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-.gstate.ok { color: var(--ok-ink); } .gstate.ok::before { background: var(--ok-ink); }
-.gstate.warn { color: var(--warn-ink); } .gstate.warn::before { background: var(--warn-ink); animation: pulse 1.6s ease-in-out infinite; }
-.gcaret { position: absolute; top: 14px; right: 11px; width: 7px; height: 7px; margin: 0 4px 3px 0; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .15s var(--ease); }
-.gamebtn[aria-expanded="true"] .gcaret { transform: rotate(225deg) translate(-2px, -2px); }
-.gamemenu { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 6px); display: grid; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); animation: gameswap .14s var(--ease); }
-.gameopt { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; padding: 7px 8px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
-.gameopt:hover, .gameopt:focus-visible { background: var(--surface-2); outline: none; }
-.gameopt:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
-.gameopt[aria-checked="true"] { background: color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
-.gameopt .gtile { width: 36px; height: 36px; border-radius: 9px; } .gameopt .gtile svg { width: 21px; height: 21px; }
-.gstate kbd { margin-left: auto; } .gameopt kbd { font: 600 10.5px var(--font); color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
-.gamerule { height: 1px; background: var(--line); margin: 2px 4px; }
+.gtext small { font-size: 11px; font-weight: 650; color: var(--muted); }
+.gtext b { font-size: 15px; font-weight: 750; }
+.gameopt { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.gameopt:hover { background: var(--surface-2); }
+.gameopt[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 :root[data-game="ra2"] .brand-text span { color: var(--gold); }
-.sidebar > .brand { padding-bottom: 12px; margin-bottom: 8px; }
-@media (max-width: 760px) {
-  .gamebtn { grid-template-columns: auto; justify-content: center; padding: 6px; }
-  .gtext, .gcaret { display: none; }
-  .gamemenu { left: 0; right: auto; width: 230px; }
-}
 
 /* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
 .page-head .head-text { display: grid; gap: 3px; }
 .page-head .head-sub { color: var(--muted); font-size: 13px; }
-.statrow { display: flex; flex-wrap: wrap; gap: 8px; }
-.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.card.hero.ra2hero { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 22px; }
-.ra2hero .gtile { width: 76px; height: 76px; border-radius: 18px; } .ra2hero .gtile svg { width: 44px; height: 44px; }
-.ra2hero .heroact { justify-items: end; text-align: right; }
-.ra2hero .heroact .live { justify-content: flex-end; }
-@media (max-width: 860px) { .card.hero.ra2hero { grid-template-columns: auto minmax(0, 1fr); } .ra2hero .heroact { grid-column: 1 / -1; justify-items: start; text-align: left; } }
-@media (max-width: 520px) { .card.hero.ra2hero { grid-template-columns: 1fr; } }
-.sectionhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.sectionhead p { color: var(--muted); font-size: 13px; }
-.rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
+@media (max-width: 860px) { @media (max-width: 520px) { .rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
 .rules .switches { display: flex; flex-wrap: wrap; gap: 10px 22px; }
 .ra2opts .field.check { padding-top: 0; }
 .empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
@@ -738,4 +717,4 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 .wizpick .gameopt { grid-template-columns: auto minmax(0, 1fr); border: 1px solid var(--line); padding: 10px; }
 @media (max-width: 520px) { .wizpick { grid-template-columns: 1fr; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.intro .gtile { width: 110px; height: 110px; border-radius: 26px; } .intro .gtile svg { width: 62px; height: 62px; }
+.intro .gtile { width: 110px; height: 110px; border-radius: 26px; font-size: 36px; }

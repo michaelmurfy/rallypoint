@@ -33,7 +33,6 @@ const ICONS = {
   check: "M9 16.200 4.800 12l-1.400 1.400L9 19 21 7l-1.400-1.400z",
   plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
   prev: "M15.400 7.400 14 6l-6 6 6 6 1.400-1.400L10.800 12z",
-  ra2: "M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.3 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z",
   folder: "M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z",
   next: "M8.600 16.600 10 18l6-6-6-6-1.400 1.400L13.200 12z",
 };
@@ -2399,26 +2398,25 @@ function ra2PlayPage() {
     setTimeout(update, ok ? 5000 : 0);
   } }, icon("play"), "Play skirmish");
   const hasFiles = !!store.cfg.ra2.game_dir;
-  const chip = (text, kind) => h("span", { class: "pill " + kind }, h("i", { class: "dot" }), text);
-  const disp = h("span", { class: "pill" });
-  const redrawDisp = () => fill(disp, icon("screen"), ra2DisplayLabel(store.cfg.ra2, nativeRes()), " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change"));
+  const disp = h("span", { class: "muted small" });
+  const redrawDisp = () => fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()), " · ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change"));
   redrawDisp();
   window.addEventListener("ra2display", redrawDisp);
   function update() {
-    const why = !store.cfg.ra2_engine ? "This build does not include the Red Alert 2 engine yet." : sk.why();
+    const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : sk.why();
     play.disabled = !!why;
     status.set(why);
   }
-  const hero = h("div", { class: "card hero ra2hero" }, gameTile("ra2"),
-    h("div", { class: "stack tight herotext" }, h("h2", {}, RA2_NAME), h("p", { class: "muted" }, "Skirmish against the computer. For games with friends, use the Online page."),
-      h("div", { class: "statrow" }, chip(hasFiles ? "Game files ready" : "Game files needed", hasFiles ? "ok" : "warn"), chip(store.cfg.ra2_engine ? "Engine ready" : "Engine not in this build", store.cfg.ra2_engine ? "ok" : "warn"), disp)),
-    h("div", { class: "stack heroact" }, play, status.el));
-  const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge (Steam and EA installs are found automatically).", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
+  const hero = h("div", { class: "card hero" },
+    h("div", { class: "stack tight herotext" }, h("h2", {}, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
+      h("p", { class: "muted small gamepath" }, store.cfg.ra2.game_dir || "No game folder chosen yet"), disp),
+    h("div", { class: "row heroact" }, play, status.el));
+  const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge. Steam and EA installs are found for you.", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
   const el = h("div", { class: "page" },
     pageHead("Play"),
     hero,
     hasFiles ? null : setupCard,
-    h("div", { class: "card" }, h("div", { class: "sectionhead" }, h("h2", {}, "Skirmish"), h("p", {}, "Choose the map, then who plays and where they start.")), sk.el));
+    h("div", { class: "card" }, h("h2", {}, "Skirmish"), sk.el));
   update();
   return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
 }
@@ -2879,8 +2877,8 @@ function go(name) {
 
 function updateSidebar() {
   if (!sideFiles) return;
-  const key = `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}`; // only rebuilt when it would look different, so it keeps focus
-  if (gameCardEl && gameCardEl.isConnected && gameCardEl.dataset.key !== key && !gameCardEl.querySelector(".gamemenu")) gameCardEl.replaceWith(gameCard());
+  const rail = document.querySelector(".rail");
+  if (rail && rail.dataset.key !== railKey()) rail.replaceWith(gameRail());
   const dir = isRa2() ? store.cfg.ra2.game_dir : store.cfg.game_dir;
   sideFiles.replaceChildren(status(dir ? "Game files ready" : "Game files needed", dir ? "ok" : "warn"));
   const s = store.relay;
@@ -2903,50 +2901,20 @@ const GAME_INFO = {
 };
 const gameReady = (id) => !!(id === "ra2" ? store.cfg.ra2.game_dir : store.cfg.game_dir);
 /** The game's emblem: Generals keeps the Rallypoint badge, Red Alert 2 gets a star on its own blue. */
-function gameTile(id) { return h("span", { class: "gtile", "aria-hidden": "true" }, id === "ra2" ? icon("ra2") : h("img", { src: "logo.png", alt: "" })); }
+function gameTile(id) { return h("span", { class: "gtile t-" + id, "aria-hidden": "true" }, id === "ra2" ? "RA2" : h("img", { src: "logo.png", alt: "" })); }
 const shortcutLabel = (id) => `${/Mac|iPhone|iPad/.test(navigator.platform) ? "\u2318" : "Ctrl+"}${GAME_INFO[id].key}`;
-let gameCardEl = null;
-
-function gameCard() {
+const railKey = () => `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}`;
+/** The game rail: one tile per game, always in view, the current one marked. Same pattern as a workspace switcher. */
+function gameRail() {
   const cur = store.cfg.game in GAME_INFO ? store.cfg.game : "generals";
-  const stateOf = (id) => (gameReady(id) ? ["Ready", "ok"] : ["Needs files", "warn"]);
-  const [st, kind] = stateOf(cur);
-  const btn = h("button", { class: "gamebtn", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `Game: ${GAME_INFO[cur].name}. ${st}. Change game` },
-    gameTile(cur),
-    h("span", { class: "gtext" }, h("small", {}, GAME_INFO[cur].kicker), h("b", {}, GAME_INFO[cur].short), h("span", { class: "gstate " + kind }, st)),
-    h("span", { class: "gcaret", "aria-hidden": "true" }));
-  let menu = null;
-  const close = (refocus) => {
-    if (!menu) return;
-    menu.remove(); menu = null; btn.setAttribute("aria-expanded", "false");
-    document.removeEventListener("pointerdown", away, true);
-    if (refocus) btn.focus();
-  };
-  const away = (e) => { if (menu && !menu.contains(e.target) && !btn.contains(e.target)) close(false); };
-  const open = () => {
-    const opts = Object.keys(GAME_INFO).map((id) => {
-      const [t, k] = stateOf(id);
-      return h("button", { class: "gameopt", type: "button", role: "menuitemradio", "aria-checked": String(id === cur), tabindex: id === cur ? "0" : "-1",
-        onclick: () => { close(true); switchGame(id); } },
-        gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short), h("span", { class: "gstate " + k }, t, h("kbd", { title: "Keyboard shortcut" }, shortcutLabel(id)))));
-    });
-    menu = h("div", { class: "gamemenu", role: "menu", "aria-label": "Choose the game",
-      onkeydown: (e) => {
-        const i = opts.indexOf(document.activeElement);
-        if (e.key === "Escape") { e.preventDefault(); close(true); }
-        else if (e.key === "Tab") close(false);
-        else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); opts[(i + (e.key === "ArrowDown" ? 1 : opts.length - 1)) % opts.length].focus(); }
-      } }, ...opts);
-    gameCardEl.append(menu);
-    btn.setAttribute("aria-expanded", "true");
-    document.addEventListener("pointerdown", away, true);
-    (opts.find((o) => o.getAttribute("aria-checked") === "true") || opts[0]).focus();
-  };
-  btn.addEventListener("click", () => (menu ? close(true) : open()));
-  btn.addEventListener("keydown", (e) => { if (!menu && e.key === "ArrowDown") { e.preventDefault(); open(); } });
-  gameCardEl = h("div", { class: "gamecard", "data-key": `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}` }, btn);
-  return gameCardEl;
+  return h("nav", { class: "rail", "aria-label": "Games", "data-key": railKey() }, Object.keys(GAME_INFO).map((id) => {
+    const ready = gameReady(id), i = GAME_INFO[id];
+    return h("button", { class: "railbtn", type: "button", "data-game": id, "aria-current": id === cur ? "true" : null,
+      "aria-label": `${i.name}${ready ? "" : ", needs game files"}. ${shortcutLabel(id)}`, "data-tip": `${i.name}  ${shortcutLabel(id)}`,
+      onclick: () => switchGame(id) }, gameTile(id), ready ? null : h("i", { class: "need", "aria-hidden": "true" }));
+  }));
 }
+/** Ctrl or Command with 1 or 2 changes the game from anywhere. */
 /** First run: which game is this setup for? Picking the other one swaps to its own setup. */
 function wizardGamePick(cur) {
   return h("div", { class: "stack tight" }, h("p", { class: "muted small" }, "Playing both? Set up one now and the other any time from the game card at the top left."),
@@ -2961,7 +2929,6 @@ function otherGameOffer(finish) {
   return done ? null : h("p", { class: "muted small" }, `Also play ${GAME_INFO[other].name}? `, h("button", { class: "linkbtn", onclick: () => finish(() => switchGame(other)) }, "Set it up next"), ".");
 }
 
-/** Ctrl or Command with 1 or 2 changes the game from anywhere. */
 document.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || wizardEl || !store.cfg) return;
   const id = Object.keys(GAME_INFO).find((g) => GAME_INFO[g].key === e.key);
@@ -2971,9 +2938,9 @@ document.addEventListener("keydown", (e) => {
 function shell() {
   sideFiles = h("div"); sideNet = h("div");
   const nav = Object.entries(pages()).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
-  document.getElementById("root").append(h("div", { class: "app" },
+  document.getElementById("root").append(h("div", { class: "app" }, gameRail(),
     h("aside", { class: "sidebar" },
-      gameCard(),
+      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"), h("span", {}, (GAME_INFO[store.cfg.game] || GAME_INFO.generals).name))),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
