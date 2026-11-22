@@ -1201,7 +1201,7 @@ fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, Strin
     }
 }
 
-/// Screen size (0 x 0: the screen's own), window, and the default side and colour.
+/// Screen size (0 x 0: the screen's own), window, picture size, sound, and the default side and colour.
 #[tauri::command]
 fn ra2_set_settings(
     app: tauri::AppHandle,
@@ -1211,6 +1211,7 @@ fn ra2_set_settings(
     side: i32,
     color: i32,
     logical_height: Option<u32>,
+    sound: Option<bool>,
 ) -> Result<(), String> {
     let logical_height = logical_height.unwrap_or(0);
     if !(-1..ra2launch::SIDES).contains(&side) || !(-1..ra2launch::COLORS).contains(&color) {
@@ -1224,6 +1225,7 @@ fn ra2_set_settings(
         height,
         windowed,
         logical_height,
+        sound: sound.unwrap_or(true),
         side,
         color,
         ..c.ra2

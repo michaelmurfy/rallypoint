@@ -12,7 +12,7 @@ pub const DATA_FILES: [&str; 4] = ["ra2.mix", "ra2md.mix", "language.mix", "mult
 pub const WINDOW_PRESETS: &[(u32, u32)] =
     &[(640, 480), (800, 600), (1024, 768), (1280, 720), (1600, 900), (1920, 1080)];
 
-/// Environment variable for a future logical canvas height (see `ra2/README.md`). Ignored until an engine build reads it.
+/// Environment variable the engine reads for the height of its picture in lines (see `ra2/README.md`).
 pub const LOGICAL_HEIGHT_ENV: &str = "RA2_LOGICAL_HEIGHT";
 
 /// Values the launcher may store for `logical_height` (0 = the engine's 720-line canvas).
@@ -111,9 +111,11 @@ pub struct Ra2Config {
     pub width: u32,
     pub height: u32,
     pub windowed: bool,
-    /// Logical canvas height for `RA2_LOGICAL_HEIGHT` (0 = engine default 720). Future engine builds only.
+    /// Height of the picture in lines for `RA2_LOGICAL_HEIGHT` (0 = the engine picks from the window).
     #[serde(default)]
     pub logical_height: u32,
+    /// Game sound on. Off starts the engine with `--no-audio`.
+    pub sound: bool,
     /// Country 0..9 (America .. Russia, then Yuri: `ra2launch::SIDES`), -1 random.
     pub side: i32,
     /// Colour 0..7, -1 any free one.
@@ -125,7 +127,7 @@ pub struct Ra2Config {
 
 impl Default for Ra2Config {
     fn default() -> Self {
-        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, logical_height: 0, side: -1, color: -1, setup_done: false }
+        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, logical_height: 0, sound: true, side: -1, color: -1, setup_done: false }
     }
 }
 
@@ -160,7 +162,7 @@ mod tests {
     fn settings_fill_in_what_an_older_file_lacks() {
         let c: Ra2Config = serde_json::from_str(r#"{"windowed":true,"renderer":"gdi"}"#).unwrap();
         assert_eq!(c, Ra2Config { windowed: true, ..Default::default() });
-        assert_eq!((c.side, c.color, c.setup_done, c.logical_height), (-1, -1, false, 0));
+        assert_eq!((c.side, c.color, c.setup_done, c.logical_height, c.sound), (-1, -1, false, 0, true));
     }
 
     #[test]

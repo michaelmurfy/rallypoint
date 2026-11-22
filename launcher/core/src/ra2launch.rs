@@ -251,8 +251,7 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
 }
 
 /// The engine's command line: the game files, the launch file, the window. A size of 0 x 0 is the screen's own.
-/// `Ra2Config::logical_height` becomes `RA2_LOGICAL_HEIGHT` when set (see `ra2::LOGICAL_HEIGHT_ENV`); current engine
-/// builds still scale a 720-line canvas and ignore the variable until a patch honours it.
+/// `Ra2Config::logical_height` becomes `RA2_LOGICAL_HEIGHT` when set (see `ra2::LOGICAL_HEIGHT_ENV`); sound off adds `--no-audio`.
 pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &crate::ra2::Ra2Config) -> std::process::Command {
     let mut c = std::process::Command::new(engine);
     c.arg("--data").arg(game_dir).arg("--launch").arg(launch_file);
@@ -260,6 +259,9 @@ pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &cra
         c.arg("--width").arg(display.width.to_string()).arg("--height").arg(display.height.to_string());
     }
     c.arg(if display.windowed { "--windowed" } else { "--fullscreen" }).arg("--title").arg("Red Alert 2");
+    if !display.sound {
+        c.arg("--no-audio");
+    }
     if display.logical_height != 0 {
         c.env(crate::ra2::LOGICAL_HEIGHT_ENV, display.logical_height.to_string());
     }
@@ -402,6 +404,9 @@ mod tests {
         let native = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config::default());
         let native_args: Vec<_> = native.get_args().collect();
         assert!(!native_args.iter().any(|a| *a == OsStr::new("--width")));
+        assert!(!native_args.contains(&OsStr::new("--no-audio")), "sound is on by default");
+        let quiet = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config { sound: false, ..Default::default() });
+        assert!(quiet.get_args().any(|a| a == OsStr::new("--no-audio")));
         assert!(native.get_envs().find(|(k, _)| *k == OsStr::new(crate::ra2::LOGICAL_HEIGHT_ENV)).is_none());
     }
 
