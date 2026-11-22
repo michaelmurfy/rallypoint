@@ -1,21 +1,19 @@
+## Rallypoint 0.10.0-beta.6
+
+**Red Alert 2 draws the battlefield at native pixels, renders crisp TrueType menu text, shows the real superweapon cursors and country flags, and fixes building art and movement.** Generals is untouched.
+
+- **Crisp world, separate interface size.** On Retina, 4K and ultrawide screens the battlefield now draws at your screen's own pixels while the sidebar and menus keep a whole-number scale, so you see more of the map and units stay sharp. Settings adds **Interface size** and **World zoom** controls.
+- **Sharp menu text.** Menus and buttons now draw with a TrueType font at your screen's resolution instead of upscaled 16-pixel bitmap letters.
+- **Healthy buildings look healthy.** Construction Yards and other structures whose animation ranges reach past their sprite frames no longer show damaged art while at full health.
+- **Superweapon cursors.** Every superweapon now uses its own animated targeting pointer from Yuri's Revenge (`mouse.sha`), including the Weather Control device, Spy Plane, Nuclear Missile, Iron Curtain, Chronosphere, ParaDrop, Psychic Dominator, Genetic Mutator, Force Shield and Psychic Reveal.
+- **Cleaner unit movement.** Units take straighter lines across open ground instead of stepping in staircases, and starting forces only pick units your country is allowed to field.
+- **Yuri and computer players.** The Psychic Dominator permanently captures units in its blast ring (freeing any prior mind-control link) while crushing nearby buildings, and computer players only queue ships or aircraft when they own the matching yard or airfield.
+- **Official country flags.** The Red Alert 2 skirmish and online lobbies now read the ten country flags straight from your installed game archives.
+
 ## Rallypoint 0.10.0-beta.5
 
-**Red Alert 2 gets sharper on big screens, plays closer to the original, and the launcher pages follow the Generals ones.** Generals is untouched.
-
-- **Big screens.** On 1440p, 4K and ultrawide the sidebar is now twice the size instead of a thin strip, and menu art and text are smoothed instead of blocky. The mouse stays inside the game in fullscreen and edge scrolling works from the black bars.
-- **Orders from the minimap.** Right-click the radar to move, attack-move with Ctrl+Shift, force-move with Alt. Armed modes like superweapons and repair work there too.
-- **Yuri.** The Psychic Tower takes control of units, Cloning Vats copy what you train, and the Genetic Mutator, Psychic Dominator, Psychic Reveal, Master Mind overload and Chaos Drone gas are in.
-- **Planes crash properly.** A shot-down plane keeps flying, spirals and trails smoke before it hits the ground.
-- **Fog and buildings.** Soldiers inside a transport no longer light up the map, fog is drawn once instead of twice, and a damaged building switches its art and animations together.
-- **Units walk around walls.** A group sent to a spot next to a wall no longer sends half its members to the far side.
-- **The score screen shows up** when you resign or the connection drops, then Continue closes the game.
-- **Launcher.** RA2 Play is one Quick Skirmish card with country flags, Maps has the same search, filters and Skirmish button as Generals, and Settings lost its jargon and gained a sound switch.
-- **Not played yet.** These build and pass their tests, but nobody has flown the plane crash or tried the Yuri powers with real game files, and a few Yuri timings are educated guesses. Old RA2 saves will not load, and everyone in an RA2 game needs this beta. If something looks off, send the debug logs.
+Red Alert 2 got a 2x sidebar on high-resolution screens, right-click minimap orders, the Psychic Tower, Cloning Vats, Genetic Mutator, Psychic Dominator and Psychic Reveal, spiralling plane crashes, healthier fog and wall pathing, a resign score screen, and a cleaner launcher Play and Maps layout.
 
 ## Rallypoint 0.10.0-beta.4
 
 Red Alert 2 fixes: the Spy Plane got its own button text and voice lines, buildings with a build limit can only be built once, and Tesla Troopers sound right when they charge a coil.
-
-## Rallypoint 0.10.0-beta.3
-
-Red Alert 2 got its own look, a two-part game switch (Ctrl/Cmd+1 and 2), sharper text with a battlefield zoom-out, and a closer match to the original: turrets that hold aim, burning buildings, the computer calling for help, Magnetron blasts, country bonuses and unique units, smooth ramps. Not compatible with beta.2 for RA2 multiplayer.
