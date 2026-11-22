@@ -2196,7 +2196,7 @@ function ra2CrateDensityLabel(dens, crates, min) {
 /** A remembered yes/no match option for RA2 skirmish / lobby. */
 function ra2OptCheck(label, desc, key, fallback = true) {
   const box = h("input", { type: "checkbox", checked: ra2Flag(key, fallback), "aria-label": label, onchange: () => prefs.set({ [key]: box.checked }) });
-  return setting(label, desc, h("label", { class: "switch" }, box));
+  return h("label", { class: "rulerow", title: desc }, h("span", {}, label), h("span", { class: "switch small" }, box));
 }
 const fileOf = (path) => String(path).split(/[\\/]/).pop();
 const sizeText = (kb) => (kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`);
@@ -2254,8 +2254,8 @@ function ra2Skirmish(onChange) {
   const crateDensity = pick("Crates", RA2_CRATE_DENSITIES, ra2CrateDensity(), (v) => prefs.set({ ra2CrateDensity: v, ra2Crates: v !== "off" }));
   const strongerAi = pick("Stronger AI", AI_BOOSTS.map(([v, t]) => [v, v ? `${t} AI` : "Normal AI"]), aiLocal(), (v) => prefs.set({ aiBoost: +v }));
   const superweapons = ra2OptCheck("Superweapons", "Nuclear missiles, weather storms and the rest can be built.", "ra2Superweapons");
-  const allies = ra2OptCheck("Allies allowed", "Players can make and break alliances during the game.", "ra2Allies");
-  const autoRepair = ra2OptCheck("Computer repairs its base", "The AI fixes damaged buildings on its own.", "ra2AutoRepair");
+  const allies = ra2OptCheck("Allies", "Players can make and break alliances during the game.", "ra2Allies");
+  const autoRepair = ra2OptCheck("AI repairs", "The AI fixes damaged buildings on its own.", "ra2AutoRepair");
   const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
 
   function newRows(n) {
@@ -2368,21 +2368,19 @@ function ra2Skirmish(onChange) {
   const empty = emptyState("maps", "No skirmish maps yet", "Maps with at least two start positions show up here. Add community packs or your own files.", h("button", { class: "btn", onclick: () => go("maps") }, "Open Maps"));
   const skel = h("div", { class: "ra2setup", "aria-hidden": "true" }, h("span", { class: "skeleton sk-map" }), h("div", { class: "stack" }, h("span", { class: "skeleton sk-line" }), skeletonLines(4)));
   const errBox = h("div", { hidden: true });
+  // the rules sit under the map they apply to, in the column the preview leaves free
+  const rule = (label, ctl) => h("label", { class: "rulerow" }, h("span", {}, label), ctl);
+  const rules = h("div", { class: "rulelist", role: "group", "aria-label": "Match rules" }, h("h3", {}, "Rules"),
+    rule("Credits", credits), rule("Speed", speed), rule("Crates", crateDensity), rule("Stronger AI", strongerAi),
+    superweapons, allies, autoRepair);
   const body = h("div", { class: "ra2setup" },
-    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts),
+    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts, rules),
     h("div", { class: "mapside" },
       h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
       h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox));
-  const rules = h("div", { class: "rules" }, h("h3", {}, "Match rules"),
-    h("div", { class: "ra2opts" },
-      h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
-      h("label", { class: "field" }, h("span", {}, "Game speed"), speed),
-      h("label", { class: "field" }, h("span", {}, "Crates"), crateDensity),
-      h("label", { class: "field" }, h("span", {}, "Stronger AI"), strongerAi)),
-    h("div", { class: "settings" }, superweapons, allies, autoRepair));
-  const el = h("div", { class: "stack" }, skel, empty, body, rules);
+  const el = h("div", { class: "stack" }, skel, empty, body);
   let loaded = false;
-  const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; rules.hidden = body.hidden; };
+  const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; };
   reload();
   return { el, setup, why, reload, remember: () => { const ai = rows.filter((r) => r.kind === "ai"); prefs.set({ ra2Ai: ai.length, aiBoost: +strongerAi.value }); } };
 }
@@ -2827,19 +2825,30 @@ function ra2SettingsPage() {
 }
 
 /** Change game: a new shell with that game's pages. Rooms are per game, so the relay is left. The choice is remembered for next launch. */
+let switching = false;
 async function switchGame(id) {
-  if (id === store.cfg.game) return;
+  if (id === store.cfg.game || switching) return;
   const fromSwitch = !!(document.activeElement && document.activeElement.closest(".gameswitch"));
   try { await invoke("set_game", { game: id }); } catch (e) { say(errText(e), "bad"); return; }
+  switching = true;
+  // the page steps out, the palette cross-fades (style.css @property tokens), the new game's page steps in
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const old = document.querySelector(".app");
+  const sw = old.querySelector(".gameswitch");
+  if (sw) { sw.dataset.cur = id; sw.querySelectorAll(".gseg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.game === id))); } // the marker starts sliding now
+  if (!still) { old.classList.add("leaving"); await new Promise((r) => setTimeout(r, 150)); }
   store.cfg.game = id;
   applyGameTheme();
   store.relay = "Offline"; store.lobby = null; net.last = null; net.hist = [];
   current && current.dispose && current.dispose(); current = null;
-  document.querySelector(".app").remove();
+  old.remove();
   shell();
   const app = document.querySelector(".app");
+  // keep the old switch, so its marker finishes the slide it started instead of jumping
+  const fresh = app.querySelector(".gameswitch");
+  if (sw && fresh) { sw.dataset.key = fresh.dataset.key; fresh.replaceWith(sw); }
   app.classList.add("entering");
-  setTimeout(() => app.classList.remove("entering"), 400);
+  setTimeout(() => { app.classList.remove("entering"); switching = false; }, still ? 0 : 450);
   go("play");
   if (fromSwitch) { const b = document.querySelector('.gseg[aria-pressed="true"]'); b && b.focus(); }
   // First time in RA2 (or Generals if that wizard was never finished): walk through setup.
@@ -2902,7 +2911,7 @@ const railKey = () => `${store.cfg.game}${gameReady("generals")}${gameReady("ra2
 /** Two games, both always in view: a two-part switch under the brand. The pressed one is the game on screen. */
 function gameSwitch() {
   const cur = store.cfg.game in GAME_INFO ? store.cfg.game : "generals";
-  return h("div", { class: "gameswitch", role: "group", "aria-label": "Game", "data-key": railKey() }, Object.keys(GAME_INFO).map((id) => {
+  return h("div", { class: "gameswitch", role: "group", "aria-label": "Game", "data-key": railKey(), "data-cur": cur }, Object.keys(GAME_INFO).map((id) => {
     const ready = gameReady(id), i = GAME_INFO[id];
     return h("button", { class: "gseg", type: "button", "data-game": id, "aria-pressed": String(id === cur),
       "aria-label": `${i.name}${ready ? "" : ", needs game files"}`, title: `${i.name} (${shortcutLabel(id)})${ready ? "" : ". Needs game files"}`,

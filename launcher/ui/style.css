@@ -110,6 +110,14 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 @property --accent { syntax: "<color>"; inherits: true; initial-value: #d4312f; }
 @property --accent-ink { syntax: "<color>"; inherits: true; initial-value: #ffffff; }
 @property --rose { syntax: "<color>"; inherits: true; initial-value: #f08f8a; }
+/* the ground and text tokens too, so switching game cross-fades the palette (browsers without @property just swap) */
+@property --bg { syntax: "<color>"; inherits: true; initial-value: #150808; }
+@property --surface { syntax: "<color>"; inherits: true; initial-value: #200d0f; }
+@property --surface-2 { syntax: "<color>"; inherits: true; initial-value: #301318; }
+@property --text { syntax: "<color>"; inherits: true; initial-value: #f8eded; }
+@property --muted { syntax: "<color>"; inherits: true; initial-value: #cba3a6; }
+@property --gold { syntax: "<color>"; inherits: true; initial-value: #e8b84a; }
+:root { transition: --bg .4s var(--ease), --surface .4s var(--ease), --surface-2 .4s var(--ease), --text .4s var(--ease), --muted .4s var(--ease), --accent .4s var(--ease), --rose .4s var(--ease), --gold .4s var(--ease); }
 .card.hero { transition: --accent .8s var(--ease), --accent-ink .8s var(--ease), --rose .8s var(--ease); }
 .card.hero.blue { --accent: #2f6fd6; --accent-ink: #ffffff; --rose: #8fb4f2; }
 .card.hero { padding: 26px 28px; gap: 20px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface) 65%); }
@@ -666,19 +674,25 @@ input:disabled { opacity: .55; cursor: not-allowed; }
     --c-settings: #5c5238; --shadow: 0 14px 36px rgba(13, 40, 74, .2);
   }
 }
-body, .sidebar, .card, main { transition: background-color .3s var(--ease), border-color .3s var(--ease); }
-.app.entering > * { animation: gameswap .26s var(--ease); }
+.app.leaving main > *, .app.leaving .nav { opacity: 0; transform: translateY(-4px); transition: opacity .15s ease-in, transform .15s ease-in; }
+.app.entering main > *, .app.entering .nav { animation: gameswap .3s var(--ease) both; }
+.app.entering .nav:nth-child(4) { animation-delay: 20ms; } .app.entering .nav:nth-child(5) { animation-delay: 40ms; } .app.entering .nav:nth-child(6) { animation-delay: 60ms; } .app.entering .nav:nth-child(7) { animation-delay: 80ms; }
 @keyframes gameswap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* ---- the game switch: two games, two parts, under the brand; the pressed one is the game on screen ---- */
-.gameswitch { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; margin: 0 2px 12px; border-radius: var(--r-btn); background: color-mix(in srgb, var(--bg) 75%, transparent); border: 1px solid var(--line); }
-.gseg { min-width: 0; padding: 6px 3px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
+.gameswitch { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; margin: 0 2px 12px; border-radius: var(--r-btn); background: color-mix(in srgb, var(--bg) 75%, transparent); border: 1px solid var(--line); }
+.gseg { position: relative; z-index: 1; min-width: 0; padding: 6px 3px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: background .12s var(--ease), color .12s var(--ease); }
 .gseg:hover { color: var(--text); }
-.gseg[aria-pressed="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--gold), 0 1px 2px rgba(0, 0, 0, .25); }
+.gseg[aria-pressed="true"] { color: var(--text); }
+/* one marker that slides to the pressed part */
+.gameswitch::before { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 4px); border-radius: 7px; background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--gold), 0 1px 2px rgba(0, 0, 0, .25); transition: transform .32s var(--ease); }
+.gameswitch[data-cur="ra2"]::before { transform: translateX(calc(100% + 2px)); }
 .gseg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gseg .short { display: none; }
 @media (max-width: 760px) {
   .gameswitch { grid-template-columns: 1fr; margin: 0 0 12px; }
+  .gameswitch::before { width: auto; right: 3px; bottom: auto; height: calc(50% - 4px); }
+  .gameswitch[data-cur="ra2"]::before { transform: translateY(calc(100% + 2px)); }
   .gseg .long { display: none; } .gseg .short { display: inline; }
 }
 .gtile { width: 40px; height: 40px; border-radius: 11px; flex: none; display: grid; place-items: center; overflow: hidden; font-weight: 850; font-size: 14px; letter-spacing: -.02em; }
@@ -694,8 +708,6 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 /* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
 .page-head .head-text { display: grid; gap: 3px; }
 .page-head .head-sub { color: var(--muted); font-size: 13px; }
-.rules { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
-.rules .ra2opts { gap: 12px; } .rules .settings { padding-top: 4px; }
 .ra2opts .field.check { padding-top: 0; }
 .empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
 .empty > svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
@@ -714,3 +726,10 @@ body, .sidebar, .card, main { transition: background-color .3s var(--ease), bord
 @media (max-width: 520px) { .wizpick { grid-template-columns: 1fr; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .intro .gtile { width: 110px; height: 110px; border-radius: 26px; font-size: 36px; }
+/* RA2 skirmish rules: a compact list under the map preview, label left, control right */
+.rulelist { width: 220px; display: grid; margin-top: 6px; }
+.rulelist h3 { padding-bottom: 6px; }
+.rulerow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 38px; border-top: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
+.rulerow select { width: 118px; height: 30px; font-size: 13px; }
+.rulerow .switch.small { margin-right: 2px; }
+@media (max-width: 1080px) { .rulelist { width: 100%; max-width: 460px; } .rulerow select { width: 160px; } }
