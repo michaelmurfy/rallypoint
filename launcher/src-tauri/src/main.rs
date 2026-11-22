@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{ra2, ra2launch, ra2lobby, ra2maps, generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
+use generals_core::{ra2, ra2flags, ra2launch, ra2lobby, ra2maps, generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -1182,6 +1182,15 @@ fn ra2_detect() -> Vec<ra2::Ra2Install> {
     ra2::detect()
 }
 
+/// The game's own country flags (side emblem + national flag), read from the player's `ra2.mix`/`ra2md.mix` and
+/// returned as PNG data URLs. EA art is never shipped or written to disk by the launcher.
+#[tauri::command]
+async fn ra2_country_flags(game_dir: String) -> Result<Vec<ra2flags::Ra2Flag>, String> {
+    tauri::async_runtime::spawn_blocking(move || ra2flags::country_flags(Path::new(&game_dir)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Is `path` a Red Alert 2 with Yuri's Revenge? Saved when it is.
 #[tauri::command]
 fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, String> {
@@ -1201,7 +1210,7 @@ fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, Strin
     }
 }
 
-/// Screen size (0 x 0: the screen's own), window, picture size, sound, and the default side and colour.
+/// Screen size (0 x 0: the screen's own), window, interface size, world zoom, sound, and the default side and colour.
 #[tauri::command]
 fn ra2_set_settings(
     app: tauri::AppHandle,
@@ -1210,21 +1219,23 @@ fn ra2_set_settings(
     windowed: bool,
     side: i32,
     color: i32,
-    logical_height: Option<u32>,
+    ui_scale: Option<u32>,
+    world_zoom: Option<u32>,
     sound: Option<bool>,
 ) -> Result<(), String> {
-    let logical_height = logical_height.unwrap_or(0);
+    let (ui_scale, world_zoom) = (ui_scale.unwrap_or(0), world_zoom.unwrap_or(0));
     if !(-1..ra2launch::SIDES).contains(&side) || !(-1..ra2launch::COLORS).contains(&color) {
         return Err("That setting is out of range".into());
     }
-    ra2::validate_display(width, height, logical_height)?;
+    ra2::validate_display(width, height, ui_scale, world_zoom)?;
     let path = config_path(&app)?;
     let mut c = Config::load(&path);
     c.ra2 = ra2::Ra2Config {
         width,
         height,
         windowed,
-        logical_height,
+        ui_scale,
+        world_zoom,
         sound: sound.unwrap_or(true),
         side,
         color,
@@ -1475,7 +1486,7 @@ fn main() {
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game, launch_editor,
-            set_game, ra2_detect, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
+            set_game, ra2_detect, ra2_country_flags, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
         ])
         .run(tauri::generate_context!())
         .expect("tauri");

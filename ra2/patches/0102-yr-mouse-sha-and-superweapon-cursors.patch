@@ -1,0 +1,392 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 608383e..cd83a31 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -95,7 +95,7 @@
+         if (tab < 0 || tab > 3 || tab == active_tab_) return;
+         active_tab_ = tab;
+         buildable_ = tab_buildable(active_tab_);
+-        lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_);
++        lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, 0, lay_.sw_slots);
+     }
+ 
+     // CenterBase [RE: FUN_00730670]: the player's ConYard (the primary one if
+@@ -375,7 +375,7 @@
+     void strip_scroll(int rows) {
+         const int top = std::max(0, std::min(lay_.top_row + rows, lay_.max_top_row(static_cast<int>(buildable_.size()))));
+         if (top == lay_.top_row) return;
+-        lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, top);
++        lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, top, lay_.sw_slots);
+     }
+     bool strip_button_click(int x, int y) {
+         if (lay_.scroll_up.contains(x, y)) { strip_scroll(-1); return true; }
+diff --git a/engine/main.cpp b/engine/main.cpp
+index c2c4550..84539a9 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3086,6 +3086,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+             {ra2engine::SuperweaponType::SpyPlane, "spypicon"},   // [SpyPlaneSpecial] SidebarImage
+             {ra2engine::SuperweaponType::PsychicDominator, "pdomicon"},
+             {ra2engine::SuperweaponType::GeneticConverter, "muteicon"},
++            {ra2engine::SuperweaponType::ForceShield, "fshdicon"},
+             {ra2engine::SuperweaponType::PsychicReveal, "psyricon"}};
+         for (const auto& kv : kSwIcons)
+             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
+@@ -7015,11 +7016,24 @@ public:
+                     world_.set_anim(ru.combat.image, ua_.anims.at(ru.combat.image));
+             }
+         }
+-        // Repair / Sell cursor art [RE: repair-sell.md §D8]. Missing art just
+-        // leaves the OS cursor (the pressed sidebar frame still shows the mode).
++        // Repair / Sell / action cursor art [RE: gamemd.exe "MOUSE.SHA" in
++        // ra2md.mix/conqmd.mix (517 frames: 0..516, covering all 86 entries of
++        // the MouseCursorType table at 0x82D028); fallback to ra2.mix/conquer.mix
++        // mouse.shp (450 frames) when conqmd.mix is absent].
+         try {
+-            MixFile conquer = ra2_.open_nested("conquer.mix");
+-            mouse_.shp = load_unit_shp(conquer, "mouse");
++            bool loaded_sha = false;
++            try {
++                MixFile top = MixFile::open_path(dir_ + "ra2md.mix");
++                MixFile conqmd = top.open_nested("conqmd.mix");
++                if (const ra2assets::MixEntry* me = conqmd.find(std::string("mouse.sha"))) {
++                    mouse_.shp = ShpFile::load(conqmd.read(*me));
++                    loaded_sha = mouse_.shp.count() > 0;
++                }
++            } catch (const std::exception&) {}
++            if (!loaded_sha) {
++                MixFile conquer = ra2_.open_nested("conquer.mix");
++                mouse_.shp = load_unit_shp(conquer, "mouse");
++            }
+             MixFile cache = ra2_.open_nested("cache.mix");
+             if (const ra2assets::MixEntry* pe = cache.find(std::string("mousepal.pal"))) {
+                 const auto raw = cache.read(*pe);
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index b5df12e..07e1bb5 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -277,21 +277,20 @@ public:
+     }
+ 
+ private:
+-    // ---- G-08 (draw half) action cursors from MOUSE.SHP ---------------------
++    // ---- G-08 (draw half) action cursors from MOUSE.SHA / MOUSE.SHP ----------
+     // MouseCursorType ids (YRpp GeneralDefinitions.h) index the 86-entry
+-    // descriptor table at gamemd.exe 0x0082C038 {start, count, rate, hotX,
+-    // hotY} (dumped in D:\ra2-re\out\rs10_log.txt; repair-sell.md §D8 pinned
+-    // entries 30..35 against MOUSE.SHP). Hotspot codes: 0 = left/top,
+-    // 12345 = centre, 54321 = right/bottom.
++    // descriptor table at gamemd.exe 0x0082D028 (superweapon.hpp).
+     enum Cursor : int {
+         kDefault = 0x00, kScrollN = 0x01, kNoScrollN = 0x09, kSelect = 0x11, kMove = 0x12,
+         kNoMove = 0x13, kAttack = 0x14, kAttackOutOfRange = 0x15, kEnter = 0x19, kNoEnter = 0x1A,
+-        kDeploy = 0x1B, kNoDeploy = 0x1C, kNuke = 0x35, kIronCurtain = 0x39, kChronosphere = 0x3A,
+-        kLightningStorm = 0x32, kAirstrike = 0x52,
++        kDeploy = 0x1B, kNoDeploy = 0x1C, kInfiltrate = 0x25, kIvanBomb = 0x26, kParaDrop = 0x2F,
++        kLightningStorm = 0x32, kDemolish = 0x34, kNuke = 0x35, kIronCurtain = 0x39,
++        kChronosphere = 0x3A, kDisarmBomb = 0x3B, kPlaceBeacon = 0x4E, kForceShield = 0x4F,
++        kNoForceShield = 0x50, kGeneticMutator = 0x51, kAirstrike = 0x52,
++        kPsychicDominator = 0x53, kPsychicReveal = 0x54, kSpyPlane = 0x55,
+     };
+-    // W2-AN-04 [RE: presentation.md §3 ConvertAction: 0x14 Nuke -> 0x35,
+-    // 0x25 IronCurtain -> 0x39, 0x26 LightningStorm -> 0x32, 0x27/0x28 Chrono
+-    // -> 0x3A, 0x29 ParaDrop -> 0x2F]: the armed SW's targeting cursor.
++    // W2-AN-04 [RE: DisplayClass::ConvertAction FUN_004aae90]: the armed SW's
++    // targeting cursor from the 86-entry 0x0082D028 table.
+     mutable int armed_sw_ = 0;
+     static int sw_cursor(int armed, const ra2engine::World& w) {
+         using T = ra2engine::SuperweaponType;
+@@ -300,69 +299,11 @@ private:
+             const ra2engine::Superweapon* sw = w.sw_state(g_local_house);
+             if (sw) t = sw->type;
+         }
+-        switch (t) {
+-            case T::IronCurtain: return kIronCurtain;
+-            case T::LightningStorm: return kLightningStorm;
+-            case T::ChronoSphere: case T::ChronoWarp: return kChronosphere;
+-            case T::ParaDrop: case T::AmerParaDrop: return kNuke;   // [0x2F frames not in the dumped table]
+-            default: return kNuke;
+-        }
++        return ra2engine::superweapon_cursor(t);
+     }
+-    struct CursorDesc { int start, count, rate, hx, hy; };
++    using CursorDesc = ra2engine::MouseCursorDesc;
+     static const CursorDesc& cursor_desc(int id) {
+-        static const CursorDesc kTable[] = {
+-            {0, 1, 0, 0, 0},             // 0x00 Default
+-            {2, 1, 0, 12345, 0},         // 0x01 scroll N
+-            {3, 1, 0, 54321, 0},         // NE
+-            {4, 1, 0, 54321, 12345},     // E
+-            {5, 1, 0, 54321, 54321},     // SE
+-            {6, 1, 0, 12345, 54321},     // S
+-            {7, 1, 0, 0, 54321},         // SW
+-            {8, 1, 0, 0, 12345},         // W
+-            {9, 1, 0, 0, 0},             // NW
+-            {10, 1, 0, 12345, 0},        // 0x09 no-scroll N
+-            {11, 1, 0, 54321, 0},
+-            {12, 1, 0, 54321, 12345},
+-            {13, 1, 0, 54321, 54321},
+-            {14, 1, 0, 12345, 54321},
+-            {15, 1, 0, 0, 54321},
+-            {16, 1, 0, 0, 12345},
+-            {17, 1, 0, 0, 0},
+-            {18, 13, 4, 12345, 12345},   // 0x11 Select
+-            {31, 10, 4, 12345, 12345},   // 0x12 Move
+-            {41, 1, 0, 12345, 12345},    // 0x13 NoMove
+-            {53, 5, 4, 12345, 12345},    // 0x14 Attack
+-            {58, 5, 4, 12345, 12345},    // 0x15 AttackOutOfRange
+-            {68, 5, 4, 12345, 12345},    // 0x16 Protect
+-            {78, 10, 4, 12345, 12345},   // 0x17 DesolatorDeploy
+-            {88, 1, 0, 12345, 12345},    // 0x18
+-            {89, 10, 4, 12345, 12345},   // 0x19 Enter
+-            {99, 1, 0, 12345, 12345},    // 0x1A NoEnter
+-            {110, 9, 4, 12345, 12345},   // 0x1B Deploy
+-            {119, 1, 0, 12345, 12345},   // 0x1C NoDeploy
+-            {120, 9, 4, 12345, 12345},   // 0x1D
+-            {129, 10, 4, 12345, 12345},  // 0x1E Sell
+-            {139, 10, 4, 12345, 12345},  // 0x1F SellUnit
+-            {149, 1, 0, 12345, 12345},   // 0x20 NoSell
+-            {150, 20, 4, 12345, 12345},  // 0x21 Repair
+-            {170, 20, 4, 12345, 12345},  // 0x22 EngineerRepair
+-            {190, 1, 0, 12345, 12345},   // 0x23 NoRepair
+-        };
+-        static const CursorDesc kRallyD{269, 10, 0, 12345, 12345};   // 0x30 RallyPoint [table [48]]
+-        static const CursorDesc kNukeD{319, 10, 4, 12345, 12345};     // 0x35
+-        static const CursorDesc kIronD{394, 10, 4, 12345, 12345};     // 0x39 [table [57]]
+-        static const CursorDesc kChronoD{404, 9, 4, 12345, 12345};    // 0x3A
+-        static const CursorDesc kStormD{279, 20, 4, 12345, 12345};    // 0x32
+-        // W7-02-06 [RE: table 0x0082C038 entry 0x52 = {480, 8, 4, -1, -1, C, M}]
+-        static const CursorDesc kAirD{480, 8, 4, 12345, 12345};       // 0x52 airstrike
+-        if (id >= 0 && id < static_cast<int>(sizeof kTable / sizeof kTable[0])) return kTable[id];
+-        if (id == kNuke) return kNukeD;
+-        if (id == kIronCurtain) return kIronD;
+-        if (id == kChronosphere) return kChronoD;
+-        if (id == kLightningStorm) return kStormD;
+-        if (id == kAirstrike) return kAirD;
+-        if (id == 0x30) return kRallyD;
+-        return kTable[0];
++        return ra2engine::mouse_cursor_desc(id);
+     }
+ 
+     // Fallback "what would a click do" probe [G-08: B owns the authoritative
+diff --git a/engine/superweapon.hpp b/engine/superweapon.hpp
+index 184330d..06f3aa9 100644
+--- a/engine/superweapon.hpp
++++ b/engine/superweapon.hpp
+@@ -123,4 +123,128 @@ const char* superweapon_type_name(SuperweaponType t);
+ // SuperweaponType [RE-GATE APPLIED: superweapon.md §4]. Unknown/absent ids -> None.
+ SuperweaponType superweapon_type_from_id(int id);
+ 
++// MouseCursorType descriptor from the 86-entry table at gamemd.exe 0x0082D028
++// (stride 28: {start, count, rate, mini_start, mini_count, hotX, hotY}).
++// Hotspot codes: 0 = left/top, 12345 = centre, 54321 = right/bottom.
++struct MouseCursorDesc {
++    int start, count, rate, hx, hy;
++};
++constexpr int kMouseCursorCount = 86;
++
++inline const MouseCursorDesc& mouse_cursor_desc(int id) {
++    static const MouseCursorDesc kTable[kMouseCursorCount] = {
++        {  0,  1, 0,     0,     0},  // 0x00 Default
++        {  2,  1, 0, 12345,     0},  // 0x01 ScrollN
++        {  3,  1, 0, 54321,     0},  // 0x02 ScrollNE
++        {  4,  1, 0, 54321, 12345},  // 0x03 ScrollE
++        {  5,  1, 0, 54321, 54321},  // 0x04 ScrollSE
++        {  6,  1, 0, 12345, 54321},  // 0x05 ScrollS
++        {  7,  1, 0,     0, 54321},  // 0x06 ScrollSW
++        {  8,  1, 0,     0, 12345},  // 0x07 ScrollW
++        {  9,  1, 0,     0,     0},  // 0x08 ScrollNW
++        { 10,  1, 0, 12345,     0},  // 0x09 NoScrollN
++        { 11,  1, 0, 54321,     0},  // 0x0A NoScrollNE
++        { 12,  1, 0, 54321, 12345},  // 0x0B NoScrollE
++        { 13,  1, 0, 54321, 54321},  // 0x0C NoScrollSE
++        { 14,  1, 0, 12345, 54321},  // 0x0D NoScrollS
++        { 15,  1, 0,     0, 54321},  // 0x0E NoScrollSW
++        { 16,  1, 0,     0, 12345},  // 0x0F NoScrollW
++        { 17,  1, 0,     0,     0},  // 0x10 NoScrollNW
++        { 18, 13, 4, 12345, 12345},  // 0x11 Select
++        { 31, 10, 4, 12345, 12345},  // 0x12 Move
++        { 41,  1, 0, 12345, 12345},  // 0x13 NoMove
++        { 53,  5, 4, 12345, 12345},  // 0x14 Attack
++        { 58,  5, 4, 12345, 12345},  // 0x15 AttackOutOfRange
++        { 68,  5, 4, 12345, 12345},  // 0x16 Protect
++        { 78, 10, 4, 12345, 12345},  // 0x17 DesolatorDeploy
++        { 88,  1, 0, 12345, 12345},  // 0x18 Cursor_18
++        { 89, 10, 4, 12345, 12345},  // 0x19 Enter
++        { 99,  1, 0, 12345, 12345},  // 0x1A NoEnter
++        {110,  9, 4, 12345, 12345},  // 0x1B Deploy
++        {119,  1, 0, 12345, 12345},  // 0x1C NoDeploy
++        {120,  9, 4, 12345, 12345},  // 0x1D Cursor_1D
++        {129, 10, 4, 12345, 12345},  // 0x1E Sell
++        {139, 10, 4, 12345, 12345},  // 0x1F SellUnit
++        {149,  1, 0, 12345, 12345},  // 0x20 NoSell
++        {150, 20, 4, 12345, 12345},  // 0x21 Repair
++        {170, 20, 4, 12345, 12345},  // 0x22 EngineerRepair
++        {190,  1, 0, 12345, 12345},  // 0x23 NoRepair
++        {191,  7, 0, 12345, 12345},  // 0x24 Pick
++        {199,  5, 4, 12345, 12345},  // 0x25 Infiltrate
++        {204,  5, 4, 12345, 12345},  // 0x26 IvanBomb
++        {209,  5, 4, 12345, 12345},  // 0x27 MindControl
++        {214,  5, 0, 12345, 12345},  // 0x28 RemoveSquid
++        {219,  5, 0, 12345, 12345},  // 0x29 Crush
++        {224,  5, 0, 12345, 12345},  // 0x2A SpyTech
++        {229,  5, 0, 12345, 12345},  // 0x2B SpyPower
++        {234,  5, 0, 12345, 12345},  // 0x2C Cursor_2C
++        {239, 10, 0, 12345, 12345},  // 0x2D GICursor
++        {249, 10, 0, 12345, 12345},  // 0x2E Cursor_2E
++        {259, 10, 4, 12345, 12345},  // 0x2F ParaDrop
++        {269, 10, 0, 12345, 12345},  // 0x30 RallyPoint
++        {356,  1, 0, 12345, 12345},  // 0x31 LoopWaypoint
++        {279, 20, 4, 12345, 12345},  // 0x32 LightningStorm
++        {299, 10, 4, 12345, 12345},  // 0x33 Detonate
++        {309, 10, 4, 12345, 12345},  // 0x34 Demolish
++        {319, 10, 4, 12345, 12345},  // 0x35 Nuke
++        {329, 10, 0, 12345, 12345},  // 0x36 SelectChrono
++        {339,  6, 0, 12345, 12345},  // 0x37 ElectricCharge
++        {345,  1, 0, 12345, 12345},  // 0x38 NoSelectChrono
++        {346,  5, 4, 12345, 12345},  // 0x39 IronCurtain
++        {357, 12, 4, 12345, 12345},  // 0x3A Chronosphere
++        {369, 15, 4, 12345, 12345},  // 0x3B DisarmBomb
++        {384,  1, 0, 12345, 12345},  // 0x3C Disallowed
++        {385,  1, 0, 12345, 12345},  // 0x3D Scroll_3D
++        {386,  1, 0, 12345, 12345},  // 0x3E Scroll_3E
++        {387,  1, 0, 12345, 12345},  // 0x3F Scroll_3F
++        {388,  1, 0, 12345, 12345},  // 0x40 Scroll_40
++        {389,  1, 0, 12345, 12345},  // 0x41 Scroll_41
++        {390,  1, 0, 12345, 12345},  // 0x42 Scroll_42
++        {391,  1, 0, 12345, 12345},  // 0x43 Scroll_43
++        {392,  1, 0, 12345, 12345},  // 0x44 Scroll_44
++        {393,  1, 0, 12345, 12345},  // 0x45 Scroll_45
++        {394, 10, 4, 12345, 12345},  // 0x46 GuardArea
++        {404,  9, 4, 12345, 12345},  // 0x47 AttackMove
++        {413,  9, 4, 12345, 12345},  // 0x48 Cursor_48
++        {422,  9, 4, 12345, 12345},  // 0x49 ChronoTeleport
++        {431,  1, 0, 12345, 12345},  // 0x4A NoMindControl
++        {432,  1, 0, 12345, 12345},  // 0x4B NoRallyPoint
++        {433,  1, 0, 12345, 12345},  // 0x4C Cursor_4C
++        {434,  1, 0, 12345, 12345},  // 0x4D Cursor_4D
++        {435, 15, 4, 12345, 12345},  // 0x4E PlaceBeacon
++        {450, 10, 4, 12345, 12345},  // 0x4F ForceShield
++        {460, 10, 4, 12345, 12345},  // 0x50 NoForceShield
++        {470, 10, 4, 12345, 12345},  // 0x51 GeneticMutator
++        {480,  8, 4, 12345, 12345},  // 0x52 Airstrike
++        {488,  8, 4, 12345, 12345},  // 0x53 PsychicDominator
++        {496,  8, 4, 12345, 12345},  // 0x54 PsychicReveal
++        {504,  8, 4, 12345, 12345},  // 0x55 SpyPlane
++    };
++    return (id >= 0 && id < kMouseCursorCount) ? kTable[id] : kTable[0];
++}
++
++// [RE: DisplayClass::ConvertAction FUN_004aae90]:
++//   Action 0x14 Nuke -> 0x35, 0x25 IronCurtain -> 0x39,
++//   0x26 LightningStorm -> 0x32, 0x27/0x28 ChronoSphere/ChronoWarp -> 0x3A,
++//   0x29/0x41 ParaDrop/AmerParaDrop -> 0x2F, 0x42 PsychicDominator -> 0x53,
++//   0x43 SpyPlane -> 0x55, 0x44 GeneticConverter -> 0x51,
++//   0x45 ForceShield -> 0x4F, 0x48 PsychicReveal -> 0x54.
++inline int superweapon_cursor(SuperweaponType t) {
++    switch (t) {
++        case SuperweaponType::Nuke:             return 0x35;
++        case SuperweaponType::IronCurtain:      return 0x39;
++        case SuperweaponType::LightningStorm:   return 0x32;
++        case SuperweaponType::ChronoSphere:
++        case SuperweaponType::ChronoWarp:       return 0x3A;
++        case SuperweaponType::ParaDrop:
++        case SuperweaponType::AmerParaDrop:     return 0x2F;
++        case SuperweaponType::PsychicDominator: return 0x53;
++        case SuperweaponType::SpyPlane:         return 0x55;
++        case SuperweaponType::GeneticConverter: return 0x51;
++        case SuperweaponType::ForceShield:      return 0x4F;
++        case SuperweaponType::PsychicReveal:    return 0x54;
++        default:                                return 0x35;
++    }
++}
++
+ }  // namespace ra2engine
+diff --git a/tests/test_superweapon.cpp b/tests/test_superweapon.cpp
+index b10b789..4cbdd77 100644
+--- a/tests/test_superweapon.cpp
++++ b/tests/test_superweapon.cpp
+@@ -146,3 +146,83 @@ TEST_CASE("superweapon: Spy Plane fire reveals shroud (camera sweep fallback)")
+     CHECK(w.explored_at(0, tx + 5, ty));
+     CHECK_FALSE(w.explored_at(0, tx + 8, ty));  // outside Damage=6
+ }
++
++#include "ra2assets/shp.hpp"
++TEST_CASE("superweapon: ConvertAction cursor mapping and 86-entry 0x82D028 cursor table") {
++    // [RE: DisplayClass::ConvertAction FUN_004aae90 + table at 0x0082D028]
++    CHECK(superweapon_cursor(SuperweaponType::Nuke) == 0x35);
++    CHECK(superweapon_cursor(SuperweaponType::IronCurtain) == 0x39);
++    CHECK(superweapon_cursor(SuperweaponType::LightningStorm) == 0x32);
++    CHECK(superweapon_cursor(SuperweaponType::ChronoSphere) == 0x3A);
++    CHECK(superweapon_cursor(SuperweaponType::ChronoWarp) == 0x3A);
++    CHECK(superweapon_cursor(SuperweaponType::ParaDrop) == 0x2F);
++    CHECK(superweapon_cursor(SuperweaponType::AmerParaDrop) == 0x2F);
++    CHECK(superweapon_cursor(SuperweaponType::PsychicDominator) == 0x53);
++    CHECK(superweapon_cursor(SuperweaponType::SpyPlane) == 0x55);
++    CHECK(superweapon_cursor(SuperweaponType::GeneticConverter) == 0x51);
++    CHECK(superweapon_cursor(SuperweaponType::ForceShield) == 0x4F);
++    CHECK(superweapon_cursor(SuperweaponType::PsychicReveal) == 0x54);
++
++    // Spot-check frame ranges against the 0x0082D028 dump.
++    CHECK(mouse_cursor_desc(0x2F).start == 259);
++    CHECK(mouse_cursor_desc(0x2F).count == 10);
++    CHECK(mouse_cursor_desc(0x32).start == 279);
++    CHECK(mouse_cursor_desc(0x32).count == 20);
++    CHECK(mouse_cursor_desc(0x35).start == 319);
++    CHECK(mouse_cursor_desc(0x35).count == 10);
++    CHECK(mouse_cursor_desc(0x39).start == 346);
++    CHECK(mouse_cursor_desc(0x39).count == 5);
++    CHECK(mouse_cursor_desc(0x3A).start == 357);
++    CHECK(mouse_cursor_desc(0x3A).count == 12);
++    CHECK(mouse_cursor_desc(0x4F).start == 450);
++    CHECK(mouse_cursor_desc(0x51).start == 470);
++    CHECK(mouse_cursor_desc(0x53).start == 488);
++    CHECK(mouse_cursor_desc(0x54).start == 496);
++    CHECK(mouse_cursor_desc(0x55).start == 504);
++
++    for (int id = 0; id < kMouseCursorCount; ++id) {
++        const MouseCursorDesc& d = mouse_cursor_desc(id);
++        CHECK(d.start >= 0);
++        CHECK(d.count >= 1);
++        CHECK(d.start + d.count <= 512);
++    }
++
++    if (!ra2fixture::assets_available()) {
++        if (std::getenv("RA2_INSTALL_DIR")) FAIL("real assets missing");
++        MESSAGE("skipped: real assets not found");
++        return;
++    }
++    const ra2assets::MixFile& md = ra2fixture::mix_by_name("ra2md.mix");
++    ra2assets::MixFile conqmd = md.open_nested("conqmd.mix");
++    const ra2assets::MixEntry* me = conqmd.find(std::string("mouse.sha"));
++    REQUIRE(me != nullptr);
++    const ra2assets::ShpFile sha = ra2assets::ShpFile::load(conqmd.read(*me));
++    CHECK(sha.width() == 55);
++    CHECK(sha.height() == 43);
++    CHECK(sha.count() == 517);
++
++    const SuperweaponType kAllSw[] = {
++        SuperweaponType::Nuke,             SuperweaponType::IronCurtain,
++        SuperweaponType::LightningStorm,   SuperweaponType::ChronoSphere,
++        SuperweaponType::ChronoWarp,       SuperweaponType::ParaDrop,
++        SuperweaponType::AmerParaDrop,     SuperweaponType::PsychicDominator,
++        SuperweaponType::SpyPlane,         SuperweaponType::GeneticConverter,
++        SuperweaponType::ForceShield,      SuperweaponType::PsychicReveal,
++    };
++    for (SuperweaponType t : kAllSw) {
++        const int cid = superweapon_cursor(t);
++        const MouseCursorDesc& d = mouse_cursor_desc(cid);
++        REQUIRE(d.start + d.count <= sha.count());
++        for (int f = d.start; f < d.start + d.count; ++f) {
++            const ra2assets::ShpFile::Frame fi = sha.frame_info(f);
++            CHECK_MESSAGE(fi.w > 0, superweapon_type_name(t) << " frame " << f);
++            CHECK_MESSAGE(fi.h > 0, superweapon_type_name(t) << " frame " << f);
++            const std::vector<uint8_t> px = sha.decode_indexed(f);
++            bool any_ink = false;
++            for (uint8_t v : px)
++                if (v != 0) { any_ink = true; break; }
++            CHECK_MESSAGE(any_ink, superweapon_type_name(t) << " frame " << f);
++        }
++    }
++}
++

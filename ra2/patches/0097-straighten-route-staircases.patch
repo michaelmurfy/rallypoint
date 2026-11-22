@@ -1,0 +1,204 @@
+# 0097: straighten a route's staircases like the original does.
+#
+# FUN_00429A90 hands the finished PathType to FUN_0042B210 and FUN_0042B7F0 (decompiled
+# 2026-11-22). FUN_0042B7F0 walks the direction list, collects runs that use only two
+# neighbouring directions (a diagonal and the straight step beside it: E SE E SE) and calls
+# FUN_0042BE20, which rewrites the run as min(|dx|,|dy|) diagonal steps followed by the
+# straight steps, or straight first when the diagonals-first order is not enterable (it tests
+# each cell with the locomotor's IsCellOccupied, vtbl +0x1AC). FUN_0042B210 does the same kind
+# of rewrite for 90-degree corners. Our A* breaks ties in its own order and leaves staircases
+# round obstacles; straighten_runs applies the same rewrite to the finished route (same length,
+# same end cells, every new cell checked with the search's own step test; a cost grid only lets
+# it use clear cells; routes over bridge decks are left alone). It is integer and order-fixed,
+# so lockstep is unaffected.
+# Measured: 164 routes over a seeded obstacle field: 2635 -> 1850 turns, 1074 -> 553 single-step
+# staircases; routes on real maps (xmp03t4, xmp19t4 MTNK + GI): 182 -> 170 turns, 70 -> 60
+# staircases (those routes were mostly straight already, the gain there is small).
+
+--- a/engine/pathfind.cpp
++++ b/engine/pathfind.cpp
+@@ -88,6 +88,85 @@
+ 
+ enum class Mode { Exact, Nearest };
+ 
++// Retail straightens the cell route before a unit follows it [RE: FUN_0042B7F0
++// with FUN_0042BE20 and FUN_0042B210, called by FUN_00429A90 on the finished
++// PathType; verified 2026-11-22]: a run of steps that uses only two
++// neighbouring directions (a diagonal and the orthogonal beside it, such as
++// E SE E SE E) is rewritten as its diagonal steps first and its straight steps
++// after (FUN_0042BE20 writes min(|dx|,|dy|) steps of the diagonal, then the
++// rest), or straight first when that order is blocked. The route keeps its
++// length and its cells at both ends; only the staircase between disappears.
++// The A* above breaks ties by its own order, and on rough ground it leaves
++// "single step" staircases (measured on real maps: 5 in a 13-turn route).
++// `step_ok(fx, fy, tx, ty)` is the search's own test of one step (cell passable,
++// corner rule, height gate), so a rewritten run is as legal as the original.
++// `cost` (null = all 1): a rewritten cell must be a clear one (cost 1).
++template <class StepOk>
++void straighten_runs(std::vector<Cellxy>& path, int width, const std::vector<std::uint16_t>* cost,
++                     StepOk step_ok) {
++    if (path.size() < 4) return;
++    // clockwise ring from N: N NE E SE S SW W NW; odd = diagonal
++    static const int kRingX[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
++    static const int kRingY[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
++    auto ring_of = [&](int dx, int dy) {
++        for (int k = 0; k < 8; ++k) if (kRingX[k] == dx && kRingY[k] == dy) return k;
++        return -1;
++    };
++    const size_t n = path.size() - 1;   // steps
++    std::vector<int> dir(n);
++    for (size_t i = 0; i < n; ++i) {
++        dir[i] = ring_of(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
++        if (dir[i] < 0) return;   // not a neighbour walk (never from the A*): leave it
++    }
++    size_t i = 0;
++    while (i < n) {
++        const int d0 = dir[i];
++        int d1 = -1;
++        size_t j = i;
++        for (; j < n; ++j) {
++            const int s = dir[j];
++            if (s == d0 || s == d1) continue;
++            if (d1 < 0 && (((s - d0) & 7) == 1 || ((s - d0) & 7) == 7)) { d1 = s; continue; }
++            break;
++        }
++        if (d1 < 0 || j - i < 3) { i = j > i ? j : i + 1; continue; }
++        int turns = 0;
++        for (size_t k = i + 1; k < j; ++k) turns += dir[k] != dir[k - 1];
++        if (turns < 2) { i = j; continue; }   // already one block of each
++        const int diag = (d0 & 1) ? d0 : d1, orth = (d0 & 1) ? d1 : d0;
++        int a = 0;   // diagonal steps in the run
++        for (size_t k = i; k < j; ++k) a += dir[k] == diag;
++        const int b = static_cast<int>(j - i) - a;
++        std::vector<Cellxy> alt[2];
++        for (int order = 0; order < 2; ++order) {
++            const int first = order == 0 ? diag : orth, second = order == 0 ? orth : diag;
++            const int nf = order == 0 ? a : b, ns = order == 0 ? b : a;
++            Cellxy c = path[i];
++            bool ok = true;
++            for (int k = 0; k < nf + ns && ok; ++k) {
++                const int d = k < nf ? first : second;
++                const Cellxy nx{ c.x + kRingX[d], c.y + kRingY[d] };
++                if (cost && (*cost)[(size_t)nx.y * width + nx.x] != 1) { ok = false; break; }
++                if (!step_ok(c.x, c.y, nx.x, nx.y)) ok = false;
++                alt[order].push_back(nx);
++                c = nx;
++            }
++            if (!ok) alt[order].clear();
++        }
++        const std::vector<Cellxy>& pick = !alt[0].empty() ? alt[0] : alt[1];
++        if (!pick.empty())
++            for (size_t k = 0; k < pick.size(); ++k) path[i + 1 + k] = pick[k];
++        // the cells of the run are replaced in place; the steps now read diag.. then orth..
++        if (!pick.empty()) {
++            const bool diag_first = !alt[0].empty();
++            for (size_t k = 0; k < j - i; ++k)
++                dir[i + k] = (k < (size_t)(diag_first ? a : b)) ? (diag_first ? diag : orth) : (diag_first ? orth : diag);
++        }
++        i = j;
++    }
++}
++
++
+ // The one A* body. Exact: the historical find_path (empty when unreachable, or
+ // when a budget > 0 runs out). Nearest: when the goal is not reached, the path
+ // to the closed cell nearest the goal (lowest h, then lowest g, then index).
+@@ -185,6 +264,15 @@
+         if (cell == start_idx) break;
+     }
+     std::reverse(path.begin(), path.end());
++    straighten_runs(path, width, cost, [&](int fx, int fy, int tx, int ty) {
++        if (!in_range(tx, ty) || !passable[(size_t)index_of(tx, ty)]) return false;
++        if (tx != fx && ty != fy) {
++            const int c1 = index_of(tx, fy), c2 = index_of(fx, ty);
++            if (!passable[(size_t)c1] && !(leak && (*leak)[(size_t)c1])) return false;
++            if (!passable[(size_t)c2] && !(leak && (*leak)[(size_t)c2])) return false;
++        }
++        return true;
++    });
+     return path;
+ }
+ 
+@@ -305,6 +393,18 @@
+         if (s == start_idx) break;
+     }
+     std::reverse(path.begin(), path.end());
++    if (!decks)   // (a route over bridge decks keeps the search's own cells)
++        straighten_runs(path, width, cost, [&](int fx, int fy, int tx, int ty) {
++            if (!in_range(tx, ty)) return false;
++            const int ncell = ty * width + tx;
++            if (!base_ok(ncell) || !state_ok(ncell, 0)) return false;
++            if (tx != fx && ty != fy) {
++                const int c1 = fy * width + tx, c2 = ty * width + fx;
++                if (!base_ok(c1) && !(leak && (*leak)[(size_t)c1])) return false;
++                if (!base_ok(c2) && !(leak && (*leak)[(size_t)c2])) return false;
++            }
++            return path_step_layer(t, width, fx, fy, 0, tx, ty) == 0;
++        });
+     return path;
+ }
+ 
+--- a/tests/test_pathfind_scenarios.cpp
++++ b/tests/test_pathfind_scenarios.cpp
+@@ -137,3 +137,61 @@
+     CHECK(p.back().y == 9);
+     CHECK(p.back().x == 30);   // straight above the goal, not merely "a cell with Chebyshev distance 8"
+ }
++
++// Retail rewrites a run of two neighbouring directions (E SE E SE ...) as its
++// diagonals first and then its straight steps [FUN_0042B7F0 / FUN_0042BE20]:
++// the route keeps its length, the staircase between goes. 164 routes over a
++// seeded field of 200 obstacles: 2635 turns and 1074 single-step staircases
++// before, 1850 and 553 after.
++TEST_CASE("scenario: routes round obstacles are straightened and stay within a few steps of the shortest") {
++    const int W = 40, H = 30;
++    Grid g(W * H, 1);
++    unsigned s = 12345;
++    for (int i = 0; i < 200; ++i) {
++        s = s * 1664525u + 1013904223u; const int x = (s >> 8) % W;
++        s = s * 1664525u + 1013904223u; const int y = (s >> 8) % H;
++        if ((x < 3 && y < 3) || (x > 34 && y > 24)) continue;
++        g[y * W + x] = 0;
++    }
++    auto bfs = [&](Cellxy a, Cellxy b) {   // fewest steps, same corner rule
++        std::vector<int> d(W * H, -1);
++        std::vector<int> q{a.y * W + a.x};
++        d[q[0]] = 0;
++        for (size_t i = 0; i < q.size(); ++i) {
++            const int cx = q[i] % W, cy = q[i] / W;
++            for (int dy = -1; dy <= 1; ++dy)
++                for (int dx = -1; dx <= 1; ++dx) {
++                    if (!dx && !dy) continue;
++                    const int nx = cx + dx, ny = cy + dy;
++                    if (nx < 0 || ny < 0 || nx >= W || ny >= H || !g[ny * W + nx] || d[ny * W + nx] >= 0) continue;
++                    if (dx && dy && (!g[cy * W + nx] || !g[ny * W + cx])) continue;
++                    d[ny * W + nx] = d[q[i]] + 1;
++                    q.push_back(ny * W + nx);
++                }
++        }
++        return d[b.y * W + b.x];
++    };
++    int paths = 0, turns = 0, stairs = 0, longer = 0;
++    for (int t = 0; t < 200; ++t) {
++        s = s * 1664525u + 1013904223u; const int sx = (s >> 8) % 6, sy = (s >> 12) % 6;
++        s = s * 1664525u + 1013904223u; const int gx = 30 + (s >> 8) % 9, gy = 20 + (s >> 12) % 9;
++        if (!g[sy * W + sx] || !g[gy * W + gx]) continue;
++        auto p = find_path(g, W, H, {sx, sy}, {gx, gy});
++        if (p.empty()) continue;
++        ++paths;
++        CHECK(steps_ok(p, g, W));
++        longer = std::max(longer, (int)p.size() - 1 - bfs({sx, sy}, {gx, gy}));   // (Euclid h overestimates a diagonal: the original's routes are a step or two over the minimum too)
++        int run = 1;
++        for (size_t k = 2; k < p.size(); ++k) {
++            const bool same = (p[k].x - p[k - 1].x == p[k - 1].x - p[k - 2].x) && (p[k].y - p[k - 1].y == p[k - 1].y - p[k - 2].y);
++            if (same) { ++run; continue; }
++            ++turns;
++            if (run == 1 && k >= 3) ++stairs;
++            run = 1;
++        }
++    }
++    CHECK(paths == 164);
++    CHECK(longer <= 3);
++    CHECK(turns < 2000);
++    CHECK(stairs < 700);
++}

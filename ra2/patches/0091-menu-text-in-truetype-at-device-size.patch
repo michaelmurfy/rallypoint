@@ -1,0 +1,493 @@
+--- a/engine/ttfont.hpp
++++ b/engine/ttfont.hpp
+@@ -0,0 +1,35 @@
++#pragma once
++// Menu text at the real pixel size: Liberation Sans Bold (SIL OFL, embedded,
++// see third_party/fonts) rasterised with stb_truetype. The game's own bitmap
++// fonts are 16 px tall, made for 640x480; blown up they smear. Pure C++ (no
++// SDL), so the layout maths is host-testable. `em` is the font size in device
++// pixels. Strings are UTF-8 (bytes that are not valid UTF-8 are read as Latin-1).
++#include <cstdint>
++#include <string>
++#include <vector>
++namespace ra2engine::ttfont {
++
++// Size of the text for a bitmap-font cell of the same height: the original's 16 px
++// cell has 10 px capitals and narrow letters, so the face is 0.86 em per cell px,
++// drawn 16% narrower than its design (x scale only).
++inline constexpr double kEmPerCell = 0.86;
++
++bool available();                              // the embedded font parsed
++double measure(const std::string& s, double em);   // pen advance in px
++double cap_height(double em);                  // height of a capital above the baseline
++double line_height(double em);                 // ascent + descent
++
++inline constexpr int kPad = 2;                  // blank pixels round a run (Run::pen_x)
++int baseline_row(double em);                    // Run::baseline for this size, without rendering
++
++struct Run {
++    int w = 0, h = 0;          // bitmap size, RGBA8 (R,G,B,A memory order)
++    int pen_x = 0;             // bitmap column of the pen start
++    int baseline = 0;          // bitmap row of the baseline
++    std::vector<uint8_t> rgba;
++};
++// Rasterise `s`: letter colour fades from `top` to `bottom` (0xRRGGBB) down the
++// capital height, and a dark shadow of about em/14 px sits behind it.
++Run render(const std::string& s, double em, std::uint32_t top, std::uint32_t bottom);
++
++}  // namespace ra2engine::ttfont
+--- a/engine/ttfont.cpp
++++ b/engine/ttfont.cpp
+@@ -0,0 +1,163 @@
++#include "ttfont.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++
++#define STB_TRUETYPE_IMPLEMENTATION
++#define STBTT_STATIC
++#include "stb_truetype.h"
++
++namespace ra2engine::ttfont {
++namespace {
++
++const unsigned char kFontData[] = {
++#include "ttfont_data.inc"
++};
++
++struct Face {
++    stbtt_fontinfo info;
++    bool ok = false;
++    Face() { ok = stbtt_InitFont(&info, kFontData, stbtt_GetFontOffsetForIndex(kFontData, 0)) != 0; }
++};
++Face& face() {
++    static Face f;
++    return f;
++}
++
++// UTF-8 to code points; input that is not valid UTF-8 is taken as Latin-1.
++std::vector<int> decode(const std::string& s) {
++    std::vector<int> out;
++    for (std::size_t i = 0; i < s.size();) {
++        const unsigned char c = static_cast<unsigned char>(s[i]);
++        int n = c < 0x80 ? 0 : (c >> 5) == 6 ? 1 : (c >> 4) == 14 ? 2 : (c >> 3) == 30 ? 3 : -1;
++        bool ok = n >= 0;
++        int cp = n == 0 ? c : (c & (0x3F >> n));
++        for (int k = 1; ok && k <= n; ++k) {
++            if (i + k >= s.size() || (static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) { ok = false; break; }
++            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
++        }
++        if (ok) { out.push_back(cp); i += n + 1; }
++        else    { out.push_back(c);  i += 1; }
++    }
++    return out;
++}
++
++constexpr double kCondense = 0.84;   // horizontal scale (the design is wider than the original's)
++
++double scale_for(double em) { return stbtt_ScaleForMappingEmToPixels(&face().info, static_cast<float>(em)); }
++
++double advance_of(int cp, int next, double sc) {
++    const stbtt_fontinfo* fi = &face().info;
++    int adv = 0, lsb = 0;
++    stbtt_GetCodepointHMetrics(fi, cp, &adv, &lsb);
++    double a = adv;
++    if (next) a += stbtt_GetCodepointKernAdvance(fi, cp, next);
++    return a * sc * kCondense;
++}
++
++}  // namespace
++
++// RA2_NO_TTF=1 forces the bitmap fonts (to compare, or if the face misbehaves).
++bool available() {
++    static const bool off = std::getenv("RA2_NO_TTF") != nullptr;
++    return face().ok && !off;
++}
++
++double measure(const std::string& s, double em) {
++    if (!available() || em <= 0.0) return 0.0;
++    const double sc = scale_for(em);
++    const std::vector<int> cps = decode(s);
++    double w = 0.0;
++    for (std::size_t i = 0; i < cps.size(); ++i)
++        w += advance_of(cps[i], i + 1 < cps.size() ? cps[i + 1] : 0, sc);
++    return w;
++}
++
++double cap_height(double em) {
++    if (!available() || em <= 0.0) return 0.0;
++    int x0, y0, x1, y1;
++    if (!stbtt_GetCodepointBox(&face().info, 'H', &x0, &y0, &x1, &y1)) return em * 0.72;
++    return y1 * scale_for(em);
++}
++
++double line_height(double em) {
++    if (!available() || em <= 0.0) return 0.0;
++    int asc, desc, gap;
++    stbtt_GetFontVMetrics(&face().info, &asc, &desc, &gap);
++    return (asc - desc) * scale_for(em);
++}
++
++int baseline_row(double em) {
++    if (!available() || em <= 0.0) return 0;
++    int asc = 0, desc = 0, gap = 0;
++    stbtt_GetFontVMetrics(&face().info, &asc, &desc, &gap);
++    return kPad + static_cast<int>(std::ceil(asc * scale_for(em)));
++}
++
++Run render(const std::string& s, double em, std::uint32_t top, std::uint32_t bottom) {
++    Run run;
++    if (!available() || em <= 0.0 || s.empty()) return run;
++    const stbtt_fontinfo* fi = &face().info;
++    const double sc = scale_for(em);
++    int asc = 0, desc = 0, gap = 0;
++    stbtt_GetFontVMetrics(fi, &asc, &desc, &gap);
++    const int sh = std::max(1, static_cast<int>(std::lround(em / 14.0)));   // shadow offset
++    const int pad = kPad;
++    const int up = static_cast<int>(std::ceil(asc * sc)), down = static_cast<int>(std::ceil(-desc * sc));
++    const int w = static_cast<int>(std::ceil(measure(s, em))) + 2 * pad + sh;
++    const int h = up + down + 2 * pad + sh;
++    run.w = w; run.h = h; run.pen_x = pad; run.baseline = pad + up;
++    std::vector<uint8_t> cov(static_cast<std::size_t>(w) * h, 0);
++    const std::vector<int> cps = decode(s);
++    double pen = 0.0;
++    for (std::size_t i = 0; i < cps.size(); ++i) {
++        const int cp = cps[i];
++        const double x = pen + pad;
++        const int xi = static_cast<int>(std::floor(x));
++        const float fx = static_cast<float>(x - xi);
++        int x0, y0, x1, y1;
++        stbtt_GetCodepointBitmapBoxSubpixel(fi, cp, static_cast<float>(sc * kCondense), static_cast<float>(sc), fx, 0, &x0, &y0, &x1, &y1);
++        const int gw = x1 - x0, gh = y1 - y0;
++        if (gw > 0 && gh > 0) {
++            std::vector<uint8_t> g(static_cast<std::size_t>(gw) * gh);
++            stbtt_MakeCodepointBitmapSubpixel(fi, g.data(), gw, gh, gw, static_cast<float>(sc * kCondense), static_cast<float>(sc), fx, 0, cp);
++            for (int yy = 0; yy < gh; ++yy)
++                for (int xx = 0; xx < gw; ++xx) {
++                    const int dx = xi + x0 + xx, dy = run.baseline + y0 + yy;
++                    if (dx < 0 || dx >= w || dy < 0 || dy >= h) continue;
++                    uint8_t& c = cov[static_cast<std::size_t>(dy) * w + dx];
++                    c = static_cast<uint8_t>(std::min(255, c + g[static_cast<std::size_t>(yy) * gw + xx]));
++                }
++        }
++        pen += advance_of(cp, i + 1 < cps.size() ? cps[i + 1] : 0, sc);
++    }
++    const double cap = std::max(1.0, cap_height(em));
++    run.rgba.assign(static_cast<std::size_t>(w) * h * 4, 0);
++    for (int y = 0; y < h; ++y) {
++        // 0 at the top of the capitals, 1 at the baseline, clamped.
++        const double t = std::clamp((y - (run.baseline - cap)) / cap, 0.0, 1.0);
++        auto mix = [&](int shift) {
++            const double a = (top >> shift) & 255, b = (bottom >> shift) & 255;
++            return static_cast<int>(std::lround(a + (b - a) * t));
++        };
++        const int r = mix(16), gc = mix(8), b = mix(0);
++        for (int x = 0; x < w; ++x) {
++            const int fg = cov[static_cast<std::size_t>(y) * w + x];
++            const int bgx = x - sh, bgy = y - sh;
++            const int shadow = (bgx >= 0 && bgy >= 0) ? cov[static_cast<std::size_t>(bgy) * w + bgx] * 200 / 255 : 0;
++            // Letter over shadow, premultiplied then straightened for SDL's blend.
++            const double fa = fg / 255.0, sa = shadow / 255.0;
++            const double oa = fa + sa * (1.0 - fa);
++            uint8_t* p = &run.rgba[(static_cast<std::size_t>(y) * w + x) * 4];
++            if (oa <= 0.0) continue;
++            p[0] = static_cast<uint8_t>(std::lround(r * fa / oa));
++            p[1] = static_cast<uint8_t>(std::lround(gc * fa / oa));
++            p[2] = static_cast<uint8_t>(std::lround(b * fa / oa));
++            p[3] = static_cast<uint8_t>(std::lround(oa * 255.0));
++        }
++    }
++    return run;
++}
++
++}  // namespace ra2engine::ttfont
+--- a/engine/text_shot.inc
++++ b/engine/text_shot.inc
+@@ -0,0 +1,58 @@
++// text_shot.inc -- `--text-shot <prefix>`: renders the shell text pages (main
++// menu, Options, and the in-game Game Options / Controls / Sound / Keyboard
++// pages) at each size in RA2_SHOT_SIZES (default 1280x720, e.g.
++// "1920x1080,3440x1440") to <prefix>_<WxH>_<page>.png, with the real assets
++// from RA2_INSTALL_DIR. Used to look at menu text; changes nothing in a game.
++int run_text_shot(const std::string& prefix) {
++    const std::string dir = env_install_dir();
++    Ini rules_ini = load_ini_from_ra2md(dir, "rulesmd.ini");
++    Rules rules = Rules::load(rules_ini);
++    MenuArtStore store;
++    load_menu_art(dir, /*no_audio=*/true, store);
++    g_menu_art = &store.art;
++    std::vector<std::pair<int, int>> sizes;
++    {
++        std::string s = std::getenv("RA2_SHOT_SIZES") ? std::getenv("RA2_SHOT_SIZES") : "1280x720";
++        std::stringstream ss(s);
++        std::string tok;
++        while (std::getline(ss, tok, ',')) {
++            int w = 0, h = 0;
++            if (std::sscanf(tok.c_str(), "%dx%d", &w, &h) == 2 && w > 0 && h > 0) sizes.push_back({w, h});
++        }
++    }
++    for (const auto& wh : sizes) {
++        const int W = wh.first, H = wh.second;
++        g_ui_w = W;
++        g_ui_h = H;
++        ra2engine::Platform plat = ra2engine::Platform::create("text-shot", W, H, /*hidden=*/true);
++        ra2engine::TextureCache tc(plat.renderer());
++        SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
++        const std::string stem = prefix + "_" + std::to_string(W) + "x" + std::to_string(H) + "_";
++        auto frame = [&](const std::string& name, const std::function<void()>& draw) {
++            for (int i = 0; i < 2; ++i) {
++                plat.begin_frame();
++                draw();
++                plat.present();
++            }
++            capture_png(ren, stem + name + ".png", W, H);
++            std::cerr << "[text-shot] wrote " << stem + name + ".png\n";
++        };
++        ShellScene main_page(rules, true, store.art, PAGE_MAIN);
++        frame("main", [&] { main_page.render(plat, tc); });
++        ShellScene opt_page(rules, true, store.art, PAGE_OPTIONS);
++        frame("options", [&] { opt_page.render(plat, tc); });
++        InGameMenu m;
++        m.configure(false, false);
++        m.open(InGameMenu::P_OPTIONS);
++        frame("gameoptions", [&] { m.render(ren, tc); });
++        m.open(InGameMenu::P_CONTROLS);
++        frame("controls", [&] { m.render(ren, tc); });
++        m.open(InGameMenu::P_SOUND);
++        frame("sound", [&] { m.render(ren, tc); });
++        m.open(InGameMenu::P_CONTROLS);
++        m.keyboard().open();
++        frame("keyboard", [&] { m.render(ren, tc); });
++    }
++    g_menu_art = nullptr;
++    return 0;
++}
+--- a/tests/test_ttfont.cpp
++++ b/tests/test_ttfont.cpp
+@@ -0,0 +1,86 @@
++#include "doctest.h"
++#include "asset_fixture.hpp"
++#include "ra2assets/fnt.hpp"
++#include "ra2assets/mix.hpp"
++#include "ttfont.hpp"
++
++#include <cmath>
++#include <cstdio>
++#include <string>
++
++using namespace ra2engine;
++
++TEST_CASE("ttfont: the embedded face loads and measures") {
++    REQUIRE(ttfont::available());
++    CHECK(ttfont::measure("", 20) == 0.0);
++    // Linear in the size, wider letters measure wider.
++    const double a = ttfont::measure("Game Options", 20), b = ttfont::measure("Game Options", 40);
++    CHECK(a > 0.0);
++    CHECK(b == doctest::Approx(2.0 * a).epsilon(0.01));
++    CHECK(ttfont::measure("iii", 20) < ttfont::measure("WWW", 20));
++    CHECK(ttfont::measure("ab", 20) > ttfont::measure("a", 20));
++    // UTF-8 and Latin-1 spell the same text.
++    CHECK(ttfont::measure("caf\xC3\xA9", 20) == doctest::Approx(ttfont::measure("caf\xE9", 20)));
++    CHECK(ttfont::cap_height(40) == doctest::Approx(2.0 * ttfont::cap_height(20)).epsilon(0.05));
++    CHECK(ttfont::cap_height(20) > 10.0);
++    CHECK(ttfont::cap_height(20) < 18.0);
++}
++
++TEST_CASE("ttfont: a rendered run has the promised layout and colours") {
++    const double em = 30.0;
++    const ttfont::Run r = ttfont::render("Sound", em, 0xFFFF00, 0x808000);
++    REQUIRE(r.w > 0);
++    CHECK(r.rgba.size() == static_cast<size_t>(r.w) * r.h * 4);
++    CHECK(r.pen_x == ttfont::kPad);
++    CHECK(r.baseline == ttfont::baseline_row(em));
++    CHECK(r.w >= static_cast<int>(std::ceil(ttfont::measure("Sound", em))) + 2 * ttfont::kPad);
++    int ink = 0, opaque_yellowish = 0, shadow = 0, above_top = 0;
++    for (int y = 0; y < r.h; ++y)
++        for (int x = 0; x < r.w; ++x) {
++            const uint8_t* p = &r.rgba[(static_cast<size_t>(y) * r.w + x) * 4];
++            if (p[3] == 0) continue;
++            ++ink;
++            if (p[3] > 200 && p[0] > 120 && p[1] > 120 && p[2] < 40) ++opaque_yellowish;
++            if (p[3] > 100 && p[0] < 10 && p[1] < 10 && p[2] < 10) ++shadow;
++            if (y < r.baseline - static_cast<int>(std::ceil(ttfont::cap_height(em))) - 2) ++above_top;   // 'S' has overshoot only
++        }
++    CHECK(ink > 100);
++    CHECK(opaque_yellowish > 50);   // the letters keep the control colour
++    CHECK(shadow > 20);             // and carry a dark shadow
++    CHECK(above_top == 0);          // nothing floats above the capitals
++    CHECK(ttfont::render("", em, 0, 0).w == 0);
++}
++
++// The bitmap shell font is the size reference: at the same cell height the
++// TrueType text must be about as wide and as tall as the original's, so every
++// layout built for it still fits. Uses the player's own 12metfnt.fnt.
++TEST_CASE("ttfont: matches the size of the original 12metfnt text (real assets)") {
++    if (!ra2fixture::ra2_available()) { MESSAGE("ra2.mix absent; skipped"); return; }
++    const ra2assets::MixFile& top = ra2fixture::mix_by_name("ra2.mix");
++    ra2assets::MixFile cache = top.open_nested("cache.mix");
++    const ra2assets::MixEntry* e = cache.find("12metfnt.fnt");
++    REQUIRE(e != nullptr);
++    const ra2assets::Font f = ra2assets::load_fnt(cache.read(*e));
++    const double cell = f.height();   // 16
++    const double kEmPerCell = ttfont::kEmPerCell;
++    for (const char* s : {"Game Speed", "Scroll Rate", "Target Lines", "See Hidden Objects", "Keyboard", "Music Volume"}) {
++        int bw = 0;
++        for (unsigned char ch : std::string(s)) bw += f.width(ch) > 0 ? f.width(ch) : f.height() / 2;
++        const double tw = ttfont::measure(s, cell * kEmPerCell);
++        std::printf("[ttfont] \"%s\" bitmap %d px, TrueType %.1f px (%.2f)\n", s, bw, tw, tw / bw);
++        CHECK(tw / bw > 0.92);
++        CHECK(tw / bw < 1.12);
++    }
++    // Capital height: the bitmap 'H' rows with any ink vs the TrueType cap height.
++    const ra2assets::FntGlyph& H = f.glyph('H');
++    int rows = 0;
++    for (int y = 0; y < H.h; ++y) {
++        bool any = false;
++        for (int x = 0; x < H.w; ++x) any |= H.pixels[static_cast<size_t>(y) * H.w + x] != 0;
++        rows += any;
++    }
++    const double cap = ttfont::cap_height(cell * kEmPerCell);
++    std::printf("[ttfont] capital H: bitmap %d rows, TrueType %.1f px\n", rows, cap);
++    CHECK(cap / rows > 0.92);
++    CHECK(cap / rows < 1.1);
++}
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -97,6 +97,7 @@
+ #include <functional>        // W2-AR-10 deferred scene factories
+ #include <optional>
+ #include "production.hpp"
++#include "ttfont.hpp"      // menu text at the real pixel size (Liberation Sans Bold)
+ #include "rectfont.hpp"    // glyph_rows (5x7 rect-font for menu labels) [Task 5]
+ #include "repair_sell.hpp" // RepairSellRules (Repair & Sell phase)
+ #include "settings.hpp"    // P8 Options: RA2.INI settings, slider math, edge-scroll table
+@@ -5441,6 +5442,46 @@
+     }
+ }
+ 
++// Menu text through the TrueType face (ttfont.hpp) instead of the 16 px bitmap
++// font. `cell` is the height in device pixels the bitmap glyph cell would have
++// (16 * the UI scale at 12 px control text), so every caller keeps its sizes;
++// the layout (box, alignment) stays the caller's, only the glyphs change. The
++// bitmap path remains for when the face did not load.
++inline bool tt_ok() { return ra2engine::ttfont::available(); }
++inline double tt_text_w(const std::string& s, double cell) {
++    return ra2engine::ttfont::measure(s, cell * ra2engine::ttfont::kEmPerCell);
++}
++// Draw `s` with its pen at x, capitals centred vertically in [box_y, box_y+box_h).
++// Colour: the palette's brightest entry, a little lighter on top, darker below.
++void tt_draw(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Palette& pal,
++             const std::string& s, double x, double box_y, double box_h, double cell,
++             const char* keypfx) {
++    namespace tf = ra2engine::ttfont;
++    const double em = cell * ra2engine::ttfont::kEmPerCell;
++    const ra2assets::Rgba c = pal[15];
++    auto pack = [](int r, int g, int b) {
++        return (static_cast<std::uint32_t>(std::clamp(r, 0, 255)) << 16) |
++               (static_cast<std::uint32_t>(std::clamp(g, 0, 255)) << 8) |
++               static_cast<std::uint32_t>(std::clamp(b, 0, 255));
++    };
++    const std::uint32_t top = pack(c.r * 11 / 10 + 12, c.g * 11 / 10 + 12, c.b * 11 / 10 + 8);
++    const std::uint32_t bot = pack(c.r * 78 / 100, c.g * 78 / 100, c.b * 78 / 100);
++    const std::string key = std::string("tt:") + keypfx + std::to_string(std::lround(em * 8)) + ":" +
++                            std::to_string(top) + ":" + std::to_string(bot) + ":" + s;
++    SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
++    if (!tex) {
++        const tf::Run run = tf::render(s, em, top, bot);
++        if (run.w <= 0) return;
++        tex = static_cast<SDL_Texture*>(tc.get_rgba(key, run.rgba.data(), run.w, run.h));
++    }
++    if (!tex) return;
++    int w = 0, h = 0;
++    SDL_QueryTexture(tex, nullptr, nullptr, &w, &h);
++    const double base = box_y + box_h / 2.0 + tf::cap_height(em) / 2.0;
++    SDL_Rect dst{static_cast<int>(std::lround(x)) - tf::kPad, static_cast<int>(std::lround(base)) - tf::baseline_row(em), w, h};
++    SDL_RenderCopy(ren, tex, nullptr, &dst);
++}
++
+ void shade_rect(SDL_Renderer* ren, const ra2engine::SbRect& r, Uint8 alpha, Uint8 rr = 0,
+                 Uint8 gg = 0, Uint8 bb = 0) {
+     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+@@ -6669,6 +6710,15 @@
+         auto centered = [&](const std::string& s, int lx, int ly, int lw, int lh,
+                             int gscale, int ldx = 0, int ldy = 0) {
+             SDL_Rect box = dev(lx, ly, lw, lh);
++            if (tt_ok()) {   // TrueType: the cell is 16 px x the (fractional) scale, shrunk to fit
++                double cell = 16.0 * (gscale >= lbl_scale ? canvas_scale : std::floor(canvas_scale));
++                double tw = tt_text_w(s, cell);
++                while (cell > 8.0 && tw > box.w) { cell *= 0.94; tw = tt_text_w(s, cell); }
++                tt_draw(ren, tc, *art.font_pal, s,
++                        box.x + (box.w - tw) / 2.0 + ldx * canvas_scale, box.y + ldy * canvas_scale,
++                        box.h, cell, "shf:");
++                return;
++            }
+             int tw = fnt_text_width(f, s) * gscale;
+             while (gscale > 1 && tw > box.w) { --gscale; tw = fnt_text_width(f, s) * gscale; }
+             const int th = f.height() * gscale;
+@@ -10112,6 +10162,8 @@
+     return 0;
+ }
+ 
++#include "text_shot.inc"   // --text-shot: menu text pages at chosen sizes
++
+ // Non-interactive verification of the whole select -> path -> walk pipeline:
+ // programmatically select the unit, order a move to (goal_x, goal_y), then
+ // run the sim (fixed 60Hz dt) until arrival or a 15s cap, rendering each
+@@ -19276,6 +19328,7 @@
+             if (arg == "--scene-shot" && i + 1 < argc) {
+                 return run_scene_shot(argc, argv, i + 1);   // G-8x presentation harness
+             }
++            if (arg == "--text-shot" && i + 1 < argc) return run_text_shot(argv[++i]);
+             if (arg == "--menu-shot" && i + 1 < argc) {
+                 return run_menu_shot(argv[++i]);
+             } else if (arg == "--gf-play" && i + 1 < argc) {   // gF real-play driver
+--- a/engine/shell_widgets.inc
++++ b/engine/shell_widgets.inc
+@@ -54,6 +54,7 @@
+     bool fnt() const { return art.font && art.fnt_ok; }
+     double text_w(const std::string& s, double logical_px) const {
+         if (!fnt()) return 0.0;
++        if (tt_ok()) return tt_text_w(s, 16.0 * xf.s * logical_px / 16.0) / xf.s;   // TrueType, in LOGICAL px
+         const double sc = std::max(1.0, xf.s * logical_px / 16.0);
+         return fnt_text_width(*art.font, s) * sc / xf.s;   // in LOGICAL px
+     }
+@@ -63,8 +64,16 @@
+         if (!fnt() || !pal || s.empty()) return;
+         const ra2assets::Font& f = *art.font;
+         // 12metfnt cell = 16 px; scaled by the exact factor, drawn linear.
+-        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
+         const SDL_Rect box = dev(lx, ly, lw, lh);
++        if (tt_ok()) {
++            const double cell = xf.s * logical_px, tw = tt_text_w(s, cell);
++            double tx = box.x;
++            if (align == 1) tx = box.x + (box.w - tw) / 2.0;
++            else if (align == 2) tx = box.x + box.w - tw;
++            tt_draw(ren, tc, *pal, s, tx, box.y, box.h, cell, keypfx);
++            return;
++        }
++        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
+         const double tw = fnt_text_width(f, s) * sc;
+         const double th = f.height() * sc;
+         double tx = box.x;
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -337,6 +337,8 @@
+ # labels (Task 5, [RE: skirmish.md §UI]). Its coverage cases live in
+ # test_skirmish.cpp above; draw_text (the SDL consumer) lives in engine/main.cpp.
+ target_sources(ra2assets_tests PRIVATE engine/rectfont.cpp)
++# ttfont.cpp: menu text in the embedded Liberation Sans Bold via stb_truetype (pure C++).
++target_sources(ra2assets_tests PRIVATE engine/ttfont.cpp tests/test_ttfont.cpp)
+ # P8 Options + persistence: the PURE settings layer (RA2.INI IniDoc round-trip,
+ # OptionsClass defaults/clamps/save list, slider/trackbar math, the recovered
+ # edge-scroll table) [RE: docs/re/options.md]. SDL-free; main.cpp owns the UI.
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -145,6 +145,7 @@
+     ${RA2_ROOT}/engine/mp/lan_discovery.cpp
+     ${RA2_ROOT}/engine/mp/server_link.cpp
+     ${RA2_ROOT}/engine/rectfont.cpp
++    ${RA2_ROOT}/engine/ttfont.cpp
+     ${RA2_ROOT}/engine/maplist.cpp
+     ${RA2_ROOT}/engine/repair_sell.cpp
+     ${RA2_ROOT}/engine/settings.cpp

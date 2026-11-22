@@ -251,7 +251,7 @@ pub fn launch_ini(setup: &Ra2Setup, map: &str, local: usize) -> Result<String, S
 }
 
 /// The engine's command line: the game files, the launch file, the window. A size of 0 x 0 is the screen's own.
-/// `Ra2Config::logical_height` becomes `RA2_LOGICAL_HEIGHT` when set (see `ra2::LOGICAL_HEIGHT_ENV`); sound off adds `--no-audio`.
+/// `ui_scale` and `world_zoom` become `RA2_UI_SCALE` and `RA2_WORLD_ZOOM` when set; sound off adds `--no-audio`.
 pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &crate::ra2::Ra2Config) -> std::process::Command {
     let mut c = std::process::Command::new(engine);
     c.arg("--data").arg(game_dir).arg("--launch").arg(launch_file);
@@ -262,8 +262,11 @@ pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &cra
     if !display.sound {
         c.arg("--no-audio");
     }
-    if display.logical_height != 0 {
-        c.env(crate::ra2::LOGICAL_HEIGHT_ENV, display.logical_height.to_string());
+    if display.ui_scale != 0 {
+        c.env(crate::ra2::UI_SCALE_ENV, display.ui_scale.to_string());
+    }
+    if display.world_zoom != 0 {
+        c.env(crate::ra2::WORLD_ZOOM_ENV, format!("{}", display.world_zoom as f64 / 100.0));
     }
     c
 }
@@ -388,7 +391,8 @@ mod tests {
             width: 1920,
             height: 1080,
             windowed: true,
-            logical_height: 900,
+            ui_scale: 2,
+            world_zoom: 150,
             ..Default::default()
         };
         let c = command(Path::new("ra2engine"), Path::new("/game"), Path::new("/tmp/launch.ini"), &display);
@@ -397,9 +401,13 @@ mod tests {
         assert!(args.contains(&"--windowed".into()));
         assert_eq!(
             c.get_envs()
-                .find(|(k, _)| *k == OsStr::new(crate::ra2::LOGICAL_HEIGHT_ENV))
+                .find(|(k, _)| *k == OsStr::new(crate::ra2::UI_SCALE_ENV))
                 .map(|(_, v)| v),
-            Some(OsStr::new("900").into())
+            Some(OsStr::new("2").into())
+        );
+        assert_eq!(
+            c.get_envs().find(|(k, _)| *k == OsStr::new(crate::ra2::WORLD_ZOOM_ENV)).map(|(_, v)| v),
+            Some(OsStr::new("1.5").into())
         );
         let native = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config::default());
         let native_args: Vec<_> = native.get_args().collect();
@@ -407,7 +415,7 @@ mod tests {
         assert!(!native_args.contains(&OsStr::new("--no-audio")), "sound is on by default");
         let quiet = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config { sound: false, ..Default::default() });
         assert!(quiet.get_args().any(|a| a == OsStr::new("--no-audio")));
-        assert!(native.get_envs().find(|(k, _)| *k == OsStr::new(crate::ra2::LOGICAL_HEIGHT_ENV)).is_none());
+        assert!(native.get_envs().all(|(k, _)| k != OsStr::new(crate::ra2::UI_SCALE_ENV) && k != OsStr::new(crate::ra2::WORLD_ZOOM_ENV)));
     }
 
     #[test]

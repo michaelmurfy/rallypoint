@@ -1,0 +1,536 @@
+diff --git a/engine/ai_soak.inc b/engine/ai_soak.inc
+index cc8e8de..a5f278c 100644
+--- a/engine/ai_soak.inc
++++ b/engine/ai_soak.inc
+@@ -22,6 +22,271 @@ struct AiSoakProbe {
+     static ra2engine::World& world(GameScene& g) { return g.world_; }
+     static const BuildingAssets& ba(GameScene& g) { return g.ba_; }
+ 
++    // --probe-yuri-sw: a Yuri human with the real rules and a real map owns the Genetic Mutator, Psychic
++    // Dominator and Psychic Sensor; checks the grant, the charge time, the sidebar slots and each effect.
++    static int yuri_sw(int, char**) {
++        using ra2engine::SuperweaponType;
++        int fails = 0;
++        auto check = [&](bool ok, const std::string& what) {
++            std::cout << (ok ? "[yuri-sw] PASS " : "[yuri-sw] FAIL ") << what << "\n";
++            if (!ok) ++fails;
++        };
++        const std::string dir = env_install_dir();
++        Ini rules_ini = load_ini_from_ra2md(dir, "rulesmd.ini");
++        Rules rules = Rules::load(rules_ini);
++        ra2engine::SkirmishConfig cfg = ra2engine::default_skirmish_config(rules);
++        cfg.map_file = "xmp31s2.map";
++        cfg.use_map_starts = true;
++        cfg.slots[0].country = "YuriCountry";
++        cfg.slots[0].side = ra2engine::World::Side::Yuri;
++        cfg.slots[1].is_ai = false;   // the enemy only stands there
++        GameScene g(/*no_audio=*/true, cfg);
++        ra2engine::World& w = world(g);
++        const BuildingAssets& b_a = ba(g);
++        const int me = 0, foe = 1;
++        for (int i = 0; i < static_cast<int>(w.units().size()); ++i)
++            if (w.units()[static_cast<std::size_t>(i)].house == me && w.is_mcv(i)) { w.order_deploy_mcv(i); break; }
++        for (int f = 0; f < 150; ++f) g.update(1.0 / 15.0);
++        int bx = -1, by = -1;
++        for (const ra2engine::Building& b : w.buildings())
++            if (b.alive && b.house == me) { bx = b.cx; by = b.cy; break; }
++        check(bx >= 0, "the Yuri human has a base after deploying its MCV");
++        auto add_instant = [&](const char* id) {
++            const int t = roster_index(b_a, id);
++            if (t < 0) return -1;
++            const ra2engine::BuildingTypeDef& d = b_a.roster[static_cast<std::size_t>(t)];
++            for (int r = 3; r <= 16; ++r)
++                for (int dy = -r; dy <= r; ++dy)
++                    for (int dx = -r; dx <= r; ++dx) {
++                        if (std::max(std::abs(dx), std::abs(dy)) != r) continue;
++                        if (!g.placement_ok(t, bx + dx, by + dy)) continue;
++                        return w.add_building(t, bx + dx, by + dy, d.fw, d.fh, me, d.strength, d.armor_ix, 0.0, true,
++                                              d.sight, d.grants_map_reveal);
++                    }
++            return -1;
++        };
++        for (int k = 0; k < 5; ++k) add_instant("YAPOWR");
++        const int gc = add_instant("YAGNTC"), pp = add_instant("YAPPET"), ps = add_instant("NAPSIS");
++        check(gc >= 0 && pp >= 0 && ps >= 0, "YAGNTC, YAPPET and NAPSIS placed");
++        int f_ready[3] = {-1, -1, -1};
++        const SuperweaponType kT[3] = {SuperweaponType::GeneticConverter, SuperweaponType::PsychicDominator,
++                                       SuperweaponType::PsychicReveal};
++        const char* kN[3] = {"Genetic Mutator", "Psychic Dominator", "Psychic Reveal"};
++        const char* kSpecial[3] = {"GeneticConverterSpecial", "PsychicDominatorSpecial", "PsychicRevealSpecial"};
++        for (int f = 1; f <= 9300; ++f) {
++            g.update(1.0 / 15.0);
++            for (int k = 0; k < 3; ++k)
++                if (f_ready[k] < 0 && w.sw_ready(me, kT[k])) f_ready[k] = f;
++        }
++        const std::vector<SuperweaponType> held = w.sw_types(me);
++        for (int k = 0; k < 3; ++k) {
++            const bool listed = std::find(held.begin(), held.end(), kT[k]) != held.end();
++            check(listed, std::string(kN[k]) + " is on the sidebar (sw_types)");
++            check(g.ba_.sw_cameos.count(static_cast<int>(kT[k])) > 0, std::string(kN[k]) + " has a sidebar cameo");
++            const double mins = rules.section_double(kSpecial[k], "RechargeTime", 5.0);
++            std::cout << "[yuri-sw] " << kN[k] << " ready after " << f_ready[k] << " frames, RechargeTime=" << mins
++                      << " min = " << mins * 900 << " frames\n";
++            check(f_ready[k] > 0 && std::abs(f_ready[k] - mins * 900.0) < 160.0,
++                  std::string(kN[k]) + " charges in RechargeTime");
++        }
++        auto spawn = [&](const char* id, int house, int x, int y) -> int {
++            const ra2engine::UnitCombat c = resolve_combat_unit(g.rules_, id).combat;
++            if (c.image.empty()) return -1;
++            w.add_combat_unit(x, y, house, c);
++            return static_cast<int>(w.units().size()) - 1;
++        };
++        const int tx = bx + 22, ty = by + 4;   // a patch of open ground away from the base
++        // ---- Genetic Mutator: infantry become Brutes, tanks stay.
++        {
++            std::vector<int> inf, veh;
++            for (int k = 0; k < 4; ++k) inf.push_back(spawn("E1", foe, tx + k % 2, ty + k / 2));
++            veh.push_back(spawn("MTNK", foe, tx - 1, ty - 1));
++            const int far_inf = spawn("E1", foe, tx + 14, ty + 14);
++            const bool fired = w.fire_superweapon_at(me, SuperweaponType::GeneticConverter, tx, ty);
++            check(fired, "the Genetic Mutator fires (fire_superweapon_at)");
++            check(!w.sw_ready(me, SuperweaponType::GeneticConverter), "the Mutator recharges after firing");
++            int f_done = -1;
++            for (int f = 1; f <= 400 && f_done < 0; ++f) {
++                g.update(1.0 / 15.0);
++                int nbr = 0;
++                for (const ra2engine::Unit& u : w.units()) nbr += (u.alive && u.image == "BRUTE" && u.house == foe) ? 1 : 0;
++                if (nbr >= 4) f_done = f;
++            }
++            int brutes = 0;
++            for (int i : inf) brutes += w.units()[static_cast<std::size_t>(i)].alive ? 0 : 1;
++            std::cout << "[yuri-sw] Mutator: infantry replaced after " << f_done << " frames; replaced=" << brutes << "\n";
++            int nb = 0;
++            for (const ra2engine::Unit& u : w.units())
++                if (u.alive && u.image == "BRUTE" && u.house == foe) ++nb;
++            check(nb >= 4, "four enemy infantry in the blast became Brutes (found " + std::to_string(nb) + ")");
++            check(w.units()[static_cast<std::size_t>(veh[0])].alive && w.units()[static_cast<std::size_t>(veh[0])].image != "BRUTE",
++                  "a tank in the blast is untouched");
++            check(w.units()[static_cast<std::size_t>(far_inf)].image != "BRUTE", "infantry far outside the blast is untouched");
++        }
++        // ---- Psychic Dominator: enemies in the 3x3 capture spiral change sides permanently.
++        {
++            const int rng = static_cast<int>(rules.general_double("DominatorCaptureRange", 1.0));
++            std::cout << "[yuri-sw] DominatorCaptureRange=" << rng << " DominatorFireAtPercentage="
++                      << rules.general_double("DominatorFireAtPercentage", 20.0) << "\n";
++            const int dx0 = tx, dy0 = ty + 10;
++            const int a = spawn("E1", foe, dx0, dy0), b2 = spawn("MTNK", foe, dx0 + 1, dy0 + 1);
++            const int far_u = spawn("E1", foe, dx0 + 8, dy0 + 8);
++            const bool fired = w.fire_superweapon_at(me, SuperweaponType::PsychicDominator, dx0, dy0);
++            check(fired, "the Psychic Dominator fires");
++            int f_own = -1;
++            for (int f = 1; f <= 300; ++f) {
++                g.update(1.0 / 15.0);
++                if (w.units()[static_cast<std::size_t>(a)].house == me && f_own < 0) f_own = f;
++            }
++            std::cout << "[yuri-sw] Dominator: units switch side at frame " << f_own << " (permanent in retail)\n";
++            check(f_own > 0, "enemy units in range went over to the Yuri player");
++            check(w.units()[static_cast<std::size_t>(a)].house == me &&
++                      w.units()[static_cast<std::size_t>(b2)].house == me,
++                  "captured units (including the 3x3 diagonal corner) stay permanently with the Yuri player");
++            check(w.units()[static_cast<std::size_t>(far_u)].house == foe, "a unit out of range stayed with its owner");
++        }
++        // ---- Psychic Reveal: shroud lifts around the target.
++        {
++            int rx = -1, ry = -1;
++            for (int y = w.grid_h() - 2; y > 0 && rx < 0; --y)
++                for (int x = w.grid_w() - 2; x > 0 && rx < 0; --x)
++                    if (!w.explored_at(me, x, y) && g.world_.map().at(x, y)) { rx = x; ry = y; }
++            std::cout << "[yuri-sw] map " << w.grid_w() << "x" << w.grid_h() << " reveal target " << rx << "," << ry << "\n";
++            const bool before = w.explored_at(me, rx, ry);
++            const bool fired = w.fire_superweapon_at(me, SuperweaponType::PsychicReveal, rx, ry);
++            g.update(1.0 / 15.0);
++            check(fired, "the Psychic Reveal fires");
++            check(!before && w.explored_at(me, rx, ry), "the cell was shrouded before and is revealed after");
++        }
++        // ---- Psychic Tower: [MultipleMindControlTower] Damage=3 links, Range=7.
++        {
++            for (int ui = 0; ui < static_cast<int>(w.units().size()); ++ui)   // a clean field: nothing else shoots the victims
++                if (w.units()[static_cast<std::size_t>(ui)].alive)
++                    w.campaign_damage_unit(ui, w.units()[static_cast<std::size_t>(ui)].hp + 1);
++            const int tw = add_instant("YAPSYT");
++            check(tw >= 0, "YAPSYT placed");
++            const ra2engine::Building& tb = w.buildings()[static_cast<std::size_t>(tw)];
++            std::vector<int> vic;
++            for (int k = 0; k < 5; ++k) vic.push_back(spawn(k < 3 ? "ENGINEER" : "MTNK", foe, tb.cx + 3 + k % 3, tb.cy + 2 + k / 3));   // unarmed infantry and one tank type
++            int f_full = -1, held = 0;
++            for (int f = 1; f <= 900 && f_full < 0; ++f) {
++                g.update(1.0 / 15.0);
++                held = 0;
++                for (int v : vic) held += (w.units()[static_cast<std::size_t>(v)].house == me && w.units()[static_cast<std::size_t>(v)].alive) ? 1 : 0;
++                if (held >= 3) f_full = f;
++                if (f % 100 == 0) {
++                    std::cout << "[yuri-sw] tower f=" << f << " held=" << held << " victims:";
++                    for (int v : vic) { const ra2engine::Unit& u = w.units()[static_cast<std::size_t>(v)];
++                        std::cout << " (h" << u.house << " a" << u.alive << " hp" << u.hp << " ctl" << u.w7.mc_controller << ")"; }
++                    std::cout << " tower hp=" << w.buildings()[static_cast<std::size_t>(tw)].hp << " off=" << w.buildings()[static_cast<std::size_t>(tw)].def_offline << w.buildings()[static_cast<std::size_t>(tw)].power_off << "\n";
++                }
++            }
++            for (int f = 0; f < 600; ++f) g.update(1.0 / 15.0);
++            held = 0;
++            for (int v : vic) held += (w.units()[static_cast<std::size_t>(v)].house == me && w.units()[static_cast<std::size_t>(v)].alive) ? 1 : 0;
++            std::cout << "[yuri-sw] Psychic Tower: 3 victims held after " << f_full << " frames; later holds " << held << "\n";
++            check(f_full > 0, "the Psychic Tower takes three enemy units in range 7");
++            check(held == 3, "it holds exactly Damage=3 links (holds " + std::to_string(held) + ")");
++            w.campaign_damage_building(tw, w.buildings()[static_cast<std::size_t>(tw)].hp + 1);
++            g.update(1.0 / 15.0);
++            int still = 0;
++            for (int v : vic) still += (w.units()[static_cast<std::size_t>(v)].house == me && w.units()[static_cast<std::size_t>(v)].alive) ? 1 : 0;
++            check(still == 0, "destroying the tower frees its victims (still held " + std::to_string(still) + ")");
++        }
++        // ---- Cloning Vats: every infantry unit the barracks trains is copied for free.
++        {
++            const int br = add_instant("YABRCK"), cv = add_instant("NACLON");
++            check(br >= 0 && cv >= 0, "YABRCK and NACLON placed");
++            for (int f = 0; f < 30; ++f) g.update(1.0 / 15.0);
++            auto n_init = [&]() {
++                int n = 0;
++                for (const ra2engine::Unit& u : w.units()) n += (u.alive && u.house == me && u.image == "INIT") ? 1 : 0;
++                return n;
++            };
++            const int before = n_init();
++            { std::string ids; for (const std::string& i : RealPlayProbe::tab_ids(g, 2)) ids += i + " ";
++              std::cout << "[yuri-sw] infantry tab: " << ids << "\n"; }
++            std::cout << "[yuri-sw] credits " << RealPlayProbe::credits(g) << " low_power=" << w.house_low_power(me) << "\n";
++            const int u0 = RealPlayProbe::train(g, 2, "INIT", 15 * 300);
++            for (int f = 0; f < 30; ++f) g.update(1.0 / 15.0);
++            std::cout << "[yuri-sw] Cloning Vats: Initiates before " << before << " after one trained " << n_init() << "\n";
++            check(u0 >= 0, "an Initiate rolled out of the barracks");
++            check(n_init() == before + 2, "the vats made a free second Initiate");
++        }
++        std::cout << "[yuri-sw] " << (fails ? "FAILED" : "all passed") << " (" << fails << " failures)\n";
++        return fails ? 1 : 0;
++    }
++
++    // --probe-crash: real aircraft types shot down over a real map: trajectory, flags, impact.
++    static int crash(int, char**) {
++        const std::string dir = env_install_dir();
++        Ini rules_ini = load_ini_from_ra2md(dir, "rulesmd.ini");
++        Rules rules = Rules::load(rules_ini);
++        ra2engine::SkirmishConfig cfg = ra2engine::default_skirmish_config(rules);
++        cfg.map_file = "xmp31s2.map";
++        cfg.use_map_starts = true;
++        cfg.slots[1].is_ai = false;
++        GameScene g(/*no_audio=*/true, cfg);
++        ra2engine::World& w = world(g);
++        int fails = 0;
++        for (int f = 0; f < 5; ++f) g.update(1.0 / 15.0);
++        for (std::size_t i = 0; i < w.units().size(); ++i) {
++            const ra2engine::Unit& u = w.units()[i];
++            if (u.image == "DEATHDUMMY")
++                std::cout << "[crash] DEATHDUMMY unit " << i << " house " << u.house << " cell " << u.cell_x << "," << u.cell_y
++                          << " alive " << u.alive << " hp " << u.hp << "\n";
++        }
++        for (const char* id : {"HORNET", "ORCA", "ZEP", "BEAG", "SCHP", "SHAD"}) {
++            const ra2engine::UnitCombat c = resolve_combat_unit(g.rules_, id).combat;
++            if (c.image.empty()) { std::cout << "[crash] " << id << ": no such unit\n"; continue; }
++            w.register_an_type(c.image, c);
++            ra2engine::Unit& u = w.add_combat_unit(60, 60, 0, c);
++            const int idx = static_cast<int>(w.units().size()) - 1;
++            u.altitude = 1500.0;   // [General] FlightLevel
++            u.flight_state = ra2engine::FlightState::Cruising;
++            u.body_facing = 16384.0;
++            std::cout << "[crash] " << id << ": aircraft=" << u.is_aircraft << " crashable=" << u.an.t.crashable
++                      << " fixed_wing=" << u.an.t.fixed_wing << " missile=" << u.an.t.missile
++                      << " fly_speed_cps=" << u.an.t.fly_speed_cps << " altitude=" << u.altitude << "\n";
++            const double x0 = u.fx, y0 = u.fy;
++            w.campaign_damage_unit(idx, u.hp + 1);
++            int f = 0, f_ground = -1;
++            std::string tr;
++            for (; f < 600; ++f) {
++                g.update(1.0 / 15.0);
++                const ra2engine::Unit& v = w.units()[static_cast<std::size_t>(idx)];
++                if (f % 5 == 0) tr += " [" + std::to_string(f) + ": alt " + std::to_string(static_cast<int>(v.altitude)) + "]";
++                if (v.altitude <= 0.0 && f_ground < 0) f_ground = f;
++                if (!v.alive) break;
++            }
++            const ra2engine::Unit& v = w.units()[static_cast<std::size_t>(idx)];
++            std::cout << "[crash] " << id << ": crashing=" << v.an.crashing << " reached the ground at frame " << f_ground
++                      << ", dead at frame " << f << ", travelled " << std::hypot(v.fx - x0, v.fy - y0) << " cells\n";
++            std::cout << "[crash]   altitude:" << tr << "\n";
++            if (f_ground < 0) ++fails;
++        }
++        return fails ? 1 : 0;
++    }
++
++    // --probe-start-pool: what a skirmish's starting force can contain, per country, from the real rules.
++    static int start_pool(int, char**) {
++        Ini rules_ini = load_ini_from_ra2md(env_install_dir(), "rulesmd.ini");
++        Rules rules = Rules::load(rules_ini);
++        int bad = 0;
++        for (const char* country : {"Americans", "Russians", "YuriCountry", "Alliance", "Africans"}) {
++            const GfStartPools p = gf_start_pools(rules_ini, rules, country, 10);
++            std::cout << "[pool] " << country << " vehicles:";
++            for (const std::string& v : p.vehicles) std::cout << " " << v;
++            std::cout << "\n[pool] " << country << " infantry:";
++            for (const std::string& v : p.infantry) std::cout << " " << v;
++            std::cout << "\n";
++            for (const std::string& v : p.vehicles) bad += (v == "DEATHDUMMY" || rules.cost(v) <= 0) ? 1 : 0;
++            for (const std::string& v : p.infantry) bad += (v == "DEATHDUMMY" || rules.cost(v) <= 0) ? 1 : 0;
++        }
++        std::cout << "[pool] " << (bad ? "FAIL: units without a cost or a tech level in the pool: " : "ok ") << bad << "\n";
++        return bad ? 1 : 0;
++    }
++
+     static int run(int argc, char** argv) {
+         int minutes = 15, damage_ai_at = -1, kill_cy_at = -1, ruin_at = -1;
+         double cash = -1.0;   // W2-AN: --cash N
+@@ -242,7 +507,10 @@ struct AiSoakProbe {
+                         if (u.is_aircraft) ++air;
+                     }
+                 }
+-                std::cout << "min " << f / 900 << ": ai_buildings=" << nb << " ai_miners=" << miners
++                int smin = 0, slav = 0;
++                for (const ra2engine::Unit& u : w.units())
++                    if (u.alive && u.die_time < 0.0 && u.house == ai) { smin += u.image == "SMIN"; slav += u.image == "SLAV"; }
++                std::cout << "min " << f / 900 << ": slave_miners=" << smin << " slaves=" << slav << " ai_buildings=" << nb << " ai_miners=" << miners
+                           << " ai_credits=" << (long long)w.ai_credits(ai) << " ai_units_alive=" << alive
+                           << " ai_units_built=" << ai_units_built
+                           << " teams_created=" << (ts ? ts->teams_created : 0)
+@@ -401,3 +669,6 @@ struct AiSoakProbe {
+ }  // namespace
+ 
+ int run_ai_soak(int argc, char** argv) { return AiSoakProbe::run(argc, argv); }
++int run_yuri_sw_probe(int argc, char** argv) { return AiSoakProbe::yuri_sw(argc, argv); }
++int run_crash_probe(int argc, char** argv) { return AiSoakProbe::crash(argc, argv); }
++int run_start_pool_probe(int argc, char** argv) { return AiSoakProbe::start_pool(argc, argv); }
+diff --git a/engine/air_naval.hpp b/engine/air_naval.hpp
+index 4e0a66a..959a978 100644
+--- a/engine/air_naval.hpp
++++ b/engine/air_naval.hpp
+@@ -294,19 +294,20 @@ struct SwParams {
+     double c4_pmax = 1.0;
+     // --- Yuri (save v48) ---
+     // Psychic Dominator [General] DominatorWarhead / DominatorDamage /
+-    // DominatorCaptureRange / DominatorFireAtPercentage. [RE-FALLBACK: the
+-    // length of the PDFXCLD head animation (art Rate=300, frame count not
+-    // read) and how long the captured units stay captured are not recovered:
+-    // the effect fires at fire_percent of dominator_anim_frames and the units
+-    // go back after dominator_hold_frames.]
++    // DominatorCaptureRange / DominatorFireAtPercentage [RE: PsyDom::Update
++    // FUN_0053af40, PsyDom::Fire FUN_0053b080, verified in gamemd.exe 2026-11-22]:
++    // PDFXCLD.SHP has 30 image frames at art Rate=300 (3 game frames per image
++    // = 90 game frames), and FUN_0053b080 permanently captures units in the
++    // CellSpread octile spiral DAT_007ed3d0[DominatorCaptureRange] (hold_frames
++    // == 0 is permanent; a positive hold_frames releases after that delay).
+     int dominator_damage = 1000;
+     double dominator_spread = 7.0;
+     double dominator_pmax = 0.2;
+     std::array<int, 11> dominator_verses{};
+     int dominator_capture_range = 1;
+     int dominator_fire_percent = 20;
+-    int dominator_anim_frames = 150;
+-    int dominator_hold_frames = 450;
++    int dominator_anim_frames = 90;
++    int dominator_hold_frames = 0;
+     // Genetic Mutator [General] MutateExplosion / MutateExplosionWarhead /
+     // MutateWarhead: infantry the warhead's Verses reach turn into mutant_type.
+     bool mutate_explosion = true;
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 869652f..c2c4550 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -19449,6 +19449,12 @@ int main(int argc, char** argv) {
+                 return run_demo_skirmish();
+             } else if (arg == "--ai-soak") {
+                 return run_ai_soak(argc, argv);
++            } else if (arg == "--probe-yuri-sw") {
++                return run_yuri_sw_probe(argc, argv);
++            } else if (arg == "--probe-crash") {
++                return run_crash_probe(argc, argv);
++            } else if (arg == "--probe-start-pool") {
++                return run_start_pool_probe(argc, argv);
+             } else if (arg == "--demo-roster") {
+                 return run_demo_roster();
+             } else if (arg == "--demo-roster2") {
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 7b089f8..8086aab 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -5540,11 +5540,27 @@ void World::step_ai_teams(double dt) {
+         // 2) Factory-lost cancel for the unit queues (the queues themselves
+         //    already TICKED inside step_ai_houses's ai_econ(rec).queues.tick — no new
+         //    production code) [RE: ai-team.md §6].
++        //    Ships and fixed-wing aircraft share QueueCat::Vehicle with land
++        //    vehicles (see ai_launch_unit_ready), so resolve the factory list
++        //    from the unit type itself rather than always tc.veh_factory_types.
++        std::vector<int> air_ft;
++        for (int bt = 0; bt < (int)an_.airfield_btype.size(); ++bt)
++            if (an_.airfield_btype[(std::size_t)bt]) air_ft.push_back(bt);
++        auto unit_ft = [&](int ut) -> const std::vector<int>& {
++            if (ut >= 0 && ut < (int)tc.unit_roster.size()) {
++                const UnitTypeDef& d = tc.unit_roster[ut];
++                if (!d.is_vehicle) return tc.inf_factory_types;
++                if (d.combat.an.fixed_wing) return air_ft;
++                if (d.combat.is_naval || d.combat.movement_domain == MovementDomain::Amphibious)
++                    return tc.nav_factory_types;
++            }
++            return tc.veh_factory_types;
++        };
+         if (ai_econ(rec).queues.producing(QueueCat::Infantry) != -1 &&
+             factory_category_lost(tc.inf_factory_types, h))
+             ai_econ(rec).queues.cancel(QueueCat::Infantry);
+-        if (ai_econ(rec).queues.producing(QueueCat::Vehicle) != -1 &&
+-            factory_category_lost(tc.veh_factory_types, h))
++        const int vprod = ai_econ(rec).queues.producing(QueueCat::Vehicle);
++        if (vprod != -1 && factory_category_lost(unit_ft(vprod), h))
+             ai_econ(rec).queues.cancel(QueueCat::Vehicle);
+         ai_econ(rec).credits = ai_econ(rec).queues.credits();
+ 
+@@ -5733,7 +5749,7 @@ void World::step_ai_teams(double dt) {
+                 if (!free_inf &&
+                     ai_econ(rec).credits < d.cost * rec.cfg.mods.cost_mul + tc.rules.credit_reserve + base_hold)
+                     continue;
+-                const std::vector<int>& ft = veh ? tc.veh_factory_types : tc.inf_factory_types;
++                const std::vector<int>& ft = unit_ft(ut);
+                 if (factory_category_lost(ft, h) ||
+                     !can_start_unit(ai_econ(rec).queues.state(cat), ut, tc.unit_roster, buildings_,
+                                     rec.cfg.roster, h, rec.cfg.groups, true))
+@@ -5828,7 +5844,7 @@ void World::step_ai_teams(double dt) {
+         if (want >= 0) {
+             const bool veh = tc.unit_roster[want].is_vehicle;
+             const QueueCat cat = veh ? QueueCat::Vehicle : QueueCat::Infantry;
+-            const std::vector<int>& ft = veh ? tc.veh_factory_types : tc.inf_factory_types;
++            const std::vector<int>& ft = unit_ft(want);
+             const bool factory = !factory_category_lost(ft, h);
+             // BuildSlowdown OVER-QUEUE damp [RE-GATE APPLIED: ai-team.md §6]: on
+             // Normal/Difficult, do NOT start another of a category the house
+diff --git a/engine/world_grinder_bio.cpp b/engine/world_grinder_bio.cpp
+index 4a557ad..43559de 100644
+--- a/engine/world_grinder_bio.cpp
++++ b/engine/world_grinder_bio.cpp
+@@ -44,12 +44,19 @@ int cheb_to_foundation(const Building& b, int x, int y) {
+ }  // namespace
+ 
+ void World::mc_free_keep_owner(int ctl, int vi) {
+-    if (ctl < 0 || ctl >= static_cast<int>(units_.size())) return;
+     if (vi < 0 || vi >= static_cast<int>(units_.size())) return;
+-    Unit& cu = units_[static_cast<std::size_t>(ctl)];
+     Unit& vu = units_[static_cast<std::size_t>(vi)];
+-    auto& vv = cu.w7.mc_victims;
+-    vv.erase(std::remove(vv.begin(), vv.end(), vi), vv.end());
++    if (ctl >= kTowerCtl) {
++        const int bi = ctl - kTowerCtl;
++        if (bi >= 0 && bi < static_cast<int>(buildings_.size())) {
++            auto& tv = buildings_[static_cast<std::size_t>(bi)].mc_victims;
++            tv.erase(std::remove(tv.begin(), tv.end(), vi), tv.end());
++        }
++    } else if (ctl >= 0 && ctl < static_cast<int>(units_.size())) {
++        Unit& cu = units_[static_cast<std::size_t>(ctl)];
++        auto& vv = cu.w7.mc_victims;
++        vv.erase(std::remove(vv.begin(), vv.end(), vi), vv.end());
++    }
+     if (vu.w7.mc_controller != ctl) return;
+     vu.w7.mc_controller = -1;
+     vu.w7.mc_orig_house = -1;
+diff --git a/engine/world_sw.cpp b/engine/world_sw.cpp
+index a154c41..2be2955 100644
+--- a/engine/world_sw.cpp
++++ b/engine/world_sw.cpp
+@@ -664,8 +664,12 @@ void World::an_step_strikes(double dt) {
+             } else if (s.kind == 3) {   // Psychic Dominator (world_yuri.cpp)
+                 const int fire = std::max(1, P.dominator_anim_frames * P.dominator_fire_percent / 100);
+                 if (s.frame == fire) an_dominator_fire(s);
+-                if (s.frame >= fire + P.dominator_hold_frames) {
+-                    an_dominator_release(s);
++                if (P.dominator_hold_frames > 0) {
++                    if (s.frame >= fire + P.dominator_hold_frames) {
++                        an_dominator_release(s);
++                        s.done = true;
++                    }
++                } else if (s.frame >= std::max(fire, P.dominator_anim_frames)) {
+                     s.done = true;
+                 }
+             } else if (s.kind == 4) {   // Genetic Mutator
+diff --git a/engine/world_yuri.cpp b/engine/world_yuri.cpp
+index b0583b0..a00d0c3 100644
+--- a/engine/world_yuri.cpp
++++ b/engine/world_yuri.cpp
+@@ -88,28 +88,40 @@ void World::an_mutate_detonate(const SwStrike& s) {
+     }
+ }
+ 
+-// ---- Psychic Dominator: at fire_percent of the head animation the warhead
+-// damages (buildings: Verses 0 on every unit armor) and every non-allied unit
+-// within DominatorCaptureRange that can be mind controlled changes sides; they
+-// go back dominator_hold_frames later. Victims live in s.recent.
++// ---- Psychic Dominator [RE: PsyDom::Update FUN_0053af40, PsyDom::Fire
++// FUN_0053b080]: at fire_percent of the PDFXCLD animation the warhead damages
++// buildings (Verses 0 on every unit armor) and every non-allied ground unit in
++// the CellSpread octile spiral DAT_007ed3d0[DominatorCaptureRange] (1, 9, 21,
++// 37, 61, 89, 121, 161, 205, 253, 309 cells for range 0..10, i.e. octile
++// max(|dx|,|dy|) + min(|dx|,|dy|)/2 <= r) changes sides permanently
++// (IsPermaControlled +0xb1 = 1; any prior mind-control link +0xb0 is freed
++// via FUN_00471ff0). When dominator_hold_frames > 0 (synthetic tests), victims
++// ride in s.recent and revert after that delay.
+ void World::an_dominator_fire(SwStrike& s) {
+     const SwParams& P = an_.sw;
+     an_area_damage(s.house, s.x, s.y, P.dominator_damage, P.dominator_spread, P.dominator_pmax,
+                    P.dominator_verses, /*hit_air=*/false, /*spare_house=*/false, 0.0, 0, -1);
++    const int r_cells = std::clamp(P.dominator_capture_range, 0, 10);
+     const double radius = std::max(0.5, static_cast<double>(P.dominator_capture_range)) * kLept;
+     for (int j = 0; j < static_cast<int>(units_.size()); ++j) {
+         const Unit& v = units_[static_cast<std::size_t>(j)];
+         if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0 || v.garrison_of >= 0 || v.is_aircraft) continue;
+         if (v.house == s.house || !is_enemy(s.house, v.house)) continue;
+-        if (!psionic_target_ok(j) || v.an.iron_left_frames > 0.0 || v.w7.mc_controller >= 0 ||
+-            v.w7.mc_orig_house >= 0)
+-            continue;
+-        if (om::hypot((v.fx - s.x) * kLept, (v.fy - s.y) * kLept) > radius) continue;
+-        units_[static_cast<std::size_t>(j)].w7.mc_orig_house = v.house;
++        if (!psionic_target_ok(j) || v.an.iron_left_frames > 0.0) continue;
++        const int adx = std::abs(v.cell_x - s.x), ady = std::abs(v.cell_y - s.y);
++        const int oct = std::max(adx, ady) + std::min(adx, ady) / 2;
++        if (oct > r_cells && om::hypot((v.fx - s.x) * kLept, (v.fy - s.y) * kLept) > radius) continue;
++        if (v.w7.mc_controller >= 0) mc_free_keep_owner(v.w7.mc_controller, j);
++        if (P.dominator_hold_frames > 0) {
++            if (units_[static_cast<std::size_t>(j)].w7.mc_orig_house < 0)
++                units_[static_cast<std::size_t>(j)].w7.mc_orig_house = v.house;
++            s.recent.push_back(j);
++        } else {
++            units_[static_cast<std::size_t>(j)].w7.mc_orig_house = -1;
++        }
+         set_unit_owner(j, s.house);
+         units_[static_cast<std::size_t>(j)].target = -1;
+         units_[static_cast<std::size_t>(j)].attack_order = false;
+-        s.recent.push_back(j);
+     }
+ }
+ 
+diff --git a/tests/test_yuri_specials.cpp b/tests/test_yuri_specials.cpp
+index 7e90e9a..3caa6c7 100644
+--- a/tests/test_yuri_specials.cpp
++++ b/tests/test_yuri_specials.cpp
+@@ -130,6 +130,33 @@ TEST_CASE("psychic dominator: a victim killed meanwhile is not resurrected into
+     CHECK_FALSE(w.units()[0].alive);
+ }
+ 
++TEST_CASE("psychic dominator: retail default permanently captures the 3x3 spiral and frees a prior MC link") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    SwParams p;
++    p.dominator_damage = 0;   // stock range=1, anim_frames=90, fire_percent=20 (frame 18), hold_frames=0 (permanent)
++    w.set_sw_params(p);
++    UnitCombat psi = mk_inf("YURI");
++    psi.w7.mind_control = true;
++    psi.w7.mc_capacity = 1;
++    w.add_combat_unit(15, 15, 1, psi);                    // index 0: enemy controller
++    w.add_combat_unit(11, 11, 0, mk_inf("E1"));           // index 1: diagonal corner (11,11) of (10,10), captured by enemy psi
++    w.add_combat_unit(10, 10, 1, mk_inf("E1"));           // index 2: centre cell
++    REQUIRE(w.mc_capture(0, 1));
++    REQUIRE(w.units()[1].house == 1);
++    REQUIRE(w.units()[1].w7.mc_controller == 0);
++    arm_sw(w, 0, SuperweaponType::PsychicDominator);
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::PsychicDominator, 10, 10));
++    run(w, 20);   // fires at frame 18 (20% of 90)
++    CHECK(w.units()[1].house == 0);
++    CHECK(w.units()[1].w7.mc_controller == -1);           // prior MC link freed (FUN_00471ff0)
++    CHECK(w.units()[0].w7.mc_victims.empty());
++    CHECK(w.units()[2].house == 0);
++    run(w, 600);                                          // permanent: never reverts
++    CHECK(w.units()[1].house == 0);
++    CHECK(w.units()[2].house == 0);
++}
++
+ TEST_CASE("psychic reveal: reveals around the target without a strike") {
+     const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
+     World w(map);

@@ -1,0 +1,662 @@
+# 0098: `ra2engine --probe-move [map.map]`, a real-data movement harness (nothing in the game changes).
+#
+# Like --probe-combat it builds the real GameScene (the menu's Start) headless and drives
+# GameScene::update at 15 Hz with units resolved from the install's rulesmd.ini, so every number
+# is the shipped rules. Run it from a build with RA2_INSTALL_DIR set and SDL_VIDEODRIVER=dummy:
+#   (no env)       16 unit types (Grizzly, Rhino, Apocalypse, GI, Conscript, Dog, Engineer,
+#                  Harvester, IFV, Prism, Terror Drone, Lasher, Brute, Initiate, Aegis):
+#                  6 moves each across the map: route length / shortest, turns, one-step
+#                  staircases, average and peak speed against Speed=, stalls, > 45 degree
+#                  heading jumps, body-facing change per frame against ROT
+#   PROBE_SCEN=1   group moves (6 tanks + 6 GI, 12 Rhinos, 12 GI, 10 Apocalypse + 10 GI), a one-cell
+#                  corridor with a parked friend and head-on
+#   PROBE_SCEN2=1  re-clicking the same move every 8/15/30 frames, an unreachable goal inside a
+#                  sealed ring, a wall placed across the route mid-way, 8 units sent to one cell
+#   PROBE_SHAPE=1  the shape of open-ground routes (direction string, turns)
+#   PROBE_ECON=1   1 and 3 Harvesters round one refinery for 4 minutes (unloads, stalls, state frames)
+#   PROBE_START=1  what each house starts with
+#   PROBE_FACTORY=1  8 tanks leaving a War Factory
+#   PROBE_VERBOSE=1  per-frame lines for the scenario being run; RA2_LOCO_TRACE=1 the locomotor's
+#                  blocked-move lines
+# Findings of the first runs are in patches 0095 to 0097 (and the PR description).
+
+--- /dev/null
++++ b/engine/movement_probe.inc
+@@ -0,0 +1,610 @@
++// movement_probe.inc -- `--probe-move [map]`: real-data movement measurements.
++// Builds the real GameScene (like --probe-combat), spawns real unit types
++// from the install's rules and records per-frame trajectories to measure path
++// length against the shortest route, speed against Speed=, turning against
++// ROT, stalls, group moves and blocked traffic. Prints MEASURE lines and
++// PASS/FAIL checks; exits 1 on a failed check.
++
++#include <cmath>
++#include <queue>
++#include <map>
++#include <set>
++
++namespace {
++struct MoveProbe {
++    int fails = 0;
++    void check(bool ok, const std::string& what) {
++        std::cout << (ok ? "[move] PASS " : "[move] FAIL ") << what << "\n";
++        if (!ok) ++fails;
++    }
++    static ra2engine::SkirmishConfig cfg_for(const Rules& rules, const std::string& map) {
++        ra2engine::SkirmishConfig cfg = ra2engine::default_skirmish_config(rules);
++        cfg.map_file = map;
++        cfg.use_map_starts = true;
++        return cfg;
++    }
++    static ra2engine::World& world(GameScene& g) { return g.world_; }
++    static ra2engine::UnitCombat combat_of(GameScene& g, const std::string& id) {
++        for (const UnitRoster* r : {&g.ur_, &g.ur_ai_})
++            for (const ra2engine::UnitTypeDef& d : r->defs)
++                if (d.id == id) return d.combat;
++        return resolve_combat_unit(g.rules_, id).combat;
++    }
++    static bool ground_ok(const ra2engine::World& w, int x, int y) {
++        return w.walkable(x, y) && w.unit_at_cell(x, y) < 0 && w.building_at_cell(x, y) < 0;
++    }
++    // Shortest route length in cells (diagonal sqrt2, no corner cutting) over
++    // the walkable grid: the reference every path is compared with.
++    static double dijkstra(const ra2engine::World& w, int sx, int sy, int gx, int gy) {
++        const int W = w.grid_w(), H = w.grid_h();
++        std::vector<double> d((size_t)W * H, 1e18);
++        using Q = std::pair<double, int>;
++        std::priority_queue<Q, std::vector<Q>, std::greater<Q>> q;
++        d[(size_t)sy * W + sx] = 0;
++        q.push({0, sy * W + sx});
++        while (!q.empty()) {
++            auto [dist, c] = q.top();
++            q.pop();
++            if (dist > d[(size_t)c]) continue;
++            const int x = c % W, y = c / W;
++            if (x == gx && y == gy) return dist;
++            for (int dy = -1; dy <= 1; ++dy)
++                for (int dx = -1; dx <= 1; ++dx) {
++                    if (!dx && !dy) continue;
++                    const int nx = x + dx, ny = y + dy;
++                    if (nx < 0 || ny < 0 || nx >= W || ny >= H || !w.walkable(nx, ny)) continue;
++                    if (dx && dy && (!w.walkable(x + dx, y) || !w.walkable(x, y + dy))) continue;
++                    const double nd = dist + ((dx && dy) ? 1.41421356 : 1.0);
++                    if (nd < d[(size_t)ny * W + nx]) { d[(size_t)ny * W + nx] = nd; q.push({nd, ny * W + nx}); }
++                }
++        }
++        return -1;
++    }
++    struct Trace {
++        int frames = 0, moving_frames = 0, stalls = 0, reversals = 0, path_turns = 0, path_cells = 0, stair = 0;
++        double travelled = 0, max_turn = 0, speed_sum = 0, speed_max = 0;
++        double end_dx = 0, end_dy = 0;
++        bool arrived = false;
++        std::vector<std::array<double, 4>> pts;   // fx, fy, body_facing, speed (cells/s)
++    };
++    // Order unit i to (gx,gy) and run until it stops (or max frames).
++    static Trace run_move(GameScene& g, int i, int gx, int gy, int max_frames = 15 * 120) {
++        ra2engine::World& w = g.world_;
++        Trace t;
++        w.order_unit_move(i, gx, gy);
++        const ra2engine::Unit& u0 = w.units()[(size_t)i];
++        t.path_cells = (int)u0.path.size();
++        for (size_t k = 2; k < u0.path.size(); ++k) {
++            const int ax = u0.path[k - 1].x - u0.path[k - 2].x, ay = u0.path[k - 1].y - u0.path[k - 2].y;
++            const int bx = u0.path[k].x - u0.path[k - 1].x, by = u0.path[k].y - u0.path[k - 1].y;
++            if (ax != bx || ay != by) ++t.path_turns;
++        }
++        {   // staircase: a run of exactly one step between two turns (x,y,x,y...)
++            int run = 1;
++            for (size_t k = 2; k + 0 < u0.path.size(); ++k) {
++                const bool same = (u0.path[k].x - u0.path[k - 1].x == u0.path[k - 1].x - u0.path[k - 2].x) &&
++                                  (u0.path[k].y - u0.path[k - 1].y == u0.path[k - 1].y - u0.path[k - 2].y);
++                if (same) { ++run; continue; }
++                if (run == 1 && k >= 3) ++t.stair;
++                run = 1;
++            }
++        }
++        double px = u0.fx, py = u0.fy, pf = u0.body_facing;
++        double last_hx = 0, last_hy = 0;
++        for (int f = 0; f < max_frames; ++f) {
++            g.update(1.0 / 15.0);
++            const ra2engine::Unit& u = w.units()[(size_t)i];
++            ++t.frames;
++            const double dx = u.fx - px, dy = u.fy - py, d = std::sqrt(dx * dx + dy * dy);
++            double df = std::fabs(u.body_facing - pf);
++            if (df > 32768) df = 65536 - df;
++            t.max_turn = std::max(t.max_turn, df);
++            if (u.moving()) {
++                ++t.moving_frames;
++                if (d < 1e-9) ++t.stalls;
++            }
++            t.travelled += d;
++            t.speed_max = std::max(t.speed_max, d * 15.0);
++            if (d > 1e-6) {
++                if (last_hx * dx + last_hy * dy < 0.7071 * std::sqrt(last_hx * last_hx + last_hy * last_hy) * d &&
++                    (last_hx != 0 || last_hy != 0))
++                    ++t.reversals;   // heading changed by more than 45 degrees in one frame
++                last_hx = dx; last_hy = dy;
++            }
++            t.pts.push_back({u.fx, u.fy, u.body_facing, d * 15.0});
++            px = u.fx; py = u.fy; pf = u.body_facing;
++            if (!u.moving() && f > 2) { t.arrived = true; break; }
++        }
++        const ra2engine::Unit& u = w.units()[(size_t)i];
++        t.end_dx = u.cell_x - gx; t.end_dy = u.cell_y - gy;
++        return t;
++    }
++
++    // An open rectangle (all cells walkable and free) of size w x h nearest the map centre.
++    static bool open_rect(const ra2engine::World& w, int rw, int rh, int& ox, int& oy) {
++        const int W = w.grid_w(), H = w.grid_h();
++        int best = 1 << 30; bool found = false;
++        for (int y = 2; y + rh < H - 2; ++y)
++            for (int x = 2; x + rw < W - 2; ++x) {
++                bool ok = true;
++                for (int yy = y - 1; yy <= y + rh && ok; ++yy)
++                    for (int xx = x - 1; xx <= x + rw && ok; ++xx)
++                        if (!ground_ok(w, xx, yy)) ok = false;
++                if (!ok) continue;
++                const int d = std::abs(x + rw / 2 - W / 2) + std::abs(y + rh / 2 - H / 2);
++                if (d < best) { best = d; ox = x; oy = y; found = true; }
++            }
++        return found;
++    }
++    static int spawn_near(GameScene& g, const std::string& id, int house, int x, int y) {
++        ra2engine::World& w = g.world_;
++        for (int r = 0; r < 14; ++r)
++            for (int dy = -r; dy <= r; ++dy)
++                for (int dx = -r; dx <= r; ++dx)
++                    if (std::max(std::abs(dx), std::abs(dy)) == r && ground_ok(w, x + dx, y + dy)) {
++                        w.add_combat_unit(x + dx, y + dy, house, combat_of(g, id));
++                        const int i = (int)w.units().size() - 1;
++                        w.units()[(size_t)i].hp = w.units()[(size_t)i].max_hp = 100000000;
++                        return i;
++                    }
++        return -1;
++    }
++    static int moving_count(const ra2engine::World& w, const std::vector<int>& ids) {
++        int n = 0;
++        for (int i : ids) if (w.units()[(size_t)i].moving()) ++n;
++        return n;
++    }
++};
++}  // namespace
++
++
++// ---- scenario probes -------------------------------------------------------
++namespace {
++// Group move: n_tank tanks + n_inf GIs from an open area to a far goal.
++void probe_group(MoveProbe& p, const Rules& rules, const std::string& map, int n_tank, int n_inf, const char* tank_id) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 9, 9, ox, oy)) { std::cout << "[move] group: no open area\n"; return; }
++    std::vector<int> ids;
++    for (int k = 0; k < n_tank; ++k) ids.push_back(P::spawn_near(g, tank_id, 0, ox + 4, oy + 4));
++    for (int k = 0; k < n_inf; ++k) ids.push_back(P::spawn_near(g, "E1", 0, ox + 4, oy + 4));
++    // goal: farthest-ish reachable open cell 25-45 away
++    int gx = -1, gy = -1;
++    for (int r = 28; r >= 10 && gx < 0; --r)
++        for (int k = 0; k < 8 && gx < 0; ++k) {
++            static const int d8[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{-1,1},{1,-1},{-1,-1}};
++            const int x = ox + 4 + d8[k][0] * r, y = oy + 4 + d8[k][1] * r;
++            if (P::ground_ok(w, x, y) && P::dijkstra(w, ox + 4, oy + 4, x, y) > 0) { gx = x; gy = y; }
++        }
++    if (gx < 0) { std::cout << "[move] group: no goal\n"; return; }
++    w.group_move(0, ids, gx, gy);
++    int stalls = 0, settle = -1;
++    std::vector<int> first_arrive;
++    for (int f = 0; f < 15 * 240; ++f) {
++        g.update(1.0 / 15.0);
++        for (int i : ids) {
++            const ra2engine::Unit& u = w.units()[(size_t)i];
++            if (u.moving() && u.wait_time > 0.0) ++stalls;
++        }
++        if (P::moving_count(w, ids) == 0) { settle = f; break; }
++    }
++    std::set<std::pair<int,int>> cells; int maxd = 0; double sumd = 0; int clumped = 0;
++    for (int i : ids) {
++        const ra2engine::Unit& u = w.units()[(size_t)i];
++        cells.insert({u.cell_x, u.cell_y});
++        const int d = std::max(std::abs(u.cell_x - gx), std::abs(u.cell_y - gy));
++        maxd = std::max(maxd, d); sumd += d;
++    }
++    (void)clumped;
++    const double opt = P::dijkstra(w, ox + 4, oy + 4, gx, gy);
++    std::cout << "[move] GROUP " << map << " " << n_tank << "x" << tank_id << "+" << n_inf << "xE1 goal=(" << gx << "," << gy << ") opt=" << opt
++              << " settle_frames=" << settle << " (" << (settle < 0 ? -1.0 : settle / 15.0) << " s) blocked_unit_frames=" << stalls
++              << " still_moving=" << P::moving_count(w, ids) << " distinct_cells=" << cells.size() << "/" << ids.size()
++              << " max_cheb_from_goal=" << maxd << " mean=" << sumd / ids.size() << "\n";
++    p.check(settle >= 0, "group move settles within 240 s");
++}
++
++// A one-cell-wide corridor of length 8 cut into open ground, a parked friendly in the middle.
++void probe_corridor(MoveProbe& p, const Rules& rules, const std::string& map, const char* mover, const char* parked, bool head_on) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 24, 7, ox, oy)) { std::cout << "[move] corridor: no open area\n"; return; }
++    // walls: rows oy+2 and oy+4 blocked for x in [ox+8, ox+16); corridor row oy+3
++    for (int x = ox + 8; x < ox + 16; ++x) { w.block_cell(x, oy + 2); w.block_cell(x, oy + 4); }
++    const int a = P::spawn_near(g, mover, 0, ox + 2, oy + 3);
++    int b = -1;
++    if (head_on) b = P::spawn_near(g, mover, 0, ox + 21, oy + 3);
++    else b = P::spawn_near(g, parked, 0, ox + 12, oy + 3);
++    if (a < 0 || b < 0) { std::cout << "[move] corridor: spawn failed\n"; return; }
++    std::cout << "[move] corridor " << mover << (head_on ? " head-on vs " : " vs parked ") << (head_on ? mover : parked)
++              << " a=(" << w.units()[(size_t)a].cell_x << "," << w.units()[(size_t)a].cell_y << ") b=(" << w.units()[(size_t)b].cell_x << "," << w.units()[(size_t)b].cell_y << ")\n";
++    if (head_on) w.order_unit_move(b, ox + 1, oy + 3);
++    w.order_unit_move(a, ox + 22, oy + 3);
++    int arrive = -1;
++    for (int f = 0; f < 15 * 120; ++f) {
++        g.update(1.0 / 15.0);
++        const ra2engine::Unit& u = w.units()[(size_t)a];
++        if (std::getenv("PROBE_VERBOSE") && f % 3 == 0)
++            std::cout << "[move]     f=" << f << " a cell=(" << u.cell_x << "," << u.cell_y << ") f=(" << u.fx << "," << u.fy << ") path=" << u.path_idx << "/" << u.path.size()
++                      << " goal=(" << (u.path.empty() ? -1 : u.path.back().x) << "," << (u.path.empty() ? -1 : u.path.back().y) << ") wait=" << u.wait_time << " moving=" << u.moving()
++                      << " | b cell=(" << w.units()[(size_t)b].cell_x << "," << w.units()[(size_t)b].cell_y << ") moving=" << w.units()[(size_t)b].moving() << "\n";
++        if (!u.moving() && f > 3) { arrive = f; break; }
++    }
++    const ra2engine::Unit& ua = w.units()[(size_t)a];
++    const ra2engine::Unit& ub = w.units()[(size_t)b];
++    std::cout << "[move] CORRIDOR " << mover << (head_on ? " head-on" : " parked-friendly") << " a_end=(" << ua.cell_x << "," << ua.cell_y << ") want x=" << ox + 22
++              << " arrive_frames=" << arrive << " (" << (arrive < 0 ? -1.0 : arrive / 15.0) << " s) b_end=(" << ub.cell_x << "," << ub.cell_y << ") b_moving=" << ub.moving() << "\n";
++    p.check(arrive >= 0 && ua.cell_x >= ox + 20, std::string("corridor ") + mover + (head_on ? " head-on" : " vs parked") + ": mover reaches the far side");
++}
++
++// Re-issuing the same move order every `every` frames (a player clicking again).
++void probe_spam(MoveProbe& p, const Rules& rules, const std::string& map, const char* id, int every) {
++    using P = MoveProbe;
++    double t_clean = 0, t_spam = 0, jump = 0, minv = 1e9; int slow = 0;
++    for (int pass = 0; pass < 2; ++pass) {
++        GameScene g(true, P::cfg_for(rules, map));
++        ra2engine::World& w = P::world(g);
++        int ox = 0, oy = 0;
++        if (!P::open_rect(w, 30, 5, ox, oy)) { std::cout << "[move] spam: no open area\n"; return; }
++        const int a = P::spawn_near(g, id, 0, ox + 1, oy + 2);
++        const int gx = ox + 28, gy = oy + 2;
++        w.order_unit_move(a, gx, gy);
++        int arrive = -1;
++        double px = w.units()[(size_t)a].fx, py = w.units()[(size_t)a].fy;
++        for (int f = 1; f < 15 * 120; ++f) {
++            if (pass == 1 && f % every == 0 && w.units()[(size_t)a].moving()) w.order_unit_move(a, gx, gy);
++            g.update(1.0 / 15.0);
++            const ra2engine::Unit& u = w.units()[(size_t)a];
++            const double d = std::hypot(u.fx - px, u.fy - py);
++            px = u.fx; py = u.fy;
++            if (pass == 1) { jump = std::max(jump, d * 15.0); if (u.moving() && d < 1e-9) ++slow; }
++            if (!u.moving() && f > 2) { arrive = f; break; }
++        }
++        (pass == 0 ? t_clean : t_spam) = arrive / 15.0;
++    }
++    std::cout << "[move] SPAM " << id << " reorder every " << every << " frames: clean=" << t_clean << " s, spam=" << t_spam << " s ("
++              << (t_spam / t_clean - 1) * 100 << "% slower) stalled_frames=" << slow << " peak_cps=" << jump << "\n";
++    (void)minv;
++}
++
++// A goal that cannot be reached (inside a ring of blocked cells).
++void probe_unreachable(MoveProbe& p, const Rules& rules, const std::string& map, const char* id) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 24, 12, ox, oy)) { std::cout << "[move] unreachable: no open area\n"; return; }
++    // ring of walls around (ox+18, oy+6), radius 2 (cells ox+16..ox+20, oy+4..oy+8)
++    for (int x = ox + 16; x <= ox + 20; ++x) for (int y = oy + 4; y <= oy + 8; ++y)
++        if (x == ox + 16 || x == ox + 20 || y == oy + 4 || y == oy + 8) w.block_cell(x, y);
++    const int a = P::spawn_near(g, id, 0, ox + 2, oy + 6);
++    P::Trace t = P::run_move(g, a, ox + 18, oy + 6, 15 * 90);
++    const ra2engine::Unit& u = w.units()[(size_t)a];
++    std::cout << "[move] UNREACHABLE " << id << " goal inside a sealed ring: ended at (" << u.cell_x - ox << "," << u.cell_y - oy << ") relative, cheb-dist-to-goal="
++              << std::max(std::abs(u.cell_x - (ox + 18)), std::abs(u.cell_y - (oy + 6))) << " (ring edge = 2) frames=" << t.frames << " travelled=" << t.travelled
++              << " arrived=" << t.arrived << " reversals=" << t.reversals << "\n";
++    p.check(t.arrived && std::max(std::abs(u.cell_x - (ox + 18)), std::abs(u.cell_y - (oy + 6))) <= 3,
++            std::string("unreachable goal: ") + id + " walks to the ring and stops");
++}
++
++// A building placed on the route while the unit is under way.
++void probe_block_midway(MoveProbe& p, const Rules& rules, const std::string& map, const char* id) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 30, 9, ox, oy)) { std::cout << "[move] midway: no open area\n"; return; }
++    const int a = P::spawn_near(g, id, 0, ox + 1, oy + 4);
++    const int gx = ox + 28, gy = oy + 4;
++    w.order_unit_move(a, gx, gy);
++    for (int f = 0; f < 15 * 4; ++f) g.update(1.0 / 15.0);
++    // wall off a 5-tall column two cells ahead
++    const int bx = w.units()[(size_t)a].cell_x + 3;
++    for (int y = oy + 2; y <= oy + 6; ++y) w.block_cell(bx, y);
++    int arrive = -1, stall_frames = 0; double travelled = 0, px = w.units()[(size_t)a].fx, py = w.units()[(size_t)a].fy;
++    for (int f = 0; f < 15 * 120; ++f) {
++        g.update(1.0 / 15.0);
++        const ra2engine::Unit& u = w.units()[(size_t)a];
++        const double d = std::hypot(u.fx - px, u.fy - py); travelled += d; px = u.fx; py = u.fy;
++        if (u.moving() && d < 1e-9) ++stall_frames;
++        if (!u.moving() && f > 2) { arrive = f; break; }
++    }
++    const ra2engine::Unit& u = w.units()[(size_t)a];
++    std::cout << "[move] MIDWAY-BLOCK " << id << " wall placed 3 cells ahead after 4 s: end=(" << u.cell_x - ox << "," << u.cell_y - oy << ") want x=" << gx - ox
++              << " frames=" << arrive << " stalled_while_moving=" << stall_frames << " travelled=" << travelled << "\n";
++    p.check(arrive >= 0 && u.cell_x >= gx - 1, std::string("midway block: ") + id + " reroutes and arrives");
++}
++
++// Many separate single-unit orders to the same goal cell (scripts / AI / waypoint).
++void probe_same_goal(MoveProbe& p, const Rules& rules, const std::string& map, const char* id, int n) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 24, 12, ox, oy)) { std::cout << "[move] samegoal: no open area\n"; return; }
++    std::vector<int> ids;
++    for (int k = 0; k < n; ++k) ids.push_back(P::spawn_near(g, id, 0, ox + 3, oy + 6));
++    for (int i : ids) w.order_unit_move(i, ox + 20, oy + 6);
++    int settle = -1; long moves = 0;
++    std::vector<std::pair<int,int>> last(ids.size(), {-1, -1});
++    for (int f = 0; f < 15 * 150; ++f) {
++        g.update(1.0 / 15.0);
++        for (size_t k = 0; k < ids.size(); ++k) {
++            const ra2engine::Unit& u = w.units()[(size_t)ids[k]];
++            if (last[k] != std::make_pair(u.cell_x, u.cell_y)) { last[k] = {u.cell_x, u.cell_y}; ++moves; }
++            if (std::getenv("PROBE_VERBOSE") && f % 15 == 0 && k == 1)
++                std::cout << "[move]     f=" << f << " u1 cell=(" << u.cell_x - ox << "," << u.cell_y - oy << ") path=" << u.path_idx << "/" << u.path.size() << " wait=" << u.wait_time << " tries=" << u.loco.temp_tries << " trk=" << u.loco.trk << " facing=" << u.body_facing << "\n";
++        }
++        if (P::moving_count(w, ids) == 0) { settle = f; break; }
++    }
++    int maxd = 0;
++    if (std::getenv("PROBE_VERBOSE"))
++        for (int i : ids) { const ra2engine::Unit& u = w.units()[(size_t)i]; std::cout << "[move]     unit " << i << " end=(" << u.cell_x - ox << "," << u.cell_y - oy << ") moving=" << u.moving() << "\n"; }
++    for (int i : ids) { const ra2engine::Unit& u = w.units()[(size_t)i]; maxd = std::max(maxd, std::max(std::abs(u.cell_x - (ox + 20)), std::abs(u.cell_y - (oy + 6)))); }
++    std::cout << "[move] SAME-GOAL " << n << "x" << id << " each ordered to one cell: settle_frames=" << settle << " (" << (settle < 0 ? -1.0 : settle / 15.0) << " s) cell_changes=" << moves
++              << " (ideal ~" << n * 17 << ") still_moving=" << P::moving_count(w, ids) << " max_cheb_from_goal=" << maxd << "\n";
++    p.check(settle >= 0, std::string("same-goal: ") + id + " crowd settles");
++}
++
++// Shape of the path A* returns in open ground: direction string and number of turns.
++void probe_shape(MoveProbe& p, const Rules& rules, const std::string& map) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    int ox = 0, oy = 0;
++    if (!P::open_rect(w, 22, 13, ox, oy)) { std::cout << "[move] shape: no open area\n"; return; }
++    static const int T[][2] = {{17, 7}, {10, 10}, {12, 5}, {20, 3}, {6, 11}, {19, 12}, {5, 2}, {15, 11}};
++    const char* dn = "NEESSWWN";   // placeholder, built below
++    (void)dn;
++    int total_turns = 0, total_min = 0;
++    for (auto& t : T) {
++        const int a = P::spawn_near(g, "MTNK", 0, ox + 1, oy + 1);
++        const ra2engine::Unit& u0 = w.units()[(size_t)a];
++        const int sx = u0.cell_x, sy = u0.cell_y;
++        w.order_unit_move(a, sx + t[0], sy + t[1]);
++        const ra2engine::Unit& u = w.units()[(size_t)a];
++        std::string s; int turns = 0, pd = -1;
++        for (size_t k = 1; k < u.path.size(); ++k) {
++            const int dx = u.path[k].x - u.path[k - 1].x, dy = u.path[k].y - u.path[k - 1].y;
++            const int d = (dx + 1) * 3 + (dy + 1);
++            static const char* nm[9] = {"NW", "W", "SW", "N", "?", "S", "NE", "E", "SE"};
++            // screen-less: x east, y south
++            s += (k > 1 ? "," : ""); s += nm[d];
++            if (pd >= 0 && d != pd) ++turns;
++            pd = d;
++        }
++        const int minturns = (t[0] != 0 && t[1] != 0 && t[0] != t[1]) ? 1 : 0;
++        total_turns += turns; total_min += minturns;
++        std::cout << "[move] SHAPE (" << t[0] << "," << t[1] << ") cells=" << u.path.size() - 1 << " turns=" << turns << " (ideal " << minturns << ") " << s.substr(0, 150) << "\n";
++        w.order_unit_move(a, sx, sy);   // park: cancel
++        w.units()[(size_t)a].path.clear();
++        w.units()[(size_t)a].alive = false;
++    }
++    std::cout << "[move] SHAPE total turns=" << total_turns << " ideal=" << total_min << "\n";
++}
++
++// Harvesters on a real map: n driving HARV around one refinery for 4 minutes.
++void probe_econ(MoveProbe& p, const Rules& rules, const std::string& map, int n_harv) {
++    using P = MoveProbe;
++    using RP = RealPlayProbe;
++    ra2engine::SkirmishConfig cfg = P::cfg_for(rules, map);
++    GameScene g(true, cfg);
++    RP::deploy_start(g);
++    ra2engine::World& w = P::world(g);
++    RP::add_instant(g, "GAPOWR");
++    RP::add_instant(g, "GAPOWR");
++    const int t = roster_index(RP::ba(g), "GAREFN");
++    int rx = 0, ry = 0;
++    if (t < 0 || !RP::find_spot(g, t, rx, ry)) { std::cout << "[move] econ: no refinery spot\n"; return; }
++    g.place_building(t, rx, ry);
++    for (int f = 0; f < 15 * 25; ++f) g.update(1.0 / 15.0);   // build-up and the free miner
++    std::vector<int> hv;
++    for (int k = 0; k < n_harv; ++k) {
++        const int i = P::spawn_near(g, "HARV", 0, rx + 2, ry + 4);
++        if (i >= 0) { w.make_harvester(i, false, 40); hv.push_back(i); }
++    }
++    if (std::getenv("PROBE_VERBOSE"))
++        for (const ra2engine::Building& b : w.buildings())
++            if (b.alive && b.house == 0)
++                std::cout << "[move]     building " << RP::ba(g).roster[b.type].id << " at (" << b.cx << "," << b.cy << ") " << b.fw << "x" << b.fh << " state=" << (int)b.state << "\n";
++    const double c0 = RP::credits(g);
++    std::vector<int> unloads(hv.size(), 0), stall(hv.size(), 0), wait_dock(hv.size(), 0), seek(hv.size(), 0), moveore(hv.size(), 0), ret(hv.size(), 0), harvest(hv.size(), 0);
++    std::vector<ra2engine::HarvState> prev(hv.size(), ra2engine::HarvState::None);
++    std::vector<double> px(hv.size()), py(hv.size()), dist(hv.size(), 0.0);
++    for (size_t k = 0; k < hv.size(); ++k) { px[k] = w.units()[(size_t)hv[k]].fx; py[k] = w.units()[(size_t)hv[k]].fy; }
++    const int frames = 15 * 240;
++    for (int f = 0; f < frames; ++f) {
++        g.update(1.0 / 15.0);
++        for (size_t k = 0; k < hv.size(); ++k) {
++            const ra2engine::Unit& u = w.units()[(size_t)hv[k]];
++            if (!u.alive) continue;
++            const double d = std::hypot(u.fx - px[k], u.fy - py[k]);
++            dist[k] += d; px[k] = u.fx; py[k] = u.fy;
++            if (u.moving() && d < 1e-9) ++stall[k];
++            if (std::getenv("PROBE_VERBOSE") && k == 0 && f % 300 == 0)
++                for (size_t q = 0; q < w.units().size(); ++q) {
++                    const ra2engine::Unit& o = w.units()[q];
++                    if (o.alive && o.house == 0 && (o.is_harvester || o.is_vehicle))
++                        std::cout << "[move]       unit#" << q << " " << o.image << " harv=" << o.is_harvester << " chrono=" << o.chrono_miner << " cell=(" << o.cell_x << "," << o.cell_y << ") state=" << (int)o.harv
++                                  << " moving=" << o.moving() << " bales=" << o.bales_ore << " dock_ref=" << o.dock_refinery << "\n";
++                }
++            if (std::getenv("PROBE_VERBOSE") && k == 0 && f % 45 == 0 && f > 2000)
++                std::cout << "[move]     f=" << f << " harv cell=(" << u.cell_x << "," << u.cell_y << ") state=" << (int)u.harv << " path=" << u.path_idx << "/" << u.path.size()
++                          << " goal=(" << (u.path.empty() ? -1 : u.path.back().x) << "," << (u.path.empty() ? -1 : u.path.back().y) << ") wait=" << u.wait_time << " dock_ref=" << u.dock_refinery
++                          << " bales=" << u.bales_ore + u.bales_gems << " manual_hold=" << u.manual_hold << "\n";
++            if (u.harv == ra2engine::HarvState::Unloading && prev[k] != ra2engine::HarvState::Unloading) ++unloads[k];
++            prev[k] = u.harv;
++            switch (u.harv) {
++                case ra2engine::HarvState::WaitDock: ++wait_dock[k]; break;
++                case ra2engine::HarvState::SeekOre: ++seek[k]; break;
++                case ra2engine::HarvState::MoveToOre: ++moveore[k]; break;
++                case ra2engine::HarvState::ReturnToRef: ++ret[k]; break;
++                case ra2engine::HarvState::Harvesting: ++harvest[k]; break;
++                default: break;
++            }
++        }
++    }
++    int tot = 0;
++    for (size_t k = 0; k < hv.size(); ++k) {
++        tot += unloads[k];
++        std::cout << "[move] ECON " << n_harv << "xHARV #" << k << " unloads=" << unloads[k] << " travelled=" << dist[k] << " cells; frames: moveToOre=" << moveore[k]
++                  << " harvesting=" << harvest[k] << " return=" << ret[k] << " waitDock=" << wait_dock[k] << " seek=" << seek[k] << " stalled-while-moving=" << stall[k] << "\n";
++    }
++    std::cout << "[move] ECON " << n_harv << "xHARV total_unloads=" << tot << " income=" << RP::credits(g) - c0 << " in " << frames / 15 << " s refinery=(" << rx << "," << ry << ")\n";
++    (void)p;
++}
++
++// What each house starts with (the gf start force) on a real map.
++void probe_start(MoveProbe& p, const Rules& rules, const std::string& map) {
++    using P = MoveProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    ra2engine::World& w = P::world(g);
++    std::map<int, std::map<std::string, int>> per;
++    for (const ra2engine::Unit& u : w.units())
++        if (u.alive && (u.house == 0 || u.house == 1)) ++per[u.house][u.image + (u.hp > 0 ? "" : "(hp0)")];
++    for (auto& [h, m] : per) {
++        std::cout << "[move] START " << map << " house " << h << ":";
++        int total = 0;
++        for (auto& [img, n] : m) { std::cout << " " << img << "x" << n; total += n; }
++        std::cout << " (total " << total << ")\n";
++    }
++    (void)p;
++}
++
++// Units leaving a war factory one after another.
++void probe_factory(MoveProbe& p, const Rules& rules, const std::string& map, int n) {
++    using P = MoveProbe;
++    using RP = RealPlayProbe;
++    GameScene g(true, P::cfg_for(rules, map));
++    RP::deploy_start(g);
++    ra2engine::World& w = P::world(g);
++    RP::add_instant(g, "GAPOWR");
++    RP::add_instant(g, "GAPOWR");
++    RP::add_instant(g, "GAREFN");
++    const int t = roster_index(RP::ba(g), "GAWEAP");
++    int rx = 0, ry = 0;
++    if (t < 0 || !RP::find_spot(g, t, rx, ry)) { std::cout << "[move] factory: no spot\n"; return; }
++    RP::add_instant(g, "GAWEAP");
++    const int bi = RP::own_index(g, "GAWEAP");
++    if (bi < 0) { std::cout << "[move] factory: none\n"; return; }
++    const ra2engine::BuildingTypeDef& def = RP::ba(g).roster[t];
++    const ra2engine::Building& fb = w.buildings()[(size_t)bi];
++    std::cout << "[move] FACTORY at (" << fb.cx << "," << fb.cy << ") " << fb.fw << "x" << fb.fh << "\n";
++    std::vector<int> ids; std::vector<int> t_launch, t_idle;
++    for (int k = 0; k < n; ++k) {
++        const int u = w.launch_unit(bi, def, P::combat_of(g, "MTNK"));
++        if (u < 0) { std::cout << "[move]   launch " << k << ": no free exit cell\n"; for (int f = 0; f < 15; ++f) g.update(1.0 / 15.0); --k; if (ids.size() + 1 > (size_t)n) break; continue; }
++        w.units()[(size_t)u].hp = w.units()[(size_t)u].max_hp = 100000000;
++        ids.push_back(u); t_launch.push_back(k * 30); t_idle.push_back(-1);
++        for (int f = 0; f < 30; ++f) g.update(1.0 / 15.0);
++    }
++    int frame = (int)ids.size() * 30;
++    for (; frame < 15 * 90; ++frame) {
++        g.update(1.0 / 15.0);
++        for (size_t k = 0; k < ids.size(); ++k)
++            if (t_idle[k] < 0 && !w.units()[(size_t)ids[k]].moving() && frame > t_launch[k] + 5) t_idle[k] = frame - t_launch[k];
++    }
++    int moving = 0, far = 0;
++    for (size_t k = 0; k < ids.size(); ++k) {
++        const ra2engine::Unit& u = w.units()[(size_t)ids[k]];
++        const int d = std::max(std::abs(u.cell_x - (fb.cx + fb.fw / 2)), std::abs(u.cell_y - (fb.cy + fb.fh)));
++        std::cout << "[move]   unit " << k << " end=(" << u.cell_x << "," << u.cell_y << ") dist_to_door=" << d << " idle_after=" << (t_idle[k] < 0 ? -1.0 : t_idle[k] / 15.0) << " s moving=" << u.moving() << "\n";
++        moving += u.moving(); far = std::max(far, d);
++    }
++    std::cout << "[move] FACTORY launched " << ids.size() << "/" << n << " still_moving=" << moving << " farthest_from_door=" << far << "\n";
++    (void)p;
++}
++}  // namespace
++
++int run_probe_move(const std::string& map) {
++    using P = MoveProbe;
++    const std::string dir = env_install_dir();
++    Ini rules_ini = load_ini_from_ra2md(dir, "rulesmd.ini");
++    Rules rules = Rules::load(rules_ini);
++    P p;
++    if (std::getenv("PROBE_FACTORY")) { probe_factory(p, rules, map, 8); return 0; }
++    if (std::getenv("PROBE_START")) { probe_start(p, rules, map); return 0; }
++    if (std::getenv("PROBE_ECON")) { probe_econ(p, rules, map, 1); probe_econ(p, rules, map, 3); return 0; }
++    if (std::getenv("PROBE_SHAPE")) { probe_shape(p, rules, map); return 0; }
++    if (std::getenv("PROBE_SCEN2")) {
++        for (int every : {8, 15, 30}) probe_spam(p, rules, map, "MTNK", every);
++        probe_spam(p, rules, map, "E1", 8);
++        probe_unreachable(p, rules, map, "MTNK");
++        probe_unreachable(p, rules, map, "E1");
++        probe_block_midway(p, rules, map, "MTNK");
++        probe_block_midway(p, rules, map, "E1");
++        probe_same_goal(p, rules, map, "MTNK", 8);
++        probe_same_goal(p, rules, map, "E1", 8);
++        return p.fails ? 1 : 0;
++    }
++    if (std::getenv("PROBE_SCEN")) {
++        if (!std::getenv("ONLY_CORR")) { probe_group(p, rules, map, 6, 6, "MTNK");
++        probe_group(p, rules, map, 12, 0, "HTNK");
++        probe_group(p, rules, map, 0, 12, "E1");
++        probe_group(p, rules, map, 10, 10, "APOC"); }
++        probe_corridor(p, rules, map, "MTNK", "MTNK", false);
++        probe_corridor(p, rules, map, "MTNK", "E1", false);
++        probe_corridor(p, rules, map, "E1", "MTNK", false);
++        probe_corridor(p, rules, map, "MTNK", "MTNK", true);
++        probe_corridor(p, rules, map, "E1", "E1", true);
++        return p.fails ? 1 : 0;
++    }
++    const char* kTypes[] = {"MTNK", "HTNK", "APOC", "E1", "E2", "DOG", "ENGINEER", "HARV", "FV", "SREF", "DRON", "LTNK", "BRUTE", "INIT", "HYD", "HOVER"};
++    std::cout << "[move] map " << map << "\n";
++    for (const char* id : kTypes) {
++        if (rules.section_string(id, "Strength", "").empty()) { std::cout << "[move] " << id << " not in rules\n"; continue; }
++        GameScene g(true, P::cfg_for(rules, map));
++        ra2engine::World& w = P::world(g);
++        const int W = w.grid_w(), H = w.grid_h();
++        // start: the walkable centre; goals 6 reachable cells 18..30 away
++        int cx = 0, cy = 0;
++        { long sx = 0, sy = 0, n = 0;
++          for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) if (w.walkable(x, y)) { sx += x; sy += y; ++n; }
++          cx = (int)(sx / std::max(1L, n)); cy = (int)(sy / std::max(1L, n)); }
++        int sx0 = -1, sy0 = -1;
++        for (int r = 0; r < 40 && sx0 < 0; ++r)
++            for (int dy = -r; dy <= r && sx0 < 0; ++dy)
++                for (int dx = -r; dx <= r; ++dx)
++                    if (std::max(std::abs(dx), std::abs(dy)) == r && P::ground_ok(w, cx + dx, cy + dy)) { sx0 = cx + dx; sy0 = cy + dy; break; }
++        if (sx0 < 0) { std::cout << "[move] no start cell\n"; return 1; }
++        w.add_combat_unit(sx0, sy0, 0, P::combat_of(g, id));
++        const int ui = (int)w.units().size() - 1;
++        w.units()[(size_t)ui].hp = w.units()[(size_t)ui].max_hp = 100000000;
++        static const int offs[6][2] = {{24, 0}, {-20, 18}, {0, -26}, {19, 19}, {-25, -3}, {10, -22}};
++        double tot_ratio = 0, tot_speed = 0, tot_turn = 0; int n = 0, stalls = 0, rev = 0, noarr = 0, noroute = 0;
++        double worst_ratio = 0;
++        for (auto& o : offs) {
++            int gx = -1, gy = -1;
++            const ra2engine::Unit& u = w.units()[(size_t)ui];
++            for (int r = 0; r < 6 && gx < 0; ++r)
++                for (int dy = -r; dy <= r && gx < 0; ++dy)
++                    for (int dx = -r; dx <= r; ++dx)
++                        if (std::max(std::abs(dx), std::abs(dy)) == r && P::ground_ok(w, u.cell_x + o[0] + dx, u.cell_y + o[1] + dy)) { gx = u.cell_x + o[0] + dx; gy = u.cell_y + o[1] + dy; break; }
++            if (gx < 0) continue;
++            const double opt = P::dijkstra(w, u.cell_x, u.cell_y, gx, gy);
++            if (opt < 0) { ++noroute; continue; }
++            const double sx = u.fx, sy = u.fy;
++            P::Trace t = P::run_move(g, ui, gx, gy);
++            const double ratio = opt > 0 ? t.travelled / opt : 1;
++            const double secs = t.frames / 15.0;
++            tot_ratio += ratio; tot_speed += t.travelled / secs; tot_turn += t.max_turn; ++n;
++            worst_ratio = std::max(worst_ratio, ratio);
++            stalls += t.stalls; rev += t.reversals; if (!t.arrived) ++noarr;
++            std::cout << "[move]   " << id << " (" << (int)sx << "," << (int)sy << ")->(" << gx << "," << gy << ") opt=" << opt
++                      << " travelled=" << t.travelled << " ratio=" << ratio << " path_turns=" << t.path_turns << " stair=" << t.stair
++                      << " frames=" << t.frames << " avg_cps=" << t.travelled / secs << " peak_cps=" << t.speed_max
++                      << " stalls=" << t.stalls << " rev45=" << t.reversals << " maxturn/frame=" << t.max_turn
++                      << " arrived=" << t.arrived << " end_off=" << t.end_dx << "," << t.end_dy << "\n";
++        }
++        const ra2engine::Unit& u = w.units()[(size_t)ui];
++        std::cout << "[move] SUMMARY " << id << " nominal_cps=" << w.unit_speed_cps(ui) << " rot_u16/frame=" << u.rot_u16_per_sec / 15.0
++                  << " n=" << n << " mean_ratio=" << (n ? tot_ratio / n : 0) << " worst_ratio=" << worst_ratio
++                  << " mean_avg_cps=" << (n ? tot_speed / n : 0) << " stalls=" << stalls << " rev45=" << rev
++                  << " not_arrived=" << noarr << " noroute=" << noroute << "\n";
++    }
++    return p.fails ? 1 : 0;
++}
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -8111,6 +8111,7 @@
+ #include "touch_bar.inc"              // W2-AR-07/-08/-16: touch command bar
+ #include "touch_ui.inc"               // W4-AM: touch router, mode banner, hold ring, hint
+     friend struct CombatProbe;   // gap owner C: --probe-combat drives the real scene
++    friend struct MoveProbe;     // --probe-move: movement measurements on the real scene
+     // Sidebar layout, camera and input key off these. defer_game_scene sets
+     // them from the window before construction; relayout_canvas updates them
+     // if the window changes mid-match.
+@@ -19123,6 +19124,7 @@
+ #include "realplay_probe.inc"   // gap owner A: --probe-realplay (real GameScene harness)
+ #include "ai_soak.inc"   // gap owner D: --ai-soak (real GameScene AI acceptance harness)
+ #include "realplay_combat_probe.inc"   // gap owner C: --probe-combat (real GameScene harness)
++#include "movement_probe.inc"   // --probe-move [map]: movement measurements (real GameScene harness)
+ 
+ #include "launch_file.inc"   // Rallypoint: --launch <file.ini>
+ #include "extract_maps.inc"  // Rallypoint: --extract-maps <outdir>
+@@ -19378,6 +19380,8 @@
+                 return run_demo_campaign();   // P10 Campaign gate
+             } else if (arg == "--campaign-survey") {
+                 return run_campaign_survey();   // P10 dev aid (not a gate)
++            } else if (arg == "--probe-move") {
++                return run_probe_move(i + 1 < argc ? argv[i + 1] : "xmp31s2.map");
+             } else if (arg == "--probe-combat") {
+         return run_probe_combat();   // gap owner C: real-play combat/movement probe
+     } else if (arg == "--probe-realplay") {

@@ -12,22 +12,29 @@ pub const DATA_FILES: [&str; 4] = ["ra2.mix", "ra2md.mix", "language.mix", "mult
 pub const WINDOW_PRESETS: &[(u32, u32)] =
     &[(640, 480), (800, 600), (1024, 768), (1280, 720), (1600, 900), (1920, 1080)];
 
-/// Environment variable the engine reads for the height of its picture in lines (see `ra2/README.md`).
-pub const LOGICAL_HEIGHT_ENV: &str = "RA2_LOGICAL_HEIGHT";
+/// Environment variable for the interface size: screen pixels per interface pixel (see `ra2/README.md`, patch 0085).
+pub const UI_SCALE_ENV: &str = "RA2_UI_SCALE";
+/// Environment variable for the world zoom: 1 is native, 1.5 and 2 make units bigger.
+pub const WORLD_ZOOM_ENV: &str = "RA2_WORLD_ZOOM";
 
-/// Values the launcher may store for `logical_height` (0 = the engine's 720-line canvas).
-pub const LOGICAL_HEIGHT_CHOICES: &[u32] = &[720, 900, 1080];
+/// Values the launcher may store for `ui_scale` (0 = Automatic, from the screen height).
+pub const UI_SCALE_CHOICES: &[u32] = &[1, 2, 3];
+/// Values for `world_zoom` in percent (0 = Automatic: the screen's own pixels).
+pub const WORLD_ZOOM_CHOICES: &[u32] = &[150, 200];
 
-/// Checks width/height (0×0 = the display's own size) and an optional UI scale.
-pub fn validate_display(width: u32, height: u32, logical_height: u32) -> Result<(), String> {
+/// Checks width/height (0×0 = the display's own size), the interface size and the world zoom.
+pub fn validate_display(width: u32, height: u32, ui_scale: u32, world_zoom: u32) -> Result<(), String> {
     if width > 16_384 || height > 16_384 {
         return Err("That resolution is too large".into());
     }
     if width > 0 && height > 0 && (width < 640 || height < 480) {
         return Err("Resolution must be at least 640×480".into());
     }
-    if logical_height != 0 && !LOGICAL_HEIGHT_CHOICES.contains(&logical_height) {
-        return Err("Unknown UI scale".into());
+    if ui_scale != 0 && !UI_SCALE_CHOICES.contains(&ui_scale) {
+        return Err("Unknown interface size".into());
+    }
+    if world_zoom != 0 && !WORLD_ZOOM_CHOICES.contains(&world_zoom) {
+        return Err("Unknown world zoom".into());
     }
     Ok(())
 }
@@ -111,9 +118,12 @@ pub struct Ra2Config {
     pub width: u32,
     pub height: u32,
     pub windowed: bool,
-    /// Height of the picture in lines for `RA2_LOGICAL_HEIGHT` (0 = the engine picks from the window).
+    /// Interface size for `RA2_UI_SCALE`: 1 to 3 screen pixels per interface pixel (0 = the engine picks from the screen).
     #[serde(default)]
-    pub logical_height: u32,
+    pub ui_scale: u32,
+    /// World zoom in percent for `RA2_WORLD_ZOOM` (0 = Automatic: the map at the screen's own pixels).
+    #[serde(default)]
+    pub world_zoom: u32,
     /// Game sound on. Off starts the engine with `--no-audio`.
     pub sound: bool,
     /// Country 0..9 (America .. Russia, then Yuri: `ra2launch::SIDES`), -1 random.
@@ -127,7 +137,7 @@ pub struct Ra2Config {
 
 impl Default for Ra2Config {
     fn default() -> Self {
-        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, logical_height: 0, sound: true, side: -1, color: -1, setup_done: false }
+        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, ui_scale: 0, world_zoom: 0, sound: true, side: -1, color: -1, setup_done: false }
     }
 }
 
@@ -162,14 +172,15 @@ mod tests {
     fn settings_fill_in_what_an_older_file_lacks() {
         let c: Ra2Config = serde_json::from_str(r#"{"windowed":true,"renderer":"gdi"}"#).unwrap();
         assert_eq!(c, Ra2Config { windowed: true, ..Default::default() });
-        assert_eq!((c.side, c.color, c.setup_done, c.logical_height, c.sound), (-1, -1, false, 0, true));
+        assert_eq!((c.side, c.color, c.setup_done, c.ui_scale, c.sound), (-1, -1, false, 0, true));
     }
 
     #[test]
     fn display_limits() {
-        assert!(validate_display(0, 0, 0).is_ok());
-        assert!(validate_display(1920, 1080, 900).is_ok());
-        assert!(validate_display(100, 100, 0).is_err());
-        assert!(validate_display(0, 0, 960).is_err());
+        assert!(validate_display(0, 0, 0, 0).is_ok());
+        assert!(validate_display(1920, 1080, 2, 150).is_ok());
+        assert!(validate_display(100, 100, 0, 0).is_err());
+        assert!(validate_display(0, 0, 4, 0).is_err());
+        assert!(validate_display(0, 0, 0, 175).is_err());
     }
 }
