@@ -625,7 +625,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ra2setup { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: start; }
 .ra2setup .mapview-canvas, .ra2preview .mapview-canvas { width: 220px; height: 220px; }
 .ra2setup .mapcol .stage, .ra2preview .stage { width: 220px; }
-.ra2opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .ra2maps { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
 .ra2maps .listbox .maplist { max-height: max(520px, 68vh); }
 .ra2preview { justify-items: start; width: 232px; gap: 8px; }
@@ -634,14 +633,14 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .maprow.ra2 { grid-template-columns: minmax(0, 1fr) auto 52px; gap: 8px; padding: 4px 10px; }
 .maprow.ra2 .maptags { display: none; } /* game tag is noise when the list is long; chips already filter */
 .maprow.ra2 .mapname { font-size: 13px; font-weight: 550; }
-.maprow.ra2 .mapplayers, .maprow.ra2 .mapsize { font-size: 12px; }
+.maprow.ra2 .mapplayers, .maprow.ra2 .mapsize { font-size: 12px; color: var(--muted); font-weight: 500; }
+.maprow.ra2 { min-height: 34px; }
+.maprow.ra2.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.maprow.ra2.on .mapname { color: var(--text); }
 .maprow.ra2:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ra2setup .sidehead { margin-bottom: 2px; }
 .ra2setup .mapside { display: grid; gap: 10px; align-content: start; }
 .ra2setup .mapcol { display: grid; gap: 8px; }
-.ra2setup .ra2opts .field { gap: 4px; }
-.ra2opts .field.check { flex-direction: row; align-items: center; gap: 8px; padding-top: 18px; }
-.ra2opts .field.check input { width: 16px; height: 16px; margin: 0; }
 .page:has(.ra2maps) > .card, .page:has(.ra2setup) > .card { gap: 10px; padding: 14px 16px; }
 @media (max-width: 1080px) { .ra2setup, .ra2maps { grid-template-columns: 1fr; } .ra2setup .mapcol { justify-items: start; } .ra2maps .listbox .maplist { max-height: 42vh; } }
 @media (max-width: 760px) {
@@ -708,7 +707,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 /* ---- shared page parts (RA2 pages use these; Generals pages can adopt them) ---- */
 .page-head .head-text { display: grid; gap: 3px; }
 .page-head .head-sub { color: var(--muted); font-size: 13px; }
-.ra2opts .field.check { padding-top: 0; }
 .empty { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
 .empty > svg { width: 34px; height: 34px; padding: 8px; box-sizing: content-box; border-radius: 50%; color: var(--page); background: color-mix(in srgb, var(--page) 15%, transparent); }
 .empty strong { font-size: 15px; } .empty p { max-width: 46ch; color: var(--muted); }
@@ -726,10 +724,29 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 520px) { .wizpick { grid-template-columns: 1fr; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .intro .gtile { width: 110px; height: 110px; border-radius: 26px; font-size: 36px; }
-/* RA2 skirmish rules: a compact list under the map preview, label left, control right */
-.rulelist { width: 220px; display: grid; margin-top: 6px; }
-.rulelist h3 { padding-bottom: 6px; }
-.rulerow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 38px; border-top: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; }
-.rulerow select { width: 118px; height: 30px; font-size: 13px; }
-.rulerow .switch.small { margin-right: 2px; }
-@media (max-width: 1080px) { .rulelist { width: 100%; max-width: 460px; } .rulerow select { width: 160px; } }
+/* RA2 match rules (skirmish and lobby): three values in a row of fields, then the two switches side by side.
+   A guest sees the same grid with the host's values as text. */
+.ruleshead { margin: 8px 0 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 15px; }
+.rules { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.rules > .field { grid-column: span 2; }
+.rules > .rulesw { grid-column: span 3; }
+.rules.readonly { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.rules.readonly > .field { grid-column: auto; }
+.rules div.field { display: grid; gap: 5px; align-content: start; font-weight: 600; font-size: 13px; }
+.rules .field > span:first-child { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+.fieldvalue { font-size: 14px; font-weight: 650; color: var(--text); }
+.fieldvalue.off { color: var(--muted); font-weight: 500; }
+.rulesw { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-radius: var(--r-field); border: 1px solid var(--line); cursor: pointer; transition: border-color .12s var(--ease), background .12s var(--ease); }
+.rulesw:hover { background: var(--surface-2); }
+.rulesw b { font-size: 13.5px; font-weight: 650; }
+.rulesw:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (max-width: 700px) { .rules, .rules.readonly { grid-template-columns: 1fr 1fr; } .rules > .field, .rules > .rulesw { grid-column: auto; } }
+/* the skirmish card ends in its action: what Play will start, then Play */
+.skfoot { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; margin: 6px -16px -14px; padding: 14px 16px; border-top: 1px solid var(--line); border-radius: 0 0 var(--r-panel) var(--r-panel); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.skwhat { margin: 0; font-size: 13.5px; font-weight: 600; min-width: 0; }
+.skfoot > .row { margin-left: auto; gap: 14px; }
+.maphint { width: 220px; margin: 0; }
+@media (max-width: 1080px) { .maphint { width: auto; } }
+/* the slim header: which game, and the screen it starts on */
+.card.hero.slim { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; padding: 18px 24px; }
+.herodisp { display: flex; align-items: baseline; gap: 10px; }
