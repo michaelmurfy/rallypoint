@@ -2,7 +2,7 @@
 
 Prioritized gaps for cloning a complete modern RA2/YR engine from retail
 `gamemd.exe`, grounded in this tree (`ra2/engine/` + Rallypoint patches through
-`0051`). Docs only: nothing here is implemented by this file.
+`0058`). Docs only: nothing here is implemented by this file.
 
 Binary reference: Steam YR `gamemd.exe` (tools on the RE VM). Upstream RE notes
 lived in `docs/re/` / `docs/gap/` of omarelarab/ra2-engine and were trimmed from
@@ -34,6 +34,8 @@ reference (never a substitute for gamemd behaviour).
 | T2.3 / T4.2 Spy Plane SW Approach→Overfly fog reveal | `0050-spy-plane-sw` | [#191](https://github.com/michaelmurfy/rallypoint/pull/191) |
 | T2.4 SMIN↔YAREFN SlaveManager deploy transplant | `0051-smin-yarefn-deploy-transplant` | (this PR) |
 | T3.3 turret AI + T3.1 damage fires + T3.2 fear gate | `0055-vehicle-turret-deploy-damage-fires` | (this PR) |
+| T2.2 country unique roster audit | `0052-country-unique-roster` | [#194](https://github.com/michaelmurfy/rallypoint/pull/194) |
+| T2.4 Magnetron drop Crush blast + Floating Disc live Disc-over-base | `0058-magnetron-toss-disc-over-base` | [#198](https://github.com/michaelmurfy/rallypoint/pull/198) |
 
 ---
 
@@ -229,8 +231,10 @@ MagBeam + DISKRAY presentation (`0045` / [#186](https://github.com/michaelmurfy/
 blank `Cameo=` XXICON / Image+ICON (`0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187)).
 Do not re-land those.
 
-**Still open (Slave Miner / Yuri):** Magnetron building toss; Floating Disc
-Disc-over-base; Xvfb Yuri skirmish CI proof.
+**Still open (Slave Miner / Yuri):** Xvfb Yuri skirmish CI proof; what sets a
+held Magnetron victim's Jumpjet destination in gamemd (the drag toward the
+targeted building is ours).
+Magnetron drop + Disc-over-base landed as `0058`.
 SMIN↔YAREFN transplant landed as `0051` (`FUN_006AF580`).
 
 | Item | Files / keys | Effort | OpenRA |
@@ -240,8 +244,8 @@ SMIN↔YAREFN transplant landed as `0051` (`FUN_006AF580`).
 | AI `AISlaveMinerNumber` / `SlaveMinerShortScan` scoot | ~~done~~ `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192) (`FUN_0066D530` / `FUN_006AFD60` / `FUN_006B1020` / `FUN_004FEACA`) | — | Yes |
 | SMIN↔YAREFN deploy SlaveManager transplant | ~~done~~ `0051` (`FUN_006AF580` / `FUN_007383E0` @0x739956 / `FUN_00449C30` @0x44A03C; `FUN_006B0D10` dock) | — | Partial |
 | MC enter cursors / Bio Reactor eject | ~~done~~ `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190) (`FUN_0051E010` Enter on Grinding; `FUN_004598A0` / `FUN_0044D880` absorb + eject) | — | No |
-| Magnetron building toss | patch 0017 `IsLocomotor`; toss still open (beam art done in `0045`) | M | No |
-| Floating Disc live Disc-over-base check | patch 0018 + `0045` DISKRAY; over-base still open | S | No |
+| Magnetron building toss | ~~done~~ `0058`: drop = `CrushWarhead` blast at the landing point owned by the Magnetron (Release `FUN_0070FEE0`; landing 0x746209..0x7462DA → `FUN_004690B0`); hold/refire gates `GetFireError` 0x6FC879..0x6FC8E9 and `IsLocomotor` detonate 0x4694CB read, not changed. Drag destination setter not found | S (drag RE) | No |
+| Floating Disc live Disc-over-base check | ~~done~~ `0058`: `DrainStart FUN_0070FD70` / `DrainEnd FUN_0070FE50`, live check `Frame % 16 == 2` (UnitClass::AI 0x7361A9), ally stop 0x6FA1D6, money `Frame % DrainMoneyFrameDelay` 0x6FA167, power zero `HouseClass` 0x508D1E | — | No |
 | Blank cameos (YACOMD, YAPPPT, YAROCK, …) | ~~done~~ `0046` / [#187](https://github.com/michaelmurfy/rallypoint/pull/187) (XXICON / AltCameo / Image+ICON); AltCameo *draw* swap still T3.5 | — | No |
 | Xvfb Yuri skirmish CI proof | harness | S | n/a |
 
@@ -325,7 +329,7 @@ Magnetron `IsMagBeam` MagnaBeamColor wave (`WaveClass::Draw_Magnetic`
 Do not re-implement MagBeam / DISKRAY art.
 
 **Still open:** fragment beams only via FX events; prism support visual
-polish; Magnetron building *toss* (logic) and Disc-over-base check (T2.4).
+polish. Magnetron drop blast and Disc-over-base landed in `0058` (T2.4).
 
 | | |
 |---|---|
@@ -450,10 +454,10 @@ Upstream known limitation.
 
 ## Suggested attack order
 
-1. Burn down remaining T2.4 Yuri Partial: Magnetron building toss;
-   Disc-over-base; Xvfb Yuri skirmish CI — do not re-land `0045`–`0051`
+1. Burn down remaining T2.4 Yuri Partial: Xvfb Yuri skirmish CI; the
+   Magnetron drag-destination RE — do not re-land `0045`–`0058`
    (MC cursors / Bio eject `0048`, AI scoot `0049`, Spy Plane SW `0050`,
-   SMIN↔YAREFN transplant `0051` are done).
+   SMIN↔YAREFN transplant `0051`, Magnetron drop / Disc-over-base `0058` are done).
 2. ~~T1.3 remaining RE~~ done in `0057`; only the building-zone note above is open.
 3. T2.2 country unique roster completeness (`RequiredHouses` /
    `ForbiddenHouses` kit gaps).
@@ -471,7 +475,9 @@ undeployed SMIN `0047` / [#188](https://github.com/michaelmurfy/rallypoint/pull/
 MC cursors / Bio eject `0048` / [#190](https://github.com/michaelmurfy/rallypoint/pull/190);
 AI Slave Miner scoot `0049` / [#192](https://github.com/michaelmurfy/rallypoint/pull/192);
 Spy Plane SW `0050` / [#191](https://github.com/michaelmurfy/rallypoint/pull/191);
-SMIN↔YAREFN transplant `0051` (this PR);
+SMIN↔YAREFN transplant `0051` / [#195](https://github.com/michaelmurfy/rallypoint/pull/195);
+country roster `0052` / [#194](https://github.com/michaelmurfy/rallypoint/pull/194);
+Magnetron drop / Disc-over-base `0058` / [#198](https://github.com/michaelmurfy/rallypoint/pull/198);
 T1.2 tilt `0042` / [#184](https://github.com/michaelmurfy/rallypoint/pull/184);
 T3.3 SCHP `0043` / [#182](https://github.com/michaelmurfy/rallypoint/pull/182);
 T1.3 bulk `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183);
@@ -481,15 +487,14 @@ launcher AIBoost UI [#181](https://github.com/michaelmurfy/rallypoint/pull/181).
 
 Before starting a new patch in an area listed under **Recently landed**,
 rebase on `main` and read the cited patch — re-implementing
-`0034`/`0035`/`0037`/`0040`–`0051` or the `0025`–`0033` presentation
+`0034`/`0035`/`0037`/`0040`–`0058` or the `0025`–`0033` presentation
 stack is wasted work.
 
 No open sibling parity PRs assumed for MagBeam / blank cameos / undeployed
 SMIN / MC cursors / Bio eject / AI Slave Miner scoot / Spy Plane SW (those
 landed in #186–#192), or SMIN↔YAREFN transplant (`0051`). Check open PRs
-before starting another patch in T2.4 leftovers (Magnetron toss, Disc-over-base,
-Xvfb CI), T2.2 roster, T1.3 RE leftovers, or T3.4/T3.5 polish.
+before starting another patch in T2.4 leftovers (Magnetron drag RE, Xvfb CI), T2.2 roster, T1.3 RE leftovers, or T3.4/T3.5 polish.
 
-Next priorities (open): T2.4 Magnetron toss / Disc-over-base / Xvfb CI;
+Next priorities (open): T2.4 Xvfb CI / Magnetron drag RE;
 T1.3 RE leftovers; T2.2 roster; non-SCHP T3.3; T3.1/T3.2 leftovers;
 T3.4/T3.5 polish; T4 (naval AI, campaign Yuri, net).
