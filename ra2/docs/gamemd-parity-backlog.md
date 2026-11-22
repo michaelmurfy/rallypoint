@@ -24,7 +24,8 @@ reference (never a substitute for gamemd behaviour).
 | T3.1 / T3.2 building + infantry anims (partial) | `0041-building-infantry-anims-from-gamemd` | [#179](https://github.com/michaelmurfy/rallypoint/pull/179) |
 | T1.2 unit tilt on TMP slopes (presentation) | `0042-unit-tilt-on-slopes` | [#184](https://github.com/michaelmurfy/rallypoint/pull/184) |
 | T3.3 Siege Chopper deploy / Undeploy (`IsSimpleDeployer` / SCHD) | `0043-siege-chopper-deploy` | [#182](https://github.com/michaelmurfy/rallypoint/pull/182) |
-| T1.3 call-for-help (partial; RE leftovers below) | `0044-ai-call-for-help` | [#183](https://github.com/michaelmurfy/rallypoint/pull/183) |
+| T1.3 call-for-help | `0044-ai-call-for-help` | [#183](https://github.com/michaelmurfy/rallypoint/pull/183) |
+| T1.3 call-for-help RE leftovers | `0057-ai-call-for-help-leftovers` | [#197](https://github.com/michaelmurfy/rallypoint/pull/197) |
 | T3.4 MagBeam + Floating Disc DISKRAY (presentation) | `0045-magnetron-disc-beam-art` | [#186](https://github.com/michaelmurfy/rallypoint/pull/186) |
 | T3.5 blank `Cameo=` → XXICON / Image+ICON (Yuri sidebar) | `0046-yuri-blank-cameos` | [#187](https://github.com/michaelmurfy/rallypoint/pull/187) |
 | T2.4 undeployed SMIN slaves + killer-house liberation | `0047-slave-miner-undeployed` | [#188](https://github.com/michaelmurfy/rallypoint/pull/188) |
@@ -76,7 +77,7 @@ the tilt helper.
 | **Effort** | done (verify S on real ramps) |
 | **OpenRA** | No — different render stack |
 
-### T1.3 AI call-for-help / base defense response — partial
+### T1.3 AI call-for-help / base defense response — landed (one RE note open)
 
 `World::call_for_help` ports Steam YR **FUN_00708080** (older notes said
 `FUN_00707500` — wrong VA in this binary).
@@ -92,15 +93,27 @@ victims get ArchiveTarget x100/x10 help ranking; skip ResourceGatherer and
 loaded transports; Amphibious domain zone stand-in; `PowerEmergency` sell +
 IQ `RepairSell` on ConditionRed sell. Do not re-land those pieces.
 
-**Still open (RE):** victim `+0x2DC` vehicle-pass gate; full `FUN_0056D100`
-MapZone ids; per-unit ArchiveTarget==self tracking.
+**Landed in `0057-ai-call-for-help-leftovers`:** victim `+0x2DC` is
+SlaveOwner (SlaveManager `FUN_006AF580`): `@0x7085AD` skips the whole vehicle
+pass for a slave victim. Techno `+0x2E4` is the Tank Bunker link
+(`FUN_00459301`), not cargo, so loaded transports answer again. ArchiveTarget
+`==` victim is per unit (`UnitTgt::archive_self`, save v62; a unit that answered
+its own call; buildings never have it; x100 infantry incl. negatives, x10
+vehicle positives only; recruits Area_Guard around the victim). `FUN_0056D100` /
+`FUN_0056D230` zone test = `pathfind::reach_mask` flood from the victim's cell
+(outside usable area or Fly zone = ok).
+
+**Open (not resolvable from the binary):** whether cells under a building
+share the zone of the ground around it (the clone seeds the cells ringing the
+foundation); the zone block table (`MapClass+0x68`) is built at runtime, so a
+static read cannot pin it.
 
 | | |
 |---|---|
 | **Files** | `engine/world_w7.cpp` (`call_for_help`), `engine/ai_base.hpp` (`kAiComputerBaseDefenseResponse`, `kAiPowerEmergency`, `power_emergency_sell`), `engine/world.hpp` (CombatW7Rules), `engine/aimd_parse.*` (`IsBaseDefense`) |
 | **gamemd** | **FUN_00708080** (help); callers `0x4422BC` / `0x7027E9` / `0x4D749A`; zone **FUN_0056D100**; Rules+`0xB18` / +`0x10B0` |
 | **Rules** | `[AI] ComputerBaseDefenseResponse`, `BaseDefenseDelay`, `*BaseDefenses`, `*BaseDefenseCounts`, `PowerEmergency`, `[IQ] RepairSell` |
-| **Effort** | M remaining after 0044 |
+| **Effort** | done (`0057`) |
 | **OpenRA** | Partial — AI defense scripts are analogous, not bit-compatible |
 
 ### T1.4 Lockstep sync vs long MP / mixed builds
@@ -441,8 +454,7 @@ Upstream known limitation.
    Disc-over-base; Xvfb Yuri skirmish CI — do not re-land `0045`–`0051`
    (MC cursors / Bio eject `0048`, AI scoot `0049`, Spy Plane SW `0050`,
    SMIN↔YAREFN transplant `0051` are done).
-2. T1.3 remaining RE only (victim `+0x2DC`, MapZone ids, ArchiveTarget==self)
-   — do not re-land `0044` / [#183](https://github.com/michaelmurfy/rallypoint/pull/183).
+2. ~~T1.3 remaining RE~~ done in `0057`; only the building-zone note above is open.
 3. T2.2 country unique roster completeness (`RequiredHouses` /
    `ForbiddenHouses` kit gaps).
 4. T3.3 leftovers: non-SCHP vehicle turret / deploy SHPs (SCHP done in `0043`).
