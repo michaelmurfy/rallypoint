@@ -1211,7 +1211,7 @@ fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, Strin
 }
 
 /// Screen size (0 x 0: the screen's own), window, interface size, world zoom, sound, and the default side and colour.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 fn ra2_set_settings(
     app: tauri::AppHandle,
     width: u32,
