@@ -2836,6 +2836,7 @@ function ra2SettingsPage() {
 /** Change game: a new shell with that game's pages. Rooms are per game, so the relay is left. The choice is remembered for next launch. */
 async function switchGame(id) {
   if (id === store.cfg.game) return;
+  const fromSwitch = !!(document.activeElement && document.activeElement.closest(".gameswitch"));
   try { await invoke("set_game", { game: id }); } catch (e) { say(errText(e), "bad"); return; }
   store.cfg.game = id;
   applyGameTheme();
@@ -2847,6 +2848,7 @@ async function switchGame(id) {
   app.classList.add("entering");
   setTimeout(() => app.classList.remove("entering"), 400);
   go("play");
+  if (fromSwitch) { const b = document.querySelector('.gseg[aria-pressed="true"]'); b && b.focus(); }
   // First time in RA2 (or Generals if that wizard was never finished): walk through setup.
   if (needsSetup()) openWizard();
 }
@@ -2877,8 +2879,8 @@ function go(name) {
 
 function updateSidebar() {
   if (!sideFiles) return;
-  const rail = document.querySelector(".rail");
-  if (rail && rail.dataset.key !== railKey()) rail.replaceWith(gameRail());
+  const sw = document.querySelector(".gameswitch");
+  if (sw && sw.dataset.key !== railKey()) sw.replaceWith(gameSwitch());
   const dir = isRa2() ? store.cfg.ra2.game_dir : store.cfg.game_dir;
   sideFiles.replaceChildren(status(dir ? "Game files ready" : "Game files needed", dir ? "ok" : "warn"));
   const s = store.relay;
@@ -2896,28 +2898,28 @@ window.addEventListener("net", () => updateSidebar());
 
 // ---------------------------------------------------------------- the game card (who you are playing, and the one place to change it)
 const GAME_INFO = {
-  generals: { name: "Generals Zero Hour", kicker: "Generals", short: "Zero Hour", key: "1" },
-  ra2: { name: "Red Alert 2", kicker: "Yuri's Revenge", short: "Red Alert 2", key: "2" },
+  generals: { name: "Generals Zero Hour", kicker: "Generals", short: "Zero Hour", label: "Zero Hour", abbr: "ZH", key: "1" },
+  ra2: { name: "Red Alert 2", kicker: "Yuri's Revenge", short: "Red Alert 2", label: "Red Alert 2", abbr: "RA2", key: "2" },
 };
 const gameReady = (id) => !!(id === "ra2" ? store.cfg.ra2.game_dir : store.cfg.game_dir);
 /** The game's emblem: Generals keeps the Rallypoint badge, Red Alert 2 gets a star on its own blue. */
 function gameTile(id) { return h("span", { class: "gtile t-" + id, "aria-hidden": "true" }, id === "ra2" ? "RA2" : h("img", { src: "logo.png", alt: "" })); }
 const shortcutLabel = (id) => `${/Mac|iPhone|iPad/.test(navigator.platform) ? "\u2318" : "Ctrl+"}${GAME_INFO[id].key}`;
 const railKey = () => `${store.cfg.game}${gameReady("generals")}${gameReady("ra2")}`;
-/** The game rail: one tile per game, always in view, the current one marked. Same pattern as a workspace switcher. */
-function gameRail() {
+/** Two games, both always in view: a two-part switch under the brand. The pressed one is the game on screen. */
+function gameSwitch() {
   const cur = store.cfg.game in GAME_INFO ? store.cfg.game : "generals";
-  return h("nav", { class: "rail", "aria-label": "Games", "data-key": railKey() }, Object.keys(GAME_INFO).map((id) => {
+  return h("div", { class: "gameswitch", role: "group", "aria-label": "Game", "data-key": railKey() }, Object.keys(GAME_INFO).map((id) => {
     const ready = gameReady(id), i = GAME_INFO[id];
-    return h("button", { class: "railbtn", type: "button", "data-game": id, "aria-current": id === cur ? "true" : null,
-      "aria-label": `${i.name}${ready ? "" : ", needs game files"}. ${shortcutLabel(id)}`, "data-tip": `${i.name}  ${shortcutLabel(id)}`,
-      onclick: () => switchGame(id) }, gameTile(id), ready ? null : h("i", { class: "need", "aria-hidden": "true" }));
+    return h("button", { class: "gseg", type: "button", "data-game": id, "aria-pressed": String(id === cur),
+      "aria-label": `${i.name}${ready ? "" : ", needs game files"}`, title: `${i.name} (${shortcutLabel(id)})${ready ? "" : ". Needs game files"}`,
+      onclick: () => switchGame(id) },
+      h("span", { class: "long" }, i.label), h("span", { class: "short", "aria-hidden": "true" }, i.abbr), ready ? null : h("i", { class: "need", "aria-hidden": "true" }));
   }));
 }
-/** Ctrl or Command with 1 or 2 changes the game from anywhere. */
 /** First run: which game is this setup for? Picking the other one swaps to its own setup. */
 function wizardGamePick(cur) {
-  return h("div", { class: "stack tight" }, h("p", { class: "muted small" }, "Playing both? Set up one now and the other any time from the game card at the top left."),
+  return h("div", { class: "stack tight" }, h("p", { class: "muted small" }, "Playing both? Set up one now, the other any time from the switch at the top of the sidebar."),
     h("div", { class: "wizpick", role: "radiogroup", "aria-label": "Which game are you setting up?" }, Object.keys(GAME_INFO).map((id) =>
       h("button", { class: "gameopt", type: "button", role: "radio", "aria-checked": String(id === cur), onclick: () => { if (id !== cur) { closeWizard(); switchGame(id); } } },
         gameTile(id), h("span", { class: "gtext" }, h("small", {}, GAME_INFO[id].kicker), h("b", {}, GAME_INFO[id].short))))));
@@ -2928,7 +2930,7 @@ function otherGameOffer(finish) {
   const done = other === "ra2" ? store.cfg.ra2.setup_done : store.cfg.setup_done;
   return done ? null : h("p", { class: "muted small" }, `Also play ${GAME_INFO[other].name}? `, h("button", { class: "linkbtn", onclick: () => finish(() => switchGame(other)) }, "Set it up next"), ".");
 }
-
+/** Ctrl or Command with 1 or 2 changes the game from anywhere. */
 document.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || wizardEl || !store.cfg) return;
   const id = Object.keys(GAME_INFO).find((g) => GAME_INFO[g].key === e.key);
@@ -2938,9 +2940,9 @@ document.addEventListener("keydown", (e) => {
 function shell() {
   sideFiles = h("div"); sideNet = h("div");
   const nav = Object.entries(pages()).map(([id, [label, ic]]) => h("button", { class: "nav", "data-page": id, onclick: () => go(id) }, icon(ic), h("span", {}, label)));
-  document.getElementById("root").append(h("div", { class: "app" }, gameRail(),
+  document.getElementById("root").append(h("div", { class: "app" },
     h("aside", { class: "sidebar" },
-      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"), h("span", {}, (GAME_INFO[store.cfg.game] || GAME_INFO.generals).name))),
+      h("div", { class: "brand" }, h("img", { src: "logo.png", alt: "" }), h("div", { class: "brand-text" }, h("b", {}, "Rallypoint"), h("span", {}, "Command & Conquer"))), gameSwitch(),
       nav, h("div", { class: "spacer" }), h("div", { class: "side-foot" }, sideFiles, sideNet, h("div", { class: "side-version", title: "The version of Rallypoint you are running" }, `Rallypoint ${store.cfg.version}`))),
     h("main", { id: "main" }, h("div", { id: "updatehost" }), h("div", { id: "pagehost" }))));
   updateSidebar();
