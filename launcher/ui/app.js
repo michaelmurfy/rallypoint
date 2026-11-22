@@ -2838,6 +2838,8 @@ async function switchGame(id) {
   if (sw) { sw.dataset.cur = id; sw.querySelectorAll(".gseg").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.game === id))); } // the marker starts sliding now
   if (!still) { old.classList.add("leaving"); await new Promise((r) => setTimeout(r, 150)); }
   store.cfg.game = id;
+  document.documentElement.classList.add("swapping"); // the palette fades only on a switch, never at start
+  setTimeout(() => document.documentElement.classList.remove("swapping"), 700);
   applyGameTheme();
   store.relay = "Offline"; store.lobby = null; net.last = null; net.hist = [];
   current && current.dispose && current.dispose(); current = null;

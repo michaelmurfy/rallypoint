@@ -117,7 +117,7 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 @property --text { syntax: "<color>"; inherits: true; initial-value: #f8eded; }
 @property --muted { syntax: "<color>"; inherits: true; initial-value: #cba3a6; }
 @property --gold { syntax: "<color>"; inherits: true; initial-value: #e8b84a; }
-:root { transition: --bg .4s var(--ease), --surface .4s var(--ease), --surface-2 .4s var(--ease), --text .4s var(--ease), --muted .4s var(--ease), --accent .4s var(--ease), --rose .4s var(--ease), --gold .4s var(--ease); }
+:root.swapping { transition: --bg .4s var(--ease), --surface .4s var(--ease), --surface-2 .4s var(--ease), --text .4s var(--ease), --muted .4s var(--ease), --accent .4s var(--ease), --rose .4s var(--ease), --gold .4s var(--ease); }
 .card.hero { transition: --accent .8s var(--ease), --accent-ink .8s var(--ease), --rose .8s var(--ease); }
 .card.hero.blue { --accent: #2f6fd6; --accent-ink: #ffffff; --rose: #8fb4f2; }
 .card.hero { padding: 26px 28px; gap: 20px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface) 65%); }
