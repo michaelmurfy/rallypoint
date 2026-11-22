@@ -73,3 +73,67 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "detmath_test did not compile" }
           ./detmath_test.exe
           if ($LASTEXITCODE -ne 0) { throw "the simulation maths differs with MSVC ${{ matrix.arch }}" }
+
+  # The RA2 patch series applied to a pristine ra2/engine and its doctest suite, built the way release.yml builds
+  # it (Windows is the MinGW build under Wine there too). A patch that no longer applies, or a tree that no longer
+  # compiles, used to surface only as a failed Release run on main. ccache keeps a warm run to a few minutes.
+  ra2-engine:
+    name: ra2-engine (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-24.04 }
+          - { name: windows-mingw, os: ubuntu-24.04 }
+          - { name: macos, os: macos-15 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache clang cmake ninja-build python3 libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxss-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
+            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libgl1-mesa-dev libegl1-mesa-dev
+      - if: matrix.name == 'windows-mingw'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache cmake ninja-build python3 mingw-w64 wine64
+      - if: matrix.name == 'macos'
+        run: brew install ninja ccache
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ra2-ccache-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: ra2-ccache-${{ matrix.name }}-
+      - run: sh ra2/patches/apply.sh
+      - name: Configure, build and test
+        shell: bash
+        run: |
+          case "${{ matrix.name }}" in
+            linux) extra="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++" ;;
+            windows-mingw) extra="-DCMAKE_TOOLCHAIN_FILE=$PWD/ra2/mingw-w64-x86_64.cmake" ;;
+            macos) extra="-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0" ;;
+          esac
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache $extra
+          cmake --build ra2/build
+          if [ "${{ matrix.name }}" = windows-mingw ]; then WINEDEBUG=-all wine ra2/build/ra2assets_tests.exe; else ra2/build/ra2assets_tests; fi
+      - run: ccache -s
+
+  # apply.sh is plain POSIX sh: it must also run under Git Bash, which is what a Windows contributor has.
+  ra2-patches-git-bash:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh ra2/patches/apply.sh && sh ra2/patches/apply.sh
+        shell: bash

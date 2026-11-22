@@ -16,10 +16,10 @@ index e03cf62..dbb483d 100644
          case ra2engine::InputEvent::RenderReset:
              return true;   // the driver already trimmed / cleared the texture cache
 diff --git a/engine/hud_text.inc b/engine/hud_text.inc
-index a8b920f..fd8cdc4 100644
+index a8b920f..f60ee45 100644
 --- a/engine/hud_text.inc
 +++ b/engine/hud_text.inc
-@@ -224,10 +224,24 @@ std::string cameo_tooltip_text(const std::string& ui_name, int cost) {
+@@ -224,10 +224,25 @@ std::string cameo_tooltip_text(const std::string& ui_name, int cost) {
      return s;
  }
  
@@ -27,7 +27,8 @@ index a8b920f..fd8cdc4 100644
 +inline int hud_present_scale(SDL_Renderer* ren) {
 +    int ow = 0, oh = 0, lw = 0, lh = 0;
 +    if (SDL_GetRendererOutputSize(ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return 1;
-+    if (SDL_RenderGetLogicalSize(ren, &lw, &lh) != 0 || lw <= 0 || lh <= 0) {
++    SDL_RenderGetLogicalSize(ren, &lw, &lh);   // void in SDL2
++    if (lw <= 0 || lh <= 0) {
 +        lw = 1280;
 +        lh = 720;
 +    }
@@ -46,7 +47,7 @@ index a8b920f..fd8cdc4 100644
      static ra2assets::Palette white{};
      static bool ok = false;
      if (!ok) {
-@@ -243,14 +257,17 @@ inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra
+@@ -243,14 +258,17 @@ inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra
              if (gl.w > 0 && gl.h > 0) {
                  const std::string key = "fntw:" + std::to_string((int)ch);
                  SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
@@ -68,10 +69,10 @@ index a8b920f..fd8cdc4 100644
      return cx - x;
  }
 diff --git a/engine/main.cpp b/engine/main.cpp
-index 0d6ad76..604e22b 100644
+index d7c077b..1e5fdcb 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -5377,8 +5377,14 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
+@@ -5379,8 +5379,14 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
          // W5-PRES R-142 [RE: credits draw 0x4A2280, colour 0xB0E98C by side
          // FUN_0072E520]: Allied RGB(164,210,255), Soviet/other RGB(255,255,0).
          const bool allied = std::string(g_sidebar_mix) == "sidec01.mix";
@@ -89,12 +90,10 @@ index 0d6ad76..604e22b 100644
          draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
      }
 diff --git a/engine/platform.cpp b/engine/platform.cpp
-index 0b11c1d..a8f2e19 100644
+index 0b11c1d..78516f0 100644
 --- a/engine/platform.cpp
 +++ b/engine/platform.cpp
-@@ -324,8 +324,10 @@ bool Platform::poll(InputEvent& ev) {
-             if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                 p_->update_slop();
+@@ -326,6 +326,8 @@ bool Platform::poll(InputEvent& ev) {
                  ev.kind = InputEvent::Resize;
                  ev.x = e.window.data1;
                  ev.y = e.window.data2;

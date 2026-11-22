@@ -16,6 +16,7 @@ for p in $list; do
     echo "already applied: $p"
     [ "$p" = "$done_upto" ] && state=done
   else
-    git apply --directory=ra2/engine "$p" && echo "applied: $p"
+    git apply --directory=ra2/engine "$p" || { echo "failed: $p" >&2; exit 1; }
+    echo "applied: $p"
   fi
 done

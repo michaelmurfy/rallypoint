@@ -1,103 +1,114 @@
-diff --git a/engine/slave_miner.hpp b/engine/slave_miner.hpp
-index aa6508a..c923490 100644
---- a/engine/slave_miner.hpp
-+++ b/engine/slave_miner.hpp
-@@ -1,9 +1,24 @@
- #pragma once
--// Yuri Slave Miner economy [rulesmd Enslaves= / ModEnc SlaveManager].
-- // Deployed YAREFN (BuildingTypes with Enslaves=) maintains SlavesNumber slaves
-- // of that infantry type. Slaves gather ore into their Storage and deliver it
-- // at the master; income lands in house_credits like a classic unload. Pure:
-- // no SDL/OS. Frame rates use 15 logic frames per engine second (gamespeed).
-+// Yuri Slave Miner economy [rulesmd Enslaves= / gamemd SlaveManagerClass].
-+//
-+// RE (Steam YR gamemd.exe):
-+ //   TechnoType LoadFromINI **FUN_00714C0C** reads Slaved= / Enslaves= /
-+ //   SlaveRegenRate= / SlavesNumber= / SlaveReloadRate= onto TechnoType
-+ //   (+0xD3E / +0xD40 / +0xD48 / +0xD44 / +0xD4C).
-+ //   TechnoClass init **FUN_006F3FC0** (Enslaves push @0x6F400D): if
-+ //   TechnoType+0xD40 != null, `operator new(0x64)` + **FUN_006AF1A0**
-+ //   (SlaveManager ctor) stores the manager at Techno+0x2D8 — Building *or*
-+ //   Vehicle (SMIN). rulesmd puts Enslaves=SLAV on both [SMIN] and [YAREFN]
-+ //   with an EA note that the manager is brain-transplanted on deploy.
-+ //   AI **FUN_006AF5F0** (period 10) → **FUN_006AF6C0** (slave slots) /
-+ //   **FUN_006AFD60** (owner mission). Spawn/gather use the owner cell; dock
-+ //   math special-cases What_Am_I==Building (6) for the foundation.
-+ //   ModEnc's "infantry leave BuildingTypes" means Enslaves= names an
-+ //   InfantryType, not that VehicleTypes cannot host a SlaveManager.
-+ //
-+ // Deployed YAREFN (Building) and undeployed SMIN (Unit master) keep
-+ // SlavesNumber workers. Slaves gather ore into Storage and deliver at the
-+ // master; income lands in house_credits. Pure: no SDL/OS. 15 logic fps.
- #include <cstdint>
- #include <string>
- #include <vector>
-@@ -20,7 +35,8 @@ constexpr int kSlaveMinerSlaveScanDefault = 14;
- constexpr int kSlaveLogicFps = 15;  // frames per engine second
- 
- struct SlaveSpawn {
--    int building = -1;
-+    int master = -1;           // Building or Unit index
-+    bool master_is_unit = false;
-     int gx = 0, gy = 0;
-     int house = 0;
-     int storage_bales = 4;
-@@ -36,15 +52,17 @@ struct SlaveMove {
- bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable, int gw, int gh,
-                     const Occupancy& occ, int& out_x, int& out_y);
- 
-+// Drop cell beside a unit master (8-ring then spiral).
-+bool slave_pad_cell_unit(const Unit& master, const std::vector<std::uint8_t>& passable, int gw,
-+                         int gh, const Occupancy& occ, int& out_x, int& out_y);
-+
- // Liberate every slave of a dead/missing master: clear is_slave / slave state.
-- // If liberator_house >= 0, the slave joins that house (YR: killer's house).
--void liberate_orphaned_slaves(std::vector<Unit>& units, const std::vector<Building>& buildings,
--                              int liberator_house = -1);
-+ // Killer house: Building::killed_by / Unit::vet.killed_by → that unit's house
-+ // (YR SlaveManager free → killer's house). No killer stamp → house unchanged.
-+void liberate_orphaned_slaves(std::vector<Unit>& units, const std::vector<Building>& buildings);
- 
- // Advance slave managers + slave gather AI by dt. Deterministic: ascending
-- // building then unit index. Emits Spawn/Move requests; the caller places
-- // units and paths (World::order_unit_move / add_slave).
-- // `slave_scan` = [General] SlaveMinerSlaveScan (cells).
-+ // building then unit-master then slave index. Emits Spawn/Move requests.
- void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& buildings,
-                        const std::vector<BuildingTypeDef>& types, OreField& ore,
-                        const std::vector<std::uint8_t>& passable, int gw, int gh, Occupancy& occ,
-@@ -52,10 +70,11 @@ void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& building
-                        int slave_scan, std::vector<SlaveSpawn>& spawns,
-                        std::vector<SlaveMove>& moves);
- 
--// Install slave fields on a freshly spawned unit (tests / World).
--inline void make_slave(Unit& u, int master_building, int storage_bales) {
-+// Install slave fields on a freshly spawned worker (tests / World).
-+inline void make_slave(Unit& u, int master, int storage_bales, bool master_is_unit = false) {
-     u.is_slave = true;
--    u.slave_master = master_building;
-+    u.slave_master = master;
-+    u.slave_master_is_unit = master_is_unit;
-     u.slave = SlaveState::SeekOre;
-     u.storage_bales = storage_bales > 0 ? storage_bales : 4;
-     u.bales_ore = 0.0;
-@@ -65,4 +84,16 @@ inline void make_slave(Unit& u, int master_building, int storage_bales) {
-     u.manual_hold = false;
+diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
+index 722c9b2..1f35d3f 100644
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -93,6 +93,13 @@ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixF
+             d.storage = rules.storage(d.id);
+             d.chrono_miner = d.id == "CMIN";
+         }
++        d.enslaves = rules.enslaves(d.id);
++        if (!d.enslaves.empty()) {
++            d.slaves_number = rules.slaves_number(d.id);
++            d.slave_regen_rate = rules.slave_regen_rate(d.id);
++            d.slave_reload_rate = rules.slave_reload_rate(d.id);
++            d.slave_storage = rules.storage(d.enslaves);
++        }
+         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
+     }
+     return ur;
+diff --git a/engine/building.hpp b/engine/building.hpp
+index c61aaea..d0f9f7d 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -78,8 +78,8 @@ struct BuildingTypeDef {
+     // MCV turns to before it unfolds into this type.
+     int  deploy_facing    = 0x80;
+     bool ore_purifier     = false;  // OrePurifier=     gap owner A (G-27) [RE: economy.md §2]
+-    // Rallypoint: Yuri Slave Miner (rules Enslaves= on BuildingTypes only —
+-    // ModEnc: slaves come out of buildings, not the undeployed SMIN vehicle).
++    // Rallypoint: Yuri Slave Miner (Enslaves=). Buildings (YAREFN) and vehicles
++    // (SMIN) both host SlaveManager in gamemd; Enslaves= names an InfantryType.
+     std::string enslaves;           // Enslaves= infantry type id ("" = none)
+     int slaves_number = 0;          // SlavesNumber=
+     int slave_regen_rate = 0;       // SlaveRegenRate= frames
+diff --git a/engine/main.cpp b/engine/main.cpp
+index e67890e..9fbe451 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2874,8 +2874,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+         d.crewed           = rules.section_flag(id, "Crewed", false);
+         d.soylent          = (int)rules.section_double(id, "Soylent", 0.0);
+         d.ore_purifier     = rules.section_flag(id, "OrePurifier", false);   // G-27
+-        // Rallypoint: Yuri Slave Miner (Enslaves= on YAREFN; SMIN is the
+-        // undeployed vehicle — ModEnc: infantry only spawn from BuildingTypes).
++        // Rallypoint: Yuri Slave Miner (Enslaves= on YAREFN; SMIN vehicle too).
+         d.enslaves         = rules.enslaves(id);
+         d.slaves_number    = rules.slaves_number(id);
+         d.slave_regen_rate = rules.slave_regen_rate(id);
+diff --git a/engine/realplay_economy.inc b/engine/realplay_economy.inc
+index 1e8b912..1b56735 100644
+--- a/engine/realplay_economy.inc
++++ b/engine/realplay_economy.inc
+@@ -172,6 +172,14 @@ UnitRoster load_player_unit_roster(const std::string& dir, const ra2assets::MixF
+             d.storage = rules.storage(d.id);
+             d.chrono_miner = rp_upper(d.id) == "CMIN";   // [RE: economy.md §3] Teleporter miner
+         }
++        // Rallypoint: VehicleTypes Enslaves= (undeployed SMIN).
++        d.enslaves = rules.enslaves(d.id);
++        if (!d.enslaves.empty()) {
++            d.slaves_number = rules.slaves_number(d.id);
++            d.slave_regen_rate = rules.slave_regen_rate(d.id);
++            d.slave_reload_rate = rules.slave_reload_rate(d.id);
++            d.slave_storage = rules.storage(d.enslaves);
++        }
+         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
+     }
+     std::cerr << "[realplay-roster] country=" << country << " tech<=" << lobby_tech
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index f82d19f..2d7a36e 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1053,6 +1053,11 @@ template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
+     io(ar, v.aircraft);
+     io(ar, v.harvester);
+     io(ar, v.storage);
++    io(ar, v.enslaves);            // Rallypoint: SMIN Enslaves=
++    io(ar, v.slaves_number);
++    io(ar, v.slave_regen_rate);
++    io(ar, v.slave_reload_rate);
++    io(ar, v.slave_storage);
+     io(ar, v.w5);   // wave-5 stolen tech (agent C)
  }
+ // W9-05: never saved (re-installed by the host after a load) -- only hashed,
+@@ -1205,7 +1210,15 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
+     io(ar, v.harv_skip_y);
+     io(ar, v.is_slave);       // Rallypoint: Slave Miner
+     io(ar, v.slave_master);
++    io(ar, v.slave_master_is_unit);
+     io(ar, v.slave);
++    io(ar, v.is_slave_master);
++    io(ar, v.slaves_number);
++    io(ar, v.slave_regen_rate);
++    io(ar, v.slave_reload_rate);
++    io(ar, v.slave_worker_storage);
++    io(ar, v.slave_spawn_frames);
++    io(ar, v.slave_needs_regen);
+     // cargo
+     io(ar, v.passengers_max);
+     io(ar, v.size_limit);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 4be8700..bccfc4b 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 58;   // 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 59;   // 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
  
-+// Stamp Enslaves= master fields onto a Unit (SMIN) from its UnitTypeDef.
-+inline void arm_slave_master(Unit& u, int slaves_number, int regen, int reload, int storage) {
-+    if (slaves_number <= 0) return;
-+    u.is_slave_master = true;
-+    u.slaves_number = slaves_number;
-+    u.slave_regen_rate = regen;
-+    u.slave_reload_rate = reload;
-+    u.slave_worker_storage = storage > 0 ? storage : 4;
-+    u.slave_spawn_frames = 0;
-+    u.slave_needs_regen = false;
-+}
-+
- }  // namespace ra2engine
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
 diff --git a/engine/slave_miner.cpp b/engine/slave_miner.cpp
 index 8573621..09c76ce 100644
 --- a/engine/slave_miner.cpp
@@ -449,8 +460,152 @@ index 8573621..09c76ce 100644
                      u.slave = SlaveState::SeekOre;
                  }
                  break;
+diff --git a/engine/slave_miner.hpp b/engine/slave_miner.hpp
+index aa6508a..c923490 100644
+--- a/engine/slave_miner.hpp
++++ b/engine/slave_miner.hpp
+@@ -1,9 +1,24 @@
+ #pragma once
+-// Yuri Slave Miner economy [rulesmd Enslaves= / ModEnc SlaveManager].
+- // Deployed YAREFN (BuildingTypes with Enslaves=) maintains SlavesNumber slaves
+- // of that infantry type. Slaves gather ore into their Storage and deliver it
+- // at the master; income lands in house_credits like a classic unload. Pure:
+- // no SDL/OS. Frame rates use 15 logic frames per engine second (gamespeed).
++// Yuri Slave Miner economy [rulesmd Enslaves= / gamemd SlaveManagerClass].
++//
++// RE (Steam YR gamemd.exe):
++ //   TechnoType LoadFromINI **FUN_00714C0C** reads Slaved= / Enslaves= /
++ //   SlaveRegenRate= / SlavesNumber= / SlaveReloadRate= onto TechnoType
++ //   (+0xD3E / +0xD40 / +0xD48 / +0xD44 / +0xD4C).
++ //   TechnoClass init **FUN_006F3FC0** (Enslaves push @0x6F400D): if
++ //   TechnoType+0xD40 != null, `operator new(0x64)` + **FUN_006AF1A0**
++ //   (SlaveManager ctor) stores the manager at Techno+0x2D8 — Building *or*
++ //   Vehicle (SMIN). rulesmd puts Enslaves=SLAV on both [SMIN] and [YAREFN]
++ //   with an EA note that the manager is brain-transplanted on deploy.
++ //   AI **FUN_006AF5F0** (period 10) → **FUN_006AF6C0** (slave slots) /
++ //   **FUN_006AFD60** (owner mission). Spawn/gather use the owner cell; dock
++ //   math special-cases What_Am_I==Building (6) for the foundation.
++ //   ModEnc's "infantry leave BuildingTypes" means Enslaves= names an
++ //   InfantryType, not that VehicleTypes cannot host a SlaveManager.
++ //
++ // Deployed YAREFN (Building) and undeployed SMIN (Unit master) keep
++ // SlavesNumber workers. Slaves gather ore into Storage and deliver at the
++ // master; income lands in house_credits. Pure: no SDL/OS. 15 logic fps.
+ #include <cstdint>
+ #include <string>
+ #include <vector>
+@@ -20,7 +35,8 @@ constexpr int kSlaveMinerSlaveScanDefault = 14;
+ constexpr int kSlaveLogicFps = 15;  // frames per engine second
+ 
+ struct SlaveSpawn {
+-    int building = -1;
++    int master = -1;           // Building or Unit index
++    bool master_is_unit = false;
+     int gx = 0, gy = 0;
+     int house = 0;
+     int storage_bales = 4;
+@@ -36,15 +52,17 @@ struct SlaveMove {
+ bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable, int gw, int gh,
+                     const Occupancy& occ, int& out_x, int& out_y);
+ 
++// Drop cell beside a unit master (8-ring then spiral).
++bool slave_pad_cell_unit(const Unit& master, const std::vector<std::uint8_t>& passable, int gw,
++                         int gh, const Occupancy& occ, int& out_x, int& out_y);
++
+ // Liberate every slave of a dead/missing master: clear is_slave / slave state.
+- // If liberator_house >= 0, the slave joins that house (YR: killer's house).
+-void liberate_orphaned_slaves(std::vector<Unit>& units, const std::vector<Building>& buildings,
+-                              int liberator_house = -1);
++ // Killer house: Building::killed_by / Unit::vet.killed_by → that unit's house
++ // (YR SlaveManager free → killer's house). No killer stamp → house unchanged.
++void liberate_orphaned_slaves(std::vector<Unit>& units, const std::vector<Building>& buildings);
+ 
+ // Advance slave managers + slave gather AI by dt. Deterministic: ascending
+- // building then unit index. Emits Spawn/Move requests; the caller places
+- // units and paths (World::order_unit_move / add_slave).
+- // `slave_scan` = [General] SlaveMinerSlaveScan (cells).
++ // building then unit-master then slave index. Emits Spawn/Move requests.
+ void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& buildings,
+                        const std::vector<BuildingTypeDef>& types, OreField& ore,
+                        const std::vector<std::uint8_t>& passable, int gw, int gh, Occupancy& occ,
+@@ -52,10 +70,11 @@ void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& building
+                        int slave_scan, std::vector<SlaveSpawn>& spawns,
+                        std::vector<SlaveMove>& moves);
+ 
+-// Install slave fields on a freshly spawned unit (tests / World).
+-inline void make_slave(Unit& u, int master_building, int storage_bales) {
++// Install slave fields on a freshly spawned worker (tests / World).
++inline void make_slave(Unit& u, int master, int storage_bales, bool master_is_unit = false) {
+     u.is_slave = true;
+-    u.slave_master = master_building;
++    u.slave_master = master;
++    u.slave_master_is_unit = master_is_unit;
+     u.slave = SlaveState::SeekOre;
+     u.storage_bales = storage_bales > 0 ? storage_bales : 4;
+     u.bales_ore = 0.0;
+@@ -65,4 +84,16 @@ inline void make_slave(Unit& u, int master_building, int storage_bales) {
+     u.manual_hold = false;
+ }
+ 
++// Stamp Enslaves= master fields onto a Unit (SMIN) from its UnitTypeDef.
++inline void arm_slave_master(Unit& u, int slaves_number, int regen, int reload, int storage) {
++    if (slaves_number <= 0) return;
++    u.is_slave_master = true;
++    u.slaves_number = slaves_number;
++    u.slave_regen_rate = regen;
++    u.slave_reload_rate = reload;
++    u.slave_worker_storage = storage > 0 ? storage : 4;
++    u.slave_spawn_frames = 0;
++    u.slave_needs_regen = false;
++}
++
+ }  // namespace ra2engine
+diff --git a/engine/unit_type.hpp b/engine/unit_type.hpp
+index 1f1f57e..d14206e 100644
+--- a/engine/unit_type.hpp
++++ b/engine/unit_type.hpp
+@@ -26,6 +26,13 @@ struct UnitTypeDef {
+     bool aircraft = false;                  // [AircraftTypes]  -> Airfield / Aircraft queue
+     bool harvester = false;                 // rules Harvester=yes -> launched as a miner
+     int storage = 0;                        // rules Storage= (bales) for a harvester
++    // Rallypoint: VehicleTypes Enslaves= (SMIN). Same keys as BuildingTypeDef;
++    // gamemd TechnoClass init creates SlaveManager for either AbstractType.
++    std::string enslaves;                   // Enslaves= infantry type ("" = none)
++    int slaves_number = 0;                  // SlavesNumber=
++    int slave_regen_rate = 0;               // SlaveRegenRate= frames
++    int slave_reload_rate = 0;              // SlaveReloadRate= frames
++    int slave_storage = 0;                  // Storage= of the Enslaves infantry
+     UnitTypeW5 w5;                          // wave-5: RequiresStolen*Tech gate
+ };
+ 
+diff --git a/engine/world.cpp b/engine/world.cpp
+index c6b1ab9..7d9b73c 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -5442,6 +5442,12 @@ bool World::ai_launch_unit_ready(int house, HouseAiRec& rec, QueueCat cat) {
+         ai_econ(rec).queues.placed(cat);
+         return true;
+     }
++    // Rallypoint: undeployed SMIN (VehicleTypes Enslaves=) — SlaveManager on the unit.
++    if (!tc.unit_roster[uslot].enslaves.empty() && tc.unit_roster[uslot].slaves_number > 0) {
++        const UnitTypeDef& d = tc.unit_roster[uslot];
++        make_slave_master(uidx, d.slaves_number, d.slave_regen_rate, d.slave_reload_rate,
++                          d.slave_storage);
++    }
+     // Claim into the FIRST (oldest) team owing this type -- deterministic; an
+     // unclaimed unit stays idle and recruitable [RE: ai-team.md §2].
+     // W2-SK-06 [RE: ai-team.md §2 "an unfilled Full=no team keeps recruiting /
+@@ -6425,7 +6431,7 @@ void World::step(double dt) {
+                 c.image = "SLAV";
+             }
+             Unit& u = add_combat_unit(s.gx, s.gy, s.house, c);
+-            make_slave(u, s.building, s.storage_bales);
++            make_slave(u, s.master, s.storage_bales, s.master_is_unit);
+         }
+         for (const SlaveMove& m : s_moves) order_unit_move(m.unit, m.gx, m.gy);
+     }
 diff --git a/engine/world.hpp b/engine/world.hpp
-index 08e1790..b2c5e8c 100644
+index f5af369..ad00445 100644
 --- a/engine/world.hpp
 +++ b/engine/world.hpp
 @@ -213,8 +213,17 @@ struct Unit {
@@ -472,7 +627,7 @@ index 08e1790..b2c5e8c 100644
  
      // --- CB-1 Transports/Cargo [RE: transport-cargo.md] ---------------------
      // ALL defaults INERT (spec §8): no existing demo issues a load/unload
-@@ -1325,6 +1334,21 @@ public:
+@@ -1336,6 +1345,21 @@ public:
          u.storage_bales = storage_bales;
          u.harv = HarvState::SeekOre;
      }
@@ -494,32 +649,6 @@ index 08e1790..b2c5e8c 100644
  
      // Player orders (the issuer's own harvesters among `ids` only). Simplified per
      // economy.md §1: no separate "pinned" flag -- just pin harv_cell_* to
-diff --git a/engine/world.cpp b/engine/world.cpp
-index bc69112..9ad2bde 100644
---- a/engine/world.cpp
-+++ b/engine/world.cpp
-@@ -5409,6 +5409,12 @@ bool World::ai_launch_unit_ready(int house, HouseAiRec& rec, QueueCat cat) {
-         ai_econ(rec).queues.placed(cat);
-         return true;
-     }
-+    // Rallypoint: undeployed SMIN (VehicleTypes Enslaves=) — SlaveManager on the unit.
-+    if (!tc.unit_roster[uslot].enslaves.empty() && tc.unit_roster[uslot].slaves_number > 0) {
-+        const UnitTypeDef& d = tc.unit_roster[uslot];
-+        make_slave_master(uidx, d.slaves_number, d.slave_regen_rate, d.slave_reload_rate,
-+                          d.slave_storage);
-+    }
-     // Claim into the FIRST (oldest) team owing this type -- deterministic; an
-     // unclaimed unit stays idle and recruitable [RE: ai-team.md §2].
-     // W2-SK-06 [RE: ai-team.md §2 "an unfilled Full=no team keeps recruiting /
-@@ -6375,7 +6381,7 @@ void World::step(double dt) {
-                 c.image = "SLAV";
-             }
-             Unit& u = add_combat_unit(s.gx, s.gy, s.house, c);
--            make_slave(u, s.building, s.storage_bales);
-+            make_slave(u, s.master, s.storage_bales, s.master_is_unit);
-         }
-         for (const SlaveMove& m : s_moves) order_unit_move(m.unit, m.gx, m.gy);
-     }
 diff --git a/engine/world_econ.cpp b/engine/world_econ.cpp
 index 552c55a..8add1a3 100644
 --- a/engine/world_econ.cpp
@@ -534,135 +663,6 @@ index 552c55a..8add1a3 100644
              // The launched unit's art sequences (an image with none keeps the
              // table's entry -- default_anim() when never registered).
              if (at_or<char>(r.unit_has_anim, uslot, 0))
-diff --git a/engine/unit_type.hpp b/engine/unit_type.hpp
-index 1f1f57e..d14206e 100644
---- a/engine/unit_type.hpp
-+++ b/engine/unit_type.hpp
-@@ -26,6 +26,13 @@ struct UnitTypeDef {
-     bool aircraft = false;                  // [AircraftTypes]  -> Airfield / Aircraft queue
-     bool harvester = false;                 // rules Harvester=yes -> launched as a miner
-     int storage = 0;                        // rules Storage= (bales) for a harvester
-+    // Rallypoint: VehicleTypes Enslaves= (SMIN). Same keys as BuildingTypeDef;
-+    // gamemd TechnoClass init creates SlaveManager for either AbstractType.
-+    std::string enslaves;                   // Enslaves= infantry type ("" = none)
-+    int slaves_number = 0;                  // SlavesNumber=
-+    int slave_regen_rate = 0;               // SlaveRegenRate= frames
-+    int slave_reload_rate = 0;              // SlaveReloadRate= frames
-+    int slave_storage = 0;                  // Storage= of the Enslaves infantry
-     UnitTypeW5 w5;                          // wave-5: RequiresStolen*Tech gate
- };
- 
-diff --git a/engine/building.hpp b/engine/building.hpp
-index c61aaea..d0f9f7d 100644
---- a/engine/building.hpp
-+++ b/engine/building.hpp
-@@ -78,8 +78,8 @@ struct BuildingTypeDef {
-     // MCV turns to before it unfolds into this type.
-     int  deploy_facing    = 0x80;
-     bool ore_purifier     = false;  // OrePurifier=     gap owner A (G-27) [RE: economy.md §2]
--    // Rallypoint: Yuri Slave Miner (rules Enslaves= on BuildingTypes only —
--    // ModEnc: slaves come out of buildings, not the undeployed SMIN vehicle).
-+    // Rallypoint: Yuri Slave Miner (Enslaves=). Buildings (YAREFN) and vehicles
-+    // (SMIN) both host SlaveManager in gamemd; Enslaves= names an InfantryType.
-     std::string enslaves;           // Enslaves= infantry type id ("" = none)
-     int slaves_number = 0;          // SlavesNumber=
-     int slave_regen_rate = 0;       // SlaveRegenRate= frames
-diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
-index e6c3f00..c3cb59b 100644
---- a/engine/save_fields.hpp
-+++ b/engine/save_fields.hpp
-@@ -1040,6 +1040,11 @@ template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
-     io(ar, v.aircraft);
-     io(ar, v.harvester);
-     io(ar, v.storage);
-+    io(ar, v.enslaves);            // Rallypoint: SMIN Enslaves=
-+    io(ar, v.slaves_number);
-+    io(ar, v.slave_regen_rate);
-+    io(ar, v.slave_reload_rate);
-+    io(ar, v.slave_storage);
-     io(ar, v.w5);   // wave-5 stolen tech (agent C)
- }
- // W9-05: never saved (re-installed by the host after a load) -- only hashed,
-@@ -1192,7 +1197,15 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
-     io(ar, v.harv_skip_y);
-     io(ar, v.is_slave);       // Rallypoint: Slave Miner
-     io(ar, v.slave_master);
-+    io(ar, v.slave_master_is_unit);
-     io(ar, v.slave);
-+    io(ar, v.is_slave_master);
-+    io(ar, v.slaves_number);
-+    io(ar, v.slave_regen_rate);
-+    io(ar, v.slave_reload_rate);
-+    io(ar, v.slave_worker_storage);
-+    io(ar, v.slave_spawn_frames);
-+    io(ar, v.slave_needs_regen);
-     // cargo
-     io(ar, v.passengers_max);
-     io(ar, v.size_limit);
-diff --git a/engine/savegame.hpp b/engine/savegame.hpp
-index 085a176..c851345 100644
---- a/engine/savegame.hpp
-+++ b/engine/savegame.hpp
-@@ -39,7 +39,7 @@ namespace save {
- // Bump on ANY change to what is serialized (a field added to a visitor, a
- // section's layout). A save with a different version is listed but refused
- // on load -- the original's FileEntryClass::IsWrongVersion.
--constexpr std::uint32_t kFormatVersion = 56;   // 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
-+constexpr std::uint32_t kFormatVersion = 57;   // 57: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
- 
- // --- archives ---------------------------------------------------------------
- // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
-diff --git a/engine/realplay_economy.inc b/engine/realplay_economy.inc
-index 1e8b912..1b56735 100644
---- a/engine/realplay_economy.inc
-+++ b/engine/realplay_economy.inc
-@@ -172,6 +172,14 @@ UnitRoster load_player_unit_roster(const std::string& dir, const ra2assets::MixF
-             d.storage = rules.storage(d.id);
-             d.chrono_miner = rp_upper(d.id) == "CMIN";   // [RE: economy.md §3] Teleporter miner
-         }
-+        // Rallypoint: VehicleTypes Enslaves= (undeployed SMIN).
-+        d.enslaves = rules.enslaves(d.id);
-+        if (!d.enslaves.empty()) {
-+            d.slaves_number = rules.slaves_number(d.id);
-+            d.slave_regen_rate = rules.slave_regen_rate(d.id);
-+            d.slave_reload_rate = rules.slave_reload_rate(d.id);
-+            d.slave_storage = rules.storage(d.enslaves);
-+        }
-         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
-     }
-     std::cerr << "[realplay-roster] country=" << country << " tech<=" << lobby_tech
-diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
-index 053f799..fc4cf81 100644
---- a/engine/ai_skirmish.inc
-+++ b/engine/ai_skirmish.inc
-@@ -93,6 +93,13 @@ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixF
-             d.storage = rules.storage(d.id);
-             d.chrono_miner = d.id == "CMIN";
-         }
-+        d.enslaves = rules.enslaves(d.id);
-+        if (!d.enslaves.empty()) {
-+            d.slaves_number = rules.slaves_number(d.id);
-+            d.slave_regen_rate = rules.slave_regen_rate(d.id);
-+            d.slave_reload_rate = rules.slave_reload_rate(d.id);
-+            d.slave_storage = rules.storage(d.enslaves);
-+        }
-         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
-     }
-     return ur;
-diff --git a/engine/main.cpp b/engine/main.cpp
-index 6dc92f4..4fc7b16 100644
---- a/engine/main.cpp
-+++ b/engine/main.cpp
-@@ -2836,8 +2836,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
-         d.crewed           = rules.section_flag(id, "Crewed", false);
-         d.soylent          = (int)rules.section_double(id, "Soylent", 0.0);
-         d.ore_purifier     = rules.section_flag(id, "OrePurifier", false);   // G-27
--        // Rallypoint: Yuri Slave Miner (Enslaves= on YAREFN; SMIN is the
--        // undeployed vehicle — ModEnc: infantry only spawn from BuildingTypes).
-+        // Rallypoint: Yuri Slave Miner (Enslaves= on YAREFN; SMIN vehicle too).
-         d.enslaves         = rules.enslaves(id);
-         d.slaves_number    = rules.slaves_number(id);
-         d.slave_regen_rate = rules.slave_regen_rate(id);
 diff --git a/include/ra2assets/rules.hpp b/include/ra2assets/rules.hpp
 index eb4fe19..a1664ac 100644
 --- a/include/ra2assets/rules.hpp

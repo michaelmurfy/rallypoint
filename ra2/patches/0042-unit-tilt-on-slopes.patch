@@ -1,7 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 700b9f3..e04bbaf 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -179,6 +179,7 @@
+@@ -179,6 +179,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_audio_mixer.cpp engine/audio_m
  # Compiled into both this test binary and ra2engine from one source of truth
  # (same pattern as combat.cpp above).
  target_sources(ra2assets_tests PRIVATE tests/test_voxel_raster.cpp engine/voxel_raster.cpp)
@@ -10,9 +11,10 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
  # rasterizes each of kVehicleFacings quantized yaws once at load (build_facing_set)
  # so the draw path can blit cached sprites (docs/re/voxel-render.md §2). Compiled
 diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index d01f901..8599281 100644
 --- a/cmake/ra2_sources.cmake
 +++ b/cmake/ra2_sources.cmake
-@@ -100,6 +100,7 @@
+@@ -100,6 +100,7 @@ set(RA2_ENGINE_SOURCES
      ${RA2_ROOT}/engine/world.cpp
      ${RA2_ROOT}/engine/world_loco.cpp   # W7 locomotion (step_units)
      ${RA2_ROOT}/engine/locomotion.cpp   # W7 locomotion (tracks / speeds, pure)
@@ -21,9 +23,10 @@ diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
      ${RA2_ROOT}/engine/world_veterancy.cpp
      ${RA2_ROOT}/engine/pathfind.cpp
 diff --git a/engine/main.cpp b/engine/main.cpp
+index 1f8dec9..d1c8ef5 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -74,6 +74,7 @@
+@@ -76,6 +76,7 @@ static char* ra2_cli_pref_path() {
  #include "capture.hpp"      // kNeutralHouse (Engineer/Spy Capture phase)
  #include "combat.hpp"       // armor_index
  #include "facing_cache.hpp"
@@ -31,7 +34,7 @@ diff --git a/engine/main.cpp b/engine/main.cpp
  #include "factory.hpp"      // primary_factory (unit exit handoff)
  #include "roster2.hpp"      // P6 walls / naval yard / airfield [RE: roster2.md]
  #include "flight.hpp"       // altitude_to_screen_dy (CB-2 raised-sprite draw)
-@@ -3833,6 +3834,36 @@
+@@ -3839,6 +3840,36 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
          return vxl_frame_sprite(va, part, u.house, fi, hf);
      };
      const std::string fkey = hf ? ":f" + std::to_string(hf) : std::string();
@@ -68,27 +71,27 @@ diff --git a/engine/main.cpp b/engine/main.cpp
      // W4: a RocketLocomotion rocket draws its hull at its pitch (the tilt on
      // the launcher, the climb, the arc, the dive) [FUN_00661D00 +0x50].
      if (u.an.t.missile && va.vsrc && std::fabs(u.an.rocket.pitch) > 1e-3) {
-@@ -3869,10 +3900,15 @@
+@@ -3875,10 +3906,15 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
              spr = &it->second;
          }
-         ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, u.level, cam, W, H, extra_dy);
+         ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, dlv, cam, W, H, extra_dy);
 -    } else
 -    ra2engine::draw_voxel_sprite(
 -        ren, tc, "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(bi) + fkey,
--        part_sprite(0, bi), pfx, pfy, u.level, cam, W, H, extra_dy);
+-        part_sprite(0, bi), pfx, pfy, dlv, cam, W, H, extra_dy);
 +    } else {
 +        const std::string hkey = "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
 +                                 std::to_string(bi) + fkey +
 +                                 (std::fabs(slope_pitch) > 1e-4
 +                                      ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
 +                                      : "");
-+        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, u.level, cam, W, H,
++        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, dlv, cam, W, H,
 +                                     extra_dy);
 +    }
      if (va.has_turret) {
          const int ti = ra2engine::facing_to_index(u.turret_facing, ra2engine::kVehicleFacings);
          // W3-B TurretOffset: forward along the BODY facing (FLH axes, §6).
-@@ -3886,22 +3922,39 @@
+@@ -3892,22 +3928,39 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
          const int tn = pres_turret_index(u, va);   // W7-03-05/07
          const ra2engine::VoxelSprite* alt = tn > 0 ? vxl_alt_turret(va, tn, u.house, ti, hf) : nullptr;
          auto draw_turret = [&]() {
@@ -98,12 +101,12 @@ diff --git a/engine/main.cpp b/engine/main.cpp
                                               "vxl:" + img + ":t" + std::to_string(tn) + ":" +
                                                   std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
                                                   std::to_string(ti) + fkey,
-                                              *alt, tfx, tfy, u.level, cam, W, H, extra_dy);
+                                              *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
 -            else
 +            else if (!alt)
                  ra2engine::draw_voxel_sprite(
 -                    ren, tc, "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
--                    part_sprite(1, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
+-                    part_sprite(1, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
 +                    ren, tc,
 +                    "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
 +                        std::to_string(ti) + fkey +
@@ -111,19 +114,19 @@ diff --git a/engine/main.cpp b/engine/main.cpp
 +                             ? ":sp" + std::to_string(static_cast<int>(
 +                                           std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
 +                             : ""),
-+                    pitched_part(1, ti, slope_pitch), tfx, tfy, u.level, cam, W, H, extra_dy);
++                    pitched_part(1, ti, slope_pitch), tfx, tfy, dlv, cam, W, H, extra_dy);
 +            else
 +                ra2engine::draw_voxel_sprite(ren, tc,
 +                                             "vxl:" + img + ":t" + std::to_string(tn) + ":" +
 +                                                 std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
 +                                                 std::to_string(ti) + fkey,
-+                                             *alt, tfx, tfy, u.level, cam, W, H, extra_dy);
++                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
          };
          auto draw_barrel = [&]() {
 -            if (va.has_barrel)
 -                ra2engine::draw_voxel_sprite(
 -                    ren, tc, "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
--                    part_sprite(2, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
+-                    part_sprite(2, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
 +            if (!va.has_barrel) return;
 +            const std::string bkey =
 +                "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
@@ -131,35 +134,14 @@ diff --git a/engine/main.cpp b/engine/main.cpp
 +                (std::fabs(slope_pitch) > 1e-4
 +                     ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
 +                     : "");
-+            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, u.level, cam, W,
++            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, dlv, cam, W,
 +                                         H, extra_dy);
          };
          // W7-12-41 [RE: 0x73A3A0 @0x73ACBB-0x73ADD4 -- q = ((turret facing
          // >> 13) + 1 >> 1) & 3; q 0 (N) or 3 (W) draws the barrel BEFORE the
-diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
---- a/engine/iso_renderer.cpp
-+++ b/engine/iso_renderer.cpp
-@@ -131,6 +131,7 @@
- 
- static const World* g_color_world = nullptr;
- void set_color_world(const World* w) { g_color_world = w; }
-+const World* color_world() { return g_color_world; }
- 
- namespace {
- const ObjTint* g_obj_tint = nullptr;
-diff --git a/engine/iso_renderer.hpp b/engine/iso_renderer.hpp
---- a/engine/iso_renderer.hpp
-+++ b/engine/iso_renderer.hpp
-@@ -254,6 +254,7 @@
- // houses are unconfigured, i.e. every gate); house_draw_key = the colour id
- // for texture-cache keys.
- void set_color_world(const World* w);
-+const World* color_world();  // current set_color_world pointer (draw helpers)
- 
- // W5-PRES (R-104/R-120): a per-object draw tint the object blits apply
- // (draw_unit, draw_voxel_sprite, and main.cpp's building / turret blits via
 diff --git a/engine/slope_tilt.cpp b/engine/slope_tilt.cpp
 new file mode 100644
+index 0000000..f69e5ab
 --- /dev/null
 +++ b/engine/slope_tilt.cpp
 @@ -0,0 +1,61 @@
@@ -226,6 +208,7 @@ new file mode 100644
 +}  // namespace ra2engine
 diff --git a/engine/slope_tilt.hpp b/engine/slope_tilt.hpp
 new file mode 100644
+index 0000000..f08ee1e
 --- /dev/null
 +++ b/engine/slope_tilt.hpp
 @@ -0,0 +1,20 @@
@@ -251,6 +234,7 @@ new file mode 100644
 +}  // namespace ra2engine
 diff --git a/tests/test_slope_tilt.cpp b/tests/test_slope_tilt.cpp
 new file mode 100644
+index 0000000..713f5bc
 --- /dev/null
 +++ b/tests/test_slope_tilt.cpp
 @@ -0,0 +1,25 @@

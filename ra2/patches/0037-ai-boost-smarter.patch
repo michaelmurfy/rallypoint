@@ -1,3 +1,16 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ffe9bf2..bcaa63c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -230,6 +230,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_flight.cpp engine/flight.cpp)
+ # Compiled into both this test binary and ra2engine from one source of truth
+ # (same pattern as factory.cpp above).
+ target_sources(ra2assets_tests PRIVATE tests/test_ai_base.cpp engine/ai_base.cpp)
++# [RP-AI-BOOST] header-only smarter-AI multipliers (TeamDelays / CreditReserve / ...).
++target_sources(ra2assets_tests PRIVATE tests/test_ai_boost.cpp)
+ # aimd_parse.cpp is pure C++17 (no SDL): the AI-2 aimd.ini parser --
+ # TaskForce/ScriptType/TeamType tables via the existing ra2assets::Ini
+ # ordered-section walk (docs/re/ai-team.md §1). Compiled into both this test
 diff --git a/engine/ai_boost.hpp b/engine/ai_boost.hpp
 new file mode 100644
 index 0000000..11eb50e
@@ -103,6 +116,354 @@ index 0000000..11eb50e
 +}
 +
 +}  // namespace ra2engine
+diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
+index 89a6310..b8498ca 100644
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -248,6 +248,8 @@ void arm_skirmish_ai(ra2engine::World& world, const ra2engine::SkirmishConfig& c
+                      const UnitAssets& ua) {
+     load_progress("AI TEAMS");   // W2-AR-02 loading-screen checkpoint
+     if (!ba.ok) return;
++    // [RP-AI-BOOST] resolve once for the session (launch key or RA2_AI_BOOST).
++    const int ai_boost = ra2engine::resolve_ai_boost(cfg.ai_boost);
+     // Waypoint-ring anchor: the first non-AI combatant's base (the human),
+     // else the grid centre.
+     int ax = world.grid_w() / 2, ay = world.grid_h() / 2;
+@@ -271,6 +273,14 @@ void arm_skirmish_ai(ra2engine::World& world, const ra2engine::SkirmishConfig& c
+             s, cfg.starting_cash, ba, rules, rules_ini, ur_ai, aimd, ax, ay, map);
+         // [SK-27] Lobby Superweapons off: the AI plans no SuperWeapon= building.
+         if (!cfg.superweapons) acfg.catalog.superweapons.clear();
++        // [RP-AI-BOOST] computer houses only: scale TeamDelays / BuildDelay /
++        // CreditReserve / harvester replace; keep level for runtime nudges.
++        acfg.ai_boost = ai_boost;
++        ra2engine::apply_ai_boost(acfg);
++        if (ai_boost > 0)
++            std::cerr << "[ai] boost=" << ai_boost << " house=" << i
++                      << " team_delay=" << acfg.team.rules.team_delay_frames
++                      << " credit_reserve=" << acfg.ai.credit_reserve << "\n";
+         // Register the AI infantry anims so launched infantry animate.
+         for (const ra2engine::UnitTypeDef& d : acfg.team.unit_roster)
+             if (!d.is_vehicle)
+diff --git a/engine/ai_team.cpp b/engine/ai_team.cpp
+index 0963dbd..b326ff6 100644
+--- a/engine/ai_team.cpp
++++ b/engine/ai_team.cpp
+@@ -396,7 +396,9 @@ bool house_matches(const std::string& team_house, const std::string& house_name)
+ int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
+                            const std::vector<TeamInstance>& live, double credits,
+                            const AiTeamRules& rules, std::uint32_t& rng,
+-                           const std::vector<char>* team_buildable) {
++                           const std::vector<char>* team_buildable,
++                           int enemy_vehicles, int enemy_infantry, int ai_boost,
++                           const std::vector<UnitTypeDef>* unit_roster) {
+     auto buildable = [&](int i) {
+         return !team_buildable || i >= (int)team_buildable->size() || (*team_buildable)[i];
+     };
+@@ -445,6 +447,38 @@ int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
+         if (tt.max > 0 && count >= tt.max) continue;  // Max=0 -> uncapped
+         if (tt.priority == best_priority) candidates.push_back(i);
+     }
++    // [RP-AI-BOOST] L3: among equal-priority candidates, prefer TaskForces that
++    // counter the known enemy mix (vehicles vs vehicle-heavy foes, infantry vs
++    // infantry-heavy). Stock Priority / Max / CreditReserve gates are unchanged.
++    if (ai_boost >= 3 && unit_roster && enemy_vehicles >= 0 && enemy_infantry >= 0 &&
++        candidates.size() > 1 && (enemy_vehicles + enemy_infantry) > 0) {
++        auto mix_score = [&](int team_ix) -> int {
++            const int tfi = aimd.teams[team_ix].taskforce;
++            if (tfi < 0 || tfi >= (int)aimd.taskforces.size()) return 0;
++            int veh = 0, inf = 0;
++            for (const TaskForceMember& m : aimd.taskforces[tfi].members) {
++                if (m.unit < 0 || m.unit >= (int)unit_roster->size()) continue;
++                const int n = m.count > 0 ? m.count : 0;
++                if ((*unit_roster)[m.unit].is_vehicle) veh += n;
++                else inf += n;
++            }
++            // Anti-tank when the enemy fields more vehicles; anti-inf otherwise.
++            return enemy_vehicles >= enemy_infantry ? veh * 3 + inf : inf * 3 + veh;
++        };
++        int best = mix_score(candidates[0]);
++        std::vector<int> preferred;
++        for (int c : candidates) {
++            const int s = mix_score(c);
++            if (s > best) {
++                best = s;
++                preferred.clear();
++                preferred.push_back(c);
++            } else if (s == best) {
++                preferred.push_back(c);
++            }
++        }
++        if (!preferred.empty()) candidates.swap(preferred);
++    }
+     // Seeded tie-break among the equal-highest-priority eligible candidates
+     // [RE-FALLBACK: ai-team.md §4]. A single candidate still draws once so the
+     // RNG stream advances identically whether or not a tie exists.
+diff --git a/engine/ai_team.hpp b/engine/ai_team.hpp
+index d66950b..8eee50d 100644
+--- a/engine/ai_team.hpp
++++ b/engine/ai_team.hpp
+@@ -291,7 +291,12 @@ int recruit_idle(TeamInstance& team, const AimdData& aimd,
+ int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
+                            const std::vector<TeamInstance>& live, double credits,
+                            const AiTeamRules& rules, std::uint32_t& rng,
+-                           const std::vector<char>* team_buildable = nullptr);
++                           const std::vector<char>* team_buildable = nullptr,
++                           // [RP-AI-BOOST] L3: prefer anti-tank (vehicle-heavy) /
++                           // anti-infantry TaskForces when enemy counts are known.
++                           int enemy_vehicles = -1, int enemy_infantry = -1,
++                           int ai_boost = 0,
++                           const std::vector<UnitTypeDef>* unit_roster = nullptr);
+ 
+ // Production intent [RE: ai-team.md §6]: the unit-roster type the house should
+ // start producing NEXT — the shortfall type of the FIRST (oldest) Recruiting
+diff --git a/engine/ai_trigger.cpp b/engine/ai_trigger.cpp
+index 7a37e59..c6fc6ce 100644
+--- a/engine/ai_trigger.cpp
++++ b/engine/ai_trigger.cpp
+@@ -232,7 +232,7 @@ TriggerDecision select_trigger(const AimdData& aimd,
+ }
+ 
+ void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
+-                   bool success) {
++                   bool success, double success_nudge) {
+     if (trigger < 0 || trigger >= (int)st.weights.size() ||
+         trigger >= (int)aimd.triggers.size())
+         return;
+@@ -250,7 +250,8 @@ void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
+             delta = ((double)C / (double)E - 0.5) * (double)E;
+             if (delta < 0.0) delta = 0.0;            // bonus >= 0
+         }
+-        w += kAiTriggerSuccessWeightDelta + delta;
++        // [RP-AI-BOOST] success_nudge is 0 at stock; L3 adds a small bias.
++        w += kAiTriggerSuccessWeightDelta + delta + success_nudge;
+     } else {
+         if (E > 0) {
+             delta = ((double)C / (double)E - 0.5) *
+diff --git a/engine/ai_trigger.hpp b/engine/ai_trigger.hpp
+index b99d3a0..7d6cc77 100644
+--- a/engine/ai_trigger.hpp
++++ b/engine/ai_trigger.hpp
+@@ -229,7 +229,9 @@ TriggerDecision select_trigger(const AimdData& aimd,
+ // start == min == max never moves (most stock). Records the witness fields
+ // (adjustments/last_adjusted/last_success/last_old_weight/last_new_weight).
+ // Out-of-range `trigger` is a no-op (never a crash).
++// [RP-AI-BOOST] success_nudge: added on success only (L3 keeps attacking after
++// a win without changing the stock track-record rule).
+ void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
+-                   bool success);
++                   bool success, double success_nudge = 0.0);
+ 
+ }  // namespace ra2engine
+diff --git a/engine/launch_file.inc b/engine/launch_file.inc
+index ec74107..74b4d57 100644
+--- a/engine/launch_file.inc
++++ b/engine/launch_file.inc
+@@ -122,6 +122,11 @@ int run_launch_file(const std::string& path, bool no_audio) {
+     o.allies_allowed = optional_flag(ini, "AlliesAllowed");
+     o.auto_repair = optional_flag(ini, "AutoRepair");
+     o.crate_minimum = optional_num(ini, "CrateMinimum");
++    // [RP-AI-BOOST] AIBoost=0..3; absent -> -1 (resolve_ai_boost reads RA2_AI_BOOST).
++    {
++        const int n = optional_num(ini, "AIBoost");
++        o.ai_boost = (n < 0) ? -1 : (n > 3 ? 3 : n);
++    }
+     o.ai_takeover = flag(ini, "AITakeover", false);
+ 
+     const std::string seed_text = ini.get("Game", "Seed", "");
+diff --git a/engine/main.cpp b/engine/main.cpp
+index a59e0c8..e638306 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -63,6 +63,7 @@ static char* ra2_cli_pref_path() {
+ #include <vector>
+ 
+ #include "logical_canvas.hpp"  // desktop canvas height (app_robust.inc, inside namespace {})
++#include "ai_boost.hpp"     // [RP-AI-BOOST] used by ai_skirmish.inc (included inside namespace {})
+ #include "audio_mixer.hpp"
+ #include "bridges.hpp"      // G16 (agent G): bridge overlay classes
+ #include "overlay_land.hpp"  // W8-03-02 / W8-03-01 (w8fix-place): overlay land + buildable grid
+diff --git a/engine/mp/mp_model.cpp b/engine/mp/mp_model.cpp
+index 3114276..875c58c 100644
+--- a/engine/mp/mp_model.cpp
++++ b/engine/mp/mp_model.cpp
+@@ -359,6 +359,7 @@ ra2engine::SkirmishConfig base_config(const MpSessionConfig& s) {
+     cfg.allies_allowed = o.allies_allowed;   // Rallypoint --launch AlliesAllowed=
+     cfg.auto_repair = o.auto_repair;
+     cfg.crate_minimum = o.crate_minimum;
++    cfg.ai_boost = o.ai_boost;               // [RP-AI-BOOST] AIBoost=
+     return cfg;
+ }
+ 
+diff --git a/engine/mp/mp_model.hpp b/engine/mp/mp_model.hpp
+index 809f585..0f2725a 100644
+--- a/engine/mp/mp_model.hpp
++++ b/engine/mp/mp_model.hpp
+@@ -76,6 +76,8 @@ struct MpOptions {
+     // Rallypoint --launch AutoRepair= / CrateMinimum= (CnCNet Game Options ideas).
+     int auto_repair = -1;         // -1 leave rules; 1 = [IQ] RepairSell=0
+     int crate_minimum = -1;       // -1 leave [CrateRules]; else floor count
++    // [RP-AI-BOOST] Rallypoint --launch AIBoost= (0..3); -1 = env / off.
++    int ai_boost = -1;
+     // NET-PLAY (clone extensions, 05-transport-infra.md §6.3 / §7):
+     bool ai_takeover = false;      // a player who leaves / drops: an AI takes the house over (else defeated)
+     bool cross_platform = false;   // "Cross-platform (experimental)": admit Windows + Android peers
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index e6c3f00..671b134 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1561,6 +1561,7 @@ template <class Ar> void fields(Ar& ar, AiHouseConfig& v) {
+     io(ar, v.hate_delay_frames);  // W6-03-04 (v25)
+     io(ar, v.auto_deploy_frames); // W7-01-08 (v35)
+     io(ar, v.roster_to_protect);  // W7-04-18 (v35)
++    io(ar, v.ai_boost);           // [RP-AI-BOOST] (v56)
+ }
+ 
+ // --- skirmish config (the 'CONF' section: rebuilds the scene's assets) ---
+@@ -1592,6 +1593,7 @@ template <class Ar> void fields(Ar& ar, SkirmishConfig& v) {
+     io(ar, v.allies_allowed);        // Rallypoint --launch AlliesAllowed= (v53)
+     io(ar, v.auto_repair);           // Rallypoint --launch AutoRepair= (v54)
+     io(ar, v.crate_minimum);         // Rallypoint --launch CrateMinimum= (v54)
++    io(ar, v.ai_boost);              // [RP-AI-BOOST] AIBoost= (v56)
+ }
+ 
+ // --- P10 campaign runtime state (the 'HOST' section of a campaign save) ---
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 085a176..58ce38f 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 56;   // 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 57;   // 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/skirmish.hpp b/engine/skirmish.hpp
+index 088d65f..69bd5e4 100644
+--- a/engine/skirmish.hpp
++++ b/engine/skirmish.hpp
+@@ -80,6 +80,9 @@ struct SkirmishConfig {
+     // Rallypoint --launch CrateMinimum=: -1 leave [CrateRules]; else override
+     // the floor (CnCNet Crates density: Increased=8, Extreme=40).
+     int                       crate_minimum = -1;
++    // [RP-AI-BOOST] Rallypoint --launch AIBoost= / RA2_AI_BOOST: 0 = stock
++    // (default); 1..3 smarter computer opponents. -1 = resolve from env only.
++    int                       ai_boost = -1;
+ 
+     // P10 Campaign [RE: campaign.md §3]: a NON-EMPTY campaign_map turns the
+     // GameScene into that campaign mission (map from Maps01/MAPS02, houses +
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 6b9e09e..1aa9431 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1,4 +1,5 @@
+ #include "world.hpp"
++#include "ai_boost.hpp"    // [RP-AI-BOOST]
+ #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
+ #include "weapon_unit.hpp"  // Gap fix C
+ 
+@@ -5543,9 +5544,23 @@ void World::step_ai_teams(double dt) {
+             // IsBaseDefense). Held while UseMinDefenseRule still needs a guard.
+             if (!need_defense && st.spawn_clock >= spawn_period) {
+                 st.spawn_clock = 0.0;
+-                const int pick = select_autocreate_team(tc.aimd, tc.house_name,
+-                                                        st.teams, ai_econ(rec).credits,
+-                                                        tc.rules, st.rng, &team_ok);
++                // [RP-AI-BOOST] L3: count live enemy vehicles/infantry for mix bias.
++                int enemy_veh = -1, enemy_inf = -1;
++                if (rec.cfg.ai_boost >= 3) {
++                    enemy_veh = 0;
++                    enemy_inf = 0;
++                    for (const Unit& u : units_) {
++                        if (!u.alive || u.die_time >= 0.0 || u.house == h) continue;
++                        if (allied_with(h, u.house)) continue;
++                        if (u.is_harvester) continue;
++                        if (u.is_infantry) ++enemy_inf;
++                        else ++enemy_veh;
++                    }
++                }
++                const int pick = select_autocreate_team(
++                    tc.aimd, tc.house_name, st.teams, ai_econ(rec).credits, tc.rules,
++                    st.rng, &team_ok, enemy_veh, enemy_inf, rec.cfg.ai_boost,
++                    &tc.unit_roster);
+                 if (pick >= 0) {
+                     TeamInstance t;
+                     t.teamtype = pick;
+@@ -5842,10 +5857,13 @@ void World::step_ai_teams(double dt) {
+                 // (completed_success, the team+0x84 flag), NOT survivors
+                 // [RE: §4]. Adjustment happens ONLY here, at disband.
+                 if (tc.triggers_enabled) {
++                    // [RP-AI-BOOST] L3: nudge successful trigger weights upward.
++                    const double nudge =
++                        ai_boost_success_weight_nudge(rec.cfg.ai_boost);
+                     for (int j = 0; j < (int)tc.aimd.triggers.size(); ++j)
+                         if (tc.aimd.triggers[j].team1 == t.teamtype)
+                             adjust_weight(rec.trigger_state, tc.aimd, j,
+-                                          t.completed_success);
++                                          t.completed_success, nudge);
+                 }
+                 // Release survivors: stand each live member DOWN (stop any
+                 // in-flight move) so the freed unit is IMMEDIATELY idle &
+diff --git a/engine/world.hpp b/engine/world.hpp
+index e4e0643..d3fafca 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -815,6 +815,10 @@ struct AiHouseConfig {
+     // to 6 idle units of its house onto the attacker. Per team.unit_roster
+     // index; empty = off.
+     std::vector<std::uint8_t> roster_to_protect;
++    // [RP-AI-BOOST] Rallypoint optional smarter AI (0 = stock; 1..3). Applied
++    // only to computer houses; timers/credit are mutated at arm time; level is
++    // kept for runtime defense response and trigger-weight nudges.
++    int ai_boost = 0;
+ };
+ 
+ // --- L2 per-house economy [RE: HouseClass / FactoryClass; docs/re/production.md
+diff --git a/engine/world_w7.cpp b/engine/world_w7.cpp
+index 011cf67..f54d7b2 100644
+--- a/engine/world_w7.cpp
++++ b/engine/world_w7.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <algorithm>
+ 
++#include "ai_boost.hpp"     // [RP-AI-BOOST] ComputerBaseDefenseResponse scale
+ #include "combat.hpp"       // threat_value_unit, unit_in_weapon_range, HitLog
+ #include "locomotion.hpp"   // leptons_per_frame (fv7c call for help)
+ #include "orig_math.hpp"
+@@ -299,7 +300,19 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+     if (A.an.t.fixed_wing || A.an.t.missile) return;   // WhatAmI not 0xF / 1
+     const int now = static_cast<int>(vet_frame_);
+     if (A.tg.help_frame > now) return;   // the +0x650 timer
+-    int budget = A.tg.t.threat_posed * static_cast<int>(w7_rules_.call_for_help_budget);
++    // [RP-AI-BOOST] L2+: scale ComputerBaseDefenseResponse (Rules+0xB18) for
++    // computer houses only; humans never reach this path (human_commanded).
++    double defense_mul = 1.0;
++    int defense_delay = w7_rules_.base_defense_delay;
++    if (ai_enabled(victim_house)) {
++        const int boost = ai_houses_[static_cast<std::size_t>(victim_house)].cfg.ai_boost;
++        defense_mul = ai_boost_defense_response_mul(boost);
++        defense_delay = std::max(
++            1, static_cast<int>(w7_rules_.base_defense_delay *
++                                ai_boost_defense_delay_mul(boost) + 0.5));
++    }
++    int budget = A.tg.t.threat_posed *
++                 static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
+     const int nu = static_cast<int>(units_.size());
+     auto tflags = [&](int i) -> std::uint8_t {
+         return i < static_cast<int>(team_flags_.size()) ? team_flags_[static_cast<std::size_t>(i)] : 0;
+@@ -378,7 +391,8 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+             if (spent > budget) break;
+         }
+     }
+-    if (spent > budget) units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + w7_rules_.base_defense_delay;
++    if (spent > budget)
++        units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + defense_delay;
+ }
+ 
+ void World::wake_unit(int idx) {
 diff --git a/tests/test_ai_boost.cpp b/tests/test_ai_boost.cpp
 new file mode 100644
 index 0000000..4f99f8e
@@ -205,345 +566,3 @@ index 0000000..4f99f8e
 +    CHECK(resolve_ai_boost(2) == 2);
 +    CHECK(resolve_ai_boost(99) == 3);
 +}
-diff --git a/CMakeLists.txt b/CMakeLists.txt
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -230,6 +230,8 @@
- # Compiled into both this test binary and ra2engine from one source of truth
- # (same pattern as factory.cpp above).
- target_sources(ra2assets_tests PRIVATE tests/test_ai_base.cpp engine/ai_base.cpp)
-+# [RP-AI-BOOST] header-only smarter-AI multipliers (TeamDelays / CreditReserve / ...).
-+target_sources(ra2assets_tests PRIVATE tests/test_ai_boost.cpp)
- # aimd_parse.cpp is pure C++17 (no SDL): the AI-2 aimd.ini parser --
- # TaskForce/ScriptType/TeamType tables via the existing ra2assets::Ini
- # ordered-section walk (docs/re/ai-team.md §1). Compiled into both this test
-diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
---- a/engine/ai_skirmish.inc
-+++ b/engine/ai_skirmish.inc
-@@ -3,6 +3,7 @@
- // three-layer brain (AI-1 base + AI-2 teams + AI-3 triggers) with a
- // side-correct building catalog, unit roster, factories, trigger side and
- // country. Included by main.cpp after make_ai_team_config.
-+#include "ai_boost.hpp"   // [RP-AI-BOOST]
- //
- // Regression origin: commit f77e68e (Scene framework) dropped the aimd.ini
- // load and `acfg.team = make_ai_team_config(...)` from the interactive path;
-@@ -233,6 +234,8 @@
-                      const UnitAssets& ua) {
-     load_progress("AI TEAMS");   // W2-AR-02 loading-screen checkpoint
-     if (!ba.ok) return;
-+    // [RP-AI-BOOST] resolve once for the session (launch key or RA2_AI_BOOST).
-+    const int ai_boost = ra2engine::resolve_ai_boost(cfg.ai_boost);
-     // Waypoint-ring anchor: the first non-AI combatant's base (the human),
-     // else the grid centre.
-     int ax = world.grid_w() / 2, ay = world.grid_h() / 2;
-@@ -256,6 +259,14 @@
-             s, cfg.starting_cash, ba, rules, rules_ini, ur_ai, aimd, ax, ay, map);
-         // [SK-27] Lobby Superweapons off: the AI plans no SuperWeapon= building.
-         if (!cfg.superweapons) acfg.catalog.superweapons.clear();
-+        // [RP-AI-BOOST] computer houses only: scale TeamDelays / BuildDelay /
-+        // CreditReserve / harvester replace; keep level for runtime nudges.
-+        acfg.ai_boost = ai_boost;
-+        ra2engine::apply_ai_boost(acfg);
-+        if (ai_boost > 0)
-+            std::cerr << "[ai] boost=" << ai_boost << " house=" << i
-+                      << " team_delay=" << acfg.team.rules.team_delay_frames
-+                      << " credit_reserve=" << acfg.ai.credit_reserve << "\n";
-         // Register the AI infantry anims so launched infantry animate.
-         for (const ra2engine::UnitTypeDef& d : acfg.team.unit_roster)
-             if (!d.is_vehicle)
-diff --git a/engine/ai_team.hpp b/engine/ai_team.hpp
---- a/engine/ai_team.hpp
-+++ b/engine/ai_team.hpp
-@@ -291,7 +291,12 @@
- int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
-                            const std::vector<TeamInstance>& live, double credits,
-                            const AiTeamRules& rules, std::uint32_t& rng,
--                           const std::vector<char>* team_buildable = nullptr);
-+                           const std::vector<char>* team_buildable = nullptr,
-+                           // [RP-AI-BOOST] L3: prefer anti-tank (vehicle-heavy) /
-+                           // anti-infantry TaskForces when enemy counts are known.
-+                           int enemy_vehicles = -1, int enemy_infantry = -1,
-+                           int ai_boost = 0,
-+                           const std::vector<UnitTypeDef>* unit_roster = nullptr);
- 
- // Production intent [RE: ai-team.md §6]: the unit-roster type the house should
- // start producing NEXT — the shortfall type of the FIRST (oldest) Recruiting
-diff --git a/engine/ai_team.cpp b/engine/ai_team.cpp
---- a/engine/ai_team.cpp
-+++ b/engine/ai_team.cpp
-@@ -396,7 +396,9 @@
- int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
-                            const std::vector<TeamInstance>& live, double credits,
-                            const AiTeamRules& rules, std::uint32_t& rng,
--                           const std::vector<char>* team_buildable) {
-+                           const std::vector<char>* team_buildable,
-+                           int enemy_vehicles, int enemy_infantry, int ai_boost,
-+                           const std::vector<UnitTypeDef>* unit_roster) {
-     auto buildable = [&](int i) {
-         return !team_buildable || i >= (int)team_buildable->size() || (*team_buildable)[i];
-     };
-@@ -445,6 +447,38 @@
-         if (tt.max > 0 && count >= tt.max) continue;  // Max=0 -> uncapped
-         if (tt.priority == best_priority) candidates.push_back(i);
-     }
-+    // [RP-AI-BOOST] L3: among equal-priority candidates, prefer TaskForces that
-+    // counter the known enemy mix (vehicles vs vehicle-heavy foes, infantry vs
-+    // infantry-heavy). Stock Priority / Max / CreditReserve gates are unchanged.
-+    if (ai_boost >= 3 && unit_roster && enemy_vehicles >= 0 && enemy_infantry >= 0 &&
-+        candidates.size() > 1 && (enemy_vehicles + enemy_infantry) > 0) {
-+        auto mix_score = [&](int team_ix) -> int {
-+            const int tfi = aimd.teams[team_ix].taskforce;
-+            if (tfi < 0 || tfi >= (int)aimd.taskforces.size()) return 0;
-+            int veh = 0, inf = 0;
-+            for (const TaskForceMember& m : aimd.taskforces[tfi].members) {
-+                if (m.unit < 0 || m.unit >= (int)unit_roster->size()) continue;
-+                const int n = m.count > 0 ? m.count : 0;
-+                if ((*unit_roster)[m.unit].is_vehicle) veh += n;
-+                else inf += n;
-+            }
-+            // Anti-tank when the enemy fields more vehicles; anti-inf otherwise.
-+            return enemy_vehicles >= enemy_infantry ? veh * 3 + inf : inf * 3 + veh;
-+        };
-+        int best = mix_score(candidates[0]);
-+        std::vector<int> preferred;
-+        for (int c : candidates) {
-+            const int s = mix_score(c);
-+            if (s > best) {
-+                best = s;
-+                preferred.clear();
-+                preferred.push_back(c);
-+            } else if (s == best) {
-+                preferred.push_back(c);
-+            }
-+        }
-+        if (!preferred.empty()) candidates.swap(preferred);
-+    }
-     // Seeded tie-break among the equal-highest-priority eligible candidates
-     // [RE-FALLBACK: ai-team.md §4]. A single candidate still draws once so the
-     // RNG stream advances identically whether or not a tie exists.
-diff --git a/engine/ai_trigger.hpp b/engine/ai_trigger.hpp
---- a/engine/ai_trigger.hpp
-+++ b/engine/ai_trigger.hpp
-@@ -217,7 +217,9 @@
- // start == min == max never moves (most stock). Records the witness fields
- // (adjustments/last_adjusted/last_success/last_old_weight/last_new_weight).
- // Out-of-range `trigger` is a no-op (never a crash).
-+// [RP-AI-BOOST] success_nudge: added on success only (L3 keeps attacking after
-+// a win without changing the stock track-record rule).
- void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
--                   bool success);
-+                   bool success, double success_nudge = 0.0);
- 
- }  // namespace ra2engine
-diff --git a/engine/ai_trigger.cpp b/engine/ai_trigger.cpp
---- a/engine/ai_trigger.cpp
-+++ b/engine/ai_trigger.cpp
-@@ -218,7 +218,7 @@
- }
- 
- void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
--                   bool success) {
-+                   bool success, double success_nudge) {
-     if (trigger < 0 || trigger >= (int)st.weights.size() ||
-         trigger >= (int)aimd.triggers.size())
-         return;
-@@ -236,7 +236,8 @@
-             delta = ((double)C / (double)E - 0.5) * (double)E;
-             if (delta < 0.0) delta = 0.0;            // bonus >= 0
-         }
--        w += kAiTriggerSuccessWeightDelta + delta;
-+        // [RP-AI-BOOST] success_nudge is 0 at stock; L3 adds a small bias.
-+        w += kAiTriggerSuccessWeightDelta + delta + success_nudge;
-     } else {
-         if (E > 0) {
-             delta = ((double)C / (double)E - 0.5) *
-diff --git a/engine/world.hpp b/engine/world.hpp
---- a/engine/world.hpp
-+++ b/engine/world.hpp
-@@ -810,6 +810,10 @@
-     // to 6 idle units of its house onto the attacker. Per team.unit_roster
-     // index; empty = off.
-     std::vector<std::uint8_t> roster_to_protect;
-+    // [RP-AI-BOOST] Rallypoint optional smarter AI (0 = stock; 1..3). Applied
-+    // only to computer houses; timers/credit are mutated at arm time; level is
-+    // kept for runtime defense response and trigger-weight nudges.
-+    int ai_boost = 0;
- };
- 
- // --- L2 per-house economy [RE: HouseClass / FactoryClass; docs/re/production.md
-diff --git a/engine/world.cpp b/engine/world.cpp
---- a/engine/world.cpp
-+++ b/engine/world.cpp
-@@ -1,4 +1,5 @@
- #include "world.hpp"
-+#include "ai_boost.hpp"    // [RP-AI-BOOST]
- #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
- #include "weapon_unit.hpp"  // Gap fix C
- 
-@@ -5443,9 +5444,23 @@
-                 st.spawn_clock = 0.0;
-                 // CONTRACT F: select_autocreate_team takes a trailing seeded rng
-                 // (the house's AiTeamState::rng — deterministic, never wall-clock).
--                const int pick = select_autocreate_team(tc.aimd, tc.house_name,
--                                                        st.teams, ai_econ(rec).credits,
--                                                        tc.rules, st.rng, &team_ok);
-+                // [RP-AI-BOOST] L3: count live enemy vehicles/infantry for mix bias.
-+                int enemy_veh = -1, enemy_inf = -1;
-+                if (rec.cfg.ai_boost >= 3) {
-+                    enemy_veh = 0;
-+                    enemy_inf = 0;
-+                    for (const Unit& u : units_) {
-+                        if (!u.alive || u.die_time >= 0.0 || u.house == h) continue;
-+                        if (allied_with(h, u.house)) continue;
-+                        if (u.is_harvester) continue;
-+                        if (u.is_infantry) ++enemy_inf;
-+                        else ++enemy_veh;
-+                    }
-+                }
-+                const int pick = select_autocreate_team(
-+                    tc.aimd, tc.house_name, st.teams, ai_econ(rec).credits, tc.rules,
-+                    st.rng, &team_ok, enemy_veh, enemy_inf, rec.cfg.ai_boost,
-+                    &tc.unit_roster);
-                 if (pick >= 0) {
-                     TeamInstance t;
-                     t.teamtype = pick;
-@@ -5785,10 +5800,13 @@
-                 // (completed_success, the team+0x84 flag), NOT survivors
-                 // [RE: §4]. Adjustment happens ONLY here, at disband.
-                 if (tc.triggers_enabled) {
-+                    // [RP-AI-BOOST] L3: nudge successful trigger weights upward.
-+                    const double nudge =
-+                        ai_boost_success_weight_nudge(rec.cfg.ai_boost);
-                     for (int j = 0; j < (int)tc.aimd.triggers.size(); ++j)
-                         if (tc.aimd.triggers[j].team1 == t.teamtype)
-                             adjust_weight(rec.trigger_state, tc.aimd, j,
--                                          t.completed_success);
-+                                          t.completed_success, nudge);
-                 }
-                 // Release survivors: stand each live member DOWN (stop any
-                 // in-flight move) so the freed unit is IMMEDIATELY idle &
-diff --git a/engine/world_w7.cpp b/engine/world_w7.cpp
---- a/engine/world_w7.cpp
-+++ b/engine/world_w7.cpp
-@@ -10,6 +10,7 @@
- 
- #include <algorithm>
- 
-+#include "ai_boost.hpp"     // [RP-AI-BOOST] ComputerBaseDefenseResponse scale
- #include "combat.hpp"       // threat_value_unit, unit_in_weapon_range, HitLog
- #include "locomotion.hpp"   // leptons_per_frame (fv7c call for help)
- #include "orig_math.hpp"
-@@ -299,7 +300,19 @@
-     if (A.an.t.fixed_wing || A.an.t.missile) return;   // WhatAmI not 0xF / 1
-     const int now = static_cast<int>(vet_frame_);
-     if (A.tg.help_frame > now) return;   // the +0x650 timer
--    int budget = A.tg.t.threat_posed * static_cast<int>(w7_rules_.call_for_help_budget);
-+    // [RP-AI-BOOST] L2+: scale ComputerBaseDefenseResponse (Rules+0xB18) for
-+    // computer houses only; humans never reach this path (human_commanded).
-+    double defense_mul = 1.0;
-+    int defense_delay = w7_rules_.base_defense_delay;
-+    if (ai_enabled(victim_house)) {
-+        const int boost = ai_houses_[static_cast<std::size_t>(victim_house)].cfg.ai_boost;
-+        defense_mul = ai_boost_defense_response_mul(boost);
-+        defense_delay = std::max(
-+            1, static_cast<int>(w7_rules_.base_defense_delay *
-+                                ai_boost_defense_delay_mul(boost) + 0.5));
-+    }
-+    int budget = A.tg.t.threat_posed *
-+                 static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
-     const int nu = static_cast<int>(units_.size());
-     auto tflags = [&](int i) -> std::uint8_t {
-         return i < static_cast<int>(team_flags_.size()) ? team_flags_[static_cast<std::size_t>(i)] : 0;
-@@ -378,7 +391,8 @@
-             if (spent > budget) break;
-         }
-     }
--    if (spent > budget) units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + w7_rules_.base_defense_delay;
-+    if (spent > budget)
-+        units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + defense_delay;
- }
- 
- void World::wake_unit(int idx) {
-diff --git a/engine/skirmish.hpp b/engine/skirmish.hpp
---- a/engine/skirmish.hpp
-+++ b/engine/skirmish.hpp
-@@ -80,6 +80,9 @@
-     // Rallypoint --launch CrateMinimum=: -1 leave [CrateRules]; else override
-     // the floor (CnCNet Crates density: Increased=8, Extreme=40).
-     int                       crate_minimum = -1;
-+    // [RP-AI-BOOST] Rallypoint --launch AIBoost= / RA2_AI_BOOST: 0 = stock
-+    // (default); 1..3 smarter computer opponents. -1 = resolve from env only.
-+    int                       ai_boost = -1;
- 
-     // P10 Campaign [RE: campaign.md §3]: a NON-EMPTY campaign_map turns the
-     // GameScene into that campaign mission (map from Maps01/MAPS02, houses +
-diff --git a/engine/launch_file.inc b/engine/launch_file.inc
---- a/engine/launch_file.inc
-+++ b/engine/launch_file.inc
-@@ -122,6 +122,11 @@
-     o.allies_allowed = optional_flag(ini, "AlliesAllowed");
-     o.auto_repair = optional_flag(ini, "AutoRepair");
-     o.crate_minimum = optional_num(ini, "CrateMinimum");
-+    // [RP-AI-BOOST] AIBoost=0..3; absent -> -1 (resolve_ai_boost reads RA2_AI_BOOST).
-+    {
-+        const int n = optional_num(ini, "AIBoost");
-+        o.ai_boost = (n < 0) ? -1 : (n > 3 ? 3 : n);
-+    }
-     o.ai_takeover = flag(ini, "AITakeover", false);
- 
-     const std::string seed_text = ini.get("Game", "Seed", "");
-diff --git a/engine/mp/mp_model.hpp b/engine/mp/mp_model.hpp
---- a/engine/mp/mp_model.hpp
-+++ b/engine/mp/mp_model.hpp
-@@ -76,6 +76,8 @@
-     // Rallypoint --launch AutoRepair= / CrateMinimum= (CnCNet Game Options ideas).
-     int auto_repair = -1;         // -1 leave rules; 1 = [IQ] RepairSell=0
-     int crate_minimum = -1;       // -1 leave [CrateRules]; else floor count
-+    // [RP-AI-BOOST] Rallypoint --launch AIBoost= (0..3); -1 = env / off.
-+    int ai_boost = -1;
-     // NET-PLAY (clone extensions, 05-transport-infra.md §6.3 / §7):
-     bool ai_takeover = false;      // a player who leaves / drops: an AI takes the house over (else defeated)
-     bool cross_platform = false;   // "Cross-platform (experimental)": admit Windows + Android peers
-diff --git a/engine/mp/mp_model.cpp b/engine/mp/mp_model.cpp
---- a/engine/mp/mp_model.cpp
-+++ b/engine/mp/mp_model.cpp
-@@ -359,6 +359,7 @@
-     cfg.allies_allowed = o.allies_allowed;   // Rallypoint --launch AlliesAllowed=
-     cfg.auto_repair = o.auto_repair;
-     cfg.crate_minimum = o.crate_minimum;
-+    cfg.ai_boost = o.ai_boost;               // [RP-AI-BOOST] AIBoost=
-     return cfg;
- }
- 
-diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
---- a/engine/save_fields.hpp
-+++ b/engine/save_fields.hpp
-@@ -1559,6 +1559,7 @@
-     io(ar, v.hate_delay_frames);  // W6-03-04 (v25)
-     io(ar, v.auto_deploy_frames); // W7-01-08 (v35)
-     io(ar, v.roster_to_protect);  // W7-04-18 (v35)
-+    io(ar, v.ai_boost);           // [RP-AI-BOOST] (v56)
- }
- 
- // --- skirmish config (the 'CONF' section: rebuilds the scene's assets) ---
-@@ -1590,6 +1591,7 @@
-     io(ar, v.allies_allowed);        // Rallypoint --launch AlliesAllowed= (v53)
-     io(ar, v.auto_repair);           // Rallypoint --launch AutoRepair= (v54)
-     io(ar, v.crate_minimum);         // Rallypoint --launch CrateMinimum= (v54)
-+    io(ar, v.ai_boost);              // [RP-AI-BOOST] AIBoost= (v56)
- }
- 
- // --- P10 campaign runtime state (the 'HOST' section of a campaign save) ---
-diff --git a/engine/savegame.hpp b/engine/savegame.hpp
---- a/engine/savegame.hpp
-+++ b/engine/savegame.hpp
-@@ -39,7 +39,7 @@
- // Bump on ANY change to what is serialized (a field added to a visitor, a
- // section's layout). A save with a different version is listed but refused
- // on load -- the original's FileEntryClass::IsWrongVersion.
--constexpr std::uint32_t kFormatVersion = 55;   // 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
-+constexpr std::uint32_t kFormatVersion = 56;   // 56: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
- 
- // --- archives ---------------------------------------------------------------
- // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,

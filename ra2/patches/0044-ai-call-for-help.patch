@@ -62,10 +62,10 @@ index 74944dd..1a31c61 100644
  // outward scan was NOT pinned; RE-FALLBACK (calibrated, keep): nearest-first
  // Chebyshev rings from the base center, row-major within a ring; defenses
 diff --git a/engine/world.cpp b/engine/world.cpp
-index ba1af28..af819ed 100644
+index 56e622b..c6b1ab9 100644
 --- a/engine/world.cpp
 +++ b/engine/world.cpp
-@@ -3976,7 +3976,7 @@ void World::step_ai_houses(double dt) {
+@@ -4014,7 +4014,7 @@ void World::step_ai_houses(double dt) {
          // W2-SK-10 base defence interim: every ~7 s, idle un-teamed combat
          // units engage enemies inside 12 cells of the base — ONLY while the
          // house has no live IsBaseDefense team. Once UseMinDefenseRule has
@@ -74,7 +74,7 @@ index ba1af28..af819ed 100644
          // owns the response and this path must not steal recruits.
          if ((repair_frame_ + (std::uint64_t)h) % 105u == 0u) {
              bool has_bd = false;
-@@ -4149,9 +4149,10 @@ void World::step_ai_houses(double dt) {
+@@ -4187,9 +4187,10 @@ void World::step_ai_houses(double dt) {
          // 6b) [G-65] AI sell [RE: FUN_00450620 -- money < [AI] CreditReserve,
          //     health ratio < ConditionRed (Rules+0x1708) and rand(0,50) <
          //     house+0x1d4 (the house TechLevel, ai-trigger.md; 10 in skirmish)
@@ -88,7 +88,7 @@ index ba1af28..af819ed 100644
              for (int bi = 0; bi < (int)buildings_.size(); ++bi) {
                  const Building& b = buildings_[bi];
                  if (!b.alive || b.house != h || b.state != Building::State::Idle || b.selling ||
-@@ -4164,6 +4165,30 @@ void World::step_ai_houses(double dt) {
+@@ -4202,6 +4203,30 @@ void World::step_ai_houses(double dt) {
                  break;
              }
          }
@@ -120,10 +120,10 @@ index ba1af28..af819ed 100644
          //     FUN_004fdb30]: a computer house with no refinery (house+0x15c <
          //     1) that cannot afford its BuildRefinery, or with refineries but
 diff --git a/engine/world_w7.cpp b/engine/world_w7.cpp
-index 011cf67..d2ad31f 100644
+index f54d7b2..91ccde4 100644
 --- a/engine/world_w7.cpp
 +++ b/engine/world_w7.cpp
-@@ -250,13 +250,12 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
+@@ -251,13 +251,12 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
      return v < 2 ? 1 : v;
  }
  
@@ -143,7 +143,7 @@ index 011cf67..d2ad31f 100644
  //   head: no call for an allied attacker, a human victim house, an attacker
  //     in limbo, an armed campaign victim, an attacker that is not Infantry/Unit
  //     (an AircraftType: fixed-wing or a missile -- a Jumpjet Rocketeer IS
-@@ -266,18 +265,22 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
+@@ -267,18 +266,22 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
  //   candidates, infantry array then unit array: same owner, no team or an
  //     IsBaseDefense team, armed, Recruitable mission (campaign only;
  //     SessionType != 0 skips it), GetFireError(attacker, 0) != ILLEGAL,
@@ -174,9 +174,9 @@ index 011cf67..d2ad31f 100644
  void World::call_for_help(int victim_house, int victim_unit, int victim_building, int attacker) {
      if (attacker < 0 || attacker >= static_cast<int>(units_.size())) return;
      const Unit& A = units_[static_cast<std::size_t>(attacker)];
-@@ -301,9 +304,30 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
-     if (A.tg.help_frame > now) return;   // the +0x650 timer
-     int budget = A.tg.t.threat_posed * static_cast<int>(w7_rules_.call_for_help_budget);
+@@ -314,9 +317,30 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+     int budget = A.tg.t.threat_posed *
+                  static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
      const int nu = static_cast<int>(units_.size());
 +    // [RE: FUN_00708080 @0x708351 / 0x7085BB]: ArchiveTarget (+0x218) == this
 +    // multiplies infantry help_value by 100 and vehicle by 10. Buildings take
@@ -205,7 +205,7 @@ index 011cf67..d2ad31f 100644
      int objs[6] = {0}, vals[6] = {0};
      int count = 0, minv = 0;
      for (int pass = 0; pass < 2; ++pass) {   // the infantry array, then the units
-@@ -319,11 +343,14 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+@@ -332,11 +356,14 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
              if (u.deployed && !u.deploy_fire) continue;   // a deployed Desolator cannot go
              if (playfield_.campaign && !mission_recruitable(unit_mission(u))) continue;
              if (!unit_primary_can_fire_at(u, A)) continue;

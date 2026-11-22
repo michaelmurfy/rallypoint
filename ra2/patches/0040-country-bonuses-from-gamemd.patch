@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 53278d5..33eafa2 100644
+index bcaa63c..700b9f3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -307,6 +307,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
+@@ -309,6 +309,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
  target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
  # Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
  target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
@@ -12,7 +12,7 @@ index 53278d5..33eafa2 100644
  target_sources(ra2assets_tests PRIVATE tests/test_gattling.cpp)
  # Rallypoint: Magnetron / Magnetic Beam (IsLocomotor lift / hold / drop).
 diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
-index 4d6d2d3..c80324a 100644
+index b8498ca..722c9b2 100644
 --- a/engine/ai_skirmish.inc
 +++ b/engine/ai_skirmish.inc
 @@ -146,8 +146,19 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
@@ -308,10 +308,10 @@ index e12a356..a3ec7ed 100644
          spent += std::max(1, rules.cost(id));
      }
 diff --git a/engine/main.cpp b/engine/main.cpp
-index d7c077b..1b96598 100644
+index e638306..1f8dec9 100644
 --- a/engine/main.cpp
 +++ b/engine/main.cpp
-@@ -3210,6 +3210,30 @@ ra2engine::AiHouseConfig make_ai_config(const BuildingAssets& ba, const Rules& r
+@@ -3213,6 +3213,30 @@ ra2engine::AiHouseConfig make_ai_config(const BuildingAssets& ba, const Rules& r
                                               ra2engine::difficulty_class_index(difficulty));
          if (dc >= 0) cfg.mods.defense_target = dc;
      }
@@ -342,7 +342,7 @@ index d7c077b..1b96598 100644
      cfg.build_speed = rules.general_double("BuildSpeed", 0.7);
      cfg.low_power_penalty = rules.general_double("LowPowerPenaltyModifier", 1.0);
      cfg.start_credits = start_credits;  // lobby money, UNMODIFIED — no
-@@ -14502,6 +14526,13 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
+@@ -14543,6 +14567,13 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
      load_progress("SKIRMISH WORLD");   // W2-AR-02 loading-screen checkpoint
      ra2engine::World world = build_world(a, ua, 0);          // count=0 -> launcher spawns everything
      ra2engine::configure_skirmish_houses(world, cfg);       // house table + toggles + credit seed + minimal AI
@@ -356,7 +356,7 @@ index d7c077b..1b96598 100644
      // Repair & Sell [RE: repair-sell.md §A1]: the interactive game's World never
      // routes through wire_economy, so the rulesmd-resolved [General] scalars are
      // handed over here too. NOT byte-relevant (repair_rules_ is unhashed and read
-@@ -14572,7 +14603,8 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
+@@ -14613,7 +14644,8 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
              const int mcv = gf_spawn_start_force(world, *gf_rules_ini, rules, i, country, bx, by,
                                                   cfg.unit_count, cfg.tech_level, rng, gf_spawned);
              if (s.is_ai && ba.ok) {
@@ -367,7 +367,7 @@ index d7c077b..1b96598 100644
                  // BaseUnit when there is no ConYard" step; D owns the full AI
                  // MCV logic -- this is the World-level order it calls).
 diff --git a/engine/realplay_scene.inc b/engine/realplay_scene.inc
-index 9431842..dfe03d8 100644
+index f26fef2..39aca3a 100644
 --- a/engine/realplay_scene.inc
 +++ b/engine/realplay_scene.inc
 @@ -83,6 +83,17 @@ public:
@@ -388,11 +388,55 @@ index 9431842..dfe03d8 100644
          return r;
      }
      // House h's buildable building mask (the sidebar's rp_bld_allowed_ rule
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 671b134..f82d19f 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -241,6 +241,7 @@ struct SaveAccess {
+         save::io(ar, w.repair_frame_); save::mark(ar, "repair_frame_");
+         save::io(ar, w.survivor_crew_); save::mark(ar, "survivor_crew_");
+         save::io(ar, w.survivor_crew_set_); save::mark(ar, "survivor_crew_set_");
++        save::io(ar, w.house_country_bonuses_); save::mark(ar, "house_country_bonuses_");   // Rallypoint HouseType bonuses
+         // P5 Veterancy + crates
+         save::io(ar, w.vet_any_); save::mark(ar, "vet_any_");
+         save::io(ar, w.vet_rules_); save::mark(ar, "vet_rules_");
+@@ -393,6 +394,18 @@ template <class Ar> void fields(Ar& ar, SaveAccess::Trig& v) { SaveAccess::trig(
+ template <class Ar> void fields(Ar& ar, SaveAccess::Tag& v) { SaveAccess::tag(ar, v); }
+ 
+ // --- small leaf structs ---
++template <class Ar> void fields(Ar& ar, country::Bonuses& v) {   // Rallypoint HouseType bonuses
++    io(ar, v.cost); io(ar, v.armor); io(ar, v.rof); io(ar, v.firepower);
++    io(ar, v.groundspeed); io(ar, v.airspeed); io(ar, v.build_time); io(ar, v.income);
++    io(ar, v.cost_infantry); io(ar, v.cost_units); io(ar, v.cost_aircraft);
++    io(ar, v.cost_buildings); io(ar, v.cost_defenses);
++    io(ar, v.armor_infantry); io(ar, v.armor_units); io(ar, v.armor_aircraft);
++    io(ar, v.armor_buildings); io(ar, v.armor_defenses);
++    io(ar, v.speed_infantry); io(ar, v.speed_units); io(ar, v.speed_aircraft);
++    io(ar, v.build_time_infantry); io(ar, v.build_time_units); io(ar, v.build_time_aircraft);
++    io(ar, v.build_time_buildings); io(ar, v.build_time_defenses);
++    io(ar, v.veteran_infantry); io(ar, v.veteran_units); io(ar, v.veteran_aircraft);
++}
+ template <class Ar> void fields(Ar& ar, SwParams& v) {   // W2-AN (save v9)
+     io(ar, v.nuke_up_frames); io(ar, v.nuke_down_frames); io(ar, v.nuke_rad_level);
+     io(ar, v.iron_frames); io(ar, v.chrono_delay_frames); io(ar, v.storm_deferment);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 58ce38f..4be8700 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 57;   // 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 58;   // 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
 diff --git a/engine/world.cpp b/engine/world.cpp
-index 631d7d8..03e1fc7 100644
+index 1aa9431..ac426db 100644
 --- a/engine/world.cpp
 +++ b/engine/world.cpp
-@@ -735,6 +735,18 @@ bool World::alliance_toggle_allowed(int a, int b) const {
+@@ -736,6 +736,18 @@ bool World::alliance_toggle_allowed(int a, int b) const {
      return true;
  }
  
@@ -411,7 +455,7 @@ index 631d7d8..03e1fc7 100644
  void World::set_house(int h, HouseRec rec) {
      if (h < 0) return;
      ensure_houses_default();
-@@ -1893,6 +1905,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
+@@ -1926,6 +1938,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
          if (wx.x < 0) return -1;                    // boxed in: HOLD
          UnitCombat cv = c;
          cv.veteran_rank = produced_veteran_kind(f.house, factory_def.factory_kind) ? 1 : 0;
@@ -420,7 +464,7 @@ index 631d7d8..03e1fc7 100644
          const bool has_rally = f.has_rally;
          const int rx = f.rally_x, ry = f.rally_y;
          add_combat_unit(wx.x, wx.y, f.house, cv);
-@@ -1916,6 +1930,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
+@@ -1949,6 +1963,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
          const double py = (f.cy * 256.0 + f.fh * 128.0 + (pad >= 0 ? an_.dock_offsets[pad].second : 0)) / 256.0 - 0.5;
          UnitCombat cv = c;   // W7-01-15: no spied-factory veterancy for aircraft
          const int house = f.house;
@@ -429,7 +473,7 @@ index 631d7d8..03e1fc7 100644
          add_combat_unit(static_cast<int>(om::lround(px)), static_cast<int>(om::lround(py)), house, cv);
          const int ui = static_cast<int>(units_.size()) - 1;
          occ_.release_all_of(ui, -1, -1);   // parked on the pad: no ground cell
-@@ -1949,6 +1965,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
+@@ -1982,6 +1998,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
      // in every existing demo -> cv.veteran_rank stays 0 -> byte-identical.
      UnitCombat cv = c;
      cv.veteran_rank = produced_veteran_kind(house, factory_def.factory_kind) ? 1 : 0;
@@ -439,7 +483,7 @@ index 631d7d8..03e1fc7 100644
      const int ui = static_cast<int>(units_.size()) - 1;
      // W2-AN-07: a jumpjet (Kirov, Rocketeer, Night Hawk) lifts off as it
 diff --git a/engine/world.hpp b/engine/world.hpp
-index ae45192..81093ae 100644
+index d3fafca..f5af369 100644
 --- a/engine/world.hpp
 +++ b/engine/world.hpp
 @@ -25,6 +25,7 @@
@@ -450,7 +494,7 @@ index ae45192..81093ae 100644
  
  namespace ra2engine {
  
-@@ -1789,6 +1790,10 @@ public:
+@@ -1805,6 +1806,10 @@ public:
      // (houses_configured_ = true). No existing gate calls this -> byte-identical.
      void set_house(int h, HouseRec rec);
      bool houses_configured() const { return houses_configured_; }
@@ -461,7 +505,7 @@ index ae45192..81093ae 100644
  
      // --- Multi-house / Alliances phase [RE: multihouse.md §3/§4, D3] ---
      // Pairwise relationship predicates. With houses_configured_ FALSE ->
-@@ -3041,6 +3046,8 @@ private:
+@@ -3057,6 +3062,8 @@ private:
      // construction (0=Allied/team0/comb, 1=Soviet/team1/comb, 2=Neutral/team2/
      // non-comb) so house_count()==3 and today's world is reproduced. NOT hashed.
      std::vector<HouseRec> houses_;
@@ -637,10 +681,18 @@ index 0000000..cd42fe8
 +    CHECK_FALSE(c::country_allows(rules, "AMRADR", "French"));
 +}
 diff --git a/tests/test_saveload.cpp b/tests/test_saveload.cpp
-index 5664ec8..6b64581 100644
+index 5664ec8..f9bc1dc 100644
 --- a/tests/test_saveload.cpp
 +++ b/tests/test_saveload.cpp
-@@ -235,7 +235,7 @@ TEST_CASE("saveload: private-state classes' sizeof is pinned (World et al.)") {
+@@ -105,6 +105,7 @@ TEST_CASE("saveload: every serialized aggregate's visitor covers all its members
+     CHECK_ARITY(QueueBacklogSave);   // R-180
+     CHECK_ARITY(Building);
+     CHECK_ARITY(BuildingTypeDef);
++    CHECK_ARITY(country::Bonuses);   // Rallypoint 0040
+     CHECK_ARITY(UnitCombat);
+     CHECK_ARITY(UnitTypeDef);
+     CHECK_ARITY(ProjectileSpec);
+@@ -235,7 +236,7 @@ TEST_CASE("saveload: private-state classes' sizeof is pinned (World et al.)") {
  #if defined(__MINGW64__) && defined(__GLIBCXX__) && defined(__x86_64__)
      INFO("a class with private save-state changed size: add the member to "
           "SaveAccess in engine/save_fields.hpp, bump kFormatVersion, re-pin");
