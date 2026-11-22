@@ -1,0 +1,524 @@
+Rallypoint 0057: AI call-for-help RE leftovers (T1.3), from gamemd.exe FUN_00708080.
+Builds on 0044 (not re-landed). Retail addresses:
+ - victim +0x2DC is SlaveOwner (written only by SlaveManager FUN_006AF580 @0x6AF5D7/0x6AF68B/0x6AF701):
+   @0x7085AD the VEHICLE pass skips every candidate when the victim has a slave master.
+ - techno +0x2E4 is the Tank Bunker link (FUN_00459301, 0x4596E6, 0x459814), NOT cargo: loaded
+   transports answer (0044 wrongly skipped them). No bunkers in this engine.
+ - ArchiveTarget (+0x218) == victim: only a unit that answered its own call has it (@0x70871F stores
+   the victim into each recruit; FUN_0070C610 SetArchive is called with 0 by Stop/move paths
+   0x4C7448 / 0x4D99FC). Buildings never archive themselves (FUN_00455D50 stores a rally cell), so
+   0044's building boost is removed. x100 infantry applies to negative values too (@0x708351), vehicle
+   x10 only to positive (@0x7085B7/0x7085BB). Recruits' Area_Guard centre is the victim.
+ - FUN_0056D100 / FUN_0056D230: MovementZone -1 -> ok; candidate cell outside the usable area -> ok;
+   else zone id (cell -> zone block -> per-MovementZone id) of victim == candidate. Replaced the
+   Amphibious-domain stand-in with pathfind::reach_mask (integer BFS under find_path_t's neighbour
+   rules, one flood per domain/crusher). Not pinned: whether building-occupied cells share the zone
+   of the ground around them; the clone seeds from the cells ringing the foundation.
+Also: save v62 (UnitTgt::archive_self). Simulation change for AI call-for-help only; integer code only.
+
+diff --git a/engine/target_w6.hpp b/engine/target_w6.hpp
+index e4c2ced..940ef60 100644
+--- a/engine/target_w6.hpp
++++ b/engine/target_w6.hpp
+@@ -79,6 +79,11 @@ struct UnitTgt {
+     // W7-07-06 [RE: Mission_Area_Guard FUN_004D41A0 +0x5DC]: the area-guard
+     // home cell (-1 = unset: the unit's cell on the next scan).
+     int home_x = -1, home_y = -1;
++    // Rallypoint 0057 [RE: FUN_00708080 @0x70871F sets a recruit's
++    // ArchiveTarget (+0x218) to the victim; @0x708351 / 0x7085BB test
++    // victim+0x218 == victim]: this unit's ArchiveTarget is the unit itself
++    // (it answered its own call for help). Cleared by a move or Stop.
++    bool archive_self = false;
+     // W7-07-12: attack-move destination (-1 = none).
+     int amove_x = -1, amove_y = -1;
+     // W7-07-09 [RE: +0x650]: frame before which no new call for help.
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 115a49b..c8c29cb 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -876,6 +876,7 @@ template <class Ar> void fields(Ar& ar, UnitTgt& v) {
+     // w7fix-combat (save v35): the mission model
+     io(ar, v.mission); io(ar, v.scan_timer); io(ar, v.opportunity); io(ar, v.overridden);
+     io(ar, v.resume_x); io(ar, v.resume_y); io(ar, v.resume_area_guard); io(ar, v.home_x); io(ar, v.home_y);
++    io(ar, v.archive_self);   // Rallypoint 0057 (save v59)
+     io(ar, v.amove_x); io(ar, v.amove_y); io(ar, v.help_frame); io(ar, v.team_aggressive); io(ar, v.team_suicide); io(ar, v.crush_warn);
+     io(ar, v.w7_rof); io(ar, v.rof_raw); io(ar, v.house_rof); io(ar, v.house_fp); io(ar, v.rof_vet);
+ }
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 30a6759..f6f1214 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1543,6 +1543,7 @@ void World::order_unit_move(int idx, int gx, int gy) {
+     u.tg.overridden = false;
+     u.tg.opportunity = false;
+     u.tg.home_x = u.tg.home_y = -1;
++    u.tg.archive_self = false;   // 0054: a move order replaces the ArchiveTarget
+     u.tg.amove_x = u.tg.amove_y = -1;
+     // P4 [RE: abilities.md §C1/§C2/§A]: a FROZEN unit (warping in, being
+     // erased, deployed) takes no move; a Teleporter's move is a TELEPORT.
+diff --git a/engine/unit_orders.cpp b/engine/unit_orders.cpp
+index 09108ff..ef81af7 100644
+--- a/engine/unit_orders.cpp
++++ b/engine/unit_orders.cpp
+@@ -62,6 +62,7 @@ void World::order_stop(int idx) {
+     u.tg.opportunity = false;
+     u.tg.amove_x = u.tg.amove_y = -1;
+     u.tg.home_x = u.tg.home_y = -1;
++    u.tg.archive_self = false;   // 0054 [RE: MegaMission event 0x4C7448 SetArchive(0)]
+     // W7-01-32 / W7-02-08 / W7-04-17 [RE: Enter_Idle_Mode 0x51CB2A / 0x737BB6]:
+     // a DefaultToGuardArea type (dogs, Terror Drone) idles in Area_Guard.
+     if (u.w7.t.default_to_guard_area && !u.is_aircraft) {
+diff --git a/engine/world_w7.cpp b/engine/world_w7.cpp
+index 91ccde4..7aebb11 100644
+--- a/engine/world_w7.cpp
++++ b/engine/world_w7.cpp
+@@ -213,6 +213,7 @@ void World::order_scatter_from(int idx, int ax, int ay) {
+         units_[static_cast<std::size_t>(idx)].tg.area_guard = keep.area_guard;
+         units_[static_cast<std::size_t>(idx)].tg.home_x = keep.home_x;
+         units_[static_cast<std::size_t>(idx)].tg.home_y = keep.home_y;
++        units_[static_cast<std::size_t>(idx)].tg.archive_self = keep.archive_self;
+         return;
+     }
+ }
+@@ -269,18 +270,28 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
+ //     zone-reachable (FUN_0056D100; backlog's FUN_0056CC30 was a wrong VA),
+ //     help_value != 0; a negative value is spent at once; the six best kept
+ //     with the original's replace-the-minimum quirk;
+-//   when victim ArchiveTarget (+0x218) == victim: infantry help_value x100,
+-//     vehicle help_value x10 (relative ranking prefers infantry 10:1);
+-//   unit array also skips ResourceGatherer (UnitType +0x5EC) and helpers with
+-//     +0x2E4 set (loaded transport / cargo);
++//   when victim ArchiveTarget (+0x218) == victim: infantry help_value x100
++//     (@0x708351, negative values too), vehicle help_value x10 only when
++//     positive (@0x7085B7);
++//   unit array also skips ResourceGatherer (UnitType +0x5EC), a vehicle in a
++//     Tank Bunker (+0x2E4, the building<->unit link FUN_00459301 / 0x4596E6;
++//     no bunkers here) and, after help_value, every vehicle while the victim
++//     has a SlaveOwner (+0x2DC, written only by SlaveManager FUN_006AF5D7 /
++//     0x6AF68B / 0x6AF701: a slave's master) @0x7085AD;
+ //   then sorted (exchange sort, descending), each recruit gets Mission
+-//     Area_Guard (roll(0,99) >= 66, or a base-defense team) or Rescue, and
+-//     TarCom = attacker; the spent ThreatPosed passing the budget stops it and
+-//     arms the attacker's cooldown, ftol(BaseDefenseDelay x 900) frames.
+-// [RE-OPEN: victim +0x2DC non-null skips the vehicle pass (pointer not cloned);
+-//   full MapClass zone ids from FUN_0056D100/FUN_0056D230 — Amphibious domain
+-//   sharing stands in.] [RE-FALLBACK: ArchiveTarget==self is not stored; building
+-//   victims take the x100/x10 boost (stock structure defense). Rescue (21) has
++//     Area_Guard (roll(0,99) >= 66, or a base-defense team) or Rescue (21),
++//     ArchiveTarget = victim (@0x70871F; Area_Guard FUN_004D41A0 guards around
++//     it) and TarCom = attacker; the spent ThreatPosed passing the budget stops
++//     it and arms the attacker's cooldown, ftol(BaseDefenseDelay x 900) frames.
++// 0054 zone (FUN_0056D100(candidate cell, victim cell, candidate MovementZone,
++//   candidate on bridge, 0, 0)): MovementZone -1 -> yes; a candidate cell
++//   outside the usable area (FUN_00578460(cell, 1)) but on the map -> yes; else
++//   zone(victim) == zone(candidate) (FUN_0056D230). Cells are GetDestination
++//   (vtbl +0x4C): a foot's NavCom or its cell; a building's dock coord
++//   (BuildingClass FUN_00447E90, dock types) or its centre.
++// [RE-OPEN: whether a building-occupied zone block shares the zone of the
++//   ground around it (Zone_Reset's blocking rule) is not pinned; the clone seeds
++//   the zone from the cells around the foundation.] [RE-FALLBACK: Rescue (21) has
+ //   no clone mission; it is an attack order on the attacker.]
+ void World::call_for_help(int victim_house, int victim_unit, int victim_building, int attacker) {
+     if (attacker < 0 || attacker >= static_cast<int>(units_.size())) return;
+@@ -317,21 +328,53 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+     int budget = A.tg.t.threat_posed *
+                  static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
+     const int nu = static_cast<int>(units_.size());
+-    // [RE: FUN_00708080 @0x708351 / 0x7085BB]: ArchiveTarget (+0x218) == this
+-    // multiplies infantry help_value by 100 and vehicle by 10. Buildings take
+-    // the boost (structure defense); unit victims leave ArchiveTarget untracked.
+-    const bool archive_self = victim_building >= 0;
++    // [RE: FUN_00708080 @0x708351 / 0x7085BB]: ArchiveTarget (+0x218) == this.
++    // Only a unit that answered its own call has it (no gamemd path archives a
++    // building to itself: BuildingClass::SetDestination FUN_00455D50 stores a
++    // rally cell).
++    const bool archive_self = victim_unit >= 0 && units_[static_cast<std::size_t>(victim_unit)].tg.archive_self;
++    // victim +0x2DC SlaveOwner: no vehicle helps a slave.
++    const bool victim_slaved = victim_unit >= 0 && units_[static_cast<std::size_t>(victim_unit)].is_slave &&
++                               units_[static_cast<std::size_t>(victim_unit)].slave_master >= 0;
+     auto tflags = [&](int i) -> std::uint8_t {
+         return i < static_cast<int>(team_flags_.size()) ? team_flags_[static_cast<std::size_t>(i)] : 0;
+     };
+-    // FUN_0056D100 stand-in: same movement domain, or either side Amphibious
+-    // (Amphibious* MovementZones share land and water path grids).
++    // FUN_0056D100: the victim's zone under the candidate's movement rules,
++    // flooded once per (domain, crusher) on first use.
++    auto dest_cell = [](const Unit& u) -> Cellxy {
++        return u.moving() ? u.path.back() : Cellxy{u.cell_x, u.cell_y};
++    };
++    std::vector<Cellxy> seeds;
++    if (victim_unit >= 0) {
++        seeds.push_back(dest_cell(units_[static_cast<std::size_t>(victim_unit)]));
++    } else if (victim_building >= 0) {
++        const Building& B = buildings_[static_cast<std::size_t>(victim_building)];
++        for (int y = B.cy - 1; y <= B.cy + B.fh; ++y)
++            for (int x = B.cx - 1; x <= B.cx + B.fw; ++x)
++                if (x < B.cx || y < B.cy || x >= B.cx + B.fw || y >= B.cy + B.fh) seeds.push_back({x, y});
++    }
++    std::vector<std::uint8_t> zones[6];
++    bool zone_built[6] = {false, false, false, false, false, false};
+     auto zone_ok = [&](const Unit& u) -> bool {
+-        if (u.movement_domain == A.movement_domain) return true;
+-        if (u.movement_domain == MovementDomain::Amphibious ||
+-            A.movement_domain == MovementDomain::Amphibious)
+-            return true;
+-        return false;
++        // MovementZone Fly (jumpjets, choppers) is one zone.
++        if (u.is_aircraft || u.loco.t.kind == static_cast<int>(LocoKind::Jumpjet)) return true;
++        const Cellxy c = dest_cell(u);
++        if (c.x < 0 || c.y < 0 || c.x >= grid_w_ || c.y >= grid_h_) return false;
++        if (!cell_in_playfield(c.x, c.y)) return true;   // @0x56D16B
++        const bool crush = crush_paths(u);
++        const int k = static_cast<int>(u.movement_domain) * 2 + (crush ? 1 : 0);
++        if (k < 0 || k >= 6) return false;
++        if (!zone_built[k]) {
++            PathTerrain terr;
++            std::vector<int> gates;
++            const PathTerrain* tp = terrain_for(u, terr, gates);
++            const std::vector<std::uint8_t>* leak =
++                u.movement_domain == MovementDomain::Water ? nullptr : crush ? crush_leak() : wall_leak();
++            zones[k] = reach_mask(crush ? crush_grid() : grid_for(u.movement_domain), grid_w_, grid_h_, seeds, leak, tp);
++            zone_built[k] = true;
++        }
++        const std::size_t ci = static_cast<std::size_t>(c.y) * static_cast<std::size_t>(grid_w_) + static_cast<std::size_t>(c.x);
++        return ci < zones[k].size() && zones[k][ci] != 0;
+     };
+     auto scale_help = [&](int v, bool infantry) -> int {
+         if (!archive_self || v == 0) return v;
+@@ -359,12 +402,13 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+             if (pass == 1) {
+                 // UnitType ResourceGatherer (+0x5EC): ore trucks stay on ore.
+                 if (u.is_harvester) continue;
+-                // techno +0x2E4 non-null: a loaded transport is not recruited.
+-                if (!u.cargo.empty()) continue;
++                // techno +0x2E4 is the Tank Bunker link: no bunkers in this engine.
+             }
+             if (!zone_ok(u)) continue;
+-            const int v = scale_help(help_value(i, attacker, tf), pass == 0);
+-            if (v == 0) continue;
++            const int v0 = help_value(i, attacker, tf);
++            if (v0 == 0) continue;
++            if (pass == 1 && victim_slaved) continue;   // @0x7085AD victim +0x2DC
++            const int v = scale_help(v0, pass == 0);
+             if (v < 0) {
+                 budget += v;
+             } else if (count < 6) {
+@@ -396,6 +440,16 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+         for (int k = 0; k < count; ++k) {
+             const int ri = objs[k];
+             const bool base_def = (tflags(ri) & kTeamBaseDefense) != 0;
++            // ArchiveTarget = victim (@0x70871F): the Area_Guard centre.
++            int ax = units_[static_cast<std::size_t>(ri)].cell_x, ay = units_[static_cast<std::size_t>(ri)].cell_y;
++            if (victim_unit >= 0) {
++                ax = units_[static_cast<std::size_t>(victim_unit)].cell_x;
++                ay = units_[static_cast<std::size_t>(victim_unit)].cell_y;
++            } else if (victim_building >= 0) {
++                const Building& B = buildings_[static_cast<std::size_t>(victim_building)];
++                ax = B.cx + B.fw / 2;
++                ay = B.cy + B.fh / 2;
++            }
+             const int roll = combat_rng_.random(0, 99);
+             if (roll >= 66 || base_def) {
+                 // Mission_Set(Area_Guard) + Assign_Target(attacker)
+@@ -406,14 +460,15 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+                 r.target_building = -1;
+                 r.target = attacker;
+                 r.tg.area_guard = true;
+-                r.tg.home_x = r.cell_x;
+-                r.tg.home_y = r.cell_y;
++                r.tg.home_x = ax;
++                r.tg.home_y = ay;
+                 r.guard_x = r.cell_x;
+                 r.guard_y = r.cell_y;
+             } else {
+                 // Mission_Set(Rescue) + Assign_Target(attacker) [RE-FALLBACK]
+                 order_unit_attack(ri, attacker);
+             }
++            units_[static_cast<std::size_t>(ri)].tg.archive_self = ri == victim_unit;
+             spent += units_[static_cast<std::size_t>(ri)].tg.t.threat_posed;
+             if (spent > budget) break;
+         }
+diff --git a/engine/pathfind.cpp b/engine/pathfind.cpp
+index 089a316..8642605 100644
+--- a/engine/pathfind.cpp
++++ b/engine/pathfind.cpp
+@@ -560,4 +560,61 @@ std::vector<Cellxy> find_path_nearest_t(const std::vector<uint8_t>& passable, in
+     return astar_memo(passable, width, height, start, goal, max_expand, Mode::Nearest, leak, t, cost);
+ }
+ 
++std::vector<uint8_t> reach_mask(const std::vector<uint8_t>& passable, int width, int height,
++                                const std::vector<Cellxy>& seeds, const std::vector<uint8_t>* leak,
++                                const PathTerrain* terrain) {
++    std::vector<uint8_t> out;
++    if (width <= 0 || height <= 0 || passable.size() != static_cast<size_t>(width) * static_cast<size_t>(height))
++        return out;
++    out.assign(passable.size(), 0);
++    if (leak && leak->size() != passable.size()) leak = nullptr;
++    const PathTerrain none{};
++    const PathTerrain* tp = terrain_of(terrain, passable);
++    const PathTerrain& t = tp ? *tp : none;
++    const int n = width * height;
++    const bool decks = t.deck && t.deck->size() == passable.size();
++    const int layers = decks ? 2 : 1;
++    // The neighbour rules of astar_terrain (a null terrain = astar's).
++    auto base_ok = [&](int c) { return passable[(size_t)c] != 0 || gate_open(&t, c); };
++    auto deck_of = [&](int c) { return decks ? (*t.deck)[(size_t)c] : 0; };
++    auto state_ok = [&](int c, int layer) {
++        if (!base_ok(c)) return false;
++        return layer == 0 ? deck_of(c) != 2 : deck_of(c) != 0;
++    };
++    std::vector<uint8_t> seen(static_cast<size_t>(n) * static_cast<size_t>(layers), 0);
++    std::vector<int> q;
++    for (const Cellxy& s : seeds) {
++        if (s.x < 0 || s.y < 0 || s.x >= width || s.y >= height) continue;
++        const int c = s.y * width + s.x;
++        for (int l = 0; l < layers; ++l)
++            if (state_ok(c, l) && !seen[(size_t)(c + l * n)]) {
++                seen[(size_t)(c + l * n)] = 1;
++                q.push_back(c + l * n);
++            }
++    }
++    for (size_t head = 0; head < q.size(); ++head) {
++        const int cc = q[head] % n, cl = q[head] / n;
++        out[(size_t)cc] = 1;
++        const int cx = cc % width, cy = cc / width;
++        for (int dir = 0; dir < 8; ++dir) {
++            const int nx = cx + kDx[dir], ny = cy + kDy[dir];
++            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
++            const int ncell = ny * width + nx;
++            if (!base_ok(ncell)) continue;
++            if (kDx[dir] != 0 && kDy[dir] != 0) {
++                const int c1 = cy * width + cx + kDx[dir], c2 = (cy + kDy[dir]) * width + cx;
++                if (!base_ok(c1) && !(leak && (*leak)[(size_t)c1])) continue;
++                if (!base_ok(c2) && !(leak && (*leak)[(size_t)c2])) continue;
++            }
++            const int nl = path_step_layer(t, width, cx, cy, cl, nx, ny);
++            if (nl < 0 || nl >= layers || !state_ok(ncell, nl)) continue;
++            const int ns = ncell + nl * n;
++            if (seen[(size_t)ns]) continue;
++            seen[(size_t)ns] = 1;
++            q.push_back(ns);
++        }
++    }
++    return out;
++}
++
+ }  // namespace ra2engine
+diff --git a/engine/pathfind.hpp b/engine/pathfind.hpp
+index 8434d18..d0eeda6 100644
+--- a/engine/pathfind.hpp
++++ b/engine/pathfind.hpp
+@@ -90,6 +90,15 @@ std::vector<Cellxy> find_path_nearest_t(const std::vector<uint8_t>& passable, in
+                                         const std::vector<uint8_t>* leak, const PathTerrain* terrain,
+                                         const std::vector<std::uint16_t>* cost = nullptr);
+ 
++// Rallypoint 0057 [RE: MapClass zone ids FUN_0056D230 (cell -> zone block
++// MapClass+0x68 -> per-MovementZone id MapClass+0x18[mz]), compared by
++// FUN_0056D100]: 1 for every cell in the same zone as one of `seeds`, i.e.
++// reachable under find_path_t's neighbour rules (corner rule, `leak`, height
++// gate, decks, open gates). Seeds that cannot be entered are ignored. Empty
++// on a malformed grid.
++std::vector<uint8_t> reach_mask(const std::vector<uint8_t>& passable, int width, int height,
++                                const std::vector<Cellxy>& seeds, const std::vector<uint8_t>* leak,
++                                const PathTerrain* terrain);
+ // W2-SK-16: find_path with an expansion budget (> 0): empty when the goal is
+ // not reached within `max_expand` closed nodes (same path otherwise).
+ std::vector<Cellxy> find_path_bounded(const std::vector<uint8_t>& passable, int width, int height,
+diff --git a/tests/test_ai_w7.cpp b/tests/test_ai_w7.cpp
+index 3cc61f3..0c70edf 100644
+--- a/tests/test_ai_w7.cpp
++++ b/tests/test_ai_w7.cpp
+@@ -265,7 +265,7 @@ TEST_CASE("T1.3: call_for_help skips ResourceGatherer helpers (UnitType +0x5EC)"
+     CHECK_FALSE(g.helped(hv, a));
+ }
+ 
+-TEST_CASE("T1.3: call_for_help skips a loaded transport (+0x2E4)") {
++TEST_CASE("0054: a loaded transport still answers -- techno +0x2E4 is the Tank Bunker link, not cargo") {
+     if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+     HelpRig g;
+     REQUIRE(g.ok);
+@@ -307,5 +307,170 @@ TEST_CASE("T1.3: call_for_help skips a loaded transport (+0x2E4)") {
+     REQUIRE(h >= 0);
+     g.world.call_for_help(1, -1, bi, a);
+     CHECK(g.helped(h, a));
+-    CHECK_FALSE(g.helped(tr, a));
++    CHECK(g.helped(tr, a));
++}
++
++// Rallypoint 0057 [RE: FUN_00708080 leftovers]. These call call_for_help
++// directly (no world step) so the RNG and the hit log stay out of the way.
++namespace {
++ra2engine::UnitCombat inf_gi(int threat) {
++    ra2engine::UnitCombat u = threat_gi(threat);
++    u.range = 1.0;
++    u.is_infantry = true;
++    return u;
++}
++ra2engine::UnitCombat vehicle_gi(int threat) {
++    ra2engine::UnitCombat u = threat_gi(threat);
++    u.range = 1.0;
++    u.is_infantry = false;
++    u.is_vehicle = true;
++    return u;
++}
++int add_house1_building(HelpRig& g) {
++    ra2engine::BuildingTypeDef bt;
++    bt.id = "GACNST";
++    bt.strength = 100000;
++    bt.fw = bt.fh = 2;
++    g.world.set_building_types({bt});
++    int bx = 0, by = 0;
++    if (!ring_cell(g.world, g.vx, g.vy, 0, bx, by)) return -1;
++    return g.world.add_building(0, bx, by, 2, 2, 1, 100000, 0, 0.0, true);
++}
++}  // namespace
++
++TEST_CASE("0054: no vehicle answers a slave's call (victim +0x2DC SlaveOwner, @0x7085AD)") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    const int v = g.add(0, 1, protect_victim(true));
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    const int a = g.add(3, 0, atk);
++    ra2engine::UnitCombat inf = inf_gi(5);
++    const int i = g.add(6, 1, inf);
++    const int t = g.add(8, 1, vehicle_gi(5));
++    REQUIRE((v >= 0 && a >= 0 && i >= 0 && t >= 0));
++    g.world.units()[(std::size_t)v].is_slave = true;
++    g.world.units()[(std::size_t)v].slave_master = 0;
++    g.world.call_for_help(1, v, -1, a);
++    CHECK(g.helped(i, a));
++    CHECK_FALSE(g.helped(t, a));
++    // A free victim gets the vehicle too.
++    g.world.units()[(std::size_t)v].is_slave = false;
++    g.world.units()[(std::size_t)v].slave_master = -1;
++    g.world.call_for_help(1, v, -1, a);
++    CHECK(g.helped(t, a));
++}
++
++TEST_CASE("0054: the x100 infantry boost needs victim ArchiveTarget == victim; a building never has it") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    const int bi = add_house1_building(g);
++    const int v = g.add(0, 1, protect_victim(true));
++    ra2engine::UnitCombat atk = threat_gi(10);   // budget 10 x 3 = 30
++    atk.strength = 100000;
++    const int a = g.add(3, 0, atk);
++    ra2engine::UnitCombat busy = inf_gi(1);   // already on the attacker: help_value -1
++    const int d = g.add(5, 1, busy);
++    ra2engine::UnitCombat inf = inf_gi(5);
++    const int h = g.add(7, 1, inf);
++    REQUIRE((bi >= 0 && v >= 0 && a >= 0 && d >= 0 && h >= 0));
++    REQUIRE(d < h);   // the infantry array is walked in index order
++    auto reset = [&] {
++        g.world.units()[(std::size_t)d].target = a;
++        g.world.units()[(std::size_t)h].target = -1;
++    };
++    // A building victim: budget 30 - 1 -> the helper goes.
++    reset();
++    g.world.call_for_help(1, -1, bi, a);
++    CHECK(g.helped(h, a));
++    // A unit victim without ArchiveTarget == self: the same.
++    reset();
++    g.world.call_for_help(1, v, -1, a);
++    CHECK(g.helped(h, a));
++    // ArchiveTarget == self: the busy unit costs 100 and nobody goes.
++    reset();
++    g.world.units()[(std::size_t)v].tg.archive_self = true;
++    g.world.call_for_help(1, v, -1, a);
++    CHECK_FALSE(g.helped(h, a));
++}
++
++TEST_CASE("0054: recruits guard around the victim (ArchiveTarget = victim, @0x70871F)") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    const int bi = add_house1_building(g);
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    const int a = g.add(3, 0, atk);
++    std::vector<int> hs;
++    for (int k = 0; k < 6; ++k) {
++        ra2engine::UnitCombat inf = inf_gi(1);
++        hs.push_back(g.add(6, 1, inf));
++        REQUIRE(hs.back() >= 0);
++    }
++    REQUIRE((bi >= 0 && a >= 0));
++    const ra2engine::Building& B = g.world.buildings()[(std::size_t)bi];
++    int guards = 0;
++    for (int round = 0; round < 20 && guards == 0; ++round) {   // Area_Guard on roll(0,99) >= 66
++        for (int h : hs) {
++            g.world.units()[(std::size_t)h].target = -1;
++            g.world.units()[(std::size_t)h].tg.area_guard = false;
++        }
++        g.world.call_for_help(1, -1, bi, a);
++        for (int h : hs) {
++            const ra2engine::Unit& u = g.world.units()[(std::size_t)h];
++            CHECK(u.target == a);
++            CHECK_FALSE(u.tg.archive_self);
++            if (u.tg.area_guard) {
++                ++guards;
++                CHECK(u.tg.home_x == B.cx + B.fw / 2);
++                CHECK(u.tg.home_y == B.cy + B.fh / 2);
++            }
++        }
++    }
++    CHECK(guards > 0);
++}
++
++TEST_CASE("0054: an armed victim that answers its own call archives itself; a move clears it") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    ra2engine::UnitCombat vic = threat_gi(5);
++    vic.tg.to_protect = true;
++    vic.strength = 100000;
++    const int v = g.add(0, 1, vic);
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    const int a = g.add(2, 0, atk);
++    REQUIRE((v >= 0 && a >= 0));
++    g.world.call_for_help(1, v, -1, a);
++    CHECK(g.helped(v, a));
++    CHECK(g.world.units()[(std::size_t)v].tg.archive_self);
++    int mx = 0, my = 0;
++    REQUIRE(ring_cell(g.world, g.vx, g.vy, 4, mx, my));
++    g.world.order_unit_move(v, mx, my);
++    CHECK_FALSE(g.world.units()[(std::size_t)v].tg.archive_self);
++}
++
++TEST_CASE("0054: the zone is the victim's under the helper's movement rules (FUN_0056D100)") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    const int v = g.add(0, 1, protect_victim(true));
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    const int a = g.add(3, 0, atk);
++    ra2engine::UnitCombat inf = inf_gi(5);
++    const int land = g.add(6, 1, inf);
++    const int boat = g.add(8, 1, inf);
++    REQUIRE((v >= 0 && a >= 0 && land >= 0 && boat >= 0));
++    // The attacker's domain does not matter (the 0044 stand-in compared it).
++    g.world.units()[(std::size_t)a].movement_domain = ra2engine::MovementDomain::Water;
++    // A Water mover on dry land is not in the victim's water zone.
++    g.world.units()[(std::size_t)boat].movement_domain = ra2engine::MovementDomain::Water;
++    g.world.call_for_help(1, v, -1, a);
++    CHECK(g.helped(land, a));
++    CHECK_FALSE(g.helped(boat, a));
+ }
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 23293b6..e75764d 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 61;   // 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 62;   // 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
