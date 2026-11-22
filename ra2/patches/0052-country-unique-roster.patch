@@ -201,3 +201,40 @@
 +    CHECK_FALSE(c::country_allows(rules, "DOG", "Americans"));
 +    CHECK_FALSE(c::country_allows(rules, "DOG", "YuriCountry"));
 +}
+diff --git a/tests/test_net_wire.cpp b/tests/test_net_wire.cpp
+index edac18a..5fd4a12 100644
+--- a/tests/test_net_wire.cpp
++++ b/tests/test_net_wire.cpp
+@@ -1,6 +1,8 @@
+ // tests/test_net_wire.cpp -- datagram checksum, tunnel headers, the 0xAA04 /
+ // 0x1236 channel layer, NetManager over loopback and real UDP sockets.
+ // Golden bytes follow gamemd.exe (docs/re/net-protocol.md).
++#include <chrono>
++#include <thread>
+ #include "doctest.h"
+ 
+ #include "net/channel.hpp"
+@@ -266,6 +268,7 @@ TEST_CASE("net manager: reliable delivery over a lossy loopback hub") {
+         int id;
+         while (B.get_private(p, id)) got.push_back(p[0]);
+         now += 16;
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
+     }
+     CHECK(sent == 200);
+     std::map<int, int> seen;
+@@ -316,6 +319,7 @@ TEST_CASE("net udp: real sockets on 127.0.0.1, direct and through a V2 tunnel re
+         B.service();
+         B.get_private(got, id);
+         now += 16;
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
+     }
+     CHECK(got == msg);
+     CHECK(id == 0);
+@@ -352,6 +356,7 @@ TEST_CASE("net udp: real sockets on 127.0.0.1, direct and through a V2 tunnel re
+         std::vector<uint8_t> p;
+         if (TB.get_private(p, id)) got = p;
+         now += 16;
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
+     }
+     CHECK(got == msg);
+ }
