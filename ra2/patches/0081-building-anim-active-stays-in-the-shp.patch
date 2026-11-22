@@ -1,0 +1,322 @@
+--- a/engine/building.cpp
++++ b/engine/building.cpp
+@@ -121,6 +121,13 @@
+     // ConditionYellow and the building is Idle, return stage+1 (SimpleDamage).
+     if (image_frames < 1) return 0;
+     if (count < 1) count = 1;
++    // The cycle has to lie inside the SHP's image half. The art of GACNST /
++    // NACNST / YACNST / YACOMD (AnimActive=0,26,3) and the depots (0,7,2) names
++    // 26 or 7 stages on an SHP of 3 or 4 images: those stages are the ActiveAnim
++    // overlay's, not frames of the main image, and clamping them to the last
++    // image drew the damaged art on a building at full health. Such a type
++    // keeps its static frame (0 healthy, 1 SimpleDamage).
++    if (start < 0 || start + count > image_frames) return damaged && image_frames > 1 ? 1 : 0;
+     const int st = ((stage % count) + count) % count;
+     int f = start + st + (damaged ? 1 : 0);
+     if (f < 0) f = 0;
+@@ -128,6 +135,17 @@
+     return f;
+ }
+ 
++int building_main_frame(const Building& b, int shp_frames, double condition_yellow, const BuildingFrameArt& a,
++                        int gate_stage, int stage) {
++    const int images = std::max(1, shp_frames / 2);
++    const bool damaged = building_damaged(b, condition_yellow);
++    if (a.occupiable && images >= 4) return std::min((b.occupants.empty() ? 0 : 2) + (damaged ? 1 : 0), images - 1);
++    if (a.gate) return std::clamp(gate_stage + (damaged ? a.gate_stages + 1 : 0), 0, images - 1);
++    if (a.anim_count > 1 || a.anim_start != 0)
++        return building_anim_active_frame(stage, a.anim_start, a.anim_count, damaged, images);
++    return building_frame(b, shp_frames, condition_yellow);
++}
++
+ bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red) {
+     return max_hp > 0 && hp <= (can_be_occupied ? red : yellow) * max_hp;
+ }
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -334,9 +334,24 @@
+ 
+ // Art AnimActive=start,count,rate on the building's own SHP [RE: Shape_Number
+ // FUN_0043ef90 -- Building+0xf8 stage; SimpleDamage adds 1 when hp/max <=
+-// ConditionYellow]. `stage` is 0..count-1 (presentation advances it). Pure.
++// ConditionYellow]. `stage` is 0..count-1 (presentation advances it). A cycle that
++// does not fit inside the SHP's `image_frames` (every retail AnimActive: the
++// ConYards' 0,26,3 on 3 images) is not a cycle of the main image: the static
++// frame (0, or 1 damaged) is returned. Pure.
+ int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames);
+ 
++// What picks a building's main-image frame besides its health (rules CanBeOccupied=,
++// Gate=, art GateStages= / AnimActive=start,count).
++struct BuildingFrameArt {
++    bool occupiable = false, gate = false;
++    int gate_stages = 0, anim_start = 0, anim_count = 1;
++};
++// The frame of the building's own SHP (`shp_frames` = every frame, shadows
++// included) at rest [RE: Shape_Number FUN_0043ef90]. Always below shp_frames / 2:
++// a healthy building never reaches the damaged art. Pure.
++int building_main_frame(const Building& b, int shp_frames, double condition_yellow, const BuildingFrameArt& a,
++                        int gate_stage, int stage);
++
+ // Building damage fires [RE: damage-state update FUN_0043fb4a @0x43FC39..
+ // 0x43FCBE; create FUN_0043c0d0]. They spring up once health <= ConditionYellow
+ // (Rules+0x1700), or ConditionRed (+0x1708) for CanBeOccupied (type +0x157B),
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -292,27 +292,17 @@
+                              int frame, int count, double yellow) {
+     if (!g_fx || id.empty()) return frame;
+     const PresFx::BldRules& r = g_fx->building_rules(id);
+-    const int images = std::max(1, count / 2);
+-    const bool damaged = ra2engine::building_damaged(b, yellow);
+-    if (r.occupiable && images >= 4) {
+-        const int f = (b.occupants.empty() ? 0 : 2) + (damaged ? 1 : 0);
+-        return std::min(f, images - 1);
+-    }
+     const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
+-    if (r.gate) {
+-        auto it = g_bld_events.find(bld_event_key(b));
+-        const int stage = it == g_bld_events.end() ? 0 : it->second.gate_stage;
+-        const int f = stage + (damaged ? a.gate_stages + 1 : 0);
+-        return std::clamp(f, 0, images - 1);
+-    }
+-    // AnimActive (ConYard 0,26,3; Service Depot 0,7,2; …).
+-    if (a.anim_active_count > 1 || a.anim_active_start != 0) {
+-        auto it = g_bld_events.find(bld_event_key(b));
+-        const int stage = it == g_bld_events.end() ? 0 : it->second.anim_active_stage;
+-        return ra2engine::building_anim_active_frame(stage, a.anim_active_start, a.anim_active_count, damaged,
+-                                                     images);
+-    }
+-    return frame;
++    auto it = g_bld_events.find(bld_event_key(b));
++    const BldEventState* ev = it == g_bld_events.end() ? nullptr : &it->second;
++    ra2engine::BuildingFrameArt fa;
++    fa.occupiable = r.occupiable;
++    fa.gate = r.gate;
++    fa.gate_stages = a.gate_stages;
++    fa.anim_start = a.anim_active_start;
++    fa.anim_count = a.anim_active_count;
++    return ra2engine::building_main_frame(b, count, yellow, fa, ev ? ev->gate_stage : 0,
++                                          ev ? ev->anim_active_stage : 0);
+ }
+ // LeaveRubble=yes [RE: GetRubbleImage FUN_0045f150]: a destroyed building
+ // whose main SHP has more than 3 image frames leaves frame 3 (and its shadow
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -6229,6 +6229,13 @@
+             plat.begin_frame();
+             scene->render(plat, tc);
+             perf_draw(static_cast<SDL_Renderer*>(plat.renderer()), g_ui_w, g_ui_h);
++            // Dev/QA: RA2_AUTOSHOT_FRAMES=300,900 with RA2_AUTOSHOT_DIR writes <dir>/frame-N.png.
++            if (const char* fl = std::getenv("RA2_AUTOSHOT_FRAMES"))
++                for (char* e = const_cast<char*>(fl); *e;) {
++                    const long n = std::strtol(e, &e, 10);
++                    if (n == static_cast<long>(frame)) dev_autoshot(plat, "frame-" + std::to_string(frame));
++                    if (*e == ',') ++e; else if (*e) break;
++                }
+             pc3 = SDL_GetPerformanceCounter();
+         }
+         if (hooks) hooks->end(frame, *scene, plat);   // captures read the back buffer
+--- a/engine/gf_play.inc
++++ b/engine/gf_play.inc
+@@ -154,20 +154,32 @@
+ GameScene* start_from_lobby(Ctx& c, const Rules& rules, const MenuArt& art, int country_clicks = 0) {
+     SkirmishSetupScene lobby(rules, /*no_audio=*/true, art);
+     ra2engine::InputEvent ev;
+-    for (int k = 0; k < country_clicks; ++k) {   // P0's country cell (slot_cell(0, 1))
+-        ev.kind = ra2engine::InputEvent::PointerDown;
+-        ev.button = ra2engine::InputEvent::Left;
+-        ev.x = 640 + 115 + 75;
+-        ev.y = 190 + 19;
+-        lobby.handle(ev);
++    // Real clicks at what the page itself reports (`locate`): the layout moved before.
++    auto click = [&](const std::string& what) {
++        int x = 0, y = 0;
++        if (!lobby.locate(what, x, y)) return false;
++        for (const auto kind : {ra2engine::InputEvent::PointerDown, ra2engine::InputEvent::PointerUp}) {
++            ev = ra2engine::InputEvent();
++            ev.kind = kind;
++            ev.button = ra2engine::InputEvent::Left;
++            ev.x = x;
++            ev.y = y;
++            lobby.handle(ev);
++        }
++        return true;
++    };
++    if (country_clicks > 0) {   // list item 0 is Random, then the countries 0..9 (Russians 8, Yuri 9)
++        c.check(click("combo:country0"), "country combo opens");
++        for (int k = 0; k < 12 && !click("item:" + std::to_string(country_clicks + 1)); ++k) click("list:down");
+     }
+     c.shot(lobby, "gf_lobby.png");
+-    ev.kind = ra2engine::InputEvent::PointerDown;
+-    ev.button = ra2engine::InputEvent::Left;
+-    ev.x = 60 + 110;   // start_rect() centre
+-    ev.y = 630 + 28;
+-    lobby.handle(ev);
++    c.check(click("start"), "lobby Start clicked");
+     Scene* nx = lobby.next();
++    if (auto* d = dynamic_cast<DeferredScene*>(nx)) {   // Start hands over a loading-screen scene (W2-AR-10)
++        Scene* made = d->make();
++        delete d;
++        nx = made;
++    }
+     GameScene* g = dynamic_cast<GameScene*>(nx);
+     c.check(g != nullptr, "lobby Start -> GameScene");
+     if (!g) delete nx;
+@@ -193,9 +205,9 @@
+     c.out = out_dir;
+     std::filesystem::create_directories(out_dir);
+ 
+-    if (scenario == "skirmish" || scenario == "soviet" || scenario == "win" || scenario == "lose") {
+-        // "soviet": P0 cycles Americans -> ... -> Russians (8 clicks) in the lobby.
+-        std::unique_ptr<GameScene> g(start_from_lobby(c, rules, store.art, scenario == "soviet" ? 8 : 0));
++    if (scenario == "skirmish" || scenario == "soviet" || scenario == "yuri" || scenario == "win" || scenario == "lose") {
++        // "soviet": P0 cycles Americans -> ... -> Russians (country 8) in the lobby.
++        std::unique_ptr<GameScene> g(start_from_lobby(c, rules, store.art, scenario == "soviet" ? 8 : scenario == "yuri" ? 9 : 0));
+         if (!g) return 1;
+         ra2engine::World& w = g->gf_world();
+         const int pu = count_units(w, 0, false), pm = count_units(w, 0, true);
+@@ -213,18 +225,23 @@
+         c.check(!w.house_defeated(0), "MCV-only house is not defeated (ShortGame BaseUnit rule)");
+         if (scenario == "soviet")
+             c.check(w.house_side(0) == ra2engine::World::Side::Soviet, "lobby country Russians -> Soviet house");
+-        if (scenario == "skirmish" || scenario == "soviet") {
++        if (scenario == "skirmish" || scenario == "soviet" || scenario == "yuri") {
+             const int cy = deploy_player_mcv(c, *g, 900);
+             c.check(cy >= 0, "player MCV deployed into an Idle ConYard");
+             if (cy >= 0) g->gf_center_cell(w.buildings()[(std::size_t)cy].cx + 1, w.buildings()[(std::size_t)cy].cy + 1);
+             c.shot(*g, "gf_deployed.png");
++            // The AnimActive stage moves on a timer: more frames of the same building (healthy art every time).
++            for (int k = 1; k <= 5; ++k) {
++                step(*g, 7);
++                c.shot(*g, "gf_deployed_" + std::to_string(k) + ".png");
++            }
+             int ai_cy = -1;
+             for (int h = 1; h < w.house_count() && ai_cy < 0; ++h)
+                 if (w.ai_enabled(h)) ai_cy = conyard_idle(w, h);
+             c.check(ai_cy >= 0, "AI house deployed its MCV");
+             if (cy >= 0) {   // (Soviet strip = A's G-03, merged)
+                 const bool soviet = w.house_side(0) == ra2engine::World::Side::Soviet;
+-                const bool built = build_from_sidebar(c, *g, soviet ? "NAPOWR" : "GAPOWR", cy);
++                const bool built = build_from_sidebar(c, *g, soviet ? "NAPOWR" : scenario == "yuri" ? "YAPOWR" : "GAPOWR", cy);
+                 c.check(built, "ConYard builds a power plant from the sidebar");
+                 step(*g, 60);
+                 g->gf_center_cell(w.buildings()[(std::size_t)cy].cx + 2, w.buildings()[(std::size_t)cy].cy + 1);
+--- a/tests/test_building.cpp
++++ b/tests/test_building.cpp
+@@ -97,6 +97,13 @@
+     CHECK(building_anim_active_frame(0, 0, 1, false, 2) == 0);
+     CHECK(building_anim_active_frame(0, 0, 1, true, 2) == 1);
+     CHECK(building_anim_active_frame(3, 0, 1, false, 2) == 0);   // stage wraps
++    // Real GACNST: AnimActive=0,26,3 on 3 images: not a cycle of the main image, so
++    // the static frames, never the damaged art at full health.
++    for (int stage = 0; stage < 26; ++stage) {
++        CHECK(building_anim_active_frame(stage, 0, 26, false, 3) == 0);
++        CHECK(building_anim_active_frame(stage, 0, 26, true, 3) == 1);
++    }
++    CHECK(building_anim_active_frame(6, 0, 7, false, 4) == 0);   // depots: 0,7,2 on 4 images
+ }
+ 
+ TEST_CASE("building_damaged: one predicate, flips once while hp rises through the threshold") {
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -505,3 +505,4 @@
+         $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:ra2engine>)
+   endif()
+ endif()
++target_sources(ra2assets_tests PRIVATE tests/test_building_frames.cpp)
+--- /dev/null
++++ b/tests/test_building_frames.cpp
+@@ -0,0 +1,93 @@
++#include "doctest.h"
++#include "asset_fixture.hpp"
++#include "ra2assets/asset_fs.hpp"
++#include "ra2assets/shp.hpp"
++#include "ra2assets/theater_name.hpp"
++#include "../engine/building.hpp"
++#include <algorithm>
++#include <cstdio>
++#include <set>
++#include <cstdlib>
++#include <string>
++
++using namespace ra2assets;
++
++// Real-data check (needs RA2_INSTALL_DIR, never skipped): every building type of
++// rulesmd, at full health, over a few hundred AnimActive ticks, draws a frame of
++// the healthy art, and below ConditionYellow one of the damaged art. The
++// ConYards' AnimActive=0,26,3 on a 3 image SHP clamped to the last image used to
++// draw the damaged frames on healthy buildings (macOS report, 0.10).
++static std::string join(const std::set<int>& s) {
++    std::string o;
++    for (int f : s) o += (o.empty() ? "" : ",") + std::to_string(f);
++    return o;
++}
++
++TEST_CASE("every building type draws healthy art at full health (real rules and art)") {
++    if (!ra2fixture::assets_available()) { if (std::getenv("RA2_INSTALL_DIR")) FAIL("real assets missing"); MESSAGE("skipped: real assets not found"); return; }
++    const Ini& rules = ra2fixture::rulesmd_ini();
++    const Ini& art = ra2fixture::artmd_ini();
++    std::string dir = ra2fixture::install_base();
++    if (dir.back() != '/') dir += '/';
++    const TheaterChain* ch = theater_chain("TEMPERATE");
++    AssetFS fs(dir, ch);
++    auto yes = [](const std::string& v) { return !v.empty() && (v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == '1'); };
++    int types = 0, animated = 0, old_bad = 0;
++    for (const auto& kv : rules.section("BuildingTypes")) {
++        const std::string& id = kv.second;
++        const std::string image = rules.get(id, "Image", id);
++        std::vector<uint8_t> data;
++        for (const std::string& base : art_base_names(image, ch->letter))
++            if (fs.read(base + ".shp", data)) break;
++        if (data.empty()) continue;
++        int count = 0;
++        try { count = ShpFile::load(data).count(); } catch (const std::exception&) { continue; }
++        const int images = std::max(1, count / 2);
++        ra2engine::BuildingFrameArt fa;
++        fa.occupiable = yes(rules.get(id, "CanBeOccupied"));
++        fa.gate = yes(rules.get(id, "Gate"));
++        fa.gate_stages = art.get_int(image, "GateStages", 0);
++        int start = 0, cnt = 1;
++        const std::string aa = art.get(image, "AnimActive");
++        if (!aa.empty()) std::sscanf(aa.c_str(), "%d,%d", &start, &cnt);
++        fa.anim_start = start;
++        fa.anim_count = std::max(1, cnt);
++        if (fa.anim_count > 1) ++animated;
++        ++types;
++        ra2engine::Building b;
++        b.max_hp = 1000;
++        std::set<int> healthy, hurt, old_healthy;
++        for (int stage = 0; stage < 400; ++stage)
++            for (int gs = 0; gs <= (fa.gate ? fa.gate_stages : 0); ++gs)
++                for (int occ = 0; occ < (fa.occupiable ? 2 : 1); ++occ) {
++                    b.occupants.assign(occ, 0);
++                    b.hp = 1000;
++                    healthy.insert(ra2engine::building_main_frame(b, count, 0.5, fa, gs, stage % fa.anim_count));
++                    b.hp = 400;
++                    hurt.insert(ra2engine::building_main_frame(b, count, 0.5, fa, gs, stage % fa.anim_count));
++                    // the old rule: stage + SimpleDamage, clamped to the last image
++                    if (fa.anim_count > 1 && !fa.occupiable && !fa.gate) {
++                        const int of = std::min(std::max(start + stage % fa.anim_count, 0), images - 1);
++                        old_healthy.insert(of);
++                        if (of >= 1) ++old_bad;
++                    }
++                }
++        for (int f : healthy) {
++            CHECK_MESSAGE(f >= 0, id);
++            CHECK_MESSAGE(f < images, id);
++            // static art: frame 0 healthy; a 4 image occupiable: 0 empty, 2 garrisoned; a gate: its stage
++            if (!fa.gate) CHECK_MESSAGE((f == 0 || (fa.occupiable && images >= 4 && f == 2)), id << " healthy frame " << f);
++        }
++        for (int f : hurt) {
++            CHECK_MESSAGE(f < images, id);
++            if (!fa.gate && images >= 2) CHECK_MESSAGE(f >= 1, id << " damaged frame " << f);
++        }
++        if (fa.anim_count > 1)
++            std::printf("TABLE %-8s images=%d AnimActive=%-9s healthy before {%s} after {%s}, damaged after {%s}\n", id.c_str(), images,
++                        aa.c_str(), join(old_healthy).c_str(), join(healthy).c_str(), join(hurt).c_str());
++    }
++    std::printf("types checked=%d, with AnimActive count>1=%d, old rule drew a damaged-range frame at full health %d times\n",
++                types, animated, old_bad);
++    CHECK(types > 250);
++    CHECK(animated >= 8);
++}

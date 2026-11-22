@@ -1,0 +1,109 @@
+# 0095: the A* heuristic is Euclidean (verified in gamemd.exe); supersedes PR #208's 0080.
+#
+# Decompiled with Ghidra from the shipped gamemd.exe (2026-11-22):
+#   FUN_00429A90  the search: pops the cheapest node, stops when it reaches the goal cell, no more
+#                 than 10000 nodes (param_5 caps it, the default is 0xFFF7); returns 0 on failure.
+#   FUN_0042A460  makes a node: g = parent g + step cost, then
+#                     f = g + FUN_004CAC40(dx*dx + dy*dy)
+#                 FUN_004CAC40 is a table-driven float square root (fld; mantissa >> 10 into
+#                 DAT_008650BC; exponent halved). So h = sqrt(dx^2 + dy^2), the straight-line
+#                 distance: Euclidean, NOT Chebyshev.
+#   FUN_00429830  the cell cost (Can_Enter result -> DAT_0081870C): a x10 / x2 branch exists but
+#                 is gated by the bridge-plane flag, x4 for a cell flagged 0x40000. A diagonal
+#                 step costs the same as an orthogonal one.
+#   DAT_0081872C  tie-break per direction, read from the exe: N .001 NE .005 E .002 SE .006
+#                 S .003 SW .007 W .004 NW .008.
+# The only max(|dx|,|dy|) in FUN_00429A90 is the 9th neighbour (dir 8, the tunnel / link cell,
+# a jump, not a grid step); PR #208 read that as the heuristic. The old comments cited
+# FUN_00429A10 / FUN_004297B0, which are inside FUN_00429830 / not function starts.
+# Result: no code change. Chebyshev made the "nearest cell" fallback stop anywhere along a wall
+# face (every cell with the same max(|dx|,|dy|) ties), which is what test_pathfind_scenarios'
+# "dead end ... nearest" case (CHECK(p.back().x >= 11), got 6) caught on all three engine jobs.
+# PR #208 / 0080 should be dropped. This patch fixes the comments and adds two tests.
+
+--- a/engine/pathfind.cpp
++++ b/engine/pathfind.cpp
+@@ -15,19 +15,29 @@
+ 
+ // 8 directions in a fixed, stable order: 4 cardinal first (E, W, S, N), then
+ // 4 diagonal (SE, NE, SW, NW).
+-// W7-11-08 [RE: A* FUN_00429A10, step cost FUN_004297B0, cost table
+-// DAT_0081770C, tie-break DAT_0081772C]: every step costs the Can_Enter
+-// result's cost (1 for a clear cell) PLUS a per-direction tie-break -- N .001,
+-// NE .005, E .002, SE .006, S .003, SW .007, W .004, NW .008 -- so a diagonal
+-// step costs the same as an orthogonal one (no sqrt2) and only the tie-break
+-// prefers the orthogonals. Scaled x1000 to integers: cost*1000 + tie-break.
++// Verified against gamemd.exe (decompiled 2026-11-22): the search is FUN_00429A90,
++// a node is made by FUN_0042A460, the per-step cost is FUN_00429830 and the
++// tie-break table DAT_0081872C. (The old notes said FUN_00429A10 / FUN_004297B0:
++// those addresses are inside FUN_00429830 / not a function start.)
++//   step cost = FUN_00429830 (the Can_Enter cost, 1 for a clear cell; a x10 / x2
++//   branch exists but is gated by the bridge-plane flag, x4 for a cell flagged
++//   0x40000) x scale
++//   + DAT_0081872C[dir]: N .001, NE .005, E .002, SE .006, S .003, SW .007,
++//   W .004, NW .008. A diagonal therefore costs the same as an orthogonal step
++//   and only the tie-break prefers the orthogonals.
++//   heuristic (FUN_0042A460): f = g + sqrt(dx*dx + dy*dy), the STRAIGHT-LINE
++//   distance in cells (FUN_004CAC40 is a table-driven float sqrt). It is not
++//   Chebyshev: the only max(|dx|,|dy|) in FUN_00429A90 is the 9th neighbour
++//   (dir 8, the tunnel / link cell), which is not a grid step.
++// Scaled x1000 to integers: cost*1000 + tie-break.
+ constexpr int kDx[8]   = { 1, -1, 0, 0, 1, 1, -1, -1 };
+ constexpr int kDy[8]   = { 0, 0, 1, -1, 1, -1, 1, -1 };
+ constexpr int kTie[8]  = { 2, 4, 3, 1, 6, 5, 7, 8 };   // E W S N SE NE SW NW
+ constexpr long long kUnit = 1000;
+ 
+-// [RE: FUN_00429A10] the heuristic is the straight-line (Euclidean) distance
+-// in cells, x1000.
++// [RE: FUN_0042A460, verified] the heuristic is the straight-line (Euclidean)
++// distance in cells, x1000. It overestimates a diagonal run (inadmissible), as
++// in the original, which is what sends a path along the diagonal first.
+ inline long long euclid_h(int x, int y, Cellxy goal) {
+     const double dx = static_cast<double>(x - goal.x), dy = static_cast<double>(y - goal.y);
+     return static_cast<long long>(om::ftol(om::sqrt(dx * dx + dy * dy) * static_cast<double>(kUnit)));
+@@ -183,7 +193,7 @@
+     return t && t->open_cells && std::binary_search(t->open_cells->begin(), t->open_cells->end(), c);
+ }
+ 
+-// R-210: the height-aware A* over (cell, layer) states [RE: FUN_00429A10 keeps
++// R-210: the height-aware A* over (cell, layer) states [RE: FUN_00429A90 keeps
+ // a ground and a bridge ("alt") plane of visit marks / distances and asks
+ // IsCellOccupied -> the height gate FUN_004D9B70 for every neighbour]. Same
+ // costs, heuristic, tie-breaks and corner rule as astar(); a state is
+--- a/tests/test_pathfind_scenarios.cpp
++++ b/tests/test_pathfind_scenarios.cpp
+@@ -106,3 +106,34 @@
+     CHECK(find_path_bounded(g, W, H, {10, 10}, {500, 10}, 3000).empty());
+     CHECK(!find_path_bounded(g, W, H, {10, 10}, {500, 10}, 0 + 400000).empty());
+ }
++
++// Retail FUN_0042A460 scores a node g + sqrt(dx^2 + dy^2) (the straight-line
++// distance), FUN_00429830 charges a diagonal step the same as an orthogonal one
++// and DAT_0081872C breaks ties. Together they send a route along the diagonal
++// first and then straight, with one turn: patch 0080's Chebyshev heuristic
++// (not what the original does) made the "nearest" fallback stop anywhere along
++// the wall face instead of at the cell nearest the goal.
++TEST_CASE("scenario: open ground, diagonals first then straight (Euclidean heuristic, uniform steps)") {
++    const int W = 30, H = 12;
++    Grid g(W * H, 1);
++    auto p = find_path(g, W, H, {1, 1}, {21, 4});
++    REQUIRE(p.size() == 21);   // 20 steps: a diagonal costs what an orthogonal does
++    int turns = 0;
++    for (size_t i = 2; i < p.size(); ++i)
++        if (p[i].x - p[i - 1].x != p[i - 1].x - p[i - 2].x || p[i].y - p[i - 1].y != p[i - 1].y - p[i - 2].y) ++turns;
++    CHECK(turns == 1);
++    CHECK(p[1].x == 2);
++    CHECK(p[1].y == 2);   // first step is the diagonal
++    CHECK(p[3].y == 4);   // all three diagonals up front
++    CHECK(p[4].y == 4);
++}
++
++TEST_CASE("scenario: nearest fallback ends on the wall cell closest to the goal in a straight line") {
++    const int W = 40, H = 20;
++    Grid g(W * H, 1);
++    for (int x = 0; x < W; ++x) g[10 * W + x] = 0;   // full wall
++    auto p = find_path_nearest(g, W, H, {5, 2}, {30, 17}, 0);
++    REQUIRE(!p.empty());
++    CHECK(p.back().y == 9);
++    CHECK(p.back().x == 30);   // straight above the goal, not merely "a cell with Chebyshev distance 8"
++}

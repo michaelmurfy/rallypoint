@@ -17,6 +17,8 @@ pub mod mapview;
 pub mod maps;
 pub mod mods;
 pub mod proc;
+pub mod ra2flags;
+mod ra2flags_blowfish;
 pub mod ra2maps;
 pub mod ra2;
 pub mod ra2launch;

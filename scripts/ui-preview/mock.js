@@ -40,6 +40,7 @@ const guestRoom = { map: "Little Big Lake.yrm", map_name: "Little Big Lake", sta
 if (hash.includes("changed")) { setTimeout(() => { lobby.seat.ready = true; }, 1000); setTimeout(() => { guestRoom.speed = 0; lobby.seat.ready = false; }, 2500); }
 const handlers = {
   set_game: ({ game }) => { state.cfg.game = game; },
+  ra2_country_flags: () => [],
   ra2_detect: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Red Alert II" }] : []),
   ra2_check_dir: ({ path }) => (/RA2|Red Alert/i.test(path) ? (state.cfg.ra2.game_dir = path.trim(), { ok: true, message: "Yuri's Revenge found" }) : path.trim() ? { ok: false, message: "That folder has no Red Alert 2 and Yuri's Revenge (ra2md.mix)" } : { ok: false, message: "Choose the folder that contains ra2md.mix" }),
   ra2_set_settings: (a) => { Object.assign(state.cfg.ra2, a); },

@@ -1,0 +1,285 @@
+HiDPI, world and interface scaled apart (follow-up to 0056, 0062, 0071).
+
+0071 raised the whole canvas scale (2x from 1300 lines), so on a Retina or
+ultrawide screen the world was magnified too: fewer cells, big soft sprites.
+Now the interface (sidebar, text, menus) keeps its whole k screen pixels per
+canvas pixel while the world is drawn at the screen's own pixels: the starting
+tactical zoom is 1/k (zoom_start), so a bigger screen shows more map and sprites
+are 1 art pixel on 1 screen pixel. SDL already gives the drawable size in pixels
+(ALLOW_HIGHDPI, SDL_GetWindowSizeInPixels), so no change there.
+- RA2_UI_SCALE=1..4 (launcher: Interface size) fixes k (never under 720 lines).
+- RA2_WORLD_ZOOM=1..4 (launcher: World zoom, 1 = Automatic) multiplies native.
+- zoom_min goes down to 1/k (0.25 at most), zoom_max lets units grow to k screen
+  pixels (2 on a 1:1 screen); zoom > 1 now also goes through the world texture;
+  a whole number of screen pixels per world pixel is drawn with nearest sampling.
+- A canvas change (resize, monitor) returns to the start zoom unless the player
+  zoomed; the start camera and the campaign pan use the world-view size.
+- Dev: with RA2_AUTOSHOT_DIR the match writes game.png after 150 frames and ends.
+Not tried on a real Mac: checked on Linux with Xvfb at 3440x1440, 5120x3200 and 1920x1080 windows.
+--- a/engine/logical_canvas.hpp
++++ b/engine/logical_canvas.hpp
+@@ -27,8 +27,10 @@
+     if (output_h < 1300) return 1;
+     return (output_h + 1099) / 1100;
+ }
+-inline void desktop_canvas(int output_w, int output_h, int& out_w, int& out_h) {
+-    const int k = desktop_pixel_scale(output_h);
++// ui_scale > 0 (the launcher's Interface size, RA2_UI_SCALE) fixes k, but never
++// so high that the canvas drops under 720 lines (that would not be a whole scale).
++inline void desktop_canvas(int output_w, int output_h, int& out_w, int& out_h, int ui_scale = 0) {
++    const int k = ui_scale > 0 ? std::max(1, std::min(ui_scale, output_h / 720)) : desktop_pixel_scale(output_h);
+     const int lh = std::max(720, output_h / k);
+     const int lw = output_w / k;
+     out_h = lh;
+@@ -64,27 +66,41 @@
+ 
+ // Tactical zoom (presentation only: the camera, the simulation and the saves
+ // never see it). zoom = canvas pixels per world pixel, 1 = the original's
+-// size. Zooming out is limited so a world pixel never gets smaller than half
+-// a screen pixel's worth of detail: on a 1:1 screen 0.75 (tiles 45 px wide),
+-// at 2 screen pixels per canvas pixel (Retina, 4K) 0.5, which is the art at
+-// exactly one screen pixel per art pixel. Never below 0.5, never above 1.
++// size. The world and the interface scale apart (HiDPI): the interface
++// (sidebar, text, menus) is a whole k screen pixels per canvas pixel, while the
++// world is drawn at the screen's own pixels: zoom_native = 1 / k canvas pixels
++// per world pixel, one world pixel on one screen pixel, so a bigger screen shows
++// more map and sprites are never magnified. zoom_min goes no lower than that
++// (a 1:1 screen may zoom out to 0.75, tiles 45 px wide). zoom_max lets units
++// grow to k screen pixels (or 2 on a 1:1 screen). Wheel steps are in eighths.
+ inline double zoom_min(double screen_px_per_canvas_px) {
+     const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
+-    return std::max(0.5, std::min(0.75, 1.0 / s));
++    return std::max(0.25, std::min(0.75, 1.0 / s));
++}
++inline double zoom_max(double screen_px_per_canvas_px) {
++    const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
++    return std::max(1.0, 2.0 / s);
++}
++// The starting zoom: native (1 world pixel = 1 screen pixel) times `factor`
++// (the launcher's World zoom: 1 = Automatic, 1.5, 2), kept in the limits.
++inline double zoom_start(double screen_px_per_canvas_px, double factor) {
++    const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
++    const double f = factor >= 1.0 && factor <= 4.0 ? factor : 1.0;
++    return std::max(zoom_min(s), std::min(zoom_max(s), f / s));
+ }
+ // One wheel notch / key press: eighths (1, 0.875, 0.75, 0.625, 0.5), clamped.
+-inline double zoom_step(double zoom, int dir, double zmin) {
++inline double zoom_step(double zoom, int dir, double zmin, double zmax = 1.0) {
+     double z = std::round((zoom + 0.125 * dir) * 8.0) / 8.0;
+-    return std::max(zmin, std::min(1.0, z));
++    return std::max(zmin, std::min(zmax, z));
+ }
+ // The world-view size that fills `canvas` canvas pixels at `zoom`.
+ inline int zoom_view(int canvas, double zoom) {
+-    return zoom >= 1.0 ? canvas : static_cast<int>(std::ceil(canvas / zoom - 1e-9));
++    return zoom == 1.0 ? canvas : static_cast<int>(std::ceil(canvas / zoom - 1e-9));
+ }
+ // A canvas pixel coordinate (pointer) in the world view (what Input and the
+ // camera use). Exact inverse of drawing the world view scaled by `zoom`.
+ inline int zoom_to_view(int canvas_px, double zoom) {
+-    return zoom >= 1.0 ? canvas_px : static_cast<int>(std::floor(canvas_px / zoom));
++    return zoom == 1.0 ? canvas_px : static_cast<int>(std::floor(canvas_px / zoom));
+ }
+ // The camera after a zoom change that keeps the world point under canvas pixel
+ // `anchor` fixed (the pointer for the wheel, the view centre for keys).
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -6810,6 +6810,9 @@
+         // the only two enable_projectiles call sites (the other is
+         // --demo-projectile) -- every byte-identity gate keeps the instant path.
+         cfg_ = cfg;   // P7: the save's 'CONF' section rebuilds this scene's assets
++        zoom_ = zoom_start_now();
++        input_.set_viewport(ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));
++        cam_ = centered_camera(a_.map, ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));
+         local_house_ = local_slot_of(cfg);   // L2: the house this client plays
+         g_local_house = local_house_;
+         world_.set_session_seed(session_seed_for(cfg));   // Net L0: before anything draws
+@@ -7159,7 +7162,7 @@
+         // one-mode cancel chain is the RIGHT-click-up handler (Input owns it);
+         // Esc is the Options hotkey (FUN_00646AE0 queues the options event and
+         // cancels nothing), handled in ui_handle.
+-        if (zoom_ < 1.0 && !ev.touch && ev.x < playfield_w_ &&
++        if (zoom_ != 1.0 && !ev.touch && ev.x < playfield_w_ &&
+             (ev.kind == ra2engine::InputEvent::PointerMove || ev.kind == ra2engine::InputEvent::PointerDown ||
+              ev.kind == ra2engine::InputEvent::PointerUp)) {
+             ev.x = zx(ev.x);   // Input works in world-view pixels (the zoomed canvas)
+@@ -7700,7 +7703,13 @@
+         }
+         net_render(ren, tc);   // NET-PLAY: chat line, waiting / reconnect / out-of-sync dialogs
+         screencap_tick(ren);   // W5-E ScreenCapture hotkey
++        // Dev evidence: RA2_AUTOSHOT_DIR also writes game.png after 150 frames and ends the match.
++        if (++autoshot_frames_ == 150 && !autoshot_dir().empty()) {
++            dev_autoshot(plat, "game");
++            abort_ = true;
++        }
+     }
++    int autoshot_frames_ = 0;
+ 
+ #include "gf_scene.inc"
+ #include "skirmish_map_units.inc"   // W7-09-05 skirmish map [Units]/[Infantry]/[Aircraft]
+@@ -8127,6 +8136,7 @@
+     // commands or the saves; Input, the camera and the radar box work in
+     // world-view pixels (the canvas divided by zoom), see logical_canvas.hpp.
+     double zoom_ = 1.0;
++    bool zoom_user_ = false;   // the player zoomed: a canvas change keeps it
+     SDL_Texture* zoom_tex_ = nullptr;
+     int zoom_tw_ = 0, zoom_th_ = 0;
+     SDL_Texture* zoom_prev_ = nullptr;
+@@ -8135,6 +8145,19 @@
+     double zoom_limit() const {
+         return ra2engine::zoom_min(g_platform ? g_platform->present_fit() : 1.0);
+     }
++    double zoom_top() const {
++        return ra2engine::zoom_max(g_platform ? g_platform->present_fit() : 1.0);
++    }
++    // Screen pixels per canvas pixel for the canvas as it is now (present_fit
++    // only updates at the first frame), and the zoom a new match / canvas starts
++    // at: the world at native pixels, times RA2_WORLD_ZOOM (1 = Automatic).
++    double zoom_start_now() const {
++        int ow = 0, oh = 0;
++        if (g_platform) g_platform->output_size(ow, oh);
++        const double fit = ra2engine::present_mode(ow, oh, kWinW, kWinH).fit;
++        const char* e = std::getenv("RA2_WORLD_ZOOM");
++        return ra2engine::zoom_start(fit, e ? std::atof(e) : 1.0);
++    }
+     // Re-fit Input and the camera to the world view after the zoom (or the
+     // canvas) changed; keeps the campaign's LocalSize clamp.
+     void zoom_apply_view() {
+@@ -8149,8 +8172,9 @@
+     }
+     // Zoom to `z` keeping the world point under canvas pixel (ax, ay) fixed.
+     void zoom_to(double z, int ax, int ay) {
+-        z = std::max(zoom_limit(), std::min(1.0, z));
++        z = std::max(zoom_limit(), std::min(zoom_top(), z));
+         if (z == zoom_) return;
++        zoom_user_ = true;
+         cam_.x = ra2engine::zoom_keep_point(cam_.x, ax, zoom_, z);
+         cam_.y = ra2engine::zoom_keep_point(cam_.y, ay, zoom_, z);
+         zoom_ = z;
+@@ -8167,11 +8191,11 @@
+         } else {
+             return false;
+         }
+-        zoom_to(ra2engine::zoom_step(zoom_, dir, zoom_limit()), ax, ay);
++        zoom_to(ra2engine::zoom_step(zoom_, dir, zoom_limit(), zoom_top()), ax, ay);
+         return true;
+     }
+     bool zoom_begin(SDL_Renderer* ren) {
+-        if (zoom_ >= 1.0) return false;
++        if (zoom_ == 1.0) return false;
+         const int tw = ra2engine::zoom_view(playfield_w_, zoom_), th = ra2engine::zoom_view(kWinH, zoom_);
+         if (!zoom_tex_ || zoom_tw_ != tw || zoom_th_ != th) {
+             if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
+@@ -8188,7 +8212,9 @@
+     }
+     void zoom_end(SDL_Renderer* ren) {
+         SDL_SetRenderTarget(ren, zoom_prev_);
+-        SDL_SetTextureScaleMode(zoom_tex_, SDL_ScaleModeLinear);
++        // A whole number of screen pixels per world pixel stays sharp (nearest).
++        const double spw = zoom_ * (g_platform ? g_platform->present_fit() : 1.0);
++        SDL_SetTextureScaleMode(zoom_tex_, std::fabs(spw - std::round(spw)) < 1e-6 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+         const SDL_Rect dst{0, 0, playfield_w_, kWinH};
+         SDL_RenderCopy(ren, zoom_tex_, nullptr, &dst);
+     }
+--- a/engine/game_scene_lifecycle.inc
++++ b/engine/game_scene_lifecycle.inc
+@@ -83,7 +83,9 @@
+     set_canvas_size(gw, gh);
+     lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_);
+     playfield_w_ = kWinW - (sidebar_up_ ? lay_.bar.w : 0);
+-    zoom_ = std::max(zoom_limit(), zoom_);   // a monitor / canvas change moves the limit
++    // A monitor / canvas change moves native pixels: back to the start zoom
++    // unless the player chose a zoom (then only the limits apply).
++    zoom_ = zoom_user_ ? std::max(zoom_limit(), std::min(zoom_top(), zoom_)) : zoom_start_now();
+     cam_.x = ra2engine::zoom_view(playfield_w_, zoom_) / 2 - cx;
+     cam_.y = ra2engine::zoom_view(kWinH, zoom_) / 2 - cy;
+     zoom_apply_view();   // viewport, the campaign's LocalSize clamp, camera clamp
+--- a/engine/app_robust.inc
++++ b/engine/app_robust.inc
+@@ -53,10 +53,13 @@
+     // RA2_LOGICAL_HEIGHT (the launcher's Settings > Display > UI scale: 720,
+     // 900 or 1080) fixes the canvas height; otherwise the canvas is the
+     // window's pixels over a whole number (desktop_canvas: crisp on HiDPI).
++    // RA2_UI_SCALE (Interface size: 1 to 4 screen pixels per interface pixel)
++    // keeps the picture whole-scale, so the world stays sharp.
+     const char* env = std::getenv("RA2_LOGICAL_HEIGHT");
+     const int fixed = env ? std::atoi(env) : 0;
+     if (fixed < 480 || fixed > 2160) {
+-        ra2engine::desktop_canvas(w, h, out_w, out_h);
++        const char* us = std::getenv("RA2_UI_SCALE");
++        ra2engine::desktop_canvas(w, h, out_w, out_h, us ? std::atoi(us) : 0);
+         return;
+     }
+     lh = fixed & ~1;
+--- a/engine/gf_scene.inc
++++ b/engine/gf_scene.inc
+@@ -313,8 +313,8 @@
+         const ra2assets::MapCell* mc = a_.map.at(x, y);
+         const int lvl = mc ? mc->level : 0;
+         const ra2engine::ScreenPt p = ra2engine::cell_to_screen(x, y, lvl, 60, 30, 15);
+-        cam_.x = playfield_w_ / 2 - (p.x + 30);
+-        cam_.y = kWinH / 2 - (p.y + 15);
++        cam_.x = ra2engine::zoom_view(playfield_w_, zoom_) / 2 - (p.x + 30);
++        cam_.y = ra2engine::zoom_view(kWinH, zoom_) / 2 - (p.y + 15);
+     }
+     // The original opens a skirmish looking at the player's start (the base
+     // centre set by FUN_0050DE20 in FUN_006880F0).
+--- a/engine/campaign_visuals.inc
++++ b/engine/campaign_visuals.inc
+@@ -187,8 +187,8 @@
+     }
+     // The cell at the centre of the tactical view (inverse of center_on_cell).
+     void camp_view_cell(double& cx, double& cy) const {
+-        const double u = (playfield_w_ / 2.0 - cam_.x - 30.0) / 30.0;   // cx - cy
+-        const double v = (kWinH / 2.0 - cam_.y - 15.0) / 15.0;          // cx + cy
++        const double u = (ra2engine::zoom_view(playfield_w_, zoom_) / 2.0 - cam_.x - 30.0) / 30.0;   // cx - cy
++        const double v = (ra2engine::zoom_view(kWinH, zoom_) / 2.0 - cam_.y - 15.0) / 15.0;          // cx + cy
+         cx = (u + v) / 2.0;
+         cy = (v - u) / 2.0;
+     }
+--- a/tests/test_logical_canvas.cpp
++++ b/tests/test_logical_canvas.cpp
+@@ -76,7 +76,8 @@
+     CHECK(zoom_min(1.0) == doctest::Approx(0.75));
+     CHECK(zoom_min(2.0) == doctest::Approx(0.5));
+     CHECK(zoom_min(1.5) == doctest::Approx(0.6666).epsilon(0.01));
+-    CHECK(zoom_min(4.0) == doctest::Approx(0.5));
++    CHECK(zoom_min(4.0) == doctest::Approx(0.25));
++    CHECK(zoom_min(3.0) == doctest::Approx(1.0 / 3.0));
+     CHECK(zoom_min(0.5) == doctest::Approx(0.75));
+     CHECK(zoom_step(1.0, -1, 0.75) == doctest::Approx(0.875));
+     CHECK(zoom_step(0.875, -1, 0.75) == doctest::Approx(0.75));
+@@ -130,3 +131,33 @@
+     scaled_window_size(1280, 720, 96.0, 1024, 600, w, h);    // never below the request
+     CHECK((w == 1280 && h == 720));
+ }
++
++TEST_CASE("world scale is native, interface scale is whole") {
++    int w = 0, h = 0;
++    // 3440x1440 Retina drawable: interface x2, world native (0.5 canvas px per world px).
++    desktop_canvas(3440, 1440, w, h);
++    CHECK(w == 1720); CHECK(h == 720);
++    CHECK(zoom_start(2.0, 1.0) == doctest::Approx(0.5));
++    CHECK(zoom_view(w - 168, 0.5) == 2 * (1720 - 168));     // the world view is the screen's own pixels
++    CHECK(zoom_to_view(100, 0.5) == 200);
++    // 1080p 1x: native is zoom 1, units may grow to 2 screen pixels.
++    desktop_canvas(1920, 1080, w, h);
++    CHECK(w == 1920); CHECK(h == 1080);
++    CHECK(zoom_start(1.0, 1.0) == doctest::Approx(1.0));
++    CHECK(zoom_start(1.0, 1.5) == doctest::Approx(1.5));
++    CHECK(zoom_start(1.0, 9.0) == doctest::Approx(1.0));      // out of range: Automatic
++    // 2560x1600 at 2x = 5120x3200: interface x3, world native 1/3, and 2x = 2/3.
++    desktop_canvas(5120, 3200, w, h);
++    CHECK(h == 1066);
++    CHECK(zoom_start(3.0, 1.0) == doctest::Approx(1.0 / 3.0));
++    CHECK(zoom_start(3.0, 2.0) == doctest::Approx(2.0 / 3.0));
++    CHECK(zoom_max(3.0) == doctest::Approx(1.0));
++    CHECK(zoom_start(2.0, 4.0) == doctest::Approx(1.0));       // never past zoom_max
++    // Interface size picks k, but never leaves less than 720 lines.
++    desktop_canvas(3440, 1440, w, h, 1);
++    CHECK(h == 1440);
++    desktop_canvas(1920, 1080, w, h, 3);
++    CHECK(h == 1080);
++    desktop_canvas(3840, 2160, w, h, 3);
++    CHECK(h == 720);
++}

@@ -126,6 +126,7 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 .card.hero > .heroart { position: absolute; z-index: 0; top: 0; right: 0; width: 62%; height: 100%; object-fit: cover; object-position: center; opacity: 0; transition: opacity .9s var(--ease);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); }
 .card.hero > .heroart.shown { opacity: .5; }
+.card.hero > .heroart.flagart { object-fit: contain; object-position: right center; }
 @media (max-width: 760px) { .card.hero > .heroart { width: 100%; } .card.hero > .heroart.shown { opacity: .25; } }
 .heroact { gap: 14px; }
 .gamepath { overflow-wrap: anywhere; }
@@ -445,6 +446,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .skrow2.closed .swatch { background: var(--muted); box-shadow: none; }
 .skwho { font-weight: 650; padding-left: 9px; }
 .skrow2 select { height: 30px; font-size: 13px; min-width: 0; text-overflow: ellipsis; background-color: transparent; border-color: transparent; padding-left: 8px; padding-right: 26px; background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; }
+.sidecell { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sidecell select { flex: 1; min-width: 0; }
+.sideflag { width: 30px; height: 15px; flex: none; border-radius: 2px; object-fit: contain; }
+.sideflag.official { image-rendering: pixelated; }
 .skrow2 select:hover, .skrow2 select:focus-visible { border-color: var(--line); background-color: var(--surface); }
 .pc0 { --pc: #4d8dff; } .pc1 { --pc: #e5484d; } .pc2 { --pc: #46a758; } .pc3 { --pc: #f5c542; }
 .pc4 { --pc: #f08c3c; } .pc5 { --pc: #9a6bdc; } .pc6 { --pc: #3dc7c0; } .pc7 { --pc: #e5509b; }
@@ -742,9 +747,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .card.hero.slim { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; padding: 18px 24px; }
 .herodisp { display: flex; align-items: baseline; gap: 10px; }
 
-/* Red Alert 2 Play: country tiles and the hero's drawn sunburst (nothing here comes from the game's files) */
+/* Red Alert 2 Play: country tiles and the hero art (the flags come from the player's own game files) */
 .skoptions select:not(.speedsel) { width: auto; min-width: 160px; }
 .skplay { margin-left: auto; }
-.flagcard { width: 96px; height: 64px; border-radius: 8px; border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.18); object-fit: cover; flex: none; }
+.flagcard { width: 96px; height: 64px; border-radius: 8px; border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.18); object-fit: contain; flex: none; }
+.flagcard.official { image-rendering: pixelated; }
 .countryrow { display: flex; align-items: center; gap: 12px; }
 .countryrow select { flex: 1; min-width: 0; }

@@ -2162,7 +2162,8 @@ const RA2_DIFFS = [["easy", "Easy"], ["medium", "Medium"], ["brutal", "Brutal"]]
 const RA2_TEAMS = [[-1, "No team"], [0, "Team A"], [1, "Team B"], [2, "Team C"], [3, "Team D"]];
 // Engine Options combobox (main.cpp) plus common desktop sizes; filter against the screen in ra2ResolutionPick.
 const RA2_WINDOW_PRESETS = [[640, 480], [800, 600], [1024, 768], [1280, 720], [1600, 900], [1920, 1080], [2560, 1440], [3840, 2160]];
-const RA2_UI_SCALES = [[0, "Automatic"], [720, "Large"], [900, "Medium"], [1080, "Small"]];
+const RA2_UI_SCALES = [[0, "Automatic"], [1, "Small"], [2, "Medium"], [3, "Large"]];
+const RA2_WORLD_ZOOMS = [[0, "Automatic"], [150, "Bigger (150%)"], [200, "Biggest (200%)"]];
 const ra2Speed = () => (RA2_SPEEDS.some(([v]) => v === prefs.get().ra2Speed) ? prefs.get().ra2Speed : 2);
 const ra2Credits = () => (RA2_CREDITS.includes(prefs.get().ra2Credits) ? prefs.get().ra2Credits : 10000);
 const ra2Flag = (key, fallback = true) => (typeof prefs.get()[key] === "boolean" ? prefs.get()[key] : fallback);
@@ -2233,14 +2234,18 @@ function pick(label, options, value, onchange) {
 /** The four choices every seat has. `change(patch)` gets the one that changed. */
 function seatCells(who, seat, starts, change) {
   return [
-    pick(`Side for ${who}`, [[-1, "Random side"], ...RA2_SIDES.map((s, i) => [i, s])], seat.side, (v) => change({ side: +v })),
+    h("div", { class: "sidecell" },
+      h("img", { class: "sideflag" + (RA2_FLAG_ART[seat.side] ? " official" : ""), alt: "", "aria-hidden": "true", src: ra2FlagUrl(seat.side) }),
+      pick(`Side for ${who}`, [[-1, "Random side"], ...RA2_SIDES.map((s, i) => [i, s])], seat.side, (v) => change({ side: +v }))),
     pick(`Colour for ${who}`, [[-1, "Any colour"], ...RA2_COLORS.map((c, i) => [i, c])], seat.color, (v) => change({ color: +v })),
     pick(`Start for ${who}`, [[-1, "Random"], ...Array.from({ length: starts }, (_, n) => [n + 1, `Start ${n + 1}`])], seat.start, (v) => change({ start: +v })),
     pick(`Team for ${who}`, RA2_TEAMS, seat.team, (v) => change({ team: +v })),
   ];
 }
 /** The same four as text, for another player's seat. */
-const seatText = (s) => [RA2_SIDES[s.side] || "Random side", RA2_COLORS[s.color] || "Any colour", s.start > 0 ? `Start ${s.start}` : "Random", (RA2_TEAMS.find(([v]) => v === s.team) || RA2_TEAMS[0])[1]]
+const seatText = (s) => [
+  h("span", { class: "sidecell" }, h("img", { class: "sideflag" + (RA2_FLAG_ART[s.side] ? " official" : ""), alt: "", "aria-hidden": "true", src: ra2FlagUrl(s.side) }), RA2_SIDES[s.side] || "Random side"),
+  RA2_COLORS[s.color] || "Any colour", s.start > 0 ? `Start ${s.start}` : "Random", (RA2_TEAMS.find(([v]) => v === s.team) || RA2_TEAMS[0])[1]]
   .map((t) => h("span", { class: "skcell" }, t));
 const ra2Swatch = (color) => h("i", { class: "swatch" + (color >= 0 ? "" : " any"), "aria-hidden": "true" });
 const ra2RowClass = (color) => (color >= 0 ? ` pc${RA2_PC[color]}` : "");
@@ -2402,10 +2407,12 @@ function ra2Skirmish(onChange) {
     return `${m.name}: you against ${ai} computer player${ai === 1 ? "" : "s"}, $${ra2Credits().toLocaleString("en-US")}, ${speedName} speed`;
   };
   reload();
+  ra2FlagArt().then(draw); // the official side flags arrive a moment later; redraw then
   return { el, setup, why, what, reload, remember: () => prefs.set({ ra2Ai: rows.filter((r) => r.kind === "ai").length }) };
 }
 
-/** Drawn flags for the ten countries (index = RA2_SIDES); -1 is Random. Our own SVG, nothing from the game's files. */
+/** Drawn flags for the ten countries (index = RA2_SIDES); -1 is Random. Only a fallback: the game's own 47x23
+ *  pictures (side emblem + national flag) are read from the player's ra2.mix/ra2md.mix by `ra2FlagArt` below. */
 const RA2_FLAGS = {
   "-1": '<rect width="60" height="40" fill="#5b6478"/><text x="30" y="29" font-size="26" font-family="sans-serif" font-weight="700" fill="#fff" text-anchor="middle">?</text>',
   0: '<rect width="60" height="40" fill="#fff"/>' + [0, 2, 4, 6].map((i) => `<rect y="${i * 40 / 7}" width="60" height="${40 / 7}" fill="#b22234"/>`).join("") + '<rect width="27" height="22.9" fill="#3c3b6e"/>' + [0, 1, 2].flatMap((r) => [0, 1, 2, 3].map((c) => `<circle cx="${5 + c * 6 + (r % 2) * 3}" cy="${5 + r * 6}" r="1.3" fill="#fff"/>`)).join(""),
@@ -2419,7 +2426,23 @@ const RA2_FLAGS = {
   8: '<rect width="60" height="40" fill="#fff"/><rect y="13.3" width="60" height="13.3" fill="#0039a6"/><rect y="26.7" width="60" height="13.3" fill="#d52b1e"/>',
   9: '<rect width="60" height="40" fill="#3b1a5e"/><circle cx="30" cy="20" r="12" fill="none" stroke="#c9a6ff" stroke-width="2.5"/><path d="M30 10l8.7 15h-17.4z" fill="#c9a6ff"/><circle cx="30" cy="20" r="2.5" fill="#3b1a5e"/>',
 };
-const ra2FlagUrl = (v) => "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice">${RA2_FLAGS[v] || RA2_FLAGS[-1]}</svg>`);
+/** The game's own country pictures (side index -> PNG data URL), read at runtime from the player's files. */
+const RA2_FLAG_ART = {};
+let ra2FlagArtDir = null, ra2FlagArtLoad = null;
+/** Load the official flags for the current game folder (once per folder). Resolves when a page can repaint. */
+function ra2FlagArt() {
+  const dir = store.cfg.ra2.game_dir || "";
+  if (dir === ra2FlagArtDir) return ra2FlagArtLoad || Promise.resolve();
+  ra2FlagArtDir = dir;
+  for (const k of Object.keys(RA2_FLAG_ART)) delete RA2_FLAG_ART[k];
+  ra2FlagArtLoad = !dir ? Promise.resolve()
+    : invoke("ra2_country_flags", { gameDir: dir }).then((list) => {
+        if (ra2FlagArtDir !== dir) return; // the folder changed while this was loading
+        for (const f of list || []) RA2_FLAG_ART[f.side] = f.png;
+      }).catch(() => { /* the drawn fallbacks stay */ });
+  return ra2FlagArtLoad;
+}
+const ra2FlagUrl = (v) => RA2_FLAG_ART[v] || "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice">${RA2_FLAGS[v] || RA2_FLAGS[-1]}</svg>`);
 
 /** Quick Skirmish for Red Alert 2: the same card as Generals (opponents, difficulty, one button), with your country,
  *  the map, your start, speed and starting credits beside them. Everything is remembered. */
@@ -2436,11 +2459,16 @@ function ra2PlayPage() {
   const flagBig = h("img", { class: "flagcard", alt: "", "aria-hidden": "true" });
   const heroArt = h("img", { class: "heroart shown", alt: "", "aria-hidden": "true" });
   function paintFlag() {
-    flagBig.src = ra2FlagUrl(+country.value);
+    const v = +country.value;
+    flagBig.src = ra2FlagUrl(v);
+    flagBig.classList.toggle("official", v >= 0 && !!RA2_FLAG_ART[v]);
     // Random has no flag worth blowing up: the hero gets plain rays instead
-    heroArt.src = +country.value < 0 ? "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice"><rect width="60" height="40" fill="#5b6478"/><path d="M60 20L0 0v6zM60 20L0 14v6zM60 20L0 28v6z" fill="#fff" opacity=".25"/></svg>') : flagBig.src;
+    heroArt.src = v < 0 ? "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice"><rect width="60" height="40" fill="#5b6478"/><path d="M60 20L0 0v6zM60 20L0 14v6zM60 20L0 28v6z" fill="#fff" opacity=".25"/></svg>') : flagBig.src;
+    // The game's pictures are wider than the box; show all of them rather than crop the emblem away.
+    heroArt.classList.toggle("flagart", v >= 0 && !!RA2_FLAG_ART[v]);
   }
   paintFlag();
+  ra2FlagArt().then(paintFlag); // the official pictures arrive a moment later; repaint then
   const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2QuickMap: mapSel.value }); update(); } });
   const startSel = h("select", { "aria-label": "Your start position", onchange: () => prefs.set({ ra2QuickStart: +startSel.value }) },
     new Option("Random start", "0"), ...Array.from({ length: 8 }, (_, n) => new Option(`Start ${n + 1}`, String(n + 1))));
@@ -2815,7 +2843,7 @@ function ra2LobbyCard() {
 
 function ra2DisplayLabel(r, nat) {
   const res = !r.width ? `Screen size ${nat.w} × ${nat.h}` : `${r.width} × ${r.height}`;
-  const scale = r.logical_height ? `, ${r.logical_height}p interface` : "";
+  const scale = r.ui_scale ? `, ${["", "small", "medium", "large"][r.ui_scale]} interface` : "";
   return `${res}${scale}, ${r.windowed ? "windowed" : "fullscreen"}`;
 }
 
@@ -2825,7 +2853,7 @@ async function ra2SaveSettings(patch, fb) {
   try {
     await invoke("ra2_set_settings", {
       width: c.width, height: c.height, windowed: c.windowed, side: c.side, color: c.color,
-      logical_height: c.logical_height || 0, sound: c.sound !== false,
+      ui_scale: c.ui_scale || 0, world_zoom: c.world_zoom || 0, sound: c.sound !== false,
     });
     if (fb) fb.ok("Saved");
     window.dispatchEvent(new CustomEvent("ra2display"));
@@ -2852,11 +2880,13 @@ function ra2DisplayFields(fb) {
   const save = (patch) => ra2SaveSettings(patch, fb);
   const res = ra2ResolutionPick(save);
   const win = h("input", { type: "checkbox", checked: r.windowed, "aria-label": "Windowed", onchange: () => save({ windowed: win.checked }) });
-  const ui = pick("UI scale", RA2_UI_SCALES, r.logical_height || 0, (v) => save({ logical_height: +v }));
+  const ui = pick("Interface size", RA2_UI_SCALES, r.ui_scale || 0, (v) => save({ ui_scale: +v }));
+  const zoom = pick("World zoom", RA2_WORLD_ZOOMS, r.world_zoom || 0, (v) => save({ world_zoom: +v }));
   return h("div", { class: "settings" },
     setting("Window size", "Pick Screen size to match your display.", res),
     setting("Windowed", "Play in a window. Off plays full screen.", h("label", { class: "switch" }, win)),
-    setting("Picture size", "Small shows more of the map, Large makes everything bigger.", ui));
+    setting("Interface size", "How big the sidebar, menus and text are. Automatic suits your screen.", ui),
+    setting("World zoom", "Automatic draws the map sharp, so a bigger screen shows more of it. Pick a bigger size if units look too small.", zoom));
 }
 
 function ra2DisplayCard(fb) {
@@ -3317,6 +3347,7 @@ async function start() {
   shell();
   await loadMods();
   if (!isRa2()) ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
+  if (isRa2()) ra2FlagArt(); // the game's own country flags, read from the player's files once
   await loadMaps();
   go("play");
   setInterval(pollNet, 2000);

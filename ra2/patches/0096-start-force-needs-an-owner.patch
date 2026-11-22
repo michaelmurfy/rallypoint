@@ -1,0 +1,100 @@
+# 0096: no [DeathDummy] (or any type without an Owner=) in a skirmish's starting force.
+#
+# FUN_006880F0 picks a house's starting units from [VehicleTypes] / [InfantryTypes] whose
+# Owner= LISTS the house's country (mcv-deploy.md section 6). gf_start_pools used
+# country_allows(), which treats a missing Owner= as "everyone" (right for the sidebar, which
+# also checks Prerequisite=). [DeathDummy] (index 42 of [VehicleTypes], "dummy object used to work
+# around INI parsing problem for DeathWeapon": Primary= only, no Owner, no TechLevel so 0, no
+# Cost) therefore passed every filter. It costs 0 (counted as 1), so the pick loop kept drawing
+# it: about half of the starting force was invisible dummy vehicles that stay on the map for the
+# whole game and block cells.
+# Measured (xmp03t4, the Allied human, GameScene start, `--probe-move` PROBE_START=1):
+#   before: DEATHDUMMYx10 GIx4 GTNKx4 MCVx1 (19 units, 10 of them dummies)
+#   after:  GIx4 GTNKx4 MCVx1 (9 units)           (xmp22s8: 11 dummies before, 0 after)
+# and a Harvester with a refinery beside the Construction Yard: before, it drove to the ore,
+# loaded 40 bales, came back to (74,134), a pocket sealed by the power plants, the Construction
+# Yard, the refinery and the dummy at (73,134), and sat there for the other 166 s with
+# ReturnToRef and no path (0 unloads in 240 s, the only income was the free Chrono Miner's);
+# after: 2 unloads in 240 s for one Harvester, 6 for three.
+
+--- a/engine/country_bonuses.hpp
++++ b/engine/country_bonuses.hpp
+@@ -62,6 +62,17 @@
+     return !list_has(tokens(rules.section_string(id, "ForbiddenHouses", "")), country);
+ }
+ 
++// The starting-force pool of a skirmish [RE: FUN_006880F0, mcv-deploy.md §6]:
++// the type's Owner= must LIST the house's country. country_allows() treats a
++// missing Owner= as "everyone", which is right for a sidebar that also checks
++// Prerequisite=, but it let [DeathDummy] (Primary= only, no Owner, TechLevel
++// absent = 0, Cost 0) into every start: about half of a house's starting force
++// was invisible dummy vehicles that sat around the base for the whole game.
++inline bool start_pool_allows(const ra2assets::Rules& rules, const std::string& id,
++                              const std::string& country) {
++    return !tokens(rules.section_string(id, "Owner", "")).empty() && country_allows(rules, id, country);
++}
++
+ // Loaded HouseType multipliers + veteran type lists [RE: FUN_00511850].
+ struct Bonuses {
+     double cost = 1.0;         // Cost=
+--- a/engine/gf_start.inc
++++ b/engine/gf_start.inc
+@@ -121,7 +121,7 @@
+             sum += rules.cost(id);
+             ++count;
+             if (rules.tech_level(id) > tech_level || rules.tech_level(id) < 0) continue;
+-            if (!gf_owner_has(rules, id, country)) continue;
++            if (!ra2engine::country::start_pool_allows(rules, id, country)) continue;   // Owner= must list the country (no [DeathDummy])
+             std::vector<std::string>& pool = veh ? p.vehicles : p.infantry;
+             if (std::find(pool.begin(), pool.end(), id) == pool.end()) pool.push_back(id);
+         }
+--- a/tests/test_country_bonuses.cpp
++++ b/tests/test_country_bonuses.cpp
+@@ -1,5 +1,6 @@
+ // Rallypoint: HouseType country bonuses (FUN_00511850). Synthetic INI only.
+ #include "doctest.h"
++#include <iostream>
+ #include "country_bonuses.hpp"
+ #include "ra2assets/ini.hpp"
+ #include "ra2assets/rules.hpp"
+@@ -134,3 +135,40 @@
+     CHECK_FALSE(c::country_allows(rules, "DOG", "Americans"));
+     CHECK_FALSE(c::country_allows(rules, "DOG", "YuriCountry"));
+ }
++
++// REAL rulesmd.ini: the pool a skirmish draws its starting force from
++// (FUN_006880F0). [DeathDummy] has no Owner= and no TechLevel (so 0) and only a
++// Primary=, but passed every filter, so about half of each house's start force
++// was invisible dummy vehicles blocking the base (harvesters sealed in behind
++// them, units that could not leave).
++#include "asset_fixture.hpp"
++TEST_CASE("country: real rules, the start pool holds only types a country owns (no DeathDummy)") {
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: no install under RA2_INSTALL_DIR"); return; }
++    const ra2assets::Rules& rules = ra2fixture::rulesmd();
++    const ra2assets::Ini& ini = ra2fixture::rulesmd_ini();
++    const char* kCountries[] = {"Americans", "Alliance", "French", "Germans", "British",
++                                "Africans", "Arabs", "Confederation", "Russians", "YuriCountry"};
++    for (const char* cn : kCountries) {
++        CHECK(c::country_allows(rules, "DEATHDUMMY", cn));          // the old filter let it in
++        CHECK_FALSE(c::start_pool_allows(rules, "DEATHDUMMY", cn));  // the start pool does not
++        int pool = 0;
++        std::string names;
++        for (const char* list : {"VehicleTypes", "InfantryTypes"})
++            for (const auto& kv : ini.section(list)) {
++                std::string id = kv.second;
++                for (char& ch : id) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
++                if (id.empty() || !ini.has(id)) continue;
++                if (!rules.section_flag(id, "AllowedToStartInMultiplayer", true)) continue;
++                if (rules.tech_level(id) > 10 || rules.tech_level(id) < 0) continue;
++                if (!c::start_pool_allows(rules, id, cn)) continue;
++                ++pool;
++                names += id + " ";
++                CAPTURE(id);
++                CHECK(rules.strength(id) > 0);
++                CHECK(rules.cost(id) > 0);
++            }
++        std::cout << "[start pool] " << cn << ": " << names << "\n";
++        CAPTURE(cn);
++        CHECK(pool >= 3);
++    }
++}

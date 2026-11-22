@@ -1,0 +1,234 @@
+--- a/tests/test_map.cpp
++++ b/tests/test_map.cpp
+@@ -1,4 +1,5 @@
+ #include "doctest.h"
++#include "asset_fixture.hpp"
+ #include "ra2assets/map.hpp"
+ #include "ra2assets/mix.hpp"
+ #include <algorithm>
+@@ -121,7 +122,7 @@
+ TEST_CASE("map: parses the real mapsmd03.mix temperate map (entry 0x133a0cb2)") {
+     const char* dir = std::getenv("RA2_INSTALL_DIR");
+     std::string base = dir ? dir : "D:\\Red Alert 2";
+-    auto mix_bytes = slurp(base + "\\mapsmd03.mix");
++    auto mix_bytes = slurp(ra2fixture::install_file("mapsmd03.mix"));
+     if (mix_bytes.empty()) { MESSAGE("skipped: mapsmd03.mix not found under " << base); return; }
+     MixFile mix = MixFile::open(std::move(mix_bytes));
+ 
+@@ -358,7 +359,7 @@
+ TEST_CASE("map: real reference map has ore overlay (pins)") {
+     const char* dir_env = std::getenv("RA2_INSTALL_DIR");
+     std::string base = dir_env ? dir_env : "D:\\Red Alert 2";
+-    auto mix_bytes = slurp(base + "\\mapsmd03.mix");
++    auto mix_bytes = slurp(ra2fixture::install_file("mapsmd03.mix"));
+     if (mix_bytes.empty()) { MESSAGE("skipped: mapsmd03.mix not found under " << base); return; }
+     MixFile maps = MixFile::open(std::move(mix_bytes));
+ 
+@@ -456,7 +457,7 @@
+ TEST_CASE("map: real xmp01t4.map -> TEMPERATE 105x95, 4 starts [RE: maps.md §3/§4]") {
+     const char* dir = std::getenv("RA2_INSTALL_DIR");
+     const std::string base = dir ? dir : "D:\\Red Alert 2";
+-    auto bytes = slurp(base + "\\multimd.mix");
++    auto bytes = slurp(ra2fixture::install_file("multimd.mix"));
+     if (bytes.empty()) { MESSAGE("skipped: multimd.mix not found under " << base); return; }
+     MixFile mix = MixFile::open(std::move(bytes));
+     const MixEntry* e = mix.find(std::string("xmp01t4.map"));
+@@ -476,7 +477,7 @@
+ TEST_CASE("map: real xmp31s2.map -> SNOW 70x83, 2 starts (the --demo-maps map)") {
+     const char* dir = std::getenv("RA2_INSTALL_DIR");
+     const std::string base = dir ? dir : "D:\\Red Alert 2";
+-    auto bytes = slurp(base + "\\multimd.mix");
++    auto bytes = slurp(ra2fixture::install_file("multimd.mix"));
+     if (bytes.empty()) { MESSAGE("skipped: multimd.mix not found under " << base); return; }
+     MixFile mix = MixFile::open(std::move(bytes));
+     const MixEntry* e = mix.find(std::string("xmp31s2.map"));
+--- a/tests/test_pkt.cpp
++++ b/tests/test_pkt.cpp
+@@ -1,4 +1,5 @@
+ #include "doctest.h"
++#include "asset_fixture.hpp"
+ #include "ra2assets/pkt.hpp"
+ #include "ra2assets/mix.hpp"
+ #include <cstdlib>
+@@ -82,7 +83,7 @@
+ TEST_CASE("pkt: real missionsmd.pkt = 161 active entries [RE: maps.md §2/§3/§9.6]") {
+     const char* dir = std::getenv("RA2_INSTALL_DIR");
+     const std::string base = dir ? dir : "D:\\Red Alert 2";
+-    auto bytes = slurp_pkt(base + "\\langmd.mix");
++    auto bytes = slurp_pkt(ra2fixture::install_file("langmd.mix"));
+     if (bytes.empty()) { MESSAGE("skipped: langmd.mix not found under " << base); return; }
+     MixFile lang = MixFile::open(std::move(bytes));
+     const MixEntry* e = lang.find(std::string("missionsmd.pkt"));
+--- a/tests/test_mix.cpp
++++ b/tests/test_mix.cpp
+@@ -168,7 +168,7 @@
+     // ecache01.mix is read exactly once across the suite, so it keeps a direct
+     // read (via the shared slurp helper) -- this case exercises local_names()/
+     // mix_id() against a real local mix database.
+-    auto bytes = ra2fixture::slurp(ra2fixture::install_base() + "\\ecache01.mix");
++    auto bytes = ra2fixture::slurp(ra2fixture::install_file("ecache01.mix"));
+     if (bytes.empty()) { MESSAGE("skipped: ecache01.mix not found"); return; }
+     MixFile m = MixFile::open(std::move(bytes));
+     auto names = m.local_names();
+--- a/tests/test_asset_fs.cpp
++++ b/tests/test_asset_fs.cpp
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <cstdio>
++#include <fstream>
+ #include <string>
+ #include <vector>
+ 
+@@ -23,11 +24,11 @@
+     return -1;
+ }
+ bool install_present() {
+-    const std::string p = ra2fixture::install_base() + "\\ra2.mix";
++    const std::string p = ra2fixture::install_file("ra2.mix");
+     if (std::FILE* f = std::fopen(p.c_str(), "rb")) { std::fclose(f); return true; }
+     return false;
+ }
+-std::string dir() { return ra2fixture::install_base() + "\\"; }
++std::string dir() { return ra2fixture::install_base() + "/"; }
+ // '/' join so the Yuri cameo census runs on Linux (fixture still uses '\\').
+ std::string dir_posix() {
+     std::string b = ra2fixture::install_base();
+@@ -131,7 +132,8 @@
+     // The 1.006 patch caches are on the list, ahead of conquer.mix.
+     bool has_ecache = false;
+     for (const auto& m : sno.mixes()) has_ecache |= m.first == "ecache01.mix";
+-    CHECK(has_ecache);
++    // Steam's install has no 1.006 patch caches; only demand them where the file exists.
++    CHECK((has_ecache || !std::ifstream(ra2fixture::install_file("ecache01.mix"))));
+ }
+ 
+ // Yuri sidebar icons (YCONICON, YPWRICON, ...) live only in langmd.mix/cameomd.mix.
+--- a/tests/test_audio.cpp
++++ b/tests/test_audio.cpp
+@@ -368,7 +368,7 @@
+     const std::string base = ra2fixture::install_base();
+     std::string path = base;
+     if (!path.empty() && path.back() != '/' && path.back() != '\\') path += "/";
+-    path += "theme.mix";
++    path = ra2fixture::install_file("theme.mix");
+     ra2assets::MixFile theme;
+     try { theme = ra2assets::MixFile::open_path(path); } catch (const std::exception&) {
+         MESSAGE("theme.mix absent; skipped");
+--- a/tests/test_audio_mixer.cpp
++++ b/tests/test_audio_mixer.cpp
+@@ -339,7 +339,7 @@
+ TEST_CASE("mixer: MusicStream streams theme.mix grinder.wav identically to the whole decode") {
+     std::string path = ra2fixture::install_base();
+     if (!path.empty() && path.back() != '/' && path.back() != '\\') path += "/";
+-    path += "theme.mix";
++    path = ra2fixture::install_file("theme.mix");
+     ra2assets::MixFile theme;
+     try { theme = ra2assets::MixFile::open_path(path); } catch (const std::exception&) {
+         MESSAGE("theme.mix absent; skipped");
+--- a/tests/test_input_touch_w6.cpp
++++ b/tests/test_input_touch_w6.cpp
+@@ -174,8 +174,15 @@
+     for (int dx = 2; dx < 30 && bx < 0; ++dx) {
+         const MapCell* c = world.map().at(s->x + dx, s->y);
+         const MapCell* c2 = world.map().at(s->x + dx + 1, s->y);
++        // Flat ground up the screen too: on a plateau a click 55 px above the cell lands on the raised cell
++        // drawn there (resolve_ground_cell), which is right and not what this case measures.
++        bool flat_above = true;
++        for (int k = 1; k <= 4; ++k) {
++            const MapCell* a = world.map().at(s->x + dx - k, s->y - k);
++            flat_above = flat_above && a && a->level == 0;
++        }
+         if (c && c->level == 0 && world.walkable(s->x + dx, s->y) && c2 && c2->level == 0 &&
+-            world.walkable(s->x + dx + 1, s->y)) {
++            world.walkable(s->x + dx + 1, s->y) && flat_above) {
+             bx = s->x + dx;
+             by = s->y;
+         }
+@@ -192,7 +199,13 @@
+     // Mouse: the foundation and the original hotspot pick it, the tower head does not.
+     CHECK(in.pick_building(ccx, ccy, false) == b);
+     CHECK(in.pick_building(ccx, ccy - 18, false) == b);   // dy 18: inside the hotspot ellipse
++    // With the renderer's art test wired (patch 0029: health pips on hover) the mouse picks the drawn sprite too.
++    CHECK(in.pick_building(ccx, ccy - 55, false) == b);
++    in.set_building_art_test(nullptr);   // no renderer: the hotspot alone, the head is out of it
+     CHECK(in.pick_building(ccx, ccy - 55, false) == -1);
++    in.set_building_art_test([&](int bi, int px, int py) {
++        return bi == b && px >= ccx - 10 && px <= ccx + 10 && py >= ccy - 70 && py <= ccy;
++    });
+     // Touch: the head picks it.
+     CHECK(in.pick_building(ccx, ccy - 55, true) == b);
+ 
+diff --git a/tests/test_radar_map.cpp b/tests/test_radar_map.cpp
+index d4f22c1..b589c9c 100644
+--- a/tests/test_radar_map.cpp
++++ b/tests/test_radar_map.cpp
+@@ -27,3 +27,68 @@ TEST_CASE("radar map: pixels outside the diamond clamp into the grid; no map is
+     RadarMap none;
+     CHECK_FALSE(none.cell_at(1, 1, cx, cy));
+ }
++
++// ---- real maps, the real 168x110 radar box [RE: sidebar radar.shp] and PresRadar's own layout maths.
++#include "asset_fixture.hpp"
++#include <cstdio>
++#include <climits>
++
++namespace {
++struct RealRadar {
++    RadarMap m;
++    int cells = 0;
++};
++RealRadar real_radar(const ra2assets::MapFile& map, int rw, int rh) {
++    RealRadar r;
++    int minu = INT_MAX, maxu = INT_MIN, minv = INT_MAX, maxv = INT_MIN, gw = 0, gh = 0;
++    for (const ra2assets::MapCell& c : map.cells()) {
++        minu = std::min(minu, c.x - c.y); maxu = std::max(maxu, c.x - c.y);
++        minv = std::min(minv, c.x + c.y); maxv = std::max(maxv, c.x + c.y);
++        gw = std::max(gw, c.x + 1); gh = std::max(gh, c.y + 1);
++    }
++    const int uw = maxu - minu + 1, vh = maxv - minv + 1;
++    const double s = std::min(rw / (uw * 1.0), rh / (vh * 0.5));   // PresRadar::draw
++    r.m.ox = static_cast<int>((rw - uw * s) / 2);
++    r.m.oy = static_cast<int>((rh - vh * 0.5 * s) / 2);
++    r.m.s = s; r.m.u0 = minu; r.m.v0 = minv; r.m.gw = gw; r.m.gh = gh;
++    r.cells = static_cast<int>(map.cells().size());
++    return r;
++}
++// Click every cell's centre pixel; the cell found must be within what one pixel can resolve.
++void radar_roundtrip(const char* name, const ra2assets::MapFile& map, int rw, int rh) {
++    const RealRadar r = real_radar(map, rw, rh);
++    REQUIRE(r.cells > 1000);
++    int worst = 0;
++    long sum = 0;
++    for (const ra2assets::MapCell& c : map.cells()) {
++        double px, py;
++        r.m.cell_to_pixel(c.x, c.y, px, py);
++        int cx = -1, cy = -1;
++        REQUIRE(r.m.cell_at(static_cast<int>(px), static_cast<int>(py), cx, cy));
++        const int e = std::max(std::abs(cx - c.x), std::abs(cy - c.y));
++        worst = std::max(worst, e);
++        sum += e;
++    }
++    const double mean = static_cast<double>(sum) / r.cells;
++    std::printf("[radar] %s %dx%d box: s=%.3f px per u, %d cells, mean error %.2f cells, worst %d\n", name, rw, rh,
++                r.m.s, r.cells, mean, worst);
++    // One screen pixel is 1/s radar units, so a cell centre can only be located to ceil(1/s)+1 cells.
++    CHECK(worst <= static_cast<int>(std::ceil(1.0 / r.m.s)) + 1);
++    CHECK(mean < 1.0 / r.m.s + 0.5);
++}
++}  // namespace
++
++TEST_CASE("radar map: real maps in the real radar box click back onto the cell they show") {
++    if (!ra2fixture::mapsmd03_available()) { if (std::getenv("RA2_INSTALL_DIR")) FAIL("mapsmd03.mix not found"); MESSAGE("skipped: real map assets not found"); return; }
++    radar_roundtrip("mapsmd03 campaign map", ra2fixture::mapsmd03_map(), 168, 110);
++    radar_roundtrip("mapsmd03 campaign map", ra2fixture::mapsmd03_map(), 336, 220);
++    ra2assets::MixFile mp = ra2assets::MixFile::open(ra2fixture::slurp(ra2fixture::install_file("multimd.mix")));
++    for (const char* n : {"xmp01t4.map", "xmp31s2.map"}) {
++        const ra2assets::MixEntry* e = mp.find(std::string(n));
++        REQUIRE(e);
++        const std::vector<uint8_t> raw = mp.read(*e);
++        const ra2assets::MapFile map = ra2assets::MapFile::parse(std::string(raw.begin(), raw.end()));
++        radar_roundtrip(n, map, 168, 110);
++        radar_roundtrip(n, map, 336, 220);
++    }
++}
