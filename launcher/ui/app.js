@@ -2444,115 +2444,63 @@ function ra2FlagArt() {
 }
 const ra2FlagUrl = (v) => RA2_FLAG_ART[v] || "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice">${RA2_FLAGS[v] || RA2_FLAGS[-1]}</svg>`);
 
-/** Quick Skirmish for Red Alert 2: the same card as Generals (opponents, difficulty, one button), with your country,
- *  the map, your start, speed and starting credits beside them. Everything is remembered. */
+/** Play for Red Alert 2, laid out like Generals: the game with its full setup (Maps), Quick Skirmish (opponents,
+ *  difficulty, one button: a random map, your default side, the rules last used), then the screen options. */
 function ra2PlayPage() {
   const status = liveStatus();
   let maps = null; // null while they are being read
   const p = prefs.get();
   const skAi = segmented("Quick Skirmish opponents", [1, 2, 3].map((n) => [String(n), String(n)]), String(Math.min(3, Math.max(1, p.ra2Ai || 1))), (v) => prefs.set({ ra2Ai: +v }));
-  const skDiff = segmented("Quick Skirmish difficulty", RA2_DIFFS, RA2_DIFFS.some(([d]) => d === p.ra2Diff) ? p.ra2Diff : "medium", (v) => { prefs.set({ ra2Diff: v }); update(); });
-  const side = () => (typeof prefs.get().ra2QuickSide === "number" ? prefs.get().ra2QuickSide : store.cfg.ra2.side);
-  const country = h("select", { "aria-label": "Your country", onchange: () => { prefs.set({ ra2QuickSide: +country.value }); paintFlag(); } },
-    new Option("Random", "-1"), ...RA2_SIDES.map((t, i) => new Option(t, String(i))));
-  country.value = String(side());
-  const flagBig = h("img", { class: "flagcard", alt: "", "aria-hidden": "true" });
-  const heroArt = h("img", { class: "heroart shown", alt: "", "aria-hidden": "true" });
-  function paintFlag() {
-    const v = +country.value;
-    flagBig.src = ra2FlagUrl(v);
-    flagBig.classList.toggle("official", v >= 0 && !!RA2_FLAG_ART[v]);
-    // Random has no flag worth blowing up: the hero gets plain rays instead
-    heroArt.src = v < 0 ? "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice"><rect width="60" height="40" fill="#5b6478"/><path d="M60 20L0 0v6zM60 20L0 14v6zM60 20L0 28v6z" fill="#fff" opacity=".25"/></svg>') : flagBig.src;
-    // The game's pictures are wider than the box; show all of them rather than crop the emblem away.
-    heroArt.classList.toggle("flagart", v >= 0 && !!RA2_FLAG_ART[v]);
-  }
-  paintFlag();
-  ra2FlagArt().then(paintFlag); // the official pictures arrive a moment later; repaint then
-  // The game's own title art (Red Alert 2 / Yuri's Revenge logo) for the Play header, like Generals.
+  const skDiff = segmented("Quick Skirmish difficulty", RA2_DIFFS, RA2_DIFFS.some(([d]) => d === p.ra2Diff) ? p.ra2Diff : "medium", (v) => prefs.set({ ra2Diff: v }));
+  // The game's own title art (Red Alert 2 / Yuri's Revenge logo), like Generals; plain rays until it loads.
+  const heroArt = h("img", { class: "heroart shown", alt: "", "aria-hidden": "true",
+    src: "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40" preserveAspectRatio="xMidYMid slice"><rect width="60" height="40" fill="#5b6478"/><path d="M60 20L0 0v6zM60 20L0 14v6zM60 20L0 28v6z" fill="#fff" opacity=".25"/></svg>') });
   (async () => {
     if (!store.cfg.ra2.game_dir) return;
-    try {
-      const url = await invoke("ra2_game_art", { gameDir: store.cfg.ra2.game_dir });
-      if (url) heroArt.src = url;
-    } catch { /* keep the flag/rays fallback */ }
+    try { const url = await invoke("ra2_game_art", { gameDir: store.cfg.ra2.game_dir }); if (url) heroArt.src = url; } catch { /* keep the rays */ }
   })();
-  const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2QuickMap: mapSel.value }); update(); } });
-  const startSel = h("select", { "aria-label": "Your start position", onchange: () => prefs.set({ ra2QuickStart: +startSel.value }) },
-    new Option("Random start", "0"), ...Array.from({ length: 8 }, (_, n) => new Option(`Start ${n + 1}`, String(n + 1))));
-  startSel.value = String(Math.min(8, Math.max(0, prefs.get().ra2QuickStart || 0)));
-  const selOf = (label, opts, cur, key) => { const el = h("select", { "aria-label": label, onchange: () => ra2SaveRules({ [key]: +el.value }) }, ...opts.map(([v, t]) => new Option(t, String(v)))); el.value = String(cur); return el; };
-  const speed = selOf("Game speed", RA2_SPEEDS, ra2Speed(), "speed");
-  const credits = selOf("Starting credits", RA2_CREDIT_OPTS, ra2Credits(), "credits");
 
-  /** The map and places for this click: the chosen map, or a random one with room for everyone. */
-  function pick() {
-    const n = +skAi.value, start = +startSel.value, file = mapSel.value;
-    const fits = (m) => m.players > n && m.players >= start;
-    const chosen = file && maps.find((m) => fileOf(m.path) === file);
-    const pool = maps.filter(fits);
-    const m = chosen || (pool.length ? pool[Math.floor(Math.random() * pool.length)] : maps[Math.floor(Math.random() * maps.length)]);
-    return { m, ai: Math.min(n, m.players - 1), start: start <= m.players ? start : 0 };
-  }
+  /** A random map with room for everyone, you on a random start. */
   const setup = () => {
-    const { m, ai, start } = pick();
+    const n = +skAi.value, pool = maps.filter((m) => m.players > n);
+    const m = (pool.length ? pool : maps)[Math.floor(Math.random() * (pool.length || maps.length))];
     const mine = store.cfg.ra2.color >= 0 ? store.cfg.ra2.color : 0;
     const free = RA2_COLORS.map((_, c) => c).filter((c) => c !== mine);
     return { map: fileOf(m.path), seed: 0, ...ra2RulesNow(), players: [
-      { name: store.cfg.player_name || store.cfg.default_player_name || "Player", side: side(), color: mine, start: start || -1, team: -1 },
-      ...Array.from({ length: ai }, (_, k) => ({ name: "", ai: skDiff.value, side: -1, color: free[k], start: -1, team: -1 })),
+      { name: store.cfg.player_name || store.cfg.default_player_name || "Player", side: store.cfg.ra2.side, color: mine, start: -1, team: -1 },
+      ...Array.from({ length: Math.min(n, m.players - 1) }, (_, k) => ({ name: "", ai: skDiff.value, side: -1, color: free[k], start: -1, team: -1 })),
     ] };
   };
-  const play = h("button", { class: "btn primary big", onclick: async () => {
-    play.disabled = true; heroPlay.disabled = true;
-    const ok = await launchRa2(setup());
-    setTimeout(update, ok ? 5000 : 0);
-  } }, icon("play"), "Start skirmish");
-  const heroPlay = h("button", { class: "btn primary big", onclick: async () => {
-    heroPlay.disabled = true; play.disabled = true;
+  const sk = h("button", { class: "btn", onclick: async () => {
+    sk.disabled = true;
     const ok = await launchRa2(setup());
     setTimeout(update, ok ? 5000 : 0);
   } }, icon("play"), "Start skirmish");
   function update() {
-    const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : !store.cfg.ra2.game_dir ? "Find your game files first." : maps === null ? "Reading your maps…" : !maps.length ? "Add a map first." : "";
-    play.disabled = !!why;
-    heroPlay.disabled = !!why;
+    const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : maps === null ? "Reading your maps…" : !maps.length ? "Add a map first." : "";
+    sk.disabled = !!why;
     status.set(why);
   }
   const hasFiles = !!store.cfg.ra2.game_dir;
-  if (hasFiles) loadRa2Maps().then((all) => {
-    maps = playable(all);
-    fill(mapSel, new Option("Random map", ""), maps.map((m) => new Option(`${m.name} (${m.players})`, fileOf(m.path))));
-    const want = prefs.get().ra2QuickMap;
-    mapSel.value = maps.some((m) => fileOf(m.path) === want) ? want : "";
-    update();
-  });
+  if (hasFiles) loadRa2Maps().then((all) => { maps = playable(all); update(); });
 
-  const disp = h("span", { class: "muted small" });
-  const redrawDisp = () => fill(disp, ra2DisplayLabel(store.cfg.ra2, nativeRes()));
-  redrawDisp();
-  window.addEventListener("ra2display", redrawDisp);
   const hero = h("div", { class: "card hero" }, heroArt,
-    h("div", { class: "stack tight herotext" }, h("h2", { title: store.cfg.ra2.game_dir || "" }, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
-      h("div", { class: "row between" }, h("p", { class: "muted small gamepath" }, disp, " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")))),
-    h("div", { class: "row heroact" }, heroPlay));
-  const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge. Steam and EA installs are found for you.", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
+    h("div", { class: "stack tight herotext" }, h("h2", {}, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
+      hasFiles ? h("p", { class: "muted small gamepath" }, store.cfg.ra2.game_dir) : h("p", { class: "msg bad" }, "Rallypoint doesn't have your game files yet.")),
+    h("div", { class: "row heroact" }, hasFiles
+      ? [h("button", { class: "btn primary big", onclick: () => go("maps") }, icon("play"), "Set up a skirmish"), h("span", { class: "muted small" }, "Pick the map, your country, teams and where everyone starts.")]
+      : h("button", { class: "btn primary big", onclick: () => openWizard() }, "Find game files")));
   const skOptions = h("div", { class: "card skcard" },
-    h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "A match against the computer, started straight away.")),
+    h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "A random map against the computer, started straight away.")),
     h("div", { class: "skoptions" },
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Opponents"), skAi.el),
       h("div", { class: "skgroup" }, h("span", { class: "muted small" }, "Difficulty"), skDiff.el),
-      h("div", { class: "row skplay" }, status.el, play)));
-  const optCard = h("div", { class: "card" }, h("h3", {}, "Options"),
-    h("div", { class: "grid2" },
-      h("label", { class: "field" }, h("span", {}, "Country"), h("div", { class: "countryrow" }, flagBig, country)),
-      h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
-      h("label", { class: "field" }, h("span", {}, "Your start"), startSel),
-      h("label", { class: "field" }, h("span", {}, "Starting credits"), credits),
-      h("label", { class: "field" }, h("span", {}, "Game speed"), speed)));
-  const el = h("div", { class: "page" }, pageHead("Play"), hero, ...(hasFiles ? [skOptions, optCard] : [setupCard]));
+      h("div", { class: "row skplay" }, status.el, sk)));
+  const displayFb = liveStatus();
+  const optCard = h("div", { class: "card" }, h("div", { class: "row between" }, h("h3", {}, "Options"), displayFb.el), ra2DisplayFields(displayFb));
+  const el = h("div", { class: "page" }, pageHead("Play"), hero, ...(hasFiles ? [skOptions] : []), optCard);
   update();
-  return { el, dispose: () => window.removeEventListener("ra2display", redrawDisp) };
+  return { el };
 }
 
 /** The full skirmish setup for one map, in a dialog (the Generals map viewer's counterpart). */
@@ -2910,11 +2858,6 @@ function ra2DisplayFields(fb) {
     setting("World zoom", "Automatic draws the map sharp, so a bigger screen shows more of it. Pick a bigger size if units look too small.", zoom));
 }
 
-function ra2DisplayCard(fb) {
-  fb = fb || liveStatus();
-  return h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Display"), fb.el), ra2DisplayFields(fb));
-}
-
 /** Game sound on or off. */
 function ra2SoundCard() {
   const fb = liveStatus();
@@ -2955,17 +2898,15 @@ function nameSetting() {
 
 function ra2SettingsPage() {
   const files = gameFilesPanel(() => updateSidebar(), "ra2");
-  const displayFb = liveStatus();
-  const tab = store.settingsTab === "rallypoint" ? "rallypoint" : (store.settingsTab === "display" ? "display" : "game");
+  const tab = store.settingsTab === "rallypoint" ? "rallypoint" : "game";
   const t = tabbed("Settings", [
     ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ra2PlayerDefaultsCard(), ra2SoundCard()]],
-    ["display", "Display", () => [ra2DisplayCard(displayFb)]],
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
       h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
   ], tab, (id) => { store.settingsTab = id; });
-  const el = h("div", { class: "page" }, pageHead("Settings", "Game files, screen and updates for Red Alert 2."), t.bar, t.body);
+  const el = h("div", { class: "page" }, pageHead("Settings", "Game files, sound and updates for Red Alert 2."), t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 
