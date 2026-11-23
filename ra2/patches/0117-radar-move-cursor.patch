@@ -1,0 +1,27 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index cd83a31..314640b 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -10,6 +10,10 @@
+     // G-08: the cursor STATE under the pointer (what a left click would do).
+     // Agent E draws the cursor art from this; over the sidebar it is None.
+     ra2engine::Input::Action cursor_action() const {
++        int cx = 0, cy = 0;
++        const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
++        if (!armed && !input_.selection().ids().empty() && radar_active() && radar_cell_at(mx_, my_, cx, cy))
++            return ra2engine::Input::Action::Move;
+         if (sidebar_up_ && lay_.contains(mx_, my_)) return ra2engine::Input::Action::None;
+         return input_.action_at(zx(mx_), zy(my_));
+     }
+diff --git a/engine/game_scene_play_probe.inc b/engine/game_scene_play_probe.inc
+index 6626d41..931b3dd 100644
+--- a/engine/game_scene_play_probe.inc
++++ b/engine/game_scene_play_probe.inc
+@@ -34,6 +34,7 @@
+         p.set_s("music_track", pres_.sound().current_track());
+         p.set_s("loaded_track", loaded_track_);
+         p.set("loaded_audio", loaded_audio_ ? 1 : 0);
++        p.set("cursor", static_cast<int>(cursor_action()));
+         p.set("credits", lcredits());
+         p.set("credits_shown", credits_shown_);
+         p.set_s("tooltip", tooltip_now());   // W2-UI-07

@@ -1,0 +1,18 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 7496c9a..7f9b7b6 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -9627,9 +9627,10 @@ private:
+     Scene*       next_ = nullptr;
+     bool         quit_ = false;
+     // [Task exact / §7.3] WARNING-monitor animation clock. update(dt) advances
+-    // accum_; the current SDWRNANM frame = floor(accum_/FRAME_DT) % 91. FRAME_DT
+-    // ~= 0.012s => ~1.1s loop (§7: SetTimer clamped to ~10-16ms/tick).
+-    static constexpr double kMonFrameDt = 0.012;
++    // accum_; the current SDWRNANM frame = floor(accum_/FRAME_DT) % 91. The
++    // retail needle sweeps slowly: ~1/15 s a frame => ~6 s loop (the old 12 ms
++    // a frame ran the 91-frame loop in ~1.1 s and read as a fast flicker).
++    static constexpr double kMonFrameDt = 1.0 / 15.0;
+     static constexpr int    kMonFrames  = 91;
+     double       mon_accum_ = 0.0;
+     // W2-UI-24 [RE: FUN_005E5150, mainmenu_true.md §7.2]: page enter =

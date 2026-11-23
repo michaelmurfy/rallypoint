@@ -1,0 +1,200 @@
+diff --git a/engine/input.cpp b/engine/input.cpp
+index b27f7c8..3025cd2 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -40,7 +40,7 @@ static int sel_engineer_idx(const World& world, const Selection& sel) {
+     for (int i : sel.ids()) {
+         if (i >= static_cast<int>(world.units().size())) break;
+         const Unit& u = world.units()[i];
+-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !world.controllable(u.house)) continue;
++        if (!u.alive || u.die_time >= 0.0 || carried(u) || !world.controllable(u.house)) continue;
+         if (world.unit_is_engineer(u)) return i;
+     }
+     return -1;
+@@ -132,7 +132,7 @@ int Input::unit_under(int px, int py) const {
+     long best_d2 = 0;
+     for (std::size_t i = 0; i < us.size(); ++i) {
+         const Unit& u = us[i];
+-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;  // dead/dying/
++        if (!u.alive || u.die_time >= 0.0 || carried(u)) continue;  // dead/dying/
+                                                      // CARRIED: unpickable (CB-1)
+         int gx, gy;
+         unit_ground_px(u, gx, gy);
+@@ -439,7 +439,7 @@ bool Input::box_has_own_unit() const {
+     const int x0 = std::min(down_x_, cur_x_), x1 = std::max(down_x_, cur_x_);
+     const int y0 = std::min(down_y_, cur_y_), y1 = std::max(down_y_, cur_y_);
+     for (const Unit& u : world_.units()) {
+-        if (!world_.controllable(u.house) || !u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
++        if (!world_.controllable(u.house) || !u.alive || u.die_time >= 0.0 || carried(u)) continue;
+         int gx, gy;
+         unit_ground_px(u, gx, gy);
+         if (gx >= x0 && gx <= x1 && gy >= y0 && gy <= y1) return true;
+@@ -455,10 +455,10 @@ void Input::commit_box(bool shift) {
+     for (std::size_t i = 0; i < world_.units().size(); ++i) {
+         const Unit& u = world_.units()[i];
+         // A box drag never selects hostiles, corpses, or CARRIED units --
+-        // house != 0, dead/dying, and cargo_of >= 0 (aboard a transport,
++        // house != 0, dead/dying, and carried (aboard a transport,
+         // off-map [CB-1]) are skipped even if their ground point falls
+         // inside the dragged rectangle.
+-        if (!world_.controllable(u.house) || !u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
++        if (!world_.controllable(u.house) || !u.alive || u.die_time >= 0.0 || carried(u)) continue;
+         int gx, gy;
+         unit_ground_px(u, gx, gy);
+         if (gx >= x0 && gx <= x1 && gy >= y0 && gy <= y1) sel_.set(static_cast<int>(i));
+@@ -478,10 +478,10 @@ void Input::commit_double(int px, int py) {
+         const Unit& u = world_.units()[i];
+         // The "same type" scan is also house-0-only and skips corpses AND
+         // CARRIED units (a hostile, a dead unit, or one aboard a transport
+-        // (cargo_of >= 0 [CB-1]) sharing the clicked unit's image must never
++        // [CB-1]) sharing the clicked unit's image must never
+         // join the selection).
+         if (!world_.controllable(u.house) || u.image != type || !u.alive || u.die_time >= 0.0 ||
+-            u.cargo_of >= 0)
++            carried(u))
+             continue;
+         int gx, gy;
+         unit_ground_px(u, gx, gy);
+@@ -615,10 +615,10 @@ void Input::issue_order(int px, int py) {
+             for (int i : sel) {
+                 if (i >= static_cast<int>(world_.units().size())) break;
+                 const Unit& su = world_.units()[i];
+-                // CB-1: also skip CARRIED units (cargo_of >= 0, aboard a
++                // CB-1: also skip CARRIED units (aboard a
+                 // transport / off-map) -- a widening of the corpse/
+                 // validity skip, the fourth carry-guard site.
+-                if (!su.alive || su.die_time >= 0.0 || su.cargo_of >= 0)
++                if (!su.alive || su.die_time >= 0.0 || carried(su))
+                     continue;
+                 if (su.is_harvester && world_.controllable(su.house))
+                     harv_idx.push_back(i);
+@@ -756,7 +756,7 @@ void Input::issue_order(int px, int py) {
+             for (int i : sel) {
+                 if (i < 0 || i >= static_cast<int>(world_.units().size())) continue;
+                 const Unit& su = world_.units()[i];
+-                if (!su.alive || su.die_time >= 0.0 || su.cargo_of >= 0 || !world_.controllable(su.house)) continue;
++                if (!su.alive || su.die_time >= 0.0 || carried(su) || !world_.controllable(su.house)) continue;
+                 if (world_.unit_is_spy(su) && world_.spy_can_infiltrate(i, pick_b)) spies.push_back(i);   // W7-01-14
+                 else if (world_.unit_is_engineer(su) &&
+                          world_.engineer_action(i, pick_b) != World::EngineerAct::None) engs.push_back(i);
+diff --git a/engine/input.hpp b/engine/input.hpp
+index 7d974d2..292613a 100644
+--- a/engine/input.hpp
++++ b/engine/input.hpp
+@@ -13,6 +13,12 @@
+ 
+ namespace ra2engine {
+ 
++// A parachuting unit is temporarily off-map but remains selectable. Other
++// non-negative cargo markers (transport and garrison) still mean carried.
++inline bool carried(const Unit& u) {
++    return u.cargo_of >= 0 && u.cargo_of != kParachuteCargo;
++}
++
+ // Reports what handle() did since the last take_actions() call, for audio
+ // voice-ack hooks (Task 5 of the audio-playback phase) -- pure observation,
+ // no behavior change to selection/orders. ACCUMULATE-THEN-CONSUME: handle()
+diff --git a/engine/input_original.cpp b/engine/input_original.cpp
+index c750fdc..4d632b0 100644
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -56,7 +56,7 @@ bool selection_can_move(const World& w, const Selection& sel) {
+     for (int i : sel.ids()) {
+         if (i >= static_cast<int>(w.units().size())) break;
+         const Unit& u = w.units()[i];
+-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !w.controllable(u.house)) continue;
++        if (!u.alive || u.die_time >= 0.0 || carried(u) || !w.controllable(u.house)) continue;
+         any = true;
+         // T3.3: deployed IsSimpleDeployer vehicles also refuse a ground move.
+         if (!(u.deployed && (u.deploy_fire || u.abil.deployer) &&
+@@ -73,7 +73,7 @@ int first_selected_role(const World& w, const Selection& sel, bool spy) {
+     for (int i : sel.ids()) {
+         if (i >= static_cast<int>(w.units().size())) break;
+         const Unit& u = w.units()[i];
+-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !w.controllable(u.house)) continue;
++        if (!u.alive || u.die_time >= 0.0 || carried(u) || !w.controllable(u.house)) continue;
+         if (spy ? w.unit_is_spy(u) : w.unit_is_engineer(u)) return i;
+     }
+     return -1;
+@@ -191,7 +191,7 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
+         for (int si : sel_.ids()) {
+             if (si < 0 || si >= static_cast<int>(us.size())) continue;
+             const Unit& su = us[si];
+-            if (world_.controllable(su.house) && su.alive && su.die_time < 0.0 && su.cargo_of < 0 && pred(su))
++            if (world_.controllable(su.house) && su.alive && su.die_time < 0.0 && !carried(su) && pred(su))
+                 return true;
+         }
+         return false;
+@@ -680,7 +680,7 @@ bool Input::type_select() {
+     }
+     if (types.empty()) return false;
+     auto matches = [&](const Unit& u) {
+-        return world_.controllable(u.house) && u.alive && u.die_time < 0.0 && u.cargo_of < 0 &&
++        return world_.controllable(u.house) && u.alive && u.die_time < 0.0 && !carried(u) &&
+                std::find(types.begin(), types.end(), u.image) != types.end();
+     };
+     auto on_screen = [&](const Unit& u) {
+@@ -724,7 +724,7 @@ void Input::group_add_select(int n) {
+     const auto& us = world_.units();
+     for (std::size_t i = 0; i < us.size(); ++i)
+         if (unit_group_[i] == n && world_.controllable(us[i].house) && us[i].alive && us[i].die_time < 0.0 &&
+-            us[i].cargo_of < 0)
++            !carried(us[i]))
+             sel_.set(static_cast<int>(i));
+     const int lo = lowest_selected();
+     if (lo >= 0) { selected_building_ = -1; actions_.selected = true; actions_.actor = lo; }
+diff --git a/engine/world_abilities.cpp b/engine/world_abilities.cpp
+index 30238ac..b973cb3 100644
+--- a/engine/world_abilities.cpp
++++ b/engine/world_abilities.cpp
+@@ -66,7 +66,8 @@ bool World::order_deploy(int idx) {
+     // DeployFireWeapon slot through the normal step_combat path. NOT frozen:
+     // only movement is refused (order_unit_move). Independent of the P4
+     // abilities firewall.
+-    if (u.deploy_fire && u.alive && u.die_time < 0.0 && u.cargo_of < 0) {
++    if (u.deploy_fire && u.alive && u.die_time < 0.0 &&
++        (u.cargo_of < 0 || u.cargo_of == kParachuteCargo)) {
+         u.deployed = !u.deployed;
+         if (u.deployed) {
+             if (u.moving()) {
+diff --git a/tests/test_input.cpp b/tests/test_input.cpp
+index b614779..65932df 100644
+--- a/tests/test_input.cpp
++++ b/tests/test_input.cpp
+@@ -216,6 +216,36 @@ TEST_CASE("Input: left-click a unit selects only it; empty click clears") {
+     CHECK(input.selection().empty());
+ }
+ 
++TEST_CASE("Input: a parachuting unit is selectable and can deploy") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    world.add_combat_unit(10, 10, 0, gi_combat());
++    ra2engine::Unit& para = world.units()[0];
++    para.cargo_of = ra2engine::kParachuteCargo;
++    para.an.para_alt = 100.0;
++    para.deploy_fire = true;
++
++    Camera cam;
++    Input input(world, cam, 1280, 720);
++    int px, py;
++    ground_px_for_unit(para, px, py);
++    left_click(input, px, py, false, 1000);
++    CHECK(input.selection().has(0));
++
++    input.set_deploy_check([](const ra2engine::Unit& u) { return u.deploy_fire; });
++    CHECK(input.action_at(px, py) == Input::Action::Deploy);
++    CHECK(world.order_deploy(0));
++    CHECK(para.deployed);
++
++    // Garrison cargo remains unselectable; only the parachute sentinel is an
++    // off-map exception.
++    para.deployed = false;
++    para.cargo_of = ra2engine::kGarrisonCargo;
++    input.selection().clear();
++    left_click(input, px, py, false, 2000);
++    CHECK_FALSE(input.selection().has(0));
++}
++
+ TEST_CASE("Input: Shift+left-click toggles units in and out of the selection") {
+     MapFile map;
+     if (!load_real_map(map)) { MESSAGE("skipped: no install"); return; }

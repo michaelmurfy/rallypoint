@@ -1,0 +1,68 @@
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 8086aab..196ca5e 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -7231,7 +7231,7 @@ void World::detonate_projectile(Projectile& p, int victim) {
+     // its impact point -- the target (snapped within 32 leptons), bystanders,
+     // own/allied units and buildings in the CellSpread alike. The projectile Z
+     // is terrain-relative; the applicator's is absolute (level*104 added).
+-    const int impact_z = iz + cell_level(icx, icy) * 104;
++    const int impact_z = std::max(iz + cell_level(icx, icy) * 104, deck_z(icx, icy));
+     const int tb = (p.target_building >= 0 && p.target_building < static_cast<int>(buildings_.size()))
+                        ? p.target_building : -1;
+     const int tb_before = tb >= 0 ? buildings_[tb].hp : 0;
+@@ -7262,14 +7262,14 @@ void World::detonate_projectile(Projectile& p, int victim) {
+     // unless GameScene armed the depth rules). W8-03-09 / W8-04-03: no longer
+     // gated on the map having a LOW bridge (ALL01T has high bridges only), and
+     // the high-bridge roll gets the impact Z for the deck window (0x489E87).
+-    // The clone's unit Z has no deck term, so a shell bursting on a deck
+-    // unit's cell is taken at the deck height.
++    // A projectile's terrain-relative Z omits the high-bridge deck height.
++    // A shell aimed at an empty deck cell therefore still detonates at deck Z.
+     if (depth_rules_.armed && (!bridge_ovl_.empty() || !hbridge_.empty())) {
+         int bz = impact_z;
+         if (p.target_unit >= 0 && p.target_unit < static_cast<int>(units_.size())) {
+             const Unit& t = units_[static_cast<std::size_t>(p.target_unit)];
+             if (t.on_deck && t.cell_x == icx && t.cell_y == icy)
+-                bz = std::max(bz, deck_z(icx, icy) + unit_lz(t));
++                bz = std::max(bz, deck_z(icx, icy));
+         }
+         if (p.attacker >= 0 && p.attacker < static_cast<int>(units_.size())) {
+             const Unit& att = units_[p.attacker];
+diff --git a/tests/test_w8_bridges.cpp b/tests/test_w8_bridges.cpp
+index 339d210..bb8a06a 100644
+--- a/tests/test_w8_bridges.cpp
++++ b/tests/test_w8_bridges.cpp
+@@ -11,6 +11,8 @@
+ #include "unit_w6.hpp"   // kW6Wall
+ #include "world.hpp"
+ 
++#include <algorithm>
++
+ using namespace ra2engine;
+ 
+ namespace {
+@@ -282,6 +284,23 @@ TEST_CASE("w8 W8-04-03/W8-05-05/W8-03-09: the high-bridge roll needs the deck wi
+     CHECK(w.high_bridge_destroyed(12, 20));
+ }
+ 
++TEST_CASE("high bridge: a normal deck-height projectile impact passes the destruction gate") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("no install"); return; }
++    World w(ra2fixture::mapsmd03_map());
++    arm_high(w);
++    const int lv = w.cell_level(12, 20);
++    const int projectile_z = w.deck_z(12, 20);  // impact of a shot at a deck-cell target
++    const int window_top = (lv + 1) * 104 + 416;
++    REQUIRE(projectile_z > (lv - 2) * 104 + 416);
++    REQUIRE(projectile_z <= window_top);
++    // The old on-deck target arithmetic added unit_lz (416) to this absolute
++    // deck height, putting the roll three levels above the window.
++    const int old_bz = std::max(projectile_z, w.deck_z(12, 20) + 416);
++    CHECK(old_bz > window_top);
++    CHECK(w.bridge_area_roll(12.0, 20.0, 5000, kW6Wall, projectile_z) == 5);
++    CHECK(w.high_bridge_destroyed(12, 20));
++}
++
+ TEST_CASE("w8 W8-06-04: a Lightning Storm bolt rolls the bridge (FUN_0053A030 -> FUN_00489190)") {
+     if (!ra2fixture::mapsmd03_available()) { MESSAGE("no install"); return; }
+     World w(ra2fixture::mapsmd03_map());

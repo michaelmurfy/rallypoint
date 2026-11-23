@@ -1,0 +1,263 @@
+diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
+index 046a106..f23fce8 100644
+--- a/engine/iso_renderer.cpp
++++ b/engine/iso_renderer.cpp
+@@ -435,11 +435,17 @@ void prewarm_terrain(TextureCache& tc, const ra2assets::MapFile& map, Theater& t
+     for (TerrainSlot& s : L.slots) slot_texture(tc, theater, pal, s);
+ }
+ 
++namespace {
++std::vector<TerrainFoot> g_terrain_foot;
++}
++const std::vector<TerrainFoot>& terrain_footprint() { return g_terrain_foot; }
++
+ int draw_terrain(void* sdl_renderer, TextureCache& tc,
+                  const ra2assets::MapFile& map, Theater& theater,
+                  const ra2assets::Palette& pal, const Camera& cam, int view_w,
+                  int view_h, const World* vis, int viewer) {
+     SDL_Renderer* renderer = static_cast<SDL_Renderer*>(sdl_renderer);
++    g_terrain_foot.clear();
+     const uint64_t built_before = g_terrain_builds;
+     TerrainDrawList& L = terrain_list(tc, map, theater, pal);
+     // W2-GA-P4: a (re)built list uploads every tile the map uses right away,
+@@ -470,12 +476,24 @@ int draw_terrain(void* sdl_renderer, TextureCache& tc,
+             if (!tex) continue;
+             SDL_RenderCopy(renderer, tex, nullptr, &dst);
+             ++drawn;
++            TerrainFoot foot;
++            foot.x = dst.x;
++            foot.y = dst.y;
++            foot.w = dst.w;
++            foot.h = dst.h;
+             if (it.ew) {
+                 const SDL_Rect edst{it.px + cam.x + it.ex, it.py + cam.y + it.ey, it.ew, it.eh};
+                 if (!(edst.x + edst.w <= 0 || edst.y + edst.h <= 0 || edst.x >= view_w || edst.y >= view_h))
+-                    if (SDL_Texture* et = extra_texture(tc, theater, pal, s))
++                    if (SDL_Texture* et = extra_texture(tc, theater, pal, s)) {
+                         SDL_RenderCopy(renderer, et, nullptr, &edst);
++                        foot.ex = edst.x;
++                        foot.ey = edst.y;
++                        foot.ew = edst.w;
++                        foot.eh = edst.h;
++                        foot.extra = et;
++                    }
+             }
++            g_terrain_foot.push_back(foot);
+         }
+     return drawn;
+ }
+diff --git a/engine/iso_renderer.hpp b/engine/iso_renderer.hpp
+index 494d04f..995af9f 100644
+--- a/engine/iso_renderer.hpp
++++ b/engine/iso_renderer.hpp
+@@ -167,6 +167,16 @@ int draw_terrain(void* sdl_renderer, TextureCache& tc,
+                  const ra2assets::Palette& pal, const Camera& cam, int view_w,
+                  int view_h, const World* vis = nullptr, int viewer = 0);
+ 
++// What the last draw_terrain call put on screen: each tile's diamond (x, y, w, h)
++// and, when it has one, the cliff/slope image (ex, ey, ew, eh; `extra` is its
++// SDL_Texture*). The shroud pass uses it to find the real edge of the lit ground.
++struct TerrainFoot {
++    int x = 0, y = 0, w = 0, h = 0;
++    int ex = 0, ey = 0, ew = 0, eh = 0;
++    void* extra = nullptr;
++};
++const std::vector<TerrainFoot>& terrain_footprint();
++
+ // Draw a unit's current SHP frame on top of the terrain (call AFTER
+ // draw_terrain so the sprite is not painted over). The unit's interpolated
+ // position is projected with cell_to_screen(fx, fy, level, 60, 30, 15) +
+diff --git a/engine/pres_shroud.inc b/engine/pres_shroud.inc
+index 6b1f0c3..9999df1 100644
+--- a/engine/pres_shroud.inc
++++ b/engine/pres_shroud.inc
+@@ -88,8 +88,153 @@ inline SDL_Texture* diamond_tex(ra2engine::TextureCache& tc, bool fog) {
+     return static_cast<SDL_Texture*>(tc.get_rgba(key, rgba.data(), 60, 30));
+ }
+ 
++// Fully covered cell: extend the solid diamond by 1 px, then fade its edge over
++// 9 px. `alpha` is the cover opacity.
++inline SDL_Texture* feathered_diamond_tex(ra2engine::TextureCache& tc, int alpha) {
++    char key[32];
++    std::snprintf(key, sizeof key, "shroud:feather%d", alpha);
++    SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
++    if (tex) return tex;
++    constexpr int kGrow = 9, kW = 112, kH = 56;
++    std::vector<uint8_t> rgba(static_cast<std::size_t>(kW) * kH * 4, 0);
++    for (int y = 0; y < kH; ++y)
++        for (int x = 0; x < kW; ++x) {
++            const double dx = std::abs(x + 0.5 - kW / 2.0), dy = std::abs(y + 0.5 - kH / 2.0);
++            const double outside = (dx / 30.0 + dy / 15.0 - 1.0) * 13.4 - 1.0;
++            const double a = outside <= 0.0 ? 1.0 : 1.0 - outside / kGrow;
++            if (a > 0.0) rgba[(static_cast<std::size_t>(y) * kW + x) * 4 + 3] = static_cast<uint8_t>(a * alpha + 0.5);
++        }
++    return static_cast<SDL_Texture*>(tc.get_rgba(key, rgba.data(), kW, kH));
++}
++
+ }  // namespace pres_shroud
+ 
++// Soften hard edges left by raised cells or cliffs. Blur the drawn terrain
++// footprint as a void mask, then use it to darken the frame.
++inline void draw_lit_outline(SDL_Renderer* ren, const ra2engine::Camera& cam, int W, int H) {
++    (void)cam;
++    constexpr int kQ = 8;
++    const int qw = (W + kQ - 1) / kQ, qh = (H + kQ - 1) / kQ;
++    const std::vector<ra2engine::TerrainFoot>& feet = ra2engine::terrain_footprint();
++    if (qw <= 0 || qh <= 0 || feet.empty()) return;
++    // main() owns one process-lifetime renderer shared by every scene.
++    static SDL_Texture* mask = nullptr;
++    static SDL_Texture* blur = nullptr;
++    static SDL_Renderer* rt_ren = nullptr;
++    static int rt_w = 0, rt_h = 0;
++    static int blend_ok = -1;
++    static SDL_BlendMode b_cut = SDL_BLENDMODE_INVALID, b_dark = SDL_BLENDMODE_INVALID;
++    const bool new_renderer = rt_ren != ren;
++    const bool resize = rt_w != qw || rt_h != qh;
++    if (!new_renderer && blend_ok == 0) return;
++    if (new_renderer || resize || !mask || !blur) {
++        // A different renderer owns and frees its old textures. On this engine
++        // path the shared renderer does not change before process exit.
++        if (!new_renderer) {
++            if (mask) SDL_DestroyTexture(mask);
++            if (blur) SDL_DestroyTexture(blur);
++        }
++        mask = blur = nullptr;
++        SDL_Texture* new_mask = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, qw, qh);
++        SDL_Texture* new_blur = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, qw, qh);
++        if (!new_mask || !new_blur) {
++            if (new_mask) SDL_DestroyTexture(new_mask);
++            if (new_blur) SDL_DestroyTexture(new_blur);
++            return;
++        }
++        SDL_SetTextureScaleMode(new_mask, SDL_ScaleModeLinear);
++        SDL_SetTextureScaleMode(new_blur, SDL_ScaleModeLinear);
++        if (new_renderer) {
++            // cut: dst *= 1 - src.a. dark: dst.rgb *= 1 - src.rgb.
++            b_cut = SDL_ComposeCustomBlendMode(
++                SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
++                SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
++            b_dark = SDL_ComposeCustomBlendMode(
++                SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR, SDL_BLENDOPERATION_ADD,
++                SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
++        }
++        const bool modes_ok = SDL_SetTextureBlendMode(new_mask, b_cut) == 0 &&
++                              SDL_SetTextureBlendMode(new_blur, b_dark) == 0;
++        if (!modes_ok) {
++            SDL_DestroyTexture(new_mask);
++            SDL_DestroyTexture(new_blur);
++            blend_ok = 0;
++            rt_ren = ren;
++            return;
++        }
++        mask = new_mask;
++        blur = new_blur;
++        rt_ren = ren;
++        rt_w = qw;
++        rt_h = qh;
++        blend_ok = 1;
++    }
++    if (blend_ok != 1) return;
++    SDL_Texture* prev = SDL_GetRenderTarget(ren);
++    SDL_BlendMode prev_draw_blend = SDL_BLENDMODE_NONE;
++    Uint8 prev_r = 0, prev_g = 0, prev_b = 0, prev_a = 0;
++    SDL_GetRenderDrawBlendMode(ren, &prev_draw_blend);
++    SDL_GetRenderDrawColor(ren, &prev_r, &prev_g, &prev_b, &prev_a);
++    if (SDL_SetRenderTarget(ren, mask) != 0) return;
++    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
++    SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
++    SDL_RenderClear(ren);
++    const SDL_Color black{0, 0, 0, 255};
++    const float q = 1.0f / kQ;
++    std::vector<SDL_Vertex> v;
++    std::vector<int> idx;
++    for (const ra2engine::TerrainFoot& f : feet) {
++        // The diamond, a pixel wider so neighbours never leave a seam at this size.
++        const float x0 = static_cast<float>(f.x), y0 = static_cast<float>(f.y);
++        const float hw = f.w * 0.5f, hh = f.h * 0.5f;
++        const int b0 = static_cast<int>(v.size());
++        v.push_back({{(x0 + hw) * q, (y0 - 1) * q}, black, {0, 0}});
++        v.push_back({{(x0 + f.w + 1) * q, (y0 + hh) * q}, black, {0, 0}});
++        v.push_back({{(x0 + hw) * q, (y0 + f.h + 1) * q}, black, {0, 0}});
++        v.push_back({{(x0 - 1) * q, (y0 + hh) * q}, black, {0, 0}});
++        for (int k : {0, 1, 2, 0, 2, 3}) idx.push_back(b0 + k);
++    }
++    if (!v.empty())
++        SDL_RenderGeometry(ren, nullptr, v.data(), static_cast<int>(v.size()), idx.data(), static_cast<int>(idx.size()));
++    // Include cliff and slope art using its alpha silhouette.
++    for (const ra2engine::TerrainFoot& f : feet) {
++        if (!f.extra) continue;
++        SDL_Texture* et = static_cast<SDL_Texture*>(f.extra);
++        SDL_BlendMode keep_blend = SDL_BLENDMODE_BLEND;
++        SDL_ScaleMode keep_scale = SDL_ScaleModeNearest;
++        SDL_GetTextureBlendMode(et, &keep_blend);
++        SDL_GetTextureScaleMode(et, &keep_scale);
++        SDL_SetTextureBlendMode(et, b_cut);
++        SDL_SetTextureScaleMode(et, SDL_ScaleModeLinear);
++        const SDL_FRect to{f.ex * q, f.ey * q, f.ew * q, f.eh * q};
++        SDL_RenderCopyF(ren, et, nullptr, &to);
++        SDL_SetTextureScaleMode(et, keep_scale);
++        SDL_SetTextureBlendMode(et, keep_blend);
++    }
++    const bool blurred = SDL_SetRenderTarget(ren, blur) == 0;
++    if (blurred) {
++        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
++        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
++        SDL_RenderClear(ren);
++        SDL_SetTextureBlendMode(mask, SDL_BLENDMODE_BLEND);
++        static const int kTap[5][2] = {{0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}};
++        for (int i = 0; i < 5; ++i) {
++            SDL_SetTextureAlphaMod(mask, static_cast<Uint8>(255 / (i + 1)));
++            const SDL_Rect to{kTap[i][0], kTap[i][1], qw, qh};
++            SDL_RenderCopy(ren, mask, nullptr, &to);
++        }
++    }
++    SDL_SetTextureAlphaMod(mask, 255);
++    SDL_SetTextureBlendMode(mask, b_cut);
++    SDL_SetRenderTarget(ren, prev);
++    if (blurred) {
++        const SDL_Rect all{0, 0, W, H};
++        SDL_RenderCopy(ren, blur, nullptr, &all);
++    }
++    SDL_SetRenderDrawBlendMode(ren, prev_draw_blend);
++    SDL_SetRenderDrawColor(ren, prev_r, prev_g, prev_b, prev_a);
++}
++
+ // Draws shroud then (FogOfWar only, W2-GA-03) fog over the view for house 0.
+ // No-op with shroud off. W2-GA-P1: only the cells that can reach the view are
+ // visited (cached painter-order rows), not the whole map twice per frame.
+@@ -104,6 +249,14 @@ void draw_shroud_pass(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2a
+     for (int pass = 0; pass < passes; ++pass) {   // 0 shroud, 1 fog (the original's order)
+         const bool fog = pass == 1;
+         const ra2assets::ShpFile* shp = fog ? g_fog_shp : g_shroud_shp;
++        int fog_alpha = 0;
++        if (fog && shp && shp->count() > 15) {
++            const std::vector<uint8_t> idx = shp->decode_indexed(15);
++            const ra2assets::ShpFile::Frame f = shp->frame_info(15);
++            const std::size_t mid = static_cast<std::size_t>(f.h / 2) * f.w + f.w / 2;
++            if (mid < idx.size() && idx[mid] <= 127 && idx[mid] != 0)
++                fog_alpha = (127 - idx[mid]) * 255 / 127;
++        }
+         // Draw shroud/fog over the map's terrain diamond AND a one-cell border
+         // of virtual cells around it, so the map edge gets the same partial-tile
+         // smoothing as interior shroud edges instead of a jagged cell staircase.
+@@ -136,9 +289,9 @@ void draw_shroud_pass(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2a
+                     if (fr == 0) continue;
+                     SDL_Texture* tex = nullptr;
+                     SDL_Rect dst{sx, sy, 60, 30};
+-                    if (!fog && fr == 15) {
+-                        tex = pres_shroud::diamond_tex(tc, false);
+-                        dst = SDL_Rect{sx - 1, sy - 1, 62, 32};
++                    if (fr == 15 && (!fog || (shp && shp->count() > 15))) {
++                        tex = pres_shroud::feathered_diamond_tex(tc, fog ? fog_alpha : 255);
++                        dst = SDL_Rect{sx + 30 - 56, sy + 15 - 28, 112, 56};
+                     } else if (shp && shp->count() > fr) {
+                         SDL_Rect r;
+                         tex = pres_shroud::frame_tex(tc, *shp, fog ? "fogshp" : "shroudshp", fr, r);
+@@ -151,6 +304,7 @@ void draw_shroud_pass(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2a
+             }
+         }
+     }
++    draw_lit_outline(ren, cam, W, H);
+ }
+ 
+ // G-84: an enemy/neutral building is drawn once any foundation cell has been
