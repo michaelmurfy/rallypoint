@@ -1,0 +1,408 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+index f33e755..1ec956d 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -6619,7 +6619,8 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+                 int hover_ix, int pressed_ix, const std::string& header,
+                 const std::string& version, int monitor_frame,
+                 SDL_Texture* bink_tex = nullptr, int sdtp_frame = 0,
+-                const int* row_frames = nullptr /* W2-UI-24: per-row SDBTNANM transition frame, -1 = none */) {
++                const int* row_frames = nullptr /* W2-UI-24: per-row SDBTNANM transition frame, -1 = none */,
++                int press_ix = -1, double press_t = -1.0 /* shell button sink/rise (see ShellScene) */) {
+     const double canvas_scale = xf.s;
+     // The ONE logical->device transform (shared verbatim with the hit-test).
+     auto dev = [&](int lx, int ly, int lw, int lh) -> SDL_Rect {
+@@ -6720,6 +6721,15 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+             int frame = 2;                                       // normal
+             if (b.enabled && i == pressed_ix)    frame = 4;      // yellow-hot
+             else if (b.enabled && i == hover_ix) frame = 3;      // orange glow
++            // A shell button that stays on its page sinks into the empty socket
++            // on release (5..10) and rises back (10..5), one step per 30 ms:
++            // SDBTNANM's own frames [RE: 0..16; 2 normal, 3 hover, 4 pressed,
++            // 5..9 the face sliding out, 10 the empty socket, 11..16 the blank
++            // plate]. A button that leaves the page uses the leave band instead.
++            if (i == press_ix && press_t >= 0.0) {
++                const int tick = static_cast<int>(press_t / 0.030);
++                frame = tick < 6 ? 5 + tick : 10 - (tick - 6);
++            }
+             const int brow = (b.rect.y - 199) / 42;
+             if (row_frames && brow >= 0 && brow < 6 && row_frames[brow] >= 0) frame = row_frames[brow];
+             if (frame >= art.sdbtnanm->count()) frame = 0;
+@@ -6793,6 +6803,13 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+             const ShellButton& b = buttons[i];
+             const int brow = (b.rect.y - 199) / 42;
+             if (row_frames && brow >= 0 && brow < 6 && row_frames[brow] >= 0) continue;   // W2-UI-24
++            // The label travels with the face: hidden while it is down in the
++            // socket (animation frames 6..10), back once the face is up again.
++            if (i == press_ix && press_t >= 0.0) {
++                const int tick = static_cast<int>(press_t / 0.030);
++                const int f = tick < 6 ? 5 + tick : 10 - (tick - 6);
++                if (f >= 6) continue;
++            }
+             // The label stays put when pressed: only the plate art (frame 4) shows the press.
+             centered(b.label, b.rect.x, b.rect.y, b.rect.w, b.rect.h, lbl_scale, 0, 0);
+             if (!b.enabled) {                          // dark veil conveys disabled
+@@ -6811,9 +6828,10 @@ inline void draw_shell(ra2engine::Platform& plat, ra2engine::TextureCache& tc, c
+                        const ShellXform& xf, const std::vector<ShellButton>& buttons,
+                        int hover_ix, int pressed_ix, const std::string& header,
+                        const std::string& version, int monitor_frame,
+-                       SDL_Texture* bink_tex = nullptr, int sdtp_frame = 0, const int* row_frames = nullptr) {
++                       SDL_Texture* bink_tex = nullptr, int sdtp_frame = 0, const int* row_frames = nullptr,
++                       int press_ix = -1, double press_t = -1.0) {
+     draw_shell(static_cast<SDL_Renderer*>(plat.renderer()), tc, art, xf, buttons, hover_ix, pressed_ix,
+-               header, version, monitor_frame, bink_tex, sdtp_frame, row_frames);
++               header, version, monitor_frame, bink_tex, sdtp_frame, row_frames, press_ix, press_t);
+ }
+ 
+ // Shared control skins (Options + Skirmish pages).
+@@ -8875,62 +8893,111 @@ struct MenuArtStore {
+ };
+ 
+ // [Task 5] Decode theme.mix/grinder.wav (stereo IMA, T4) and downmix to the mono
+-// SDL sink, register as the looping "menu:grinder" voice. Best-effort: any
+-// failure leaves sys.enabled=false (menu simply runs silent). Honors no_audio at
+-// the call site (run_menu skips this entirely when no_audio).
++// SDL sink, register as the looping "menu:grinder" voice. Best-effort: a missing
++// theme.mix (or grinder.wav) only loses the music; the shell GUI sounds still
++// load and the menu is still clickable. Honors no_audio at the call site
++// (run_menu skips this entirely when no_audio).
++//
++// Steam ships the file as THEME.MIX; Linux is case-sensitive, so the lowercase
++// name must be resolved to the real spelling first.
++std::string find_data_file(const std::string& dir, const std::string& name) {
++    const std::string exact = dir + name;
++    {
++        std::ifstream f(exact, std::ios::binary);
++        if (f) return exact;
++    }
++    std::error_code ec;
++    std::filesystem::directory_iterator it(std::filesystem::u8path(dir), ec), end;
++    for (; !ec && it != end; it.increment(ec)) {
++        std::string fn = it->path().filename().u8string();
++        if (fn.size() != name.size()) continue;
++        bool same = true;
++        for (std::size_t i = 0; i < fn.size() && same; ++i)
++            same = std::tolower(static_cast<unsigned char>(fn[i])) ==
++                   std::tolower(static_cast<unsigned char>(name[i]));
++        if (same) return it->path().u8string();
++    }
++    return exact;
++}
++
+ std::unique_ptr<MenuAudio> load_menu_music(const std::string& dir) {
+     auto ma = std::make_unique<MenuAudio>();
++    // [SK-32] Shell GUI sounds. The rules [AudioVisual] section names the
++    // soundmd.ini events the original's controls play (gamemd FUN_006691e0
++    // parses them into one settings object: GUIMainButtonSound at +0x188,
++    // GUICheckboxSound at +0x1AC, GUIComboOpenSound / GUIComboCloseSound next
++    // to them; the shell plays the first for every button). The engine used to
++    // ask for MenuClick by hardcoded name; take the names from the rules, as
++    // the original does. Best-effort and independent of the music: without
++    // theme.mix the shell must still click, so this no longer sits behind the
++    // music's early return. Must be in the bank before the Mixer is built.
++    std::map<std::string, ra2engine::MixerSound> gui;
++    try {
++        Ini snd_ini = load_ini_from_ra2md(dir, "soundmd.ini");
++        ra2assets::Sounds sounds = ra2assets::Sounds::load(snd_ini);
++        Ini rules = load_ini_from_ra2md(dir, "rulesmd.ini");
++        auto rule = [&rules](const char* key, const std::string& def) {
++            const std::optional<std::string> v = rules.get("AudioVisual", key);
++            return v && !v->empty() ? *v : def;
++        };
++        const std::string btn = rule("GUIMainButtonSound", "MenuClick");
++        const std::string chk = rule("GUICheckboxSound", btn);
++        const std::string combo_open = rule("GUIComboOpenSound", "MenuACBOpen");
++        const std::string combo_close = rule("GUIComboCloseSound", "MenuACBClose");
++        MixFile language = MixFile::open_path(dir + "language.mix");
++        MixFile audio_mix = language.open_nested("audio.mix");
++        const MixEntry* ie = audio_mix.find("audio.idx");
++        const MixEntry* be = audio_mix.find("audio.bag");
++        if (ie && be) {
++            auto ib = audio_mix.read(*ie);
++            ra2assets::AudioIdx idx = ra2assets::AudioIdx::load(ib.data(), ib.size());
++            const std::vector<uint8_t> bag = audio_mix.read(*be);
++            const std::pair<const char*, std::string> keys[] = {
++                {"menu:click", btn}, {"menu:checkbox", chk},
++                {"menu:comboopen", combo_open}, {"menu:comboclose", combo_close}};
++            for (const auto& [k, ev] : keys) {
++                ra2engine::MixerSound s = resolve_sound_event(ma->sys, sounds, idx, bag, ev);
++                s.global = true;
++                s.range = 1000.0;
++                s.bus = ra2engine::AudioBus::Sound;
++                gui[k] = s;
++            }
++            std::cerr << "[menu-music] GUI sounds: button=" << btn << " checkbox=" << chk
++                      << " combo=" << combo_open << "/" << combo_close << "\n";
++        }
++    } catch (const std::exception& ex) {
++        std::cerr << "[menu-music] GUI sounds unavailable: " << ex.what() << "\n";
++    }
++    // Music (best effort, after the GUI sounds are in the bank).
++    int music_id = -1;
++    ra2assets::WavInfo info{};
+     try {
+-        MixFile theme = MixFile::open_path(dir + "theme.mix");
++        MixFile theme = MixFile::open_path(find_data_file(dir, "theme.mix"));
+         const MixEntry* e = theme.find("grinder.wav");
+-        if (!e) { std::cerr << "[menu-music] grinder.wav not in theme.mix\n"; return ma; }
+-        std::vector<uint8_t> bytes = theme.read(*e);
+-        ra2assets::WavInfo info;
+-        std::vector<int16_t> pcm = ra2assets::load_wav_ima(bytes.data(), bytes.size(), info);
+-        std::vector<int16_t> mono;
+-        if (info.channels == 2) {
+-            mono.resize(pcm.size() / 2);
+-            for (size_t i = 0; i < mono.size(); ++i)
+-                mono[i] = static_cast<int16_t>(
+-                    (static_cast<int>(pcm[2 * i]) + static_cast<int>(pcm[2 * i + 1])) / 2);
++        if (!e) {
++            std::cerr << "[menu-music] grinder.wav not in theme.mix\n";
+         } else {
+-            mono = std::move(pcm);
+-        }
+-        const int id = ma->sys.bank.add(std::move(mono));
+-        // [SK-32] Shell GUI sounds (rules [AudioVisual] GUIMainButtonSound /
+-        // GUICheckboxSound = MenuClick; combobox open/close = MenuACBOpen /
+-        // MenuACBClose), soundmd.ini events over the RA2 audio.mix BAG. Must be
+-        // in the bank before the Mixer is built over it. Best-effort.
+-        std::map<std::string, ra2engine::MixerSound> gui;
+-        try {
+-            Ini snd_ini = load_ini_from_ra2md(dir, "soundmd.ini");
+-            ra2assets::Sounds sounds = ra2assets::Sounds::load(snd_ini);
+-            MixFile language = MixFile::open_path(dir + "language.mix");
+-            MixFile audio_mix = language.open_nested("audio.mix");
+-            const MixEntry* ie = audio_mix.find("audio.idx");
+-            const MixEntry* be = audio_mix.find("audio.bag");
+-            if (ie && be) {
+-                auto ib = audio_mix.read(*ie);
+-                ra2assets::AudioIdx idx = ra2assets::AudioIdx::load(ib.data(), ib.size());
+-                const std::vector<uint8_t> bag = audio_mix.read(*be);
+-                const std::pair<const char*, const char*> keys[] = {
+-                    {"menu:click", "MenuClick"}, {"menu:acbopen", "MenuACBOpen"},
+-                    {"menu:acbclose", "MenuACBClose"}};
+-                for (const auto& [k, ev] : keys) {
+-                    ra2engine::MixerSound s = resolve_sound_event(ma->sys, sounds, idx, bag, ev);
+-                    s.global = true;
+-                    s.range = 1000.0;
+-                    s.bus = ra2engine::AudioBus::Sound;
+-                    gui[k] = s;
+-                }
++            std::vector<uint8_t> bytes = theme.read(*e);
++            std::vector<int16_t> pcm = ra2assets::load_wav_ima(bytes.data(), bytes.size(), info);
++            std::vector<int16_t> mono;
++            if (info.channels == 2) {
++                mono.resize(pcm.size() / 2);
++                for (size_t i = 0; i < mono.size(); ++i)
++                    mono[i] = static_cast<int16_t>(
++                        (static_cast<int>(pcm[2 * i]) + static_cast<int>(pcm[2 * i + 1])) / 2);
++            } else {
++                mono = std::move(pcm);
+             }
+-        } catch (const std::exception& ex) {
+-            std::cerr << "[menu-music] GUI sounds unavailable: " << ex.what() << "\n";
++            music_id = ma->sys.bank.add(std::move(mono));
+         }
+-        ma->sys.mixer = std::make_unique<ra2engine::Mixer>(ma->sys.bank, kAudioRngSeed);
+-        for (auto& [k, ms2] : gui) ma->sys.mixer->register_sound(k, ms2);
++    } catch (const std::exception& ex) {
++        std::cerr << "[menu-music] music unavailable: " << ex.what() << "\n";
++    }
++    ma->sys.mixer = std::make_unique<ra2engine::Mixer>(ma->sys.bank, kAudioRngSeed);
++    for (auto& [k, ms2] : gui) ma->sys.mixer->register_sound(k, ms2);
++    if (music_id >= 0) {
+         ra2engine::MixerSound ms;
+-        ms.variants.push_back(id);
++        ms.variants.push_back(music_id);
+         ms.volume = 100;
+         ms.global = true;          // non-positional: floor at min_volume, never attenuate
+         ms.min_volume = 100;
+@@ -8938,16 +9005,15 @@ std::unique_ptr<MenuAudio> load_menu_music(const std::string& dir) {
+         ms.limit = 1;              // single looping instance
+         ms.bus = ra2engine::AudioBus::Score;   // [P8] music = ScoreVolume bus (options.md §5)
+         ma->sys.mixer->register_sound("menu:grinder", ms);
+-        ma->sys.out.open();
+-        ma->sys.enabled = ma->sys.out.ok();
+-        SDL_Log("[audio] menu handle %s: sdl_devices=%d handles=%d", ma->sys.enabled ? "ok" : "none",
+-                ra2engine::AudioOutput::open_device_count(), ra2engine::AudioOutput::handle_count());
++    }
++    ma->sys.out.open();
++    ma->sys.enabled = ma->sys.out.ok();
++    SDL_Log("[audio] menu handle %s: sdl_devices=%d handles=%d", ma->sys.enabled ? "ok" : "none",
++            ra2engine::AudioOutput::open_device_count(), ra2engine::AudioOutput::handle_count());
++    if (music_id >= 0)
+         std::cerr << "[menu-music] grinder.wav " << (info.channels == 2 ? "stereo->mono" : "mono")
+                   << " @" << info.sample_rate << "Hz device="
+                   << (ma->sys.enabled ? "ok" : "none") << "\n";
+-    } catch (const std::exception& ex) {
+-        std::cerr << "[menu-music] unavailable: " << ex.what() << "\n";
+-    }
+     return ma;
+ }
+ 
+@@ -9597,6 +9663,15 @@ private:
+     void play_click() const {
+         if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer) art_.audio->sys.mixer->play("menu:click");
+     }
++    // [RE: [AudioVisual] GUICheckboxSound at +0x1AC, GUIComboOpen/CloseSound
++    // beside it; the original plays them per control, not the button click.]
++    void play_checkbox() const {
++        if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer) art_.audio->sys.mixer->play("menu:checkbox");
++    }
++    void play_combo(bool open) const {
++        if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer)
++            art_.audio->sys.mixer->play(open ? "menu:comboopen" : "menu:comboclose");
++    }
+     bool audio_live() const {
+         return art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer;
+     }
+@@ -9673,6 +9748,25 @@ private:
+     static constexpr int kLeaveTicks = 15;   // 6 rows + 3 (the array's sentinels) + 6
+     double       leave_t_ = -1.0;            // >= 0 while the leave band plays
+     Scene*       leave_next_ = nullptr;      // the page to switch to when it ends
++    // [RE: SDBTNANM 0..16: 2 normal, 3 hover, 4 pressed, 5..9 the face sliding
++    // out, 10 the empty socket, 11..16 the blank plate of an empty row]. A shell
++    // button that stays on its page (a dialog, a confirm) sinks into its socket
++    // on release (5..10) and rises back (10..5), one step per 30 ms as the page
++    // bands do. A button that leaves the page plays the leave band instead.
++    int          press_ix_ = -1;             // button running the sink/rise
++    double       press_t_ = -1.0;            // seconds into it, < 0 = idle
++    static constexpr double kPressStep = 0.030;   // one SDBTNANM step
++    static constexpr int    kPressSteps = 6;      // 5..10 sink, 10..5 rise
++    // Set the next scene: the page leave band first unless --play asked for an
++    // immediate switch (the same rule ACT_GOTO has always used).
++    void leave_to(Scene* s) {
++        if (g_pres_play_log && !g_play_leave_band) {
++            next_ = s;
++            return;
++        }
++        leave_next_ = s;
++        leave_t_ = 0.0;
++    }
+     bool transition_frames(int out[6]) const {
+         bool row_used[6] = {false, false, false, false, false, false};
+         for (const ShellButton& b : layout()) {
+@@ -9795,6 +9889,13 @@ void MainMenuScene::update(double dt) {
+             leave_next_ = nullptr;
+         }
+     }
++    if (press_t_ >= 0.0) {   // the clicked button's sink and rise
++        press_t_ += dt;
++        if (press_t_ >= 2 * kPressSteps * kPressStep) {
++            press_t_ = -1.0;
++            press_ix_ = -1;
++        }
++    }
+     // [Task 5 / §9] Advance the Bink CRT movie at 15 fps (decode one frame/step).
+     // [P8] Dialog 0xD5 has no CRT movie control (options.md §1) -> no movie.
+     if (page_ != PAGE_OPTIONS) bink_advance(dt);
+@@ -9929,6 +10030,7 @@ bool ShellScene::options_handle(const ra2engine::InputEvent& ev) {
+     for (int i = 0; i < OptionsPageState::C_COUNT; ++i) {
+         if (OptionsPageState::check_rect(i).contains(lx, ly)) {
+             opt_.chk[i] = !opt_.chk[i];   // BS_AUTOCHECKBOX
++            play_checkbox();              // [AudioVisual] GUICheckboxSound
+             return true;
+         }
+     }
+@@ -9947,11 +10049,12 @@ bool ShellScene::options_handle(const ra2engine::InputEvent& ev) {
+             res_label_ = std::to_string(mode.first) + " x " + std::to_string(mode.second) + " x 16";
+         }
+         opt_.res_open = false;
++        play_combo(false);   // [AudioVisual] GUIComboCloseSound
+         return true;
+     }
+     if (OptionsPageState::res_supported() && lx >= 255 && lx < 435 && ly >= 73 && ly < 94) {
+         opt_.res_open = true;
+-        play_click();
++        play_combo(true);    // [AudioVisual] GUIComboOpenSound
+         return true;
+     }
+     return false;
+@@ -10020,6 +10123,17 @@ void MainMenuScene::handle(const ra2engine::InputEvent& ev) {
+         if (ev.kind == ra2engine::InputEvent::PointerDown) down_ = true;
+         if (ev.kind == ra2engine::InputEvent::PointerUp)   down_ = false;
+     }
++    // A release over the button that was pressed starts its sink and rise
++    // (SDBTNANM 5..10 then 10..5). A button that leaves the page plays the
++    // whole-page leave band instead, which overrides this in draw_shell.
++    if (ev.kind == ra2engine::InputEvent::PointerUp && ev.button == ra2engine::InputEvent::Left) {
++        int over = -1;
++        const std::vector<ShellButton> btns = layout();
++        for (int i = 0; i < static_cast<int>(btns.size()); ++i)
++            if (btns[i].enabled && to_device(btns[i].rect).contains(mx_, my_)) { over = i; break; }
++        if (over >= 0 && over == press_ix_) press_t_ = 0.0;
++        else { press_ix_ = -1; press_t_ = -1.0; }
++    }
+     // gF G-14: the Exit confirm (when open) owns every event; OK quits.
+     if (gf_confirm_.open()) {
+         if (gf_confirm_.handle(ev) == 0) quit_ = true;
+@@ -10091,32 +10205,38 @@ void MainMenuScene::handle(const ra2engine::InputEvent& ev) {
+         return;
+     // Hit-test the SAME logical rects render() draws, mapped device via the SAME
+     // transform (to_device). Greyed (disabled) buttons are skipped.
+-    for (const ShellButton& b : layout()) {
++    const std::vector<ShellButton> btns = layout();
++    for (int i = 0; i < static_cast<int>(btns.size()); ++i) {
++        const ShellButton& b = btns[i];
+         if (!b.enabled) continue;
+         if (!to_device(b.rect).contains(ev.x, ev.y)) continue;
+-        play_click();   // W2-UI-23 MenuClick
++        play_click();   // W2-UI-23 MenuClick = rules [AudioVisual] GUIMainButtonSound
++        press_ix_ = i;  // the sink/rise animation (on release) belongs to this button
+         switch (b.action) {
+             case ACT_QUIT:     // gF G-14: GUI:ExitAreYouSure, OK / Cancel (dialog 0x120)
+                 gf_confirm_.ask(gf_csf("GUI:ExitAreYouSure", "Are you sure you want to exit Red Alert 2?"),
+                                 {gf_csf("GUI:OK", "OK"), gf_csf("GUI:Cancel", "Cancel")});
+                 return;
+             // The ONLY live game path: Skirmish -> setup -> GameScene (unchanged).
+-            case ACT_SKIRMISH: next_ = new SkirmishSetupScene(rules_, no_audio_, art_); return;
+-            case ACT_MP_LAN: next_ = new MpLanScene(rules_, no_audio_, art_); return;
+-            case ACT_MP_ONLINE: next_ = new MpOnlineScene(rules_, no_audio_, art_); return;
++            // Every button that leaves the shell plays the page leave band first
++            // (FUN_00606980 in the original), not only the GOTO pages: the click
++            // used to switch scenes on mouse-down with no animation at all.
++            case ACT_SKIRMISH: leave_to(new SkirmishSetupScene(rules_, no_audio_, art_)); return;
++            case ACT_MP_LAN: leave_to(new MpLanScene(rules_, no_audio_, art_)); return;
++            case ACT_MP_ONLINE: leave_to(new MpOnlineScene(rules_, no_audio_, art_)); return;
+             // P7 [RE: saveload.md §3]: STT:SingleButtonLoadSavedGame -> the Load dialog.
+             case ACT_LOADGAME: sld_.open(SaveLoadDialog::Load, ""); return;
+             // P10: battle.ini ALL1 / SOV1 -> the first mission's loading screen.
+-            case ACT_CAMPAIGN_ALLIED: next_ = make_campaign_start_scene(no_audio_, "ALL1", "GDI"); return;
+-            case ACT_CAMPAIGN_SOVIET: next_ = make_campaign_start_scene(no_audio_, "SOV1", "Nod"); return;
+-            case ACT_CREDITS: next_ = new CreditsScene(rules_, no_audio_, art_); return;   // W2-UI-26
+-            case ACT_MOVIES: next_ = new MoviesPageScene(rules_, no_audio_, art_); return;   // W6-06-13
++            case ACT_CAMPAIGN_ALLIED: leave_to(make_campaign_start_scene(no_audio_, "ALL1", "GDI")); return;
++            case ACT_CAMPAIGN_SOVIET: leave_to(make_campaign_start_scene(no_audio_, "SOV1", "Nod")); return;
++            case ACT_CREDITS: leave_to(new CreditsScene(rules_, no_audio_, art_)); return;   // W2-UI-26
++            case ACT_MOVIES: leave_to(new MoviesPageScene(rules_, no_audio_, art_)); return;   // W6-06-13
+             case ACT_ABOUT:   // W6-06-16 (Options are committed + saved as on leaving the page)
+                 if (g_user_settings) {
+                     opt_.commit(*g_user_settings);
+                     save_user_settings(*g_user_settings);
+                 }
+-                next_ = new AboutScene(rules_, no_audio_, art_);
++                leave_to(new AboutScene(rules_, no_audio_, art_));
+                 return;
+             case ACT_KEYBOARD: kb_.open(); return;   // W5-E [RE: options.md §1/§6 0x5CE -> 0xA3]
+             case ACT_IMPORT:   // W6-06-05: the launcher's importer; the engine
+@@ -10131,7 +10251,7 @@ void MainMenuScene::handle(const ra2engine::InputEvent& ev) {
+                 if (camp_.selected() >= 0 && camp_.selected() < CampaignPageState::kEntries) {
+                     if (g_user_settings) save_user_settings(*g_user_settings);   // the slider's Difficulty
+                     const CampaignPageState::Entry& e = CampaignPageState::entry(camp_.selected());
+-                    next_ = make_campaign_start_scene(no_audio_, e.battle, e.side, camp_.difficulty);
++                    leave_to(make_campaign_start_scene(no_audio_, e.battle, e.side, camp_.difficulty));
+                 }
+                 return;
+             // Page transition (incl. Back): construct the target page's ShellScene.
+@@ -10145,12 +10265,7 @@ void MainMenuScene::handle(const ra2engine::InputEvent& ev) {
+                     if (audio_live()) apply_audio_settings(*art_.audio->sys.mixer, *g_user_settings);
+                 }
+                 // W5-E2 (R-143): play the leave band first (FUN_00606980).
+-                if (g_pres_play_log && !g_play_leave_band) {
+-                    next_ = new ShellScene(rules_, no_audio_, art_, b.target);
+-                    return;
+-                }
+-                leave_next_ = new ShellScene(rules_, no_audio_, art_, b.target);
+-                leave_t_ = 0.0;
++                leave_to(new ShellScene(rules_, no_audio_, art_, b.target));
+                 return;
+             default:           return;
+         }
