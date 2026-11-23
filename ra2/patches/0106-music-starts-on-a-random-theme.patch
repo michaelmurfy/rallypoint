@@ -1,0 +1,31 @@
+--- a/engine/pres_audio.inc
++++ b/engine/pres_audio.inc
+@@ -546,6 +546,9 @@
+     void music_start() {
+         track_ix_ = -1;
+         music_on_ = false;
++        // Seed the playlist RNG with the wall clock (SDL_GetTicks is nearly the same at every launch) so a freshly launched
++        // game does not always open on the same theme.
++        theme_rng_ = static_cast<std::uint32_t>(std::time(nullptr)) ^ static_cast<std::uint32_t>(SDL_GetPerformanceCounter()) ^ 0x9E3779B9u;
+         for (int i = 0; i < static_cast<int>(themes_.size()); ++i)
+             if (allowed(i)) { music_on_ = true; break; }
+     }
+@@ -642,6 +645,18 @@
+         if (count <= 0) return -1;
+         const bool repeat_cur = cur >= 0 && (themes_[static_cast<std::size_t>(cur)].repeat || pres_score_repeat());
+         if (repeat_cur) return cur;
++        // A freshly launched game (cur < 0) starts on a random allowed theme
++        // rather than always the first one in [Themes] order.
++        if (cur < 0) {
++            int n = 0, r = 0;
++            for (;;) {
++                theme_rng_ = theme_rng_ * 1103515245u + 12345u;
++                r = static_cast<int>((theme_rng_ >> 8) % static_cast<std::uint32_t>(count));
++                if (++n > 999) break;
++                if (allowed(r)) break;
++            }
++            if (n < 1000) return r;
++        }
+         if (pres_score_shuffle()) {
+             int n = 0, r = 0;
+             for (;;) {

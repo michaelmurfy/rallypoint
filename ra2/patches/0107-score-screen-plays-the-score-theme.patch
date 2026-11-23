@@ -1,0 +1,78 @@
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -8905,6 +8905,51 @@
+     return ma;
+ }
+ 
++// The MP score screen's music: THEMEMD.INI [SCORE] Sound=ScoreX (Repeat=yes, thememd.mix), or THEME.INI's
++// RA2-Sco (theme.mix) on a classic install. Own audio system, because a game launched straight from the launcher has
++// no menu audio. Best-effort: any failure leaves it silent. Registers the looping voice "score:theme".
++std::unique_ptr<MenuAudio> load_score_music(const std::string& dir) {
++    auto ma = std::make_unique<MenuAudio>();
++    const std::pair<const char*, const char*> tracks[] = {{"thememd.mix", "scorex.wav"}, {"theme.mix", "ra2-sco.wav"}};
++    for (const auto& [mix, wav] : tracks) {
++        try {
++            MixFile theme = MixFile::open_path(dir + mix);
++            const MixEntry* e = theme.find(wav);
++            if (!e) continue;
++            std::vector<uint8_t> bytes = theme.read(*e);
++            ra2assets::WavInfo info;
++            std::vector<int16_t> pcm = ra2assets::load_wav_ima(bytes.data(), bytes.size(), info);
++            std::vector<int16_t> mono;
++            if (info.channels == 2) {
++                mono.resize(pcm.size() / 2);
++                for (size_t i = 0; i < mono.size(); ++i)
++                    mono[i] = static_cast<int16_t>((static_cast<int>(pcm[2 * i]) + static_cast<int>(pcm[2 * i + 1])) / 2);
++            } else {
++                mono = std::move(pcm);
++            }
++            const int id = ma->sys.bank.add(std::move(mono));
++            ma->sys.mixer = std::make_unique<ra2engine::Mixer>(ma->sys.bank, kAudioRngSeed);
++            ra2engine::MixerSound ms;
++            ms.variants.push_back(id);
++            ms.volume = 100;
++            ms.global = true;
++            ms.min_volume = 100;
++            ms.range = 1000.0;
++            ms.limit = 1;
++            ms.bus = ra2engine::AudioBus::Score;   // the user's music volume
++            ma->sys.mixer->register_sound("score:theme", ms);
++            if (g_user_settings) apply_audio_settings(*ma->sys.mixer, *g_user_settings);
++            ma->sys.out.open();
++            ma->sys.enabled = ma->sys.out.ok();
++            std::cerr << "[score-music] " << mix << "/" << wav << " device=" << (ma->sys.enabled ? "ok" : "none") << "\n";
++            return ma;
++        } catch (const std::exception& ex) {
++            std::cerr << "[score-music] " << mix << ": " << ex.what() << "\n";
++        }
++    }
++    return ma;
++}
++
+ // [Task 5] Load every menu asset best-effort into `store` and wire `store.art`
+ // pointers. A per-asset failure leaves that element null (that element falls
+ // back to the rect-font/placeholder path); art.ok is set only when the
+--- a/engine/gf_result.inc
++++ b/engine/gf_result.inc
+@@ -28,6 +28,13 @@
+         : no_audio_(no_audio), cfg_(std::move(cfg)), outcome_(outcome), frames_(frames), st_(std::move(st)) {
+         SDL_ShowCursor(SDL_ENABLE);
+         head_ = gf_csf(outcome_ > 0 ? "TXT_VICTORIOUS" : "TXT_LOST", outcome_ > 0 ? "You Are Victorious!" : "Game Over");
++        if (!no_audio_) music_ = load_score_music(env_install_dir());   // the original plays theme SCORE here
++    }
++    // Loops the score theme until the page is left (the audio system dies with the scene).
++    void update(double) override {
++        if (!music_ || !music_->sys.enabled || !music_->sys.mixer) return;
++        if (music_->sys.mixer->active_voices() == 0) music_->sys.mixer->play("score:theme");
++        music_->sys.out.pump(*music_->sys.mixer);
+     }
+     std::string header() const {
+         return st_.multiplayer ? gf_csf("GUI:MultiplayerScore", "Multiplayer Score")
+@@ -133,6 +140,7 @@
+     long frames_;
+     GfSkirmishStats st_;
+     std::string head_;
++    std::unique_ptr<MenuAudio> music_;
+     int choice_ = 0;
+     bool quit_ = false, down_ = false;
+     int mx_ = 0, my_ = 0;

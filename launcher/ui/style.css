@@ -538,7 +538,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .skbanner p { margin-top: 2px; }
 .skbanner-icon { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
 .skbanner-icon svg { width: 14px; height: 14px; fill: currentColor; margin-left: 2px; }
-.maprow .btn svg { width: 14px; height: 14px; fill: currentColor; margin-right: 4px; }
+.maprow .btn svg { flex: none; width: 14px; height: 14px; fill: currentColor; margin-right: 4px; }
 .skoptions { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: center; }
 .skoptions > .btn { margin-left: auto; }
 .speedpick { position: relative; display: flex; }
@@ -630,7 +630,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ra2setup { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: start; }
 .ra2setup .mapview-canvas { width: 220px; height: 220px; }
 .ra2setup .mapcol .stage { width: 220px; }
-.maprow.ra2 { grid-template-columns: minmax(0, 1fr) auto 52px 92px; gap: 8px; padding: 4px 10px; cursor: default; }
+.maprow.ra2 { grid-template-columns: minmax(0, 1fr) auto 52px 104px; gap: 8px; padding: 4px 10px; cursor: default; }
 .maprow.ra2 .maptags { display: none; } /* game tag is noise when the list is long; chips already filter */
 .maprow.ra2 .mapname { font-size: 13px; font-weight: 550; }
 .maprow.ra2 .mapplayers, .maprow.ra2 .mapsize { font-size: 12px; color: var(--muted); font-weight: 500; }
