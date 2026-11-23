@@ -242,8 +242,15 @@ fn the_tunnel_carries_game_packets_and_nothing_else() {
     // a Bind for a port that is not the game's is ignored: that socket receives nothing
     let stranger = engine_socket(&b, 9999);
     stranger.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
-    send(game_packet(b"real"), 8088, 8088);
-    assert!(b_game.recv(&mut buf).is_ok(), "a genuine game packet still passes");
+    // UDP over a busy Windows runner can drop or delay the first copy: resend until it arrives
+    let t = Instant::now();
+    loop {
+        send(game_packet(b"real"), 8088, 8088);
+        if b_game.recv(&mut buf).is_ok() {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(5), "a genuine game packet still passes");
+    }
     assert!(stranger.recv(&mut buf).is_err());
     stop.store(true, Ordering::Relaxed);
 }
