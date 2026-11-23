@@ -1,0 +1,49 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 0000000..0000000 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -524,7 +524,9 @@
+     bool radar_cell_at(int px, int py, int& cx, int& cy) const {
+         // G-09 (E): the live isometric radar owns the pixel<->cell mapping.
+         if (g_radar && g_radar->ok()) return g_radar->cell_at(px, py, cx, cy);
+-        const ra2engine::SbRect& r = lay_.radar;
++        const ra2engine::SbRect r = (g_radar && ba_.has_radar && ba_.sb_radar.count() > 1)
++                                        ? ra2engine::SbRect{lay_.bar.x + 16, 49, 140, 108}
++                                        : lay_.radar;
+         if (!r.contains(px, py) || world_.grid_w() <= 0 || world_.grid_h() <= 0) return false;
+         const double sx = static_cast<double>(r.w) / world_.grid_w();
+         const double sy = static_cast<double>(r.h) / world_.grid_h();
+@@ -538,9 +540,10 @@
+     bool radar_right_click(const ra2engine::InputEvent& ev) {
+         int cx = 0, cy = 0;
+         const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
+-        if (!armed && !input_.selection().ids().empty() && radar_active() && radar_cell_at(ev.x, ev.y, cx, cy))
+-            input_.radar_order(cx, cy, ev);
+-        else input_.handle(ev);   // cancel chain / deselect, as on the map
++        const bool have = !input_.selection().ids().empty() || input_.selected_building() >= 0;
++        if (armed || !have) { input_.handle(ev); return true; }
++        if (radar_active() && radar_cell_at(ev.x, ev.y, cx, cy)) input_.radar_order(cx, cy, ev);
++        return true;
+         return true;
+     }
+     bool radar_click(const ra2engine::InputEvent& ev) {
+
+diff --git a/engine/input.cpp b/engine/input.cpp
+index 0000000..0000000 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -211,7 +211,13 @@
+         return;
+     }
+     sel_.prune(world_);
+-    if (sel_.ids().empty()) return;
++    if (sel_.ids().empty()) {
++        const auto& blds = world_.buildings();
++        if (selected_building_ >= 0 && selected_building_ < static_cast<int>(blds.size()) &&
++            blds[selected_building_].alive && is_unit_factory_type(blds[selected_building_].type))
++            issue_order(ev.x, ev.y);
++        return;
++    }
+     if (mod_ctrl_ && mod_shift_) {
+         const int actor = lowest_selected();
+         emit(make_mega(world_, sel_.ids(), Mission::AttackMove, Target{}, Target::cell(cx, cy)));
