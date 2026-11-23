@@ -39,6 +39,60 @@ reference (never a substitute for gamemd behaviour).
 
 ---
 
+## Yuri strength parity — verified against gamemd.exe (2026-11-23)
+
+Report: "Yuri units die too fast to a few Russian Conscripts." Verified the
+whole chain against the Steam `gamemd.exe` (YR 1.001) with Ghidra 12.2
+(headless + PyGhidra), cross-checked against the vera20k Rust port
+(github.com/YuriPlanet/vera20k, GPLv3: formulas and addresses referenced,
+no code copied). **The stats and the damage math are correct.** The outcome
+is the original's balance, not a bug:
+
+- Conscript: 125 HP, flak, M1Carbine 15 dmg / 25 ROF, SA warhead.
+- Initiate: 100 HP, none, PsychicJab 25 dmg / 15 ROF, SAFlame (SA verses).
+- 1v1 the Initiate wins (20 per hit vs flak, kills in 7 hits; takes 15 per
+  hit, needs 7). Measured in `--probe-combat`: E2 dies frame 128, INIT lives.
+- **Cost parity is 2 Conscripts per Initiate (100 vs 200 credits). Two
+  Conscripts beat one Initiate** (measured: INIT dies frame 78). That is the
+  retail game: Yuri's early answer is the Gattling Cannon / Brute, not
+  Initiate spam. A "few Conscripts" wiping an Initiate force is faithful.
+- Buildings take the warhead's Verses: E2 hits YAPOWR (wood) for 11, YACNST
+  (concrete) for 3, measured. Every Yuri type's Strength/Armor resolves from
+  the shipped `rulesmd.ini` (pinned in `tests/test_yuri_strength.cpp`).
+
+Damage chain re-verified (fresh Ghidra function boundaries; the old FUN_*
+cites in sources are instruction addresses inside these):
+
+| Function | Address | What it does |
+|---|---|---|
+| `TechnoClass::ReceiveDamage` | `0x701900` | defence divides (`GetArmorMultForType` x unit armor, then STRONGER `/VeteranArmor`), min-1 floor, immunity gates |
+| `ObjectClass::ReceiveDamage` | `0x5F5390` | calls the Verses kernel, building floor 1, heal cap at Strength, HP commit |
+| `Modify_Damage` (warhead kernel) | `0x489180` | CellSpread falloff (f32), `trunc(damage x Verses[armor])` (f64), MaxDamage cap |
+| `HouseClass::GetArmorMultForType` | `0x50BD30` | reads HouseType category slots `+0x100..+0x110` (ArmorInfantry/Units/Aircraft/Buildings/DefensesMult) |
+| `TechnoClass::FireAt` damage build | `0x6FDD50` | `ftol(House+0x188 firepower x unit firepower x Damage)`, rank, Occupy/Bunker/OpenTopped mults |
+| `Math::ftol` | `0x7C5F00` | trunc toward zero (low 32 bits) |
+
+Notes for future work:
+
+- The scalar country `Armor=` folds into the house difficulty bias whose only
+  reader is the house CRC: **no damage path reads it**. The category
+  `Armor*Mult` keys are the live divisors. Stock `rulesmd.ini` sets neither on
+  any country (identity), so patch `0040`'s spawn-HP bake is inert in stock
+  play. `MinDamage` in `[CombatDamage]` is not read by the exe; the min-1
+  floors above are the real mechanism.
+- `CurrentStrengthDamage=` (Rules+0xF68) only changes the Magnetron/aircraft
+  drop damage base (current HP instead of type Strength, x
+  `FallingDamageMultiplier`). Worth checking against `0058`'s Crush blast.
+- The `Cyborg=` infantry survive-lethal-hit prone branch in `0x5F5390` is
+  inert in stock YR (no type sets it).
+- Probe fixes landed with this verification: G-40 now unfolds the player MCV
+  (real play starts with an MCV, not a pre-built base), G-42 expects the
+  recovered raw-lepton infantry speed (0.586 cells/s, the old x1.6 was the
+  Drive/Ship track bonus), and the Yuri building test spawns the Conscript
+  inside range of the building centre.
+
+---
+
 ## Tier 1 — play-breaking (pathfind / slopes, AI defense, sync, crashes)
 
 ### T1.1 Ramp / slope height while walking — landed

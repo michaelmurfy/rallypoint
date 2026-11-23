@@ -1,0 +1,341 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 625b289..288f38f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -315,6 +315,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.c
+ # Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
+ target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_yuri_roster.cpp)
++# Rallypoint: Yuri faction strength parity vs the shipped rulesmd.ini.
++target_sources(ra2assets_tests PRIVATE tests/test_yuri_strength.cpp)
+ # Rallypoint: HouseType country bonuses (Cost*/Veteran*/Owner filters).
+ target_sources(ra2assets_tests PRIVATE tests/test_country_bonuses.cpp)
+ # Rallypoint: IsGattling RateUp/RateDown stages (gattling.hpp).
+diff --git a/engine/realplay_combat_probe.inc b/engine/realplay_combat_probe.inc
+index 1185784..2686084 100644
+--- a/engine/realplay_combat_probe.inc
++++ b/engine/realplay_combat_probe.inc
+@@ -139,8 +139,17 @@ int run_probe_combat() {
+     {
+         GameScene g(true, P::menu_config(rules));
+         ra2engine::World& w = P::world(g);
++        // Real play (gf_start) gives the human an MCV, not a pre-built base:
++        // unfold it first, exactly as the player's first click does.
++        for (int i = 0; i < (int)w.units().size(); ++i) {
++            if (w.units()[i].house == 0 && w.units()[i].tg.t.rules_id == "AMCV") {
++                w.order_deploy_mcv(i);
++                break;
++            }
++        }
++        P::run(g, 15 * 20);   // ConYard buildup
+         const int cy_b = P::own_building(g, 0);
+-        p.check(cy_b >= 0, "G-40 player base exists");
++        p.check(cy_b >= 0, "G-40 player base exists (MCV unfolded)");
+         auto place = [&](const char* id, int near_x, int near_y) {
+             const int t = roster_index(P::ba(g), id);
+             if (t < 0) return -1;
+@@ -208,8 +217,12 @@ int run_probe_combat() {
+         const int gi = P::spawn(g, "E1", 0, fx, fy);
+         if (gi >= 0) {
+             const double cps = w.units()[gi].speed_cps;
+-            p.check(std::abs(cps - 0.9375) < 1e-9,
+-                    "G-42 GI speed_cps = trunc(4*2.56)*1.6*15/256 = 0.9375 (got " +
++            // [RE: TechnoType INI FUN_00711510 / FootClass::GetCurrentSpeed
++            // FUN_004DB0B0] raw leptons: trunc(4*256/100)=10 per logic frame,
++            // 10*15/256 = 0.5859375 cells/s. The old x1.6 figure was the
++            // Drive/Ship track-table bonus, never infantry.
++            p.check(std::abs(cps - 0.5859375) < 1e-9,
++                    "G-42 GI speed_cps = trunc(4*2.56)*15/256 = 0.5859375 (got " +
+                         std::to_string(cps) + ")");
+             const double x0 = w.units()[gi].fx, y0 = w.units()[gi].fy;
+             int gx = 0, gy = 0;
+@@ -217,8 +230,8 @@ int run_probe_combat() {
+             w.order_unit_move(gi, gx, gy);
+             P::run(g, 15 * 4);
+             const double moved = std::hypot(w.units()[gi].fx - x0, w.units()[gi].fy - y0);
+-            p.check(moved > 2.5 && moved < 4.2,
+-                    "G-42 GI covered " + std::to_string(moved) + " cells in 4 s (expect ~3.75)");
++            p.check(moved > 2.0 && moved < 2.7,
++                    "G-42 GI covered " + std::to_string(moved) + " cells in 4 s (expect ~2.34)");
+         }
+         const ra2engine::UnitCombat e1 = P::combat_of(g, "E1");
+         p.check(e1.deploy_fire && e1.secondary.id == "Para",
+@@ -293,6 +306,119 @@ int run_probe_combat() {
+                               std::to_string(bad) + " unresolved)");
+     }
+ 
++    // ---- YS: Yuri faction strength parity vs rulesmd.ini (Steam YR 1.001) ----
++    // Ground truth extracted from ra2md.mix/localmd.mix/rulesmd.ini:
++    //   [E2] Strength=125 Armor=flak Primary=M1Carbine (Damage=15 ROF=25 Warhead=SA)
++    //   [INIT] Strength=100 Armor=none Primary=PsychicJab (Damage=25 ROF=15 Warhead=SAFlame)
++    //   [SA]/[SAFlame] Verses=100%,80%,80%,50%,25%,25%,75%,50%,25%,100%,100%
++    //   [YAPOWR] Strength=700 Armor=wood  [YACNST] Strength=1000 Armor=concrete
++    // Per-hit: E2->INIT 15, INIT->E2 20, E2->YAPOWR 11, E2->YACNST 3.
++    {
++        GameScene g(true, P::menu_config(rules));
++        ra2engine::World& w = P::world(g);
++        const ra2engine::UnitCombat e2 = P::combat_of(g, "E2");
++        const ra2engine::UnitCombat init = P::combat_of(g, "INIT");
++        std::cout << "[probe] YS E2 str=" << e2.strength << " armor=" << e2.armor
++                  << " dmg=" << e2.damage << " rof=" << e2.rof << "\n";
++        std::cout << "[probe] YS INIT str=" << init.strength << " armor=" << init.armor
++                  << " dmg=" << init.damage << " rof=" << init.rof << "\n";
++        p.check(e2.strength == 125 && e2.armor == "flak" && e2.damage == 15 && e2.rof == 25,
++                "YS E2 resolves rulesmd stats (125/flak/M1Carbine 15/25)");
++        p.check(init.strength == 100 && init.armor == "none" && init.damage == 25 && init.rof == 15,
++                "YS INIT resolves rulesmd stats (100/none/PsychicJab 25/15)");
++        auto bdef = [&](const char* id) -> const ra2engine::BuildingTypeDef* {
++            const int t = roster_index(P::ba(g), id);
++            return t >= 0 ? &P::ba(g).roster[t] : nullptr;
++        };
++        const auto* pow = bdef("YAPOWR");
++        const auto* cy = bdef("YACNST");
++        p.check(pow && pow->strength == 700 && pow->armor_ix == 6,
++                "YS YAPOWR 700 HP wood armor");
++        p.check(cy && cy->strength == 1000 && cy->armor_ix == 8,
++                "YS YACNST 1000 HP concrete armor");
++
++        // 1v1 duel: Initiate vs Conscript. Original balance: Initiate wins
++        // (7 hits x 20 = 140 >= 125 in 105 frames; Conscript needs 175 frames).
++        int fx = 0, fy = 0;
++        P::field(w, fx, fy);
++        const int a = P::spawn(g, "INIT", 0, fx, fy);
++        const int b = P::spawn(g, "E2", 1, fx + 3, fy);
++        p.check(a >= 0 && b >= 0, "YS spawned INIT + E2 duel");
++        if (a >= 0 && b >= 0) {
++            int a_death = -1, b_death = -1;
++            for (int f = 0; f < 15 * 30; ++f) {
++                g.update(kStep);
++                if (a_death < 0 && w.units()[a].hp <= 0) a_death = f;
++                if (b_death < 0 && w.units()[b].hp <= 0) b_death = f;
++                if (a_death >= 0 && b_death >= 0) break;
++            }
++            std::cout << "[probe] YS duel INIT death frame=" << a_death
++                      << " E2 death frame=" << b_death << "\n";
++            p.check(b_death >= 0 && (a_death < 0 || b_death < a_death),
++                    "YS Initiate beats Conscript 1v1 (rulesmd balance)");
++        }
++
++        // Cost-equivalent 2v1 (200 credits each side): the original's balance
++        // is that two Conscripts beat one Initiate -- Yuri's answer is the
++        // Gattling Cannon / Brute, not Initiate spam. Diagnostic only.
++        {
++            GameScene g2(true, P::menu_config(rules));
++            ra2engine::World& w2 = P::world(g2);
++            int fx2 = 0, fy2 = 0;
++            P::field(w2, fx2, fy2);
++            const int i0 = P::spawn(g2, "INIT", 0, fx2, fy2);
++            const int c0 = P::spawn(g2, "E2", 1, fx2 + 3, fy2);
++            const int c1 = P::spawn(g2, "E2", 1, fx2 + 3, fy2 + 1);
++            if (i0 >= 0 && c0 >= 0 && c1 >= 0) {
++                int i_death = -1, c_death = -1;
++                for (int f = 0; f < 15 * 30; ++f) {
++                    g2.update(kStep);
++                    if (i_death < 0 && w2.units()[i0].hp <= 0) i_death = f;
++                    if (c_death < 0 && w2.units()[c0].hp <= 0 && w2.units()[c1].hp <= 0) c_death = f;
++                    if (i_death >= 0 && c_death >= 0) break;
++                }
++                std::cout << "[probe] YS 2v1 (cost parity) INIT death=" << i_death
++                          << " both E2 death=" << c_death << "\n";
++            }
++        }
++
++        // Conscript shoots a Yuri power plant: 11 per hit (15 x 75%), not 15.
++        auto shoot_building = [&](const char* id, int expect_per_hit, int max_total) {
++            GameScene gb(true, P::menu_config(rules));
++            ra2engine::World& wb = P::world(gb);
++            const int t = roster_index(P::ba(gb), id);
++            if (t < 0) { p.check(false, std::string("YS roster has ") + id); return; }
++            const ra2engine::BuildingTypeDef& d = P::ba(gb).roster[t];
++            int bx = 0, by = 0;
++            P::field(wb, bx, by);
++            const int bi = wb.add_building(t, bx, by, d.fw, d.fh, 0, d.strength, d.armor_ix,
++                                           0.0, true, d.sight, d.grants_map_reveal);
++            // Range is measured to the building's CENTRE (building_aim_lept):
++            // fw+1 keeps the conscript inside M1Carbine's 4 cells for a 4x4.
++            const int e = P::spawn(gb, "E2", 1, bx + d.fw + 1, by);
++            if (bi < 0 || e < 0) { p.check(false, std::string("YS placed ") + id + " + E2"); return; }
++            const int hp0 = wb.buildings()[bi].hp;
++            int first_hit = -1, hits = 0;
++            for (int f = 0; f < 15 * 12 && wb.buildings()[bi].hp > 0; ++f) {
++                const int before = wb.buildings()[bi].hp;
++                gb.update(kStep);
++                const int delta = before - wb.buildings()[bi].hp;
++                if (delta > 0) { ++hits; if (first_hit < 0) first_hit = delta; }
++            }
++            const int lost = hp0 - wb.buildings()[bi].hp;
++            std::cout << "[probe] YS E2 vs " << id << " first_hit=" << first_hit
++                      << " hits=" << hits << " total=" << lost << " of " << hp0 << "\n";
++            p.check(first_hit == expect_per_hit,
++                    std::string("YS E2 per-hit damage on ") + id + " = " +
++                        std::to_string(expect_per_hit) + " (got " + std::to_string(first_hit) + ")");
++            p.check(lost <= max_total,
++                    std::string("YS E2 12s damage on ") + id + " <= " + std::to_string(max_total) +
++                        " (got " + std::to_string(lost) + ")");
++        };
++        shoot_building("YAPOWR", 11, 80);
++        shoot_building("YACNST", 3, 30);
++    }
++
+     std::cout << "[probe] combat: " << (p.fails ? "FAIL" : "ALL PASS") << " fails=" << p.fails
+               << "\n";
+     return p.fails ? 1 : 0;
+diff --git a/tests/test_yuri_strength.cpp b/tests/test_yuri_strength.cpp
+new file mode 100644
+index 0000000..d40d984
+--- /dev/null
++++ b/tests/test_yuri_strength.cpp
+@@ -0,0 +1,152 @@
++// Rallypoint: Yuri faction strength parity against the shipped rulesmd.ini.
++//
++// Ground truth: ra2md.mix/localmd.mix/rulesmd.ini (Steam YR 1.001), extracted
++// 2026-11-23. The damage chain these numbers feed was re-verified against
++// gamemd.exe with Ghidra (see ra2/docs/gamemd-parity-backlog.md, "Yuri
++// strength parity"): TechnoClass::ReceiveDamage 0x701900 (defence divides +
++// min-1) -> ObjectClass::ReceiveDamage 0x5F5390 (Verses kernel call, building
++// floor 1, heal cap) -> Modify_Damage 0x489180 (CellSpread falloff, Verses
++// multiply, MaxDamage cap). HouseClass::GetArmorMultForType 0x50BD30 reads
++// the HouseType category Armor*Mult slots (+0x100..+0x110); stock rulesmd
++// leaves every country's Armor keys unset (identity).
++#include "doctest.h"
++
++#include "asset_fixture.hpp"
++#include "combat.hpp"
++#include "ra2assets/rules.hpp"
++#include "weapon_resolve.hpp"
++
++#include <string>
++#include <vector>
++
++using namespace ra2assets;
++
++namespace {
++
++// One infantry/vehicle type's Strength=, Armor= and primary weapon.
++void pin_type(const Rules& r, const char* id, int strength, const char* armor,
++              const char* primary, int damage, int rof, double range,
++              const char* warhead) {
++    CAPTURE(id);
++    CHECK(r.strength(id) == strength);
++    CHECK(r.armor(id) == armor);
++    CHECK(r.primary(id) == primary);
++    CHECK(r.weapon_damage(primary) == damage);
++    CHECK(r.weapon_rof(primary) == rof);
++    CHECK(r.weapon_range(primary) == doctest::Approx(range));
++    CHECK(r.weapon_warhead(primary) == warhead);
++}
++
++// One structure's Strength= and Armor=.
++void pin_building(const Rules& r, const char* id, int strength, const char* armor) {
++    CAPTURE(id);
++    CHECK(r.strength(id) == strength);
++    CHECK(r.armor(id) == armor);
++}
++
++}  // namespace
++
++TEST_CASE("yuri strength: real rulesmd pins for every Yuri combat type") {
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: ra2md.mix not found"); return; }
++    if (ra2fixture::rulesmd_bytes().empty()) { MESSAGE("skipped: rulesmd.ini not found"); return; }
++    const Rules& r = ra2fixture::rulesmd();
++
++    // Infantry. Initiate: PsychicJab 25/15/4.5, SAFlame (SA verses, ProneDamage 70%).
++    pin_type(r, "INIT", 100, "none", "PsychicJab", 25, 15, 4.5, "SAFlame");
++    pin_type(r, "BRUTE", 200, "plate", "Punch", 100, 60, 1.4, "Battering");
++    CHECK(r.weapon_damage("Smash") == 100);   // Brute secondary
++    pin_type(r, "VIRUS", 100, "none", "Virusgun", 125, 100, 10.0, "Virus");
++    pin_type(r, "YURIPR", 150, "flak", "SuperMindControl", 1, 200, 7.0, "ControllerBuilding");
++    CHECK(r.strength("SLAV") == 125);         // Slave: SHOVEL 30/30, weak melee
++    CHECK(r.armor("SLAV") == "none");
++
++    // Vehicles.
++    pin_type(r, "LTNK", 300, "heavy", "ATGUN", 65, 60, 5.0, "AP");
++    pin_type(r, "YTNK", 210, "light", "AGGattling", 25, 16, 5.0, "GattWH");
++    CHECK(r.section_flag("YTNK", "IsGattling", false));
++    CHECK(r.section_string("YTNK", "Weapon2", "") == "AAGattling");   // AA stage
++    CHECK(r.weapon_range("AAGattling") == doctest::Approx(8.0));
++    pin_type(r, "TELE", 150, "light", "MagneticBeam", 5000, 20, 12.0, "LocomotorBeam");
++    pin_type(r, "MIND", 500, "heavy", "MultipleMindControlTank", 3, 10, 6.0, "Controller");
++    pin_type(r, "DISK", 600, "light", "DiskLaser", 90, 80, 7.0, "DiskWH");
++    pin_type(r, "CAOS", 200, "light", "ChaosAttack", 600, 30, 3.0, "PsychGasCreate");
++    CHECK(r.strength("PCV") == 1000);         // Psi Commando: no weapon
++    CHECK(r.armor("PCV") == "heavy");
++    CHECK(r.strength("YHVR") == 300);         // Hover Transport: unarmed
++    CHECK(r.armor("YHVR") == "heavy");
++    pin_type(r, "BSUB", 1200, "heavy", "BoomerTorpedo", 60, 120, 7.0, "APSplash2");
++    pin_type(r, "SMIN", 2000, "medium", "20mmRapid", 30, 20, 5.5, "HARVWH");
++    CHECK(r.strength("SMON") == 1000);        // Slave Miner (deployed): unarmed
++    CHECK(r.armor("SMON") == "medium");
++
++    // Structures.
++    pin_building(r, "YACNST", 1000, "concrete");
++    pin_building(r, "YAPOWR", 700, "wood");
++    pin_building(r, "YABRCK", 500, "steel");
++    pin_building(r, "YAWEAP", 1000, "wood");
++    pin_building(r, "YAREFN", 2000, "medium");
++    pin_building(r, "YAYARD", 1500, "concrete");
++    pin_building(r, "YADEPT", 1200, "wood");
++    pin_building(r, "YATECH", 500, "wood");
++    pin_building(r, "YAGRND", 900, "wood");
++    pin_building(r, "YAGGUN", 810, "steel");
++    pin_building(r, "YAPSYT", 455, "steel");
++    pin_building(r, "YAGNTC", 1000, "concrete");
++    pin_building(r, "YAPPET", 1000, "concrete");
++    pin_building(r, "YAROCK", 700, "wood");
++    pin_building(r, "YACOMD", 1000, "concrete");
++}
++
++TEST_CASE("yuri strength: warhead verses and the damage chain numbers") {
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: ra2md.mix not found"); return; }
++    if (ra2fixture::rulesmd_bytes().empty()) { MESSAGE("skipped: rulesmd.ini not found"); return; }
++    const Rules& r = ra2fixture::rulesmd();
++
++    // SAFlame (Initiate) shares SA's verses; GattWH is the gattling table.
++    const std::vector<int> sa{100, 80, 80, 50, 25, 25, 75, 50, 25, 100, 100};
++    CHECK(r.verses("SA") == sa);
++    CHECK(r.verses("SAFlame") == sa);
++    const std::vector<int> gatt{100, 80, 70, 50, 30, 10, 10, 5, 3, 200, 50};
++    CHECK(r.verses("GattWH") == gatt);
++    CHECK(ra2engine::warhead_prone_damage(r, "SAFlame") == doctest::Approx(0.7));
++
++    // The per-hit numbers a Conscript (M1Carbine 15, SA) and an Initiate
++    // (PsychicJab 25, SAFlame) deal through damage_vs -- the same multiply
++    // Modify_Damage 0x489180 runs (trunc toward zero, min 1 on a >0% hit).
++    const int none = ra2engine::armor_index("none");
++    const int flak = ra2engine::armor_index("flak");
++    const int plate = ra2engine::armor_index("plate");
++    const int wood = ra2engine::armor_index("wood");
++    const int steel = ra2engine::armor_index("steel");
++    const int concrete = ra2engine::armor_index("concrete");
++    CHECK(ra2engine::damage_vs(15, sa, none) == 15);      // E2 -> INIT
++    CHECK(ra2engine::damage_vs(15, sa, flak) == 12);      // E2 -> E2
++    CHECK(ra2engine::damage_vs(25, sa, flak) == 20);      // INIT -> E2
++    CHECK(ra2engine::damage_vs(25, sa, plate) == 20);     // INIT -> BRUTE
++    CHECK(ra2engine::damage_vs(15, sa, wood) == 11);      // E2 -> YAPOWR/YAWEAP
++    CHECK(ra2engine::damage_vs(15, sa, steel) == 7);      // E2 -> YABRCK/YAGGUN
++    CHECK(ra2engine::damage_vs(15, sa, concrete) == 3);   // E2 -> YACNST
++    CHECK(ra2engine::damage_vs(25, gatt, none) == 25);    // YTNK -> infantry
++    CHECK(ra2engine::damage_vs(25, gatt, ra2engine::armor_index("heavy")) == 2);   // 10% vs heavy
++    CHECK(ra2engine::damage_vs(25, gatt, concrete) == 1); // 3% truncates to 0, min-1 floor
++}
++
++TEST_CASE("yuri strength: stock country armor bonuses are identity") {
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: ra2md.mix not found"); return; }
++    if (ra2fixture::rulesmd_bytes().empty()) { MESSAGE("skipped: rulesmd.ini not found"); return; }
++    const Rules& r = ra2fixture::rulesmd();
++    // gamemd's GetArmorMultForType (0x50BD30) reads the HouseType category
++    // slots; the scalar Armor= only feeds the house CRC. Stock rulesmd sets
++    // neither on any country, so no spawn-HP bake or damage divide may move
++    // Yuri (or any) stats away from the type's Strength=.
++    for (const char* country : {"YuriCountry", "Russians", "Americans", "British", "French",
++                                "Germans", "Alliance", "Confederation", "Africans", "Arabs"}) {
++        CAPTURE(country);
++        CHECK(r.section_double(country, "Armor", 1.0) == doctest::Approx(1.0));
++        CHECK(r.section_double(country, "ArmorInfantryMult", 1.0) == doctest::Approx(1.0));
++        CHECK(r.section_double(country, "ArmorUnitsMult", 1.0) == doctest::Approx(1.0));
++        CHECK(r.section_double(country, "ArmorBuildingsMult", 1.0) == doctest::Approx(1.0));
++        CHECK(r.section_double(country, "ArmorDefensesMult", 1.0) == doctest::Approx(1.0));
++        CHECK(r.section_double(country, "Firepower", 1.0) == doctest::Approx(1.0));
++    }
++}
+\ No newline at end of file
