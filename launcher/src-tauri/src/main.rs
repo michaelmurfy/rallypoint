@@ -1191,6 +1191,17 @@ async fn ra2_country_flags(game_dir: String) -> Result<Vec<ra2flags::Ra2Flag>, S
         .map_err(|e| e.to_string())?
 }
 
+/// The game's own title art (Red Alert 2 / Yuri's Revenge logo, `launchermd.bmp` / `LAUNCHER.BMP` from the
+/// player's game folder), returned as a BMP data URL. EA art is never shipped or written to disk by the launcher.
+#[tauri::command]
+async fn ra2_game_art(game_dir: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ra2::game_art(Path::new(&game_dir)).map(|b| format!("data:image/bmp;base64,{}", mapview::base64(&b)))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Is `path` a Red Alert 2 with Yuri's Revenge? Saved when it is.
 #[tauri::command]
 fn ra2_check_dir(app: tauri::AppHandle, path: String) -> Result<GameCheck, String> {
@@ -1486,7 +1497,7 @@ fn main() {
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game, launch_editor,
-            set_game, ra2_detect, ra2_country_flags, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
+            set_game, ra2_detect, ra2_country_flags, ra2_game_art, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
         ])
         .run(tauri::generate_context!())
         .expect("tauri");
