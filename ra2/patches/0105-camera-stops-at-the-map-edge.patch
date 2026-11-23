@@ -1,0 +1,24 @@
+--- a/engine/input.cpp	2026-11-23 00:50:40.177266030 +0000
++++ b/engine/input.cpp	2026-11-23 00:50:40.177068668 +0000
+@@ -83,8 +83,8 @@
+     : world_(world), cam_(camera), view_w_(view_w), view_h_(view_h) {
+     int mnx, mny, mxx, mxy;
+     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
+-        const int margin_x = view_w_ / 2;
+-        const int margin_y = view_h_ / 2;
++        const int margin_x = 0;   // end stop: the view stops at the map edge, never in the shroud beyond it
++        const int margin_y = 0;
+         min_cam_x_ = -margin_x - mxx;
+         max_cam_x_ = view_w_ + margin_x - mnx;
+         min_cam_y_ = -margin_y - mxy;
+--- a/engine/input_original.cpp	2026-11-23 00:50:40.180663668 +0000
++++ b/engine/input_original.cpp	2026-11-23 00:50:40.179749971 +0000
+@@ -791,7 +791,7 @@
+     view_h_ = view_h;
+     int mnx, mny, mxx, mxy;   // the same rule as the constructor
+     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
+-        const int margin_x = view_w_ / 2, margin_y = view_h_ / 2;
++        const int margin_x = 0, margin_y = 0;
+         min_cam_x_ = -margin_x - mxx;
+         max_cam_x_ = view_w_ + margin_x - mnx;
+         min_cam_y_ = -margin_y - mxy;
