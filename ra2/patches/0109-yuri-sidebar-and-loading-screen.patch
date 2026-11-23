@@ -1,0 +1,63 @@
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -195,13 +195,19 @@
+ // G-91: the sidebar chrome mix -- sidec01 (Allied, every gate) or sidec02
+ // (Soviet), chosen by GameScene from the player's side before the art loads.
+ const char* g_sidebar_mix = "sidec01.mix";
++// Yuri's sidebar: the Soviet chrome (sidec02) with RADARY.SHP as the radar logo
++// and RADARYURI.PAL as the chrome palette [RE: FUN_00534FA0 maps side 2 to 1,
++// so SIDEC02.MIX + SIDEC02MD.MIX load for Yuri; FUN_0072F270 / FUN_0072FA10
++// test session+0x34B8 == 2 and pick UIBKGDY/RADARYURI.PAL and RADARY.SHP
++// instead of SIDEBAR.PAL/UIBKGD.PAL and RADAR.SHP]. sidec02md.mix is in ra2md.mix.
++bool g_sidebar_yuri = false;
+ // W4-AM-04: the sidebar chrome (sidecNN.mix art + sidebar.pal) differs per
+ // side, and the TextureCache lives for the whole menu session -- so a second
+ // mission of the other side showed the first side's cached art. Every
+ // side-art key ("sb:*", the SW clock "sw:gclk*") is cached per side.
+ inline std::string side_tex_key(const std::string& k) {
+     if (k.compare(0, 3, "sb:") == 0 || k.compare(0, 7, "sw:gclk") == 0)
+-        return (std::string(g_sidebar_mix) == "sidec02.mix" ? "S2" : "S1") + k;
++        return (g_sidebar_yuri ? "S3" : std::string(g_sidebar_mix) == "sidec02.mix" ? "S2" : "S1") + k;
+     return k;
+ }
+ void hud_font_load(const ra2assets::MixFile& ra2);   // W2-UI-12 (hud_text.inc)
+@@ -3032,6 +3038,19 @@
+             try { dst = load_sb(fn); flag = true; } catch (const std::exception&) {}
+         };
+         opt(ba.sb_radar, "radar.shp", ba.has_radar);
++        if (g_sidebar_yuri) {   // YR only: plain RA2 keeps the Soviet chrome
++            try {
++                MixFile ymd = MixFile::open_path(env_install_dir() + "ra2md.mix").open_nested("sidec02md.mix");
++                if (const MixEntry* pe = ymd.find(std::string("radaryuri.pal"))) {
++                    const auto raw = ymd.read(*pe);
++                    ba.sb_pal = Palette::load(raw.data(), raw.size());
++                }
++                if (const MixEntry* re = ymd.find(std::string("radary.shp"))) {
++                    ba.sb_radar = ShpFile::load(ymd.read(*re));
++                    ba.has_radar = ba.sb_radar.count() > 0;
++                }
++            } catch (const std::exception&) {}
++        }
+         opt(ba.sb_side3, "side3.shp", ba.has_side3);
+         opt(ba.sb_addon, "addon.shp", ba.has_addon);
+         bool up = false, dn = false;
+@@ -6836,6 +6855,8 @@
+                                                 : mp_map_selection(cfg.map_file))),
+           // G-86: the art loaders below follow this map's theater.
+           ua_((g_art_chain = a_.chain,
++               g_sidebar_yuri = cfg.campaign_map.empty() && !cfg.slots.empty() &&
++                                cfg.slots[(std::size_t)local_slot_of(cfg)].side == ra2engine::World::Side::Yuri,
+                g_sidebar_mix = (soviet_campaign(cfg) || (cfg.campaign_map.empty() && !cfg.slots.empty() &&
+                                                          cfg.slots[(std::size_t)local_slot_of(cfg)].side != ra2engine::World::Side::Allied))   // Rallypoint: Yuri borrows the Soviet chrome
+                                    ? "sidec02.mix" : "sidec01.mix",
+--- a/engine/skirmish_load.inc
++++ b/engine/skirmish_load.inc
+@@ -40,7 +40,7 @@
+             {"ustates", "mplsu.pal"}, {"ukingdom", "mplsuk.pal"}, {"russia", "mplsr.pal"}, {"libya", "mplsl.pal"},
+             {"korea", "mplsk.pal"},   {"iraq", "mplsi.pal"},      {"germany", "mplsg.pal"}, {"france", "mplsf.pal"},
+             {"cuba", "mplsc.pal"},
+-            {"yuri", "mplsobs.pal"}};   // loadmd.mix has no mplsy*.pal: the observer palette
++            {"yuri", "mpyls.pal"}};   // [RE: gamemd table at 0x844C00: MPYLS.PAL follows MPLSC.PAL]
+         std::string pal_name = "mpls.pal";
+         for (const auto& e : kPal)
+             if (art_name == std::string("ls800") + e.first + ".shp") pal_name = e.second;
