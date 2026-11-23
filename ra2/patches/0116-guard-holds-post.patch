@@ -1,0 +1,109 @@
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index c0a8615..d79c827 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1601,7 +1601,10 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
+                         u.attack_order = false;
+                         u.guard_x = u.cell_x;
+                         u.guard_y = u.cell_y;
+-                        if (mission == 11) { u.tg.home_x = u.cell_x; u.tg.home_y = u.cell_y; }
++                        if (mission == 11 && u.tg.home_x < 0) {
++                            u.tg.home_x = u.cell_x;
++                            u.tg.home_y = u.cell_y;
++                        }
+                         if (on_move && mission == 29) {
+                             // W7-07-12 [RE: FootClass FUN_004DEFF0]: an attack-
+                             // moving unit stops to engage (finishing the cell it
+diff --git a/engine/game_scene_play_probe.inc b/engine/game_scene_play_probe.inc
+index a90bb2a..6626d41 100644
+--- a/engine/game_scene_play_probe.inc
++++ b/engine/game_scene_play_probe.inc
+@@ -204,6 +204,9 @@
+             p.set("sel_occupy_target", s0 ? s0->occupy_target : -1);
+             p.set("sel_attack_cell", s0 ? s0->attack_cell_x : -1);
+             p.set("sel_target", s0 ? s0->target : -1);
++            p.set("sel_area_guard", s0 && s0->tg.area_guard ? 1 : 0);
++            p.set("sel_home_x", s0 ? s0->tg.home_x : -1);
++            p.set("sel_home_y", s0 ? s0->tg.home_y : -1);
+             p.set("sel_rof_cool", s0 ? s0->rearm_frames : -1);
+             p.set("sel_turret", s0 ? s0->turret_facing : -1);
+             p.set("sel_body", s0 ? s0->body_facing : -1);
+diff --git a/engine/unit_orders.cpp b/engine/unit_orders.cpp
+index ef81af7..f475508 100644
+--- a/engine/unit_orders.cpp
++++ b/engine/unit_orders.cpp
+@@ -98,8 +98,10 @@ void World::order_guard(int idx) {
+     // doubled area-guard threat radius.
+     if (idx >= 0 && idx < static_cast<int>(units_.size()) && orderable(units_[idx]) && !units_[idx].is_aircraft) {
+         units_[idx].tg.area_guard = true;
+-        units_[idx].tg.home_x = units_[idx].cell_x;   // W7-07-06: guard this spot
+-        units_[idx].tg.home_y = units_[idx].cell_y;
++        // order_stop records the actual post in guard_x/y, including the
++        // reserved destination when G is pressed between cells.
++        units_[idx].tg.home_x = units_[idx].guard_x;
++        units_[idx].tg.home_y = units_[idx].guard_y;
+     }
+ }
+ 
+diff --git a/tests/test_combat.cpp b/tests/test_combat.cpp
+index 8535bdd..d588653 100644
+--- a/tests/test_combat.cpp
++++ b/tests/test_combat.cpp
+@@ -248,6 +248,25 @@ TEST_CASE("step_combat: auto-acquired target dropped beyond guard stray; anchor
+     CHECK(reqs.empty());  // the GI never left its own anchor, so no return move is needed.
+ }
+ 
++TEST_CASE("step_combat: Area Guard acquisition keeps its original home anchor") {
++    auto p = open_grid(10, 1);
++    Occupancy occ(10, 1);
++    std::vector<Unit> units;
++    units.push_back(make_soldier(2, 0, 0, 0, occ));
++    units.push_back(make_soldier(5, 0, 1, 1, occ));
++    units[0].tg.area_guard = true;
++    units[0].tg.home_x = 0;
++    units[0].tg.home_y = 0;
++    units[1].w_damage = 0;
++
++    std::vector<Building> bs;
++    ra2engine::step_combat(test_world(), units, bs, occ, 1.0 / 60.0);
++
++    CHECK(units[0].target == 1);
++    CHECK(units[0].tg.home_x == 0);
++    CHECK(units[0].tg.home_y == 0);
++}
++
+ TEST_CASE("step_combat: death invariants — dying then tombstoned, occupancy freed, no dangling targets") {
+     // 3 units: two GIs both targeting one Conscript; kill it.
+     auto p = open_grid(10, 2);
+diff --git a/tests/test_command.cpp b/tests/test_command.cpp
+index 59cf9dc..90eb754 100644
+--- a/tests/test_command.cpp
++++ b/tests/test_command.cpp
+@@ -309,6 +309,27 @@ TEST_CASE("command apply: IDLE stops, SCATTER steps aside, MEGAMISSION AreaGuard
+     CHECK(w.units()[a].target == foe);
+ }
+ 
++TEST_CASE("command apply: AreaGuard anchors the stopped cell when ordered mid-move") {
++    NEED_MAP();
++    World w(ra2fixture::mapsmd03_map());
++    int x = 0, y = 0;
++    REQUIRE(open_area(w, 8, x, y));
++    const int a = add_unit(w, x, y, 0);
++    Unit& u = w.units()[a];
++    u.path = {{x, y}, {x + 1, y}, {x + 2, y}};
++    u.path_idx = 1;
++    u.fx = x + 0.5;
++
++    apply_command(w, make_mega(w, {a}, Mission::AreaGuard, Target{}, Target{}));
++
++    CHECK(u.tg.area_guard);
++    CHECK(u.path.size() == 2);
++    CHECK(u.guard_x == x + 1);
++    CHECK(u.guard_y == y);
++    CHECK(u.tg.home_x == u.guard_x);
++    CHECK(u.tg.home_y == u.guard_y);
++}
++
+ TEST_CASE("command apply: MEGAMISSION Harvest / Enter (dock) drive the issuer's harvesters") {
+     NEED_MAP();
+     World w(ra2fixture::mapsmd03_map());

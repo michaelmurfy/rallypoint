@@ -1,0 +1,151 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index dba9f89..5be416d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -508,3 +508,4 @@ if (RA2_BUILD_ENGINE)
+   endif()
+ endif()
+ target_sources(ra2assets_tests PRIVATE tests/test_building_frames.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_slot_anim_range.cpp)
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 7f9b7b6..bb1ec33 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -122,6 +122,7 @@ static char* ra2_cli_pref_path() {
+ #include "gamespeed.hpp"       // Gap fix C: RE-T1 logic rate per GameSpeed
+ #include "world.hpp"
+ #include "present_motion.hpp"
++#include "slot_anim_range.hpp"
+ #include "yuri_side.hpp"   // Rallypoint: the third side
+ #include "abil_w5_rules.hpp"   // wave-5 (agent C): requires_stolen_bits
+ 
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index f3ab0a7..519e1d2 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -555,9 +555,9 @@ public:
+     static constexpr int kBldSlots = 21;
+     struct BldAnims {
+         struct Slot {
+-            const FxAnimType* t = nullptr;     // normal
+-            const FxAnimType* dmg = nullptr;   // <Slot>Damaged (health <= ConditionYellow)
+-            const FxAnimType* garr = nullptr;  // <Slot>Garrisoned (occupants > 0)
++            FxAnimType* t = nullptr;     // normal
++            FxAnimType* dmg = nullptr;   // <Slot>Damaged (health <= ConditionYellow)
++            FxAnimType* garr = nullptr;  // <Slot>Garrisoned (occupants > 0)
+             int x = 0, y = 0;
+             bool powered = true;               // <Slot>Powered (def yes): holds without power
+             bool powered_light = false;        // <Slot>PoweredLight: hidden without power
+@@ -598,6 +598,12 @@ public:
+             sl.t = theater_type(aget(image, s));
+             sl.dmg = theater_type(aget(image, s + "Damaged"));
+             sl.garr = theater_type(aget(image, s + "Garrisoned"));
++            auto image_for = [&](const FxAnimType& t) {
++                std::string img = aget(t.name, "Image");
++                return pres_upper(img.empty() ? t.name : img);
++            };
++            ra2engine::clamp_slot_anim_ranges(
++                std::array<FxAnimType*, 3>{sl.t, sl.dmg, sl.garr}, image_for);
+             sl.x = std::atoi(aget(image, s + "X").c_str());
+             sl.y = std::atoi(aget(image, s + "Y").c_str());
+             sl.powered = yes(s + "Powered", true);
+@@ -679,18 +685,23 @@ public:
+         return bld_rules_.emplace(id, r).first->second;
+     }
+     std::vector<std::string> damage_fires() { return split(rget("General", "DamageFireTypes")); }
+-    const FxAnimType* theater_type(const std::string& name) {
++    FxAnimType* theater_type(const std::string& name) {
+         if (name.empty()) return nullptr;
+-        if (const FxAnimType* t = type(name)) return t;
+-        // NewTheater building anims live in the theater mixes (Theater=yes
+-        // anims already resolved through type(), W3-FIX-A AssetFS).
++        // NewTheater building anims live in the theater mixes (isogen
++        // holds the landmark anims, the theater mixes the building anims).
+         const std::string key = pres_upper(name);
++        auto it = types_.find(key);
++        if (it == types_.end()) {
++            (void)type(key);
++            it = types_.find(key);
++        }
++        if (it != types_.end() && it->second) return it->second.get();
+         const std::string img = aget(key, "Image").empty() ? key : aget(key, "Image");
+         std::shared_ptr<ra2assets::ShpFile> shp = theater_shp(img);
+         if (!shp) return nullptr;
+         auto t = std::make_unique<FxAnimType>();
+         fill_type(*t, key, shp);
+-        const FxAnimType* raw = t.get();
++        FxAnimType* raw = t.get();
+         types_[key] = std::move(t);
+         return raw;
+     }
+diff --git a/engine/slot_anim_range.hpp b/engine/slot_anim_range.hpp
+new file mode 100644
+index 0000000..d3d50cc
+--- /dev/null
++++ b/engine/slot_anim_range.hpp
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include <algorithm>
++#include <array>
++
++namespace ra2engine {
++
++// Slot variants can use different portions of one SHP. Keep each variant
++// inside the frame range before the next sibling's Start= boundary.
++template <typename Anim, typename ImageFor>
++void clamp_slot_anim_ranges(const std::array<Anim*, 3>& variants, ImageFor image_for) {
++    for (Anim* anim : variants) {
++        if (!anim) continue;
++        const auto image = image_for(*anim);
++        int end = anim->end;
++        for (const Anim* sibling : variants) {
++            if (!sibling || sibling == anim || sibling->start <= anim->start) continue;
++            if (image_for(*sibling) == image) end = std::min(end, sibling->start);
++        }
++        if (end >= anim->end) continue;
++        anim->end = std::max(anim->start + 1, end);
++        anim->loop_start = std::clamp(anim->loop_start, anim->start, anim->end - 1);
++        anim->loop_end = std::clamp(anim->loop_end, anim->loop_start + 1, anim->end);
++    }
++}
++
++} // namespace ra2engine
+diff --git a/tests/test_slot_anim_range.cpp b/tests/test_slot_anim_range.cpp
+new file mode 100644
+index 0000000..41c8048
+--- /dev/null
++++ b/tests/test_slot_anim_range.cpp
+@@ -0,0 +1,32 @@
++#include "doctest.h"
++#include "../engine/slot_anim_range.hpp"
++
++#include <array>
++#include <string>
++
++namespace {
++struct SyntheticSlotAnim {
++    std::string image;
++    int start;
++    int end;
++    int loop_start;
++    int loop_end;
++};
++}
++
++TEST_CASE("slot animation variants sharing an image stop at the next Start frame") {
++    // Shadow=yes makes the two-image SHP expose two animation frames. With no
++    // End=, fill_type initially gives both variants the full [0, 2) range.
++    SyntheticSlotAnim healthy{"GACSPH_E", 0, 2, 0, 2};
++    SyntheticSlotAnim damaged{"GACSPH_E", 1, 2, 1, 2};
++    const std::array<SyntheticSlotAnim*, 3> variants{&healthy, &damaged, nullptr};
++
++    ra2engine::clamp_slot_anim_ranges(variants, [](const SyntheticSlotAnim& anim) { return anim.image; });
++
++    CHECK(healthy.start == 0);
++    CHECK(healthy.end == 1);
++    CHECK(healthy.loop_start == 0);
++    CHECK(healthy.loop_end == 1);
++    CHECK(damaged.start == 1);
++    CHECK(damaged.end == 2);
++}

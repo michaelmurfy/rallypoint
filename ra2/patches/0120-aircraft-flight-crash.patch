@@ -1,0 +1,507 @@
+diff --git a/engine/flight.cpp b/engine/flight.cpp
+index ec2b7b5..3a24255 100644
+--- a/engine/flight.cpp
++++ b/engine/flight.cpp
+@@ -42,6 +42,14 @@ int altitude_to_screen_dy(double altitude) {
+     return static_cast<int>(om::lround(altitude / 256.0 * 36.74));
+ }
+ 
++double aircraft_screen_level(double ground_level, double altitude) {
++    return altitude > 0.0 ? 0.0 : ground_level;
++}
++
++double aircraft_render_z(double ground_z, double altitude) {
++    return altitude > 0.0 ? altitude : ground_z;
++}
++
+ FlightState advance_flight_state(FlightState state, double altitude,
+                                  double cruise_altitude) {
+     if (state == FlightState::TakingOff && altitude >= cruise_altitude)
+diff --git a/engine/flight.hpp b/engine/flight.hpp
+index 73ea0bd..af17282 100644
+--- a/engine/flight.hpp
++++ b/engine/flight.hpp
+@@ -47,6 +47,11 @@ double heading_toward(double body_facing, double dx, double dy,
+ // JumpjetHeight=750].
+ int altitude_to_screen_dy(double altitude);
+ 
++// Raised aircraft use their altitude as an absolute Z above flat ground.
++// Their base screen projection is level 0; once grounded they use the terrain.
++double aircraft_screen_level(double ground_level, double altitude);
++double aircraft_render_z(double ground_z, double altitude);
++
+ // Altitude-DRIVEN state transitions only (order-driven ones are set by World):
+ // TakingOff -> Cruising once altitude >= cruise_altitude; Descending ->
+ // Grounded once altitude <= 0; Grounded/Cruising pass through unchanged.
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 314640b..728345d 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -263,7 +263,10 @@
+     }
+     bool unit_on_screen(const ra2engine::Unit& u) const {
+         const double sx = (u.fx - u.fy) * 30.0 + cam_.x + 30.0;
+-        const double sy = (u.fx + u.fy) * 15.0 + cam_.y + 15.0 - u.level * 15.0;
++        const double level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++        const double up =
++            u.is_aircraft && u.altitude > 0.0 ? ra2engine::altitude_to_screen_dy(u.altitude) : 0.0;
++        const double sy = (u.fx + u.fy) * 15.0 + cam_.y + 15.0 - level * 15.0 - up;
+         return sx >= 0 && sx < playfield_w_ && sy >= 0 && sy < kWinH;
+     }
+     bool own_live(const ra2engine::Unit& u) const {
+diff --git a/engine/game_scene_play.inc b/engine/game_scene_play.inc
+index 95e2762..064c39f 100644
+--- a/engine/game_scene_play.inc
++++ b/engine/game_scene_play.inc
+@@ -54,11 +54,13 @@
+                     continue;
+                 if (k++ != n) continue;
+                 x = static_cast<int>(std::lround((u.fx - u.fy) * 30.0)) + 30 + cam_.x;
+-                y = static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - u.level * 15)) + 15 +
++                const double draw_level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++                y = static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - draw_level * 15)) + 15 +
+                     cam_.y - 10;   // a little above the feet: inside the hit box
+                 // W6-04-35: an airborne unit is drawn (and hit-tested by
+                 // Input::unit_under) at its altitude, not on its shadow.
+-                if (u.is_aircraft && u.altitude > 0.0) y -= ra2engine::altitude_to_screen_dy(u.altitude);
++                if (u.is_aircraft && u.altitude > 0.0)
++                    y -= ra2engine::altitude_to_screen_dy(u.altitude);
+                 return true;
+             }
+             return false;
+diff --git a/engine/hud_pips.inc b/engine/hud_pips.inc
+index d7ac603..100a412 100644
+--- a/engine/hud_pips.inc
++++ b/engine/hud_pips.inc
+@@ -338,7 +338,8 @@ void draw_bomb_icons(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2en
+             const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+             const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;
+             const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+-            const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - u.level * 15)) + cam.y + 15 - up;
++            const double level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++            const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - level * 15)) + cam.y + 15 - up;
+             blit_shp_centered(ren, tc, "w6bomb:" + std::to_string(bomb_frame(u.bomb_frame)), g_pips->bomb,
+                               bomb_frame(u.bomb_frame), g_pips->pal, sx, sy - 34);
+         }
+diff --git a/engine/input.cpp b/engine/input.cpp
+index 3025cd2..b0adfeb 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -115,7 +115,8 @@ void Input::unit_ground_px(const Unit& u, int& gx, int& gy) const {
+     // W5-B R-061: the infantry sub-cell spot offset (as draw_unit).
+     const double fx = u.fx + u.sub_x / 256.0, fy = u.fy + u.sub_y / 256.0;
+     gx = static_cast<int>(std::lround((fx - fy) * hw)) + kTileW / 2 + cam_.x;
+-    gy = static_cast<int>(std::lround((fx + fy) * hh - u.level * kLevelPx)) + kTileH / 2 +
++    const double draw_level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++    gy = static_cast<int>(std::lround((fx + fy) * hh - draw_level * kLevelPx)) + kTileH / 2 +
+          cam_.y;
+ }
+ 
+@@ -358,7 +359,8 @@ bool Input::unit_body_hit(int idx, int px, int py) const {
+     const Unit& u = us[idx];
+     int gx, gy;
+     unit_ground_px(u, gx, gy);
+-    if (u.is_aircraft && u.altitude > 0.0) gy -= ra2engine::altitude_to_screen_dy(u.altitude);
++    if (u.is_aircraft && u.altitude > 0.0)
++        gy -= ra2engine::altitude_to_screen_dy(u.altitude);
+     // The original's drawn-object hotspot (FUN_006d98f0: dx^2 + 0.5*dy^2 <
+     // 200). [RE-FALLBACK: the point FUN_006d9460 registers for a foot unit
+     // (vtbl+0x1C0) was not traced; the body centre is taken 10 px above the
+diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
+index f23fce8..bdb1c05 100644
+--- a/engine/iso_renderer.cpp
++++ b/engine/iso_renderer.cpp
+@@ -15,6 +15,7 @@
+ #include <utility>
+ 
+ #include "iso_project.hpp"
++#include "flight.hpp"
+ #include "present_motion.hpp"
+ #include "texture_cache.hpp"
+ 
+@@ -518,10 +519,12 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
+     present_ground(unit, ufx, ufy);
+     const int tile_screen_x =
+         static_cast<int>(std::lround((ufx - ufy) * hw)) + cam.x;
+-    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    const double draw_lv = aircraft_screen_level(
++        g_color_world ? g_color_world->draw_level(unit) : unit.level, unit.altitude);
++    const int aircraft_up =
++        unit.is_aircraft && unit.altitude > 0.0 ? altitude_to_screen_dy(unit.altitude) : 0;
+     const int tile_screen_y =
+-        static_cast<int>(std::lround((ufx + ufy) * hh - draw_lv * kLevelPx)) +
+-        cam.y;
++        static_cast<int>(std::lround((ufx + ufy) * hh - draw_lv * kLevelPx)) + cam.y - aircraft_up;
+ 
+     const ra2assets::ShpFile::Frame f = shp.frame_info(unit.frame);
+ 
+@@ -672,8 +675,10 @@ void draw_selection(void* sdl_renderer, const Unit& unit, const Camera& cam, int
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    const double draw_lv = aircraft_screen_level(
++        g_color_world ? g_color_world->draw_level(unit) : unit.level, unit.altitude);
+     tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
++    if (unit.is_aircraft && unit.altitude > 0.0) cy -= altitude_to_screen_dy(unit.altitude);
+ 
+     // Diamond size: default one-cell footprint (60x30, 2:1), or scaled to
+     // `width_px` for wide voxel sprites (keeping the 2:1 iso ratio).
+@@ -772,8 +777,10 @@ void draw_hp_bar(void* sdl_renderer, const Unit& unit, const Camera& cam, int vi
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    const double draw_lv = aircraft_screen_level(
++        g_color_world ? g_color_world->draw_level(unit) : unit.level, unit.altitude);
+     tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
++    if (unit.is_aircraft && unit.altitude > 0.0) cy -= altitude_to_screen_dy(unit.altitude);
+     const int bar_cy = cy - kHpBarUp - kHpBarGap;
+ 
+     SDL_Rect bg{cx - bar_w / 2, bar_cy - kHpBarH / 2, bar_w, kHpBarH};
+@@ -807,8 +814,10 @@ void draw_cargo_pips(void* sdl_renderer, const Unit& unit, int pips_filled, int
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    const double draw_lv = aircraft_screen_level(
++        g_color_world ? g_color_world->draw_level(unit) : unit.level, unit.altitude);
+     tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
++    if (unit.is_aircraft && unit.altitude > 0.0) cy -= altitude_to_screen_dy(unit.altitude);
+     // One row directly UNDER the HP bar (same anchor math as draw_hp_bar).
+     const int row_y = cy - kHpBarUp - kHpBarGap + kHpBarH + 2;
+     const int pip_w = 4, pip_h = 3, gap = 2;
+diff --git a/engine/main.cpp b/engine/main.cpp
+index bb1ec33..0ae9e1a 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3915,20 +3915,22 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+     double pfx, pfy;
+     ra2engine::present_ground(u, pfx, pfy);
+ 
++    // Ground height along a ramp. `u` may be the deck-lifted copy; draw_level
++    // keeps that lift and blends the two cells of the step.
++    const double dlv = ra2engine::color_world() ? ra2engine::color_world()->draw_level(u)
++                                               : static_cast<double>(u.level);
++    const double sprite_level = ra2engine::aircraft_screen_level(dlv, u.altitude);
+     // CB-2 Aircraft [RE-GATE APPLIED: aircraft.md §3]: an airborne unit is drawn RAISED
+     // by altitude_to_screen_dy, with a ground shadow at the un-raised cell.
+     // Guarded on is_aircraft && altitude > 0 -- no existing demo spawns an
+     // aircraft, so no existing screenshot changes [spec §8].
+     const int extra_dy =
+         g_sink_drop_px > 0 ? -g_sink_drop_px   // W7-12-11: the presentation's sinking hull
+-        : (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) +
+-                                                  pres_jumpjet_wobble_px(g_draw_unit_idx, u)   // W5-PRES wobble
++        : (u.is_aircraft && u.altitude > 0.0) ?
++              ra2engine::altitude_to_screen_dy(u.altitude) +
++                                                   pres_jumpjet_wobble_px(g_draw_unit_idx, u)   // W5-PRES wobble
+         : (u.an.sinking && u.die_time >= 0.0) ? -static_cast<int>(u.die_time * 24.0)   // W2-AN-25
+         : 0;
+-    // Ground height along a ramp. `u` may be the deck-lifted copy; draw_level
+-    // keeps that lift and blends the two cells of the step.
+-    const double dlv = ra2engine::color_world() ? ra2engine::color_world()->draw_level(u)
+-                                               : static_cast<double>(u.level);
+     if (u.an.t.no_shadow || g_sink_drop_px > 0) {   // W7-12-11: no shadow while sinking
+         // W4: NoShadow=yes (V3ROCKET / DMISL) -- no ground shadow at all.
+     } else if (extra_dy > 0 && g_map_dressing && vxl_shadow(va, bi)) {
+@@ -3955,8 +3957,8 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+     const std::string fkey = hf ? ":f" + std::to_string(hf) : std::string();
+     // T1.2: Drive-track slope tilt [RE: FUN_0055A7D0 / FUN_007559B0]. Presentation
+     // only — rockets keep their own pitch below.
+-    double slope_pitch = 0.0;
+-    if (!u.an.t.missile && !u.is_aircraft && va.vsrc) {
++    double slope_pitch = u.an.crashing ? -0.35 : 0.0;   // crashing fliers nose-dive [render only]
++    if (!u.an.crashing && !u.an.t.missile && !u.is_aircraft && va.vsrc) {
+         if (const ra2engine::World* cw = ra2engine::color_world()) {
+             const int cx = static_cast<int>(std::floor(pfx));
+             const int cy = static_cast<int>(std::floor(pfy));
+@@ -3998,7 +4000,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                           s.vpl, ra2engine::house_draw_palette(s.pal, u.house), 0,
+                                           pq * 5.0 * 3.14159265358979 / 180.0)).first;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, dlv, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, sprite_level, cam, W, H, extra_dy);
+         return;
+     }
+     // W7-06-12 / W7-04-27: out of spawns -> the xxxxWO hull [RE-FALLBACK: the
+@@ -4018,14 +4020,14 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                                ra2engine::house_draw_palette(va.vsrc->pal, u.house), 0)).first;
+             spr = &it->second;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, dlv, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, sprite_level, cam, W, H, extra_dy);
+     } else {
+         const std::string hkey = "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                  std::to_string(bi) + fkey +
+                                  (std::fabs(slope_pitch) > 1e-4
+                                       ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                                       : "");
+-        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, dlv, cam, W, H,
++        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, sprite_level, cam, W, H,
+                                      extra_dy);
+     }
+     if (va.has_turret) {
+@@ -4046,7 +4048,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                              "vxl:" + img + ":t" + std::to_string(tn) + ":" +
+                                                  std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                                  std::to_string(ti) + fkey,
+-                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
++                                              *alt, tfx, tfy, sprite_level, cam, W, H, extra_dy);
+             else if (!alt)
+                 ra2engine::draw_voxel_sprite(
+                     ren, tc,
+@@ -4056,13 +4058,13 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                              ? ":sp" + std::to_string(static_cast<int>(
+                                            std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                              : ""),
+-                    pitched_part(1, ti, slope_pitch), tfx, tfy, dlv, cam, W, H, extra_dy);
++                     pitched_part(1, ti, slope_pitch), tfx, tfy, sprite_level, cam, W, H, extra_dy);
+             else
+                 ra2engine::draw_voxel_sprite(ren, tc,
+                                              "vxl:" + img + ":t" + std::to_string(tn) + ":" +
+                                                  std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                                  std::to_string(ti) + fkey,
+-                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
++                                              *alt, tfx, tfy, sprite_level, cam, W, H, extra_dy);
+         };
+         auto draw_barrel = [&]() {
+             if (!va.has_barrel) return;
+@@ -4072,7 +4074,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                 (std::fabs(slope_pitch) > 1e-4
+                      ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                      : "");
+-            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, dlv, cam, W,
++            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, sprite_level, cam, W,
+                                          H, extra_dy);
+         };
+         // W7-12-41 [RE: 0x73A3A0 @0x73ACBB-0x73ADD4 -- q = ((turret facing
+@@ -4105,7 +4107,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+             static_cast<int>(std::lround((mx - my) * 15.0 - (va.flh[2] / 256.0) * 36.74));
+         const int cx = static_cast<int>(std::lround((pfx - pfy) * 30.0)) + cam.x + 30;
+         const int cy =
+-            static_cast<int>(std::lround((pfx + pfy) * 15.0 - u.level * 15)) + cam.y + 15 -
++            static_cast<int>(std::lround((pfx + pfy) * 15.0 - sprite_level * 15)) + cam.y + 15 -
+             extra_dy;   // CB-2: track the raised hull when airborne
+         SDL_Rect fr{cx + flash_dx - 3, cy + flash_dy - 3, 6, 6};
+         if (!(fr.x + fr.w <= 0 || fr.y + fr.h <= 0 || fr.x >= W || fr.y >= H)) {
+@@ -4290,10 +4292,11 @@ void draw_p5_chevrons(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2e
+         ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
+         // W7-12-20 [RE: 0x709E10 offsets from the same draw point as the
+         // health bar]: lifted by the flight altitude and a bridge deck.
+-        const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+         const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);
++        const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
++        const double draw_lv = ra2engine::aircraft_screen_level(lv, u.altitude);
+         const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+-        const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
++        const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - draw_lv * 15)) + cam.y + 15 - up;
+         // W7-12-21: +(5,2) for InfantryClass only (the drone is a Unit).
+         const bool inf = pres_rtti_infantry(u);
+         const int ox = inf ? 5 : 10, oy = inf ? 2 : 6;
+@@ -4828,11 +4831,13 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+             const int idx = static_cast<int>(&u - us.data());
+             const bool hovered = g_hover_unit == idx;   // W6-05-07
+             if (usel(u) || hovered) {
+-                const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
++                const int up =
++                    (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+                 double ufx, ufy;
+                 ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
+                 const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+-                const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
++                const double lv = ra2engine::aircraft_screen_level(
++                    world.draw_level(u) + pres_unit_lift_levels(world, u), u.altitude);   // W5-PRES R-100 deck
+                 const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
+                 draw_unit_pips(ren, tc, u, sx, sy, g_pip_yellow, g_pip_red, usel(u));
+                 // W7-12-04/05/16/17/18/22 [RE: DrawHealthBar 0x6F5A00 tail]: the
+diff --git a/engine/pres_effects.inc b/engine/pres_effects.inc
+index 98c3275..725aba4 100644
+--- a/engine/pres_effects.inc
++++ b/engine/pres_effects.inc
+@@ -347,7 +347,9 @@ public:
+                     if (usmoke_[i]) kill_system(usmoke_[i]);
+                     usmoke_[i] = 0;
+                 } else if (cond > prev && (!usmoke_[i] || !system_alive(usmoke_[i]))) {
+-                    const double z = u.level * 104.0 + (u.is_aircraft ? u.altitude : 0.0);
++                    const double z = u.is_aircraft
++                                         ? ra2engine::aircraft_render_z(u.level * 104.0, u.altitude)
++                                         : u.level * 104.0;
+                     usmoke_[i] = damage_smoke(pres_type_id(u), u.fx * 256.0, u.fy * 256.0, z,
+                                               Owner{1, static_cast<int>(i)});
+                 }
+@@ -566,7 +568,7 @@ public:
+             // launch anim when the tilt ends and it leaves the launcher, then
+             // the trail every 3 frames while it flies.
+             if (u.an.t.missile || pres_upper(u.image) == v3_image() || pres_upper(u.image) == dmisl_image()) {
+-                const double z = u.level * 104.0 + u.altitude;
++                const double z = ra2engine::aircraft_render_z(u.level * 104.0, u.altitude);
+                 if (u.an.rocket.phase >= ra2engine::kRocketClimb) {
+                     if (rocket_launched_.insert(i).second) {
+                         if (fx_->spawn("V3TAKOFF", u.fx, u.fy, 0, std::max(0.0, z - 10.0) * kFxLepPx)) ++v3_puffs_;
+@@ -1026,7 +1028,11 @@ private:
+             const ra2engine::Unit& u = world_->units()[static_cast<std::size_t>(kv.first)];
+             if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
+             if (!world_->object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+-            diamond(u.fx * 256.0, u.fy * 256.0, u.level * 104.0 + (u.is_vehicle ? 60.0 : 90.0),
++            const double ground_z = u.level * 104.0 + (u.is_vehicle ? 60.0 : 90.0);
++            const double z = u.is_aircraft
++                                 ? ra2engine::aircraft_render_z(ground_z, u.altitude)
++                                 : ground_z;
++            diamond(u.fx * 256.0, u.fy * 256.0, z,
+                     u.is_vehicle ? 20 : 9, u.is_vehicle ? 12 : 14);
+         }
+         for (const auto& kv : g_flash_buildings) {
+@@ -1077,7 +1083,8 @@ private:
+             const ra2engine::Unit& u = world_->units()[static_cast<std::size_t>(o.index)];
+             if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) return false;
+             x = u.fx * 256.0; y = u.fy * 256.0;
+-            z = u.level * 104.0 + (u.is_aircraft ? u.altitude : 0.0);
++            z = u.is_aircraft ? ra2engine::aircraft_render_z(u.level * 104.0, u.altitude)
++                              : u.level * 104.0;
+             return true;
+         }
+         if (o.kind == 2) {
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index 519e1d2..d772386 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -374,7 +374,8 @@ public:
+             const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;
+             const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+             sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+-            sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - u.level * 15 - lift)) + cam.y + 15 - up;
++            const double level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++            sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - level * 15 - lift)) + cam.y + 15 - up;
+         };
+         SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+         for (const Link& l : links_) {
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index 38df1b0..062fb70 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -334,9 +334,11 @@ private:
+             if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
+             if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+             const int gx = static_cast<int>(std::lround((u.fx - u.fy) * 30.0)) + cam_.x + 30;
+-            int gy = static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - u.level * 15)) + cam_.y + 15;
++            const double draw_level = ra2engine::aircraft_screen_level(u.level, u.altitude);
++            int gy = static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - draw_level * 15)) + cam_.y + 15;
+             // W2-AN-24: the cursor tracks the RAISED sprite of an airborne unit.
+-            if (u.is_aircraft && u.altitude > 0.0) gy -= ra2engine::altitude_to_screen_dy(u.altitude);
++            if (u.is_aircraft && u.altitude > 0.0)
++                gy -= ra2engine::altitude_to_screen_dy(u.altitude);
+             const int hw = u.is_vehicle ? 22 : 10, up = u.is_vehicle ? 24 : 30;
+             if (mx >= gx - hw && mx <= gx + hw && my >= gy - up && my <= gy + 6) { hit = i; break; }
+         }
+@@ -775,7 +777,8 @@ private:
+         }
+         ox = (mx + my) * 30.0;
+         lift = -((mx - my) * 15.0) + (flh[2] / 256.0) * 36.74;
+-        if (u.is_aircraft && u.altitude > 0.0) lift += ra2engine::altitude_to_screen_dy(u.altitude);
++        if (u.is_aircraft && u.altitude > 0.0)
++            lift += ra2engine::altitude_to_screen_dy(u.altitude);
+     }
+     // Muzzle Anim= at the firing point; an instant (no flying projectile)
+     // weapon also lands its impact on the target now. W7-12-30: everything
+diff --git a/engine/pres_layers.inc b/engine/pres_layers.inc
+index 9abd21f..f4f0ca5 100644
+--- a/engine/pres_layers.inc
++++ b/engine/pres_layers.inc
+@@ -54,7 +54,8 @@ inline int pres_unit_lift_levels(const ra2engine::World& w, const ra2engine::Uni
+ // effect of this unit (muzzle flash, beam end, impact, death anim, corpse)
+ // is drawn at -- the deck's for a unit standing on one.
+ inline int pres_unit_fx_level(const ra2engine::World& w, const ra2engine::Unit& u) {
+-    return u.level + pres_unit_lift_levels(w, u);
++    return static_cast<int>(ra2engine::aircraft_screen_level(
++        u.level + pres_unit_lift_levels(w, u), u.altitude));
+ }
+ 
+ // W5-PRES R-122 [RE: ObjectClass::SpawnParachuted 0x5F5150, SetOwnerObject
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 0536a29..59d9f3f 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -940,8 +940,8 @@ public:
+     // two cells the height is the blend of those cells, so a paved ramp (the
+     // lower cell of each one-level step is the TMP slope) is followed instead
+     // of the unit staying painted at the level it spawned on. A deck lift
+-    // already added to `u.level` is kept. Aircraft keep `u.level` (altitude
+-    // is a separate offset).
++    // already added to `u.level` is kept. Aircraft keep `u.level` for their
++    // ground anchor; their renderer resolves the altitude reference.
+     double draw_level(const Unit& u) const;
+     // W5-B R-061: up to three infantry per cell (sub-cell spots). Called by
+     // the real game (GameScene, w5_arm_combat); off = one unit per cell.
+diff --git a/tests/test_flight.cpp b/tests/test_flight.cpp
+index e8fcc01..aebe596 100644
+--- a/tests/test_flight.cpp
++++ b/tests/test_flight.cpp
+@@ -362,3 +362,18 @@ TEST_CASE("flight: World Strafe weapon fires 1 + 4 shots per Ammo point [RE: FUN
+     for (int f = 0; f < 900; ++f) { world.step(dt); shots += count_shots(world, 0); }
+     CHECK(shots == 5);
+ }
++
++TEST_CASE("flight presentation: fixed-wing absolute altitude does not add terrain twice") {
++    const double altitude = 1500.0;
++    const double low_level = aircraft_screen_level(0.0, altitude);
++    const double high_level = aircraft_screen_level(4.0, altitude);
++    CHECK(low_level == 0.0);
++    CHECK(high_level == 0.0);
++    CHECK(aircraft_screen_level(4.0, 0.0) == 4.0);
++
++    const double draw_y = -high_level * 15.0 - altitude_to_screen_dy(altitude);
++    const double flat_y = -low_level * 15.0 - altitude_to_screen_dy(altitude);
++    CHECK(draw_y == flat_y);
++    CHECK(aircraft_render_z(416.0, altitude) == altitude);
++    CHECK(aircraft_render_z(416.0, 0.0) == 416.0);
++}
+diff --git a/tests/test_w7_airnav.cpp b/tests/test_w7_airnav.cpp
+index 8b4a55f..25f4b8d 100644
+--- a/tests/test_w7_airnav.cpp
++++ b/tests/test_w7_airnav.cpp
+@@ -237,3 +237,45 @@ TEST_CASE("w7airnav crash: a shot-down plane keeps flying forward, spirals and a
+     const Unit& v = w.units()[0];
+     CHECK(std::hypot(v.fx - x0, v.fy - y0) > 1.0);   // travelled on, not straight down
+ }
++
++TEST_CASE("w7airnav crash: a killed airborne fixed-wing reaches ground and fires DeathWeapon") {
++    ra2assets::MapFile map;
++    if (!w7_map(map)) {
++        MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR");
++        return;
++    }
++    World w(map);
++    const ra2assets::MapCell* c = pick_start_cell(map);
++    REQUIRE(c != nullptr);
++
++    UnitCombat plane;
++    plane.strength = 100;
++    plane.image = "W7CRASH";
++    plane.is_aircraft = true;
++    plane.is_vehicle = true;
++    plane.an.fixed_wing = true;
++    plane.an.crash_weapon.valid = true;
++    plane.an.crash_weapon.damage = 100;
++    plane.an.crash_weapon.cell_spread = 1.0;
++    plane.an.crash_weapon.percent_at_max = 1.0;
++    plane.an.crash_weapon.verses = std::vector<int>(11, 100);
++    plane.an.crash_weapon.affects_allies = false;
++    w.add_combat_unit(c->x, c->y, 0, plane);
++    const int pi = static_cast<int>(w.units().size()) - 1;
++
++    UnitCombat victim = w7_target();
++    victim.strength = 500;
++    w.add_combat_unit(c->x, c->y, 1, victim);
++    const int vi = static_cast<int>(w.units().size()) - 1;
++    w.units()[pi].altitude = 1000.0;
++    w.units()[pi].flight_state = FlightState::Cruising;
++    w.units()[pi].an.t.fly_speed_cps = 0.0;
++
++    w.campaign_kill_unit(pi);
++    w.step(1.0 / 15.0);
++    CHECK(w.units()[pi].an.crashing);
++    for (int f = 0; f < 200 && w.units()[pi].altitude > 0.0; ++f) w.step(1.0 / 15.0);
++
++    CHECK(w.units()[pi].altitude <= 0.0);
++    CHECK(w.units()[vi].hp < w.units()[vi].max_hp);
++}

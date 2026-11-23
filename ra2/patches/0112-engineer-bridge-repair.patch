@@ -1,0 +1,69 @@
+diff --git a/tests/test_w8_bridges.cpp b/tests/test_w8_bridges.cpp
+index 19eec3f..339d210 100644
+--- a/tests/test_w8_bridges.cpp
++++ b/tests/test_w8_bridges.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "asset_fixture.hpp"
+ #include "bridges.hpp"
++#include "input.hpp"
+ #include "unit_w6.hpp"   // kW6Wall
+ #include "world.hpp"
+ 
+@@ -110,6 +111,56 @@ TEST_CASE("w8 W8-01-04/W8-03-03/W8-04-01: an intact low bridge is Road (FUN_0047
+     CHECK(land_speed_mult(c, tank, 3, 1, 2, 0) == doctest::Approx(0.5));   // destroyed piece: Water
+ }
+ 
++TEST_CASE("an engineer enters a bridge hut, repairs a broken low bridge, and is consumed") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(32, 32);
++    World w(map);
++    constexpr int x = 10, y = 10;
++    const std::size_t n = static_cast<std::size_t>(w.grid_w()) * w.grid_h();
++    std::vector<ra2assets::LandType> terrain(n, ra2assets::LandType::Clear), tiles = terrain;
++    std::vector<int> overlays(n, -1);
++    for (int dy = -1; dy <= 1; ++dy) {
++        const std::size_t i = static_cast<std::size_t>(y + dy) * w.grid_w() + x;
++        terrain[i] = ra2assets::LandType::Road;
++        tiles[i] = ra2assets::LandType::Water;
++        overlays[i] = 0x4A;
++    }
++    w.set_land_terrain(terrain);
++    w.set_bridges(overlays, tiles);
++    w.force_bridge_break(x, y);
++    w.force_bridge_break(x, y);
++    REQUIRE(low_bridge_destroyed(w.bridge_overlay_at(x, y)));
++
++    BuildingTypeDef hut_type;
++    hut_type.bridge_repair_hut = true;
++    w.set_building_types({hut_type});
++    World::HouseRec neutral;
++    neutral.combatant = false;
++    w.set_house(1, neutral);
++    const int hut = w.add_building(0, x + 2, y, 1, 1, 1, 100, 0, 0.0, true);
++    REQUIRE(hut >= 0);
++    w.add_unit(x + 1, y, "ENGINEER");
++    const int engineer = static_cast<int>(w.units().size()) - 1;
++
++    CHECK(w.engineer_action(engineer, hut) == World::EngineerAct::Hut);
++    Camera camera;
++    Input input(w, camera, 640, 480);
++    input.selection().set(engineer);
++    input.set_building_art_test([hut](int building, int, int) { return building == hut; });
++    InputEvent click;
++    click.kind = InputEvent::PointerDown;
++    click.button = InputEvent::Left;
++    click.x = 320;
++    click.y = 240;
++    input.handle(click);
++    click.kind = InputEvent::PointerUp;
++    input.handle(click);
++    CHECK(w.units()[static_cast<std::size_t>(engineer)].capture_target == hut);
++    w.step(1.0 / 15.0);
++
++    CHECK_FALSE(low_bridge_destroyed(w.bridge_overlay_at(x, y)));
++    CHECK_FALSE(w.units()[static_cast<std::size_t>(engineer)].alive);
++}
++
+ TEST_CASE("w8 W8-01-06: a low section broken at runtime over Beach is not walkable") {
+     if (!ra2fixture::mapsmd03_available()) { MESSAGE("no install"); return; }
+     LowBridgeWorld b(ra2assets::LandType::Beach);
