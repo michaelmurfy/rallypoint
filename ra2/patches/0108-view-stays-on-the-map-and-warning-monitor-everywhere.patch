@@ -1,0 +1,134 @@
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -83,7 +83,8 @@
+     : world_(world), cam_(camera), view_w_(view_w), view_h_(view_h) {
+     int mnx, mny, mxx, mxy;
+     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
+-        const int margin_x = 0;   // end stop: the view stops at the map edge, never in the shroud beyond it
++        // Loose until set_viewport, which the game always calls and which keeps the view on the map.
++        const int margin_x = 0;
+         const int margin_y = 0;
+         min_cam_x_ = -margin_x - mxx;
+         max_cam_x_ = view_w_ + margin_x - mnx;
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -791,11 +791,7 @@
+     view_h_ = view_h;
+     int mnx, mny, mxx, mxy;   // the same rule as the constructor
+     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
+-        const int margin_x = 0, margin_y = 0;
+-        min_cam_x_ = -margin_x - mxx;
+-        max_cam_x_ = view_w_ + margin_x - mnx;
+-        min_cam_y_ = -margin_y - mxy;
+-        max_cam_y_ = view_h_ + margin_y - mny;
++        set_view_limits(mnx, mny, mxx, mxy);   // end stop: the view stays on the map
+     }
+     clamp_camera();
+ }
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -6627,9 +6627,11 @@
+     // 3b. §7.3: animated WARNING monitor (SDWRNANM, shell2.pal) into ctrl-0x71C
+     //     hole at logical (508,47,92,53), current frame from the scene clock.
+     //     Null-guarded: absent SHP/pal simply leaves SDTP's baked screen showing.
+-    if (monitor_frame >= 0 && art.sdwrnanm && shell2_pal && art.sdwrnanm->count() > 0) {
+-        int mf = ((monitor_frame % art.sdwrnanm->count()) + art.sdwrnanm->count())
+-                 % art.sdwrnanm->count();
++    //     It runs on every page with the mini-monitor (SDTP frame 0) from one wall clock, so it
++    //     never freezes on a sub-page and never restarts on a page change.
++    (void)monitor_frame;
++    if (sdtp_frame == 0 && art.sdwrnanm && shell2_pal && art.sdwrnanm->count() > 0) {
++        const int mf = static_cast<int>(SDL_GetTicks() / 12u % static_cast<Uint32>(art.sdwrnanm->count()));
+         SDL_Texture* mt = shp_frame_tex(tc, "shell:sdwrn" + std::to_string(mf),
+                                         *art.sdwrnanm, mf, *shell2_pal);
+         if (mt) {
+@@ -7551,6 +7553,8 @@
+             const auto raw = read_map_bytes(dir_, sel);
+             if (raw.empty()) return;
+             const Ini map_ini = Ini::parse(std::string(raw.begin(), raw.end()));
++            view_local_ = ra2engine::parse_map_local_size(map_ini);
++            apply_local_limits();
+             // W2-GA-05: the map's [Lighting] (tiles baked per height + ambient).
+             light_.load(map_ini, a_.pal);
+             g_light = &light_;
+@@ -8249,12 +8253,7 @@
+     // canvas) changed; keeps the campaign's LocalSize clamp.
+     void zoom_apply_view() {
+         input_.set_viewport(ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));
+-        if (campaign_ && local_.valid) {
+-            const int W = local_.size_w;
+-            const int top = 15 * (W - 5 + 2 * local_.y);
+-            input_.set_view_limits(30 * (2 * local_.x - W) + 30, top, 30 * (2 * (local_.x + local_.w) - W) + 30,
+-                                   top + 30 * local_.h + 135);
+-        }
++        apply_local_limits();
+         input_.pan(0, 0);   // clamp
+     }
+     // Zoom to `z` keeping the world point under canvas pixel (ax, ay) fixed.
+@@ -8719,17 +8718,19 @@
+         }
+     }
+     void apply_local_limits() {
+-        if (local_.valid) {
++        // A skirmish keeps local_ invalid (on_board), but its view still stops at [Map] LocalSize.
++        const ra2engine::MapLocalSize& lv = campaign_ ? local_ : view_local_;
++        if (lv.valid) {
+             // [RE: TacticalClass clamp FUN_006d7bb0 (CONFIRMED), in the
+             // original's pixel space (cell centre x = 30*(cx-cy), y =
+             // 15*(cx+cy)+15; this engine's world x is +30)]: view edges
+             // left 30*(2Lx-W), right 30*(2(Lx+Lw)-W), top 15*(W-5+2Ly),
+             // bottom = top + 30*Lh + 135.
+-            const int W = local_.size_w;
+-            const int top = 15 * (W - 5 + 2 * local_.y);
+-            input_.set_view_limits(30 * (2 * local_.x - W) + 30, top,
+-                                   30 * (2 * (local_.x + local_.w) - W) + 30,
+-                                   top + 30 * local_.h + 135);
++            const int W = lv.size_w;
++            const int top = 15 * (W - 5 + 2 * lv.y);
++            input_.set_view_limits(30 * (2 * lv.x - W) + 30, top,
++                                   30 * (2 * (lv.x + lv.w) - W) + 30,
++                                   top + 30 * lv.h + 135);
+             input_.pan(0, 0);   // clamp to the new limits
+         }
+     }
+@@ -8741,6 +8742,7 @@
+         return ra2engine::within_usable_area(local_, cx, cy, mc ? mc->level : 0);
+     }
+     ra2engine::MapLocalSize local_;   // invalid (no limits) in a skirmish
++    ra2engine::MapLocalSize view_local_;   // the map's LocalSize, for the view only
+     // Word-wrapped text block (the 5x7 glyph font, `cols` characters per line).
+     static int draw_wrapped(SDL_Renderer* ren, const std::string& text, int x, int y, int cols,
+                             int scale, int max_y, Uint8 r, Uint8 g, Uint8 b) {
+--- a/tests/test_input.cpp
++++ b/tests/test_input.cpp
+@@ -392,21 +392,25 @@
+     const int view_w = 1280, view_h = 720;
+     int mnx, mny, mxx, mxy;
+     REQUIRE(ra2engine::terrain_screen_bounds(map, mnx, mny, mxx, mxy));
+-    const int margin_x = view_w / 2, margin_y = view_h / 2;
++    REQUIRE(mxx - mnx >= view_w);
++    REQUIRE(mxy - mny >= view_h);
+ 
++    // The view [-cam, -cam + view) stays inside the map: no scrolling into the void.
+     Camera cam_pos;
+     Input in_pos(world, cam_pos, view_w, view_h);
+     in_pos.set_scheme(Input::Scheme::Legacy);   // pre-G-05 model under test
++    in_pos.set_viewport(view_w, view_h);   // what the game scene does before any input
+     in_pos.pan(1000000000, 1000000000);
+-    CHECK(cam_pos.x == view_w + margin_x - mnx);
+-    CHECK(cam_pos.y == view_h + margin_y - mny);
++    CHECK(cam_pos.x == -mnx);
++    CHECK(cam_pos.y == -mny);
+ 
+     Camera cam_neg;
+     Input in_neg(world, cam_neg, view_w, view_h);
+     in_neg.set_scheme(Input::Scheme::Legacy);   // pre-G-05 model under test
++    in_neg.set_viewport(view_w, view_h);   // what the game scene does before any input
+     in_neg.pan(-1000000000, -1000000000);
+-    CHECK(cam_neg.x == -margin_x - mxx);
+-    CHECK(cam_neg.y == -margin_y - mxy);
++    CHECK(cam_neg.x == view_w - mxx);
++    CHECK(cam_neg.y == view_h - mxy);
+ }
+ 
+ // ---- Task 6: right-click attack + level-aware ground target + house-filtered selection ----
