@@ -141,6 +141,34 @@ impl Default for Ra2Config {
     }
 }
 
+/// The game's own picture for the Play page, as the bytes of a BMP. Red Alert 2 ships `launchermd.bmp` (the
+/// Yuri's Revenge logo) and `LAUNCHER.BMP` (the base Red Alert 2 logo) as loose files in the game folder, so
+/// we read those directly (nothing of EA's is shipped with Rallypoint).
+pub fn game_art(game_dir: &Path) -> Option<Vec<u8>> {
+    let bmp = |path: &Path| -> Option<Vec<u8>> {
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() || meta.len() < 64 || meta.len() > 6 * 1024 * 1024 {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        bytes.starts_with(b"BM").then_some(bytes)
+    };
+    // Case-insensitive lookup for the two logo files.
+    let find = |needle: &str| -> Option<PathBuf> {
+        std::fs::read_dir(game_dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+            p.is_file() && p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(needle))
+        })
+    };
+    for name in ["launchermd.bmp", "LAUNCHER.BMP"] {
+        if let Some(path) = find(name) {
+            if let Some(b) = bmp(&path) {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

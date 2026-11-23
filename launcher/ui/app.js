@@ -2469,6 +2469,14 @@ function ra2PlayPage() {
   }
   paintFlag();
   ra2FlagArt().then(paintFlag); // the official pictures arrive a moment later; repaint then
+  // The game's own title art (Red Alert 2 / Yuri's Revenge logo) for the Play header, like Generals.
+  (async () => {
+    if (!store.cfg.ra2.game_dir) return;
+    try {
+      const url = await invoke("ra2_game_art", { gameDir: store.cfg.ra2.game_dir });
+      if (url) heroArt.src = url;
+    } catch { /* keep the flag/rays fallback */ }
+  })();
   const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2QuickMap: mapSel.value }); update(); } });
   const startSel = h("select", { "aria-label": "Your start position", onchange: () => prefs.set({ ra2QuickStart: +startSel.value }) },
     new Option("Random start", "0"), ...Array.from({ length: 8 }, (_, n) => new Option(`Start ${n + 1}`, String(n + 1))));
@@ -2496,13 +2504,19 @@ function ra2PlayPage() {
     ] };
   };
   const play = h("button", { class: "btn primary big", onclick: async () => {
-    play.disabled = true;
+    play.disabled = true; heroPlay.disabled = true;
+    const ok = await launchRa2(setup());
+    setTimeout(update, ok ? 5000 : 0);
+  } }, icon("play"), "Start skirmish");
+  const heroPlay = h("button", { class: "btn primary big", onclick: async () => {
+    heroPlay.disabled = true; play.disabled = true;
     const ok = await launchRa2(setup());
     setTimeout(update, ok ? 5000 : 0);
   } }, icon("play"), "Start skirmish");
   function update() {
     const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : !store.cfg.ra2.game_dir ? "Find your game files first." : maps === null ? "Reading your maps…" : !maps.length ? "Add a map first." : "";
     play.disabled = !!why;
+    heroPlay.disabled = !!why;
     status.set(why);
   }
   const hasFiles = !!store.cfg.ra2.game_dir;
@@ -2520,7 +2534,8 @@ function ra2PlayPage() {
   window.addEventListener("ra2display", redrawDisp);
   const hero = h("div", { class: "card hero" }, heroArt,
     h("div", { class: "stack tight herotext" }, h("h2", { title: store.cfg.ra2.game_dir || "" }, "Yuri's Revenge"), h("p", { class: "muted" }, "Command & Conquer: Red Alert 2"),
-      h("div", { class: "row between" }, h("p", { class: "muted small gamepath" }, disp, " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")))));
+      h("div", { class: "row between" }, h("p", { class: "muted small gamepath" }, disp, " ", h("button", { class: "linkbtn", onclick: () => { store.settingsTab = "display"; go("settings"); } }, "Change")))),
+    h("div", { class: "row heroact" }, heroPlay));
   const setupCard = callout("warn", "Rallypoint needs your own copy of Red Alert 2 and Yuri's Revenge. Steam and EA installs are found for you.", h("button", { class: "btn primary", onclick: () => openWizard() }, "Find game files"));
   const skOptions = h("div", { class: "card skcard" },
     h("div", { class: "stack tight" }, h("h3", {}, "Quick Skirmish"), h("p", { class: "muted" }, "A match against the computer, started straight away.")),
