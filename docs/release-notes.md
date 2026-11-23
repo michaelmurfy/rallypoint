@@ -1,20 +1,17 @@
+## Rallypoint 0.10.0-beta.12
+
+**The shroud stops shimmering, Chrono units show their warp, and the menu meter and buttons behave.** Red Alert 2 only.
+
+- **No more flicker while you scroll.** The shroud edge is drawn cell by cell again, so the map no longer crawls with artifacts as you pan.
+- **Chrono units visibly warp.** Chrono Legionnaires and Chrono Miners both show the warp flash at the start and end of a teleport, with sparkles, and an erased unit fades out.
+- **The WARNING needle sweeps at the right pace.** It was running about five times too fast; a full loop now takes about six seconds.
+- **Menu buttons press.** Each button sinks when pressed and rises when released.
+- **Menu clicks are back.** Button, checkbox and dropdown sounds play even when the menu music files are missing, and the music file is found on Steam installs that ship it in capitals.
+
 ## Rallypoint 0.10.0-beta.11
 
-**Bridges break and repair properly, aircraft finally fly right, and a stack of Red Alert 2 rough edges are gone.** Red Alert 2 only.
-
-- **Bridges work end to end.** High bridges can now be blown up with normal fire, and an engineer repairs a broken bridge through the repair hut, just like the original.
-- **Aircraft fly like aircraft.** They hold a steady height instead of bobbing over hills, and they nose-dive and explode when shot down.
-- **Paratroopers are yours in the air.** Select them while they fall and tap D to deploy the moment they touch down.
-- **Guard means guard.** Pressing G pins a unit to its post; it no longer wanders off after a target.
-- **Slave Miners mine.** The slave workers stopped jittering in place and now haul ore back and deliver it.
-- **The cursor says what it does.** Ctrl force-fire and the minimap move both show the right cursor now.
-- **The Chronosphere and Chrono Legionnaire look right.** The charge dome no longer flickers into its damaged art, and a building being erased fades out with sparkles.
-- **Little things.** The shroud edge softens, and the menu WARNING needle sweeps at a believable pace.
+Bridges break and repair properly, aircraft fly and crash like aircraft, paratroopers can be deployed from the air, Guard pins units to their post, and Slave Miners haul ore. Also fixed: the force-fire and minimap move cursors, and the Chronosphere no longer flickers.
 
 ## Rallypoint 0.10.0-beta.10
 
 Yuri got his own purple sidebar and colour loading screen, the camera stops at the map edge, and the WARNING gauge animates on every menu page with proper button presses.
-
-## Rallypoint 0.10.0-beta.9
-
-Red Alert 2's Play page now follows the Generals layout, with screen options under Options, the skirmish setup grows out of its button in both games, and Red Alert 2 got a softer shroud edge, a random first music track and the score theme on the score screen.
