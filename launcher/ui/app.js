@@ -78,6 +78,27 @@ function liveStatus() {
 }
 
 /** A centred notice with a spinner for something that takes a moment and has no progress to show (starting the game). */
+/** A dialog grows out of the button that opened it and shrinks back into it when it closes. Returns the close
+ *  function: it plays the shrink, then calls `done`. Without a button, or with reduced motion, it just opens and closes. */
+function growFrom(overlay, from) {
+  const box = overlay.firstElementChild;
+  const still = !from || !from.isConnected || matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const frames = () => {
+    const b = from.getBoundingClientRect(), d = box.getBoundingClientRect();
+    const dx = b.left + b.width / 2 - (d.left + d.width / 2), dy = b.top + b.height / 2 - (d.top + d.height / 2);
+    return [{ transform: `translate(${dx}px, ${dy}px) scale(${Math.max(0.05, b.width / d.width)}, ${Math.max(0.05, b.height / d.height)})`, opacity: 0 }, { transform: "none", opacity: 1 }];
+  };
+  if (!still) box.animate(frames(), { duration: 320, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  let closing = false;
+  return (done) => {
+    if (closing) return;
+    closing = true;
+    if (still || !from.isConnected) { done(); return; }
+    overlay.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "ease-in", fill: "forwards" });
+    box.animate(frames().reverse(), { duration: 200, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" }).finished.then(done, done);
+  };
+}
+
 function busyOverlay(text) {
   const label = h("span", {}, text);
   const el = h("div", { class: "busy-overlay", role: "status", "aria-live": "polite" }, h("div", { class: "busy-card" }, h("span", { class: "spin big", "aria-hidden": "true" }), label));
@@ -547,7 +568,7 @@ function spotUnder(canvas, spots, e) {
 }
 
 /** A map as the game shows it: the preview picture with the start positions on it, beside the skirmish table. */
-function openMapViewer(entries, start, onChange) {
+function openMapViewer(entries, start, onChange, from) {
   let i = start, token = 0, active = 0, shown = null; // active: the row the next click on the map assigns a start position to
   let generalsList = [];                              // what the chosen game and mod offer: [{ id, name }]
   let rows = [];                                      // the skirmish table: one per place on this map
@@ -667,7 +688,8 @@ function openMapViewer(entries, start, onChange) {
         h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, aiSelect(), resPick, play))),
       h("div", { class: "wiz-foot" }, listedRow, close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
-  function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
+  let shrink = null;
+  function finish() { document.removeEventListener("keydown", onKey); shrink ? shrink(() => overlay.remove()) : overlay.remove(); }
   function go(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; show(); } }
 
   // Where the start markers are on the canvas, for drawing them and for clicks.
@@ -721,6 +743,7 @@ function openMapViewer(entries, start, onChange) {
   }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  shrink = growFrom(overlay, from);
   drawGames();
   show();
   close.focus();
@@ -873,7 +896,7 @@ function mapOrganiser(onLoad) {
       const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") + (!m.official && store.cfg.editor_available ? " editable" : "") }, m.official ? h("span", {}) : box,
         h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         m.official || !store.cfg.editor_available ? null : (() => { const b = h("button", { class: "btn small", "aria-label": `Edit ${m.name} in World Builder`, title: `Open ${m.name} in World Builder with ${editorGame().name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); launchEditor(m.name, [b]); } }, "Edit"); return b; })(),
-        h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }); } }, icon("play"), "Skirmish"));
+        h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }, e.currentTarget); } }, icon("play"), "Skirmish"));
       hoverPreview(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
       return row;
     }));
@@ -2504,7 +2527,7 @@ function ra2PlayPage() {
 }
 
 /** The full skirmish setup for one map, in a dialog (the Generals map viewer's counterpart). */
-function openRa2Skirmish(m) {
+function openRa2Skirmish(m, from) {
   prefs.set({ ra2Map: fileOf(m.path) });
   const status = liveStatus();
   const sk = ra2Skirmish(() => update());
@@ -2520,9 +2543,11 @@ function openRa2Skirmish(m) {
       h("div", { class: "wiz-body" }, sk.el),
       h("div", { class: "wiz-foot" }, status.el, h("button", { class: "btn", onclick: () => finish() }, "Close"), play)));
   const onKey = (e) => { if (e.key === "Escape" && e.target.tagName !== "SELECT") finish(); };
-  function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
+  let shrink = null;
+  function finish() { document.removeEventListener("keydown", onKey); shrink(() => overlay.remove()); }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  shrink = growFrom(overlay, from);
   update();
 }
 
@@ -2578,7 +2603,7 @@ function ra2MapsPage() {
       h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name)),
       h("span", { class: "small mapplayers" }, m.players >= 2 ? `${m.players} players` : "Solo"),
       h("span", { class: "muted small mapsize" }, sizeText(m.size_kb)),
-      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: () => openRa2Skirmish(m) }, icon("play"), "Skirmish") : h("span", {}))));
+      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: (e) => openRa2Skirmish(m, e.currentTarget) }, icon("play"), "Skirmish") : h("span", {}))));
     more.hidden = v.length <= shown;
     more.textContent = `Show more (${v.length - shown} left)`;
   }
