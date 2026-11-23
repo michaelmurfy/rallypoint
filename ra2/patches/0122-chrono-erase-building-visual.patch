@@ -1,0 +1,79 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5be416d..1917a1f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -182,6 +182,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_audio_mixer.cpp engine/audio_m
+ # (same pattern as combat.cpp above).
+ target_sources(ra2assets_tests PRIVATE tests/test_voxel_raster.cpp engine/voxel_raster.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_slope_tilt.cpp engine/slope_tilt.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_pres_chrono_tint.cpp)
+ # facing_cache.cpp is the pure C++17 load-time voxel facing cache (no SDL): it
+ # rasterizes each of kVehicleFacings quantized yaws once at load (build_facing_set)
+ # so the draw path can blit cached sprites (docs/re/voxel-render.md §2). Compiled
+diff --git a/engine/pres_chrono_tint.hpp b/engine/pres_chrono_tint.hpp
+new file mode 100644
+index 0000000..a154e22
+--- /dev/null
++++ b/engine/pres_chrono_tint.hpp
+@@ -0,0 +1,11 @@
++#pragma once
++
++// The Chrono Legionnaire's erase effect is presentation-only. Keep this tiny
++// alpha rule separate so it can be regression-tested without game assets.
++inline bool pres_apply_chrono_warp_alpha(unsigned char& alpha, int warp_remaining) {
++    if (warp_remaining > 0) {
++        alpha = 128;
++        return true;
++    }
++    return false;
++}
+diff --git a/engine/pres_state.inc b/engine/pres_state.inc
+index 756d6f0..cfde261 100644
+--- a/engine/pres_state.inc
++++ b/engine/pres_state.inc
+@@ -6,6 +6,8 @@
+ // Presentation::logic_tick. Render-only: nothing here touches the World.
+ // [RE: docs/re/w5-presentation.md §10-12]
+ 
++#include "pres_chrono_tint.hpp"
++
+ struct PresStateFx {
+     std::vector<std::pair<int, int>> prev_cell;   // per unit (cell_x, cell_y) last tick
+     std::vector<char> prev_warp;
+@@ -105,6 +107,7 @@ inline bool pres_building_tint(const ra2engine::World& w, const ra2engine::Build
+         const long c = ft->second - static_cast<long>(w.vet_frame());
+         if (c > 0 && (c & 2)) { br = br <= 1500 ? br + 500 : br - 500; any = true; }
+     }
++    if (pres_apply_chrono_warp_alpha(out.alpha, b.warp_remaining)) any = true;
+     if (any) pres_tint_brightness(out, br);
+     return any;
+ }
+@@ -144,4 +147,11 @@ void pres_state_tick(const ra2engine::World& w, PresFx& fx) {
+         }
+         g_state_fx.prev_warp[i] = warp ? 1 : 0;
+     }
++    for (const ra2engine::Building& b : w.buildings()) {
++        if (!b.alive || b.warp_remaining <= 0 || g_pres_tick % 24 != 0) continue;
++        const int cx = b.cx + (b.fw - 1) / 2;
++        const int cy = b.cy + (b.fh - 1) / 2;
++        if (w.object_visible_at(g_local_house, cx, cy))
++            fx.spawn("CHRONOSK", cx + 120.0 / 256.0, cy + 120.0 / 256.0, w.cell_level(cx, cy), 0.0);
++    }
+ }
+diff --git a/tests/test_pres_chrono_tint.cpp b/tests/test_pres_chrono_tint.cpp
+new file mode 100644
+index 0000000..15f01da
+--- /dev/null
++++ b/tests/test_pres_chrono_tint.cpp
+@@ -0,0 +1,11 @@
++#include "doctest.h"
++#include "pres_chrono_tint.hpp"
++
++TEST_CASE("chrono erase building tint is translucent only while warping") {
++    unsigned char alpha = 255;
++    CHECK_FALSE(pres_apply_chrono_warp_alpha(alpha, 0));
++    CHECK(alpha == 255);
++
++    CHECK(pres_apply_chrono_warp_alpha(alpha, 1));
++    CHECK(alpha == 128);
++}

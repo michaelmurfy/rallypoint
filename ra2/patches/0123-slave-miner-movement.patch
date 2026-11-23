@@ -1,0 +1,191 @@
+diff --git a/engine/slave_miner.cpp b/engine/slave_miner.cpp
+index 1902fd4..d248212 100644
+--- a/engine/slave_miner.cpp
++++ b/engine/slave_miner.cpp
+@@ -51,9 +51,15 @@ int killer_house(const std::vector<Unit>& units, int killed_by) {
+ }  // namespace
+ 
+ bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable, int gw, int gh,
+-                    const Occupancy& occ, int& out_x, int& out_y) {
++                    const Occupancy& occ, int& out_x, int& out_y, int self) {
+     const int dx = b.cx + b.fw / 2, dy = b.cy + b.fh;
+-    if (is_passable(passable, gw, gh, dx, dy) && occ.is_free(dx, dy)) {
++    // Returning workers reserve their destination in Occupancy before they
++    // arrive. Keep accepting that worker's own claim or the chosen pad would
++    // change every frame and order_unit_move would continually restart its path.
++    const auto available = [&](int x, int y) {
++        return occ.is_free(x, y) || (self >= 0 && occ.at(x, y) == self);
++    };
++    if (is_passable(passable, gw, gh, dx, dy) && available(dx, dy)) {
+         out_x = dx;
+         out_y = dy;
+         return true;
+@@ -63,7 +69,7 @@ bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable
+             const bool edge =
+                 y == b.cy - 1 || y == b.cy + b.fh || x == b.cx - 1 || x == b.cx + b.fw;
+             if (!edge) continue;
+-            if (is_passable(passable, gw, gh, x, y) && occ.is_free(x, y)) {
++            if (is_passable(passable, gw, gh, x, y) && available(x, y)) {
+                 out_x = x;
+                 out_y = y;
+                 return true;
+@@ -75,11 +81,14 @@ bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable
+ }
+ 
+ bool slave_pad_cell_unit(const Unit& master, const std::vector<std::uint8_t>& passable, int gw,
+-                         int gh, const Occupancy& occ, int& out_x, int& out_y) {
++                         int gh, const Occupancy& occ, int& out_x, int& out_y, int self) {
+     const int mx = master.cell_x, my = master.cell_y;
++    const auto available = [&](int x, int y) {
++        return occ.is_free(x, y) || (self >= 0 && occ.at(x, y) == self);
++    };
+     for (int d = 0; d < 8; ++d) {
+         const int x = mx + kRingDx[d], y = my + kRingDy[d];
+-        if (is_passable(passable, gw, gh, x, y) && occ.is_free(x, y)) {
++        if (is_passable(passable, gw, gh, x, y) && available(x, y)) {
+             out_x = x;
+             out_y = y;
+             return true;
+@@ -90,7 +99,7 @@ bool slave_pad_cell_unit(const Unit& master, const std::vector<std::uint8_t>& pa
+             for (int dx = -r; dx <= r; ++dx) {
+                 if (std::abs(dx) != r && std::abs(dy) != r) continue;
+                 const int x = mx + dx, y = my + dy;
+-                if (is_passable(passable, gw, gh, x, y) && occ.is_free(x, y)) {
++                if (is_passable(passable, gw, gh, x, y) && available(x, y)) {
+                     out_x = x;
+                     out_y = y;
+                     return true;
+@@ -362,7 +371,7 @@ void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& building
+             master_ok = true;
+             master_house = master.house;
+             reload = master.slave_reload_rate;
+-            (void)slave_pad_cell_unit(master, passable, gw, gh, occ, pad_x, pad_y);
++            (void)slave_pad_cell_unit(master, passable, gw, gh, occ, pad_x, pad_y, idx);
+         } else {
+             if (m < 0 || m >= (int)buildings.size() || !building_master_alive(buildings[(size_t)m])) {
+                 u.is_slave = false;
+@@ -374,7 +383,7 @@ void step_slave_miners(std::vector<Unit>& units, std::vector<Building>& building
+             master_house = master.house;
+             if (master.type >= 0 && master.type < (int)types.size())
+                 reload = types[(size_t)master.type].slave_reload_rate;
+-            (void)slave_pad_cell(master, passable, gw, gh, occ, pad_x, pad_y);
++            (void)slave_pad_cell(master, passable, gw, gh, occ, pad_x, pad_y, idx);
+         }
+         if (!master_ok) continue;
+         (void)master_house;
+diff --git a/engine/slave_miner.hpp b/engine/slave_miner.hpp
+index 2e8d4e0..c23a2c4 100644
+--- a/engine/slave_miner.hpp
++++ b/engine/slave_miner.hpp
+@@ -79,13 +79,15 @@ struct SlaveScoot {
+ };
+ 
+ // Drop cell beside a master's foundation (scan order); falls back to south
+- // centre. Used for spawn and delivery approach.
++// centre. Used for spawn and delivery approach. `self` lets a returning worker
++// keep its own reserved pad rather than choosing a new one every frame.
+ bool slave_pad_cell(const Building& b, const std::vector<std::uint8_t>& passable, int gw, int gh,
+-                    const Occupancy& occ, int& out_x, int& out_y);
++                    const Occupancy& occ, int& out_x, int& out_y, int self = -1);
+ 
+-// Drop cell beside a unit master (8-ring then spiral).
++// Drop cell beside a unit master (8-ring then spiral); `self` preserves the
++// returning worker's own reserved destination.
+ bool slave_pad_cell_unit(const Unit& master, const std::vector<std::uint8_t>& passable, int gw,
+-                         int gh, const Occupancy& occ, int& out_x, int& out_y);
++                         int gh, const Occupancy& occ, int& out_x, int& out_y, int self = -1);
+ 
+ // Liberate every slave of a dead/missing master: clear is_slave / slave state.
+  // Killer house: Building::killed_by / Unit::vet.killed_by → that unit's house
+diff --git a/tests/test_slave_miner.cpp b/tests/test_slave_miner.cpp
+index d4fb060..df8d171 100644
+--- a/tests/test_slave_miner.cpp
++++ b/tests/test_slave_miner.cpp
+@@ -1,5 +1,6 @@
+ #include "doctest.h"
+ #include "ra2assets/rules.hpp"
++#include "ra2assets/map.hpp"
+ #include "../engine/slave_miner.hpp"
+ using namespace ra2engine;
+ using ra2assets::Rules;
+@@ -248,6 +249,80 @@ TEST_CASE("slave miner: gather ore and deliver into house credits") {
+     CHECK(seeking);
+ }
+ 
++TEST_CASE("slave miner: world movement carries a worker to ore and back") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(24, 24);
++    World world(map);
++
++    BuildingTypeDef refinery;
++    refinery.id = "YAREFN";
++    refinery.fw = 3;
++    refinery.fh = 3;
++    refinery.enslaves = "SLAV";
++    refinery.slaves_number = 1;
++    refinery.slave_reload_rate = 25;
++    refinery.slave_storage = 1;
++    world.set_economy({refinery}, {}, OreValues{25, 50}, 100000.0, 0.0, 0.0);
++    world.set_slave_scan(14);
++    UnitCombat slave_proto;
++    slave_proto.image = "SLAV";
++    slave_proto.strength = 125;
++    slave_proto.is_infantry = true;
++    slave_proto.speed_cps = 0.4;
++    world.set_slave_prototype(slave_proto);
++
++    Unit& master = world.add_unit(10, 10, "SMIN");
++    arm_slave_master(master, 1, 500, 25, 1);
++    world.ore().set(15, 10, OreKind::Ore, kMaxOreDensity, 0);
++
++    bool moved = false;
++    bool delivered = false;
++    int spawn_x = -1, spawn_y = -1;
++    for (int frame = 0; frame < 900 && !delivered; ++frame) {
++        world.step(1.0 / 15.0);
++        if (world.units().size() >= 2) {
++            const Unit& slave = world.units()[1];
++            if (spawn_x < 0) {
++                spawn_x = slave.cell_x;
++                spawn_y = slave.cell_y;
++            }
++            moved |= slave.cell_x != spawn_x || slave.cell_y != spawn_y;
++        }
++        delivered = world.take_income(0) > 0.0;
++    }
++
++    CHECK(delivered);
++    CHECK(moved);
++    REQUIRE(world.units().size() >= 2);
++}
++
++TEST_CASE("slave miner: returning workers retain their reserved delivery pad") {
++    std::vector<std::uint8_t> passable(24 * 24, 1);
++    Occupancy occ(24, 24);
++    Building building;
++    building.cx = 10;
++    building.cy = 10;
++    building.fw = 3;
++    building.fh = 3;
++
++    int x = -1, y = -1;
++    REQUIRE(slave_pad_cell(building, passable, 24, 24, occ, x, y));
++    occ.set(x, y, 7);
++    int next_x = -1, next_y = -1;
++    REQUIRE(slave_pad_cell(building, passable, 24, 24, occ, next_x, next_y, 7));
++    CHECK(next_x == x);
++    CHECK(next_y == y);
++
++    Unit master;
++    master.cell_x = 10;
++    master.cell_y = 10;
++    occ.release_all_of(7, -1, -1);
++    REQUIRE(slave_pad_cell_unit(master, passable, 24, 24, occ, x, y));
++    occ.set(x, y, 7);
++    REQUIRE(slave_pad_cell_unit(master, passable, 24, 24, occ, next_x, next_y, 7));
++    CHECK(next_x == x);
++    CHECK(next_y == y);
++}
++
+ TEST_CASE("slave miner: dead slave arms SlaveRegenRate before respawn") {
+     Rig r;
+     r.types[0].slaves_number = 1;
