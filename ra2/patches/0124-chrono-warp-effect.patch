@@ -1,0 +1,318 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1917a1f..625b289 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -183,6 +183,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_audio_mixer.cpp engine/audio_m
+ target_sources(ra2assets_tests PRIVATE tests/test_voxel_raster.cpp engine/voxel_raster.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_slope_tilt.cpp engine/slope_tilt.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_pres_chrono_tint.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_pres_chrono_warp.cpp)
+ # facing_cache.cpp is the pure C++17 load-time voxel facing cache (no SDL): it
+ # rasterizes each of kVehicleFacings quantized yaws once at load (build_facing_set)
+ # so the draw path can blit cached sprites (docs/re/voxel-render.md §2). Compiled
+diff --git a/engine/pres_audio_events.inc b/engine/pres_audio_events.inc
+index f4c7d99..d752463 100644
+--- a/engine/pres_audio_events.inc
++++ b/engine/pres_audio_events.inc
+@@ -170,6 +170,27 @@ public:
+                 }
+                 w6_play(w6_type_or_av(pres_type_id(u), "ChronoOutSound"), ox, oy, "chrono out");
+                 w6_play(w6_type_or_av(pres_type_id(u), "ChronoInSound"), u.fx, u.fy, "chrono in");
++                // W5-PRES R-120: the same teleport draws the warp (Rules WarpOut
++                // at the cell it left and at the one it arrived on).
++                pres_chrono_warp_begin(w, e.a, pres_warp_display_frames(e.y));
++                continue;
++            }
++            // W5-PRES R-120 [RE: WarpAway +0x340, spawned when a unit is erased
++            // (Chrono Legionnaire)]: the victim disappears in Rules WarpAway.
++            if (e.kind == ra2engine::World::AbilityEvent::Kind::Erase) {
++                if (e.building) {
++                    if (e.b >= 0 && e.b < static_cast<int>(w.buildings().size())) {
++                        const ra2engine::Building& bb = w.buildings()[static_cast<std::size_t>(e.b)];
++                        const int cx = bb.cx + (bb.fw - 1) / 2, cy = bb.cy + (bb.fh - 1) / 2;
++                        if (w.object_visible_at(g_local_house, cx, cy))
++                            fx_.spawn(g_warp_away_anim, cx + 120.0 / 256.0, cy + 120.0 / 256.0,
++                                      w.cell_level(cx, cy), 0.0);
++                    }
++                } else if (e.b >= 0 && e.b < static_cast<int>(w.units().size())) {
++                    const ra2engine::Unit& v = w.units()[static_cast<std::size_t>(e.b)];
++                    if (w.object_visible_at(g_local_house, v.cell_x, v.cell_y))
++                        fx_.spawn(g_warp_away_anim, v.fx + 120.0 / 256.0, v.fy + 120.0 / 256.0, v.level, 0.0);
++                }
+                 continue;
+             }
+             // W7-12-13 [RE: FireDeathWeapon FUN_0070CAC0]: the death weapon's
+@@ -605,6 +626,32 @@ public:
+                     board ? "enter transport" : "leave transport");
+         }
+     }
++    // W5-PRES R-120: the picture half of a chrono warp. Rules WarpOut is drawn
++    // at the cell the unit left (pres_state_tick recorded it) and again at the
++    // cell it arrived on [RE: teleport loco warp start 0x719439, warp-in
++    // 0x71986A], and the 50 % translucency with ChronoSparkle1 runs for
++    // `frames` logic ticks. Nothing here touches the World: the Chrono Miner's
++    // warp home never set the sim's warp fields, so the warp the soldier and
++    // the miner show is tracked by the picture.
++    void pres_chrono_warp_begin(const ra2engine::World& w, int idx, long frames) {
++        if (idx < 0 || idx >= static_cast<int>(w.units().size())) return;
++        const ra2engine::Unit& u = w.units()[static_cast<std::size_t>(idx)];
++        if (idx < static_cast<int>(g_state_fx.warp_until.size()))
++            g_state_fx.warp_until[static_cast<std::size_t>(idx)] = g_pres_tick + std::max(1L, frames);
++        const std::string& anim = g_warp_out_anim.empty() ? g_warp_in_anim : g_warp_out_anim;
++        if (anim.empty()) return;
++        // The cell it jumped from, when the tick that jumped was this frame's or
++        // the last few (a catch-up frame runs several ticks before the queue is
++        // drained); otherwise there is no origin to draw.
++        if (idx < static_cast<int>(g_state_fx.jump_from.size()) && g_state_fx.jump_tick[static_cast<std::size_t>(idx)] >= 0 &&
++            g_state_fx.jump_tick[static_cast<std::size_t>(idx)] >= g_pres_tick - 8) {
++            const std::pair<int, int> from = g_state_fx.jump_from[static_cast<std::size_t>(idx)];
++            if (from.first >= 0 && w.object_visible_at(g_local_house, from.first, from.second))
++                fx_.spawn(anim, from.first, from.second, w.cell_level(from.first, from.second), 0.0);
++        }
++        if (w.object_visible_at(g_local_house, u.cell_x, u.cell_y))
++            fx_.spawn(anim, u.cell_x, u.cell_y, u.level, 0.0);
++    }
+     // Chrono Miner teleports: the miner type's ChronoOut/InSound, positional.
+     void w6_harvest_events(const ra2engine::World& w, const std::vector<ra2engine::HarvestEvent>& ev) {
+         w5_init_once();
+@@ -621,6 +668,10 @@ public:
+             }
+             w6_play(w6_type_or_av(pres_type_id(u), out ? "ChronoOutSound" : "ChronoInSound"), x, y,
+                     out ? "chrono out" : "chrono in");
++            // The warp home the miner just made: the warp anims and the
++            // sparkles it never had (the sim does not freeze it, so it has no
++            // warp window of its own).
++            if (!out) pres_chrono_warp_begin(w, e.unit, pres_warp_display_frames(0));
+         }
+     }
+ 
+diff --git a/engine/pres_chrono_warp.hpp b/engine/pres_chrono_warp.hpp
+new file mode 100644
+index 0000000..83904be
+--- /dev/null
++++ b/engine/pres_chrono_warp.hpp
+@@ -0,0 +1,30 @@
++#pragma once
++// The picture half of a chrono warp: which anims and for how long. Kept apart
++// from pres_state.inc / pres_audio_events.inc so the rules lookup and the
++// window length can be regression-tested without game assets or SDL.
++
++#include <cstddef>
++#include <string>
++
++// An anim name from a Rules key. [General] WarpOut=WARPOUT;WAKE2, WarpIn /
++// WarpAway / ChronoSparkle1 alike: the ';' starts an INI comment, which the
++// reader already cut, and a mod may write a comma list. The first name is the
++// one the game spawns. An empty or absent key keeps the stock name.
++inline std::string pres_warp_anim_name(const std::string& ini_value, const char* fallback) {
++    std::string v = ini_value;
++    const std::size_t cut = v.find_first_of(",;");
++    if (cut != std::string::npos) v.erase(cut);
++    const std::size_t first = v.find_first_not_of(" \t");
++    if (first == std::string::npos) return std::string(fallback);
++    const std::size_t last = v.find_last_not_of(" \t");
++    return v.substr(first, last - first + 1);
++}
++
++// Logic frames the warp stays drawn (translucent + sparkles). A unit teleport
++// reports the delay it froze the unit for [RE: 0x718761..0x7188B0, delay =
++// max(dist / ChronoDistanceFactor, ChronoMinimumDelay)]; the Chrono Miner's
++// warp home has no freeze in this engine, so it shows the minimum.
++constexpr long kPresWarpMinFrames = 16;   // [General] ChronoMinimumDelay
++inline long pres_warp_display_frames(long reported) {
++    return reported > 0 ? reported : kPresWarpMinFrames;
++}
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index 11c6282..da26ebd 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -44,6 +44,19 @@ public:
+             for (const ra2engine::UnitTypeDef& d : *list) effects_.note_unit_id(d.combat.image, d.id);
+         g_fx3 = &effects_;
+         rules_ini_ = &rules_ini;
++        // W5-PRES R-120: the chrono warp anims come from Rules ([General] WarpIn
++        // / WarpOut / WarpAway / ChronoSparkle1), not from hard-coded names.
++        // Stock rulesmd: WARPIN / WARPOUT / WARPAWAY / CHRONOSK; an absent key
++        // keeps the stock name, so a rules without them still shows the warp.
++        {
++            auto gen_anim = [&](const char* k, const char* def) {
++                return pres_warp_anim_name(rules_ini.get("General", k), def);
++            };
++            g_warp_in_anim = gen_anim("WarpIn", "WARPIN");
++            g_warp_out_anim = gen_anim("WarpOut", "WARPOUT");
++            g_warp_away_anim = gen_anim("WarpAway", "WARPAWAY");
++            g_chrono_sparkle_anim = gen_anim("ChronoSparkle1", "CHRONOSK");
++        }
+         w5_art_ini_ = &art_ini;   // W5-E2 sequence sounds
+         snd_.open(dir, &audio, audio_on || g_pres_log_on);
+         snd_.set_side(side_ix);
+diff --git a/engine/pres_state.inc b/engine/pres_state.inc
+index cfde261..7926749 100644
+--- a/engine/pres_state.inc
++++ b/engine/pres_state.inc
+@@ -7,12 +7,30 @@
+ // [RE: docs/re/w5-presentation.md §10-12]
+ 
+ #include "pres_chrono_tint.hpp"
++#include "pres_chrono_warp.hpp"
+ 
+ struct PresStateFx {
+     std::vector<std::pair<int, int>> prev_cell;   // per unit (cell_x, cell_y) last tick
+     std::vector<char> prev_warp;
++    // W5-PRES R-120 fix: the display half of a chrono warp. A unit teleport
++    // (World::teleport_unit) sets the sim's own warp_until, but a Chrono
++    // Miner's warp home does not, so the warp the picture shows is tracked
++    // here: `warp_until` is the g_pres_tick the translucency and the sparkles
++    // stop on (opened by the teleport the World reports). `jump_from` /
++    // `jump_tick` remember where a unit that jumped this tick came from, which
++    // is where its warp-out anim goes.
++    std::vector<long> warp_until;
++    std::vector<std::pair<int, int>> jump_from;
++    std::vector<long> jump_tick;
+ };
+ PresStateFx g_state_fx;
++
++// [General] WarpIn / WarpOut / WarpAway / ChronoSparkle1 (rulesmd: WARPIN,
++// WARPOUT, WARPAWAY, CHRONOSK). Set by Presentation::init.
++std::string g_warp_in_anim = "WARPIN";
++std::string g_warp_out_anim = "WARPOUT";
++std::string g_warp_away_anim = "WARPAWAY";
++std::string g_chrono_sparkle_anim = "CHRONOSK";
+ const ra2engine::World* g_state_world = nullptr;   // GameScene's world (null in gates)
+ int g_iron_frames = 750;                            // [SuperWeapon] IronCurtainDuration
+ 
+@@ -48,8 +66,14 @@ inline void pres_tint_brightness(ra2engine::ObjTint& t, int b) {
+     t.add[0] = t.add[1] = t.add[2] = static_cast<unsigned char>(a);
+ }
+ 
+-inline bool pres_unit_warping(const ra2engine::World& w, const ra2engine::Unit& u) {
+-    return u.an.chrono_left_frames > 0.0 || u.warp_remaining > 0 ||
++// True while the picture is showing unit `idx` mid-warp (see warp_until above).
++inline bool pres_warp_window(int idx) {
++    return idx >= 0 && idx < static_cast<int>(g_state_fx.warp_until.size()) &&
++           g_state_fx.warp_until[static_cast<std::size_t>(idx)] > g_pres_tick;
++}
++
++inline bool pres_unit_warping(const ra2engine::World& w, const ra2engine::Unit& u, int idx = -1) {
++    return u.an.chrono_left_frames > 0.0 || u.warp_remaining > 0 || pres_warp_window(idx) ||
+            (u.warp_until >= 0 && static_cast<std::int64_t>(w.ability_frame()) < u.warp_until);
+ }
+ 
+@@ -79,7 +103,7 @@ inline bool pres_unit_tint(const ra2engine::World& w, int idx, ra2engine::ObjTin
+     if (ft != g_flash_units.end()) counter = std::max(counter, ft->second - static_cast<long>(w.vet_frame()));
+     if (counter > 0 && (counter & 2)) { b = b <= 1500 ? 2000 : 500; any = true; }
+     pres_tint_brightness(out, b);
+-    if (pres_unit_warping(w, u)) {   // [RE: 0x705290 / 0x705AD0] Translucent50 while warping
++    if (pres_unit_warping(w, u, idx)) {   // [RE: 0x705290 / 0x705AD0] Translucent50 while warping
+         out.alpha = 128;
+         any = true;
+     }
+@@ -112,33 +136,37 @@ inline bool pres_building_tint(const ra2engine::World& w, const ra2engine::Build
+     return any;
+ }
+ 
+-// Per logic tick: WARPOUT at both ends of a teleport, CHRONOSK every 24 frames
+-// while warping [RE: teleport loco 0x718600, Unit AI 0x7352E3], elite flash
+-// [RE: TechnoClass::AI 0x6F9380].
++// Per logic tick: CHRONOSK every 24 frames while warping [RE: teleport loco
++// 0x718600, Unit AI 0x7352E3], elite flash [RE: TechnoClass::AI 0x6F9380].
++// The warp-out anims themselves come from the teleport the World reports
++// (Presentation::pres_chrono_warp_begin): the loco spawns Rules WarpOut at the
++// cell it leaves and again at the cell it arrives on [RE: 0x719439 warp start,
++// 0x71986A warp-in], and the Chrono Miner's warp home never set the sim fields
++// this used to test, so watching the cell jump alone missed it.
+ void pres_state_tick(const ra2engine::World& w, PresFx& fx) {
+     g_state_world = &w;
+     g_iron_frames = std::max(1, w.sw_params().iron_frames);
+     const auto& us = w.units();
+     g_state_fx.prev_cell.resize(us.size(), {-1, -1});
+     g_state_fx.prev_warp.resize(us.size(), 0);
++    g_state_fx.warp_until.resize(us.size(), -1);
++    g_state_fx.jump_from.resize(us.size(), {-1, -1});
++    g_state_fx.jump_tick.resize(us.size(), -1);
+     for (std::size_t i = 0; i < us.size(); ++i) {
+         const ra2engine::Unit& u = us[i];
+         auto& pc = g_state_fx.prev_cell[i];
+-        const bool warp = u.alive && pres_unit_warping(w, u);
+-        if (u.alive && u.cargo_of < 0 && pc.first >= 0 && warp &&
++        const bool warp = u.alive && pres_unit_warping(w, u, static_cast<int>(i));
++        // A cell jump of 2+ cells in one tick is a teleport (a warp is the only
++        // way a unit moves more than one cell per tick). Remember where it came
++        // from: the warp-out anim goes there, and the reported teleport lands
++        // after this tick.
++        if (u.alive && u.cargo_of < 0 && pc.first >= 0 &&
+             std::max(std::abs(u.cell_x - pc.first), std::abs(u.cell_y - pc.second)) >= 2) {
+-            auto level_at = [&](int x, int y) {
+-                const ra2assets::MapCell* mc = g_map_dressing && g_map_dressing->map() ? g_map_dressing->map()->at(x, y)
+-                                                                                        : nullptr;
+-                return mc ? static_cast<int>(mc->level) : u.level;
+-            };
+-            if (w.object_visible_at(g_local_house, pc.first, pc.second))
+-                fx.spawn("WARPOUT", pc.first, pc.second, level_at(pc.first, pc.second), 0.0);
+-            if (w.object_visible_at(g_local_house, u.cell_x, u.cell_y))
+-                fx.spawn("WARPOUT", u.cell_x, u.cell_y, u.level, 0.0);
++            g_state_fx.jump_from[i] = pc;
++            g_state_fx.jump_tick[i] = g_pres_tick;
+         }
+         if (warp && g_pres_tick % 24 == 0 && w.object_visible_at(g_local_house, u.cell_x, u.cell_y))
+-            fx.spawn("CHRONOSK", u.fx + 120.0 / 256.0, u.fy + 120.0 / 256.0, u.level, 0.0);
++            fx.spawn(g_chrono_sparkle_anim, u.fx + 120.0 / 256.0, u.fy + 120.0 / 256.0, u.level, 0.0);
+         pc = {u.cell_x, u.cell_y};
+         // R-122: a chute opens on the tick its paratrooper starts to fall.
+         if (u.alive && pres_para_alt(u) > 0.0) {
+@@ -152,6 +180,6 @@ void pres_state_tick(const ra2engine::World& w, PresFx& fx) {
+         const int cx = b.cx + (b.fw - 1) / 2;
+         const int cy = b.cy + (b.fh - 1) / 2;
+         if (w.object_visible_at(g_local_house, cx, cy))
+-            fx.spawn("CHRONOSK", cx + 120.0 / 256.0, cy + 120.0 / 256.0, w.cell_level(cx, cy), 0.0);
++            fx.spawn(g_chrono_sparkle_anim, cx + 120.0 / 256.0, cy + 120.0 / 256.0, w.cell_level(cx, cy), 0.0);
+     }
+ }
+diff --git a/tests/test_pres_chrono_warp.cpp b/tests/test_pres_chrono_warp.cpp
+new file mode 100644
+index 0000000..2b512be
+--- /dev/null
++++ b/tests/test_pres_chrono_warp.cpp
+@@ -0,0 +1,23 @@
++#include "doctest.h"
++#include "pres_chrono_warp.hpp"
++
++TEST_CASE("chrono warp anims come from the Rules keys, stock names as fallback") {
++    // [General] WarpOut=WARPOUT;WAKE2 -- the reader cuts the comment, so the
++    // value is already tidy, and the stock name is used when it is not.
++    CHECK(pres_warp_anim_name("WARPOUT", "WARPOUT") == "WARPOUT");
++    CHECK(pres_warp_anim_name("WARPIN", "WARPOUT") == "WARPIN");
++    // A mod list: the first name is the one spawned.
++    CHECK(pres_warp_anim_name("CHRONOSK,WAKE2", "WARPIN") == "CHRONOSK");
++    CHECK(pres_warp_anim_name(" RING1 ; alt", "WARPAWAY") == "RING1");
++    CHECK(pres_warp_anim_name("", "WARPAWAY") == "WARPAWAY");
++    CHECK(pres_warp_anim_name("   ", "CHRONOSK") == "CHRONOSK");
++}
++
++TEST_CASE("chrono warp display lasts the reported delay, else the minimum") {
++    // A unit teleport reports the frames it froze the unit for.
++    CHECK(pres_warp_display_frames(53) == 53);
++    CHECK(pres_warp_display_frames(16) == 16);
++    // The Chrono Miner's warp home freezes nothing: minimum (ChronoMinimumDelay).
++    CHECK(pres_warp_display_frames(0) == kPresWarpMinFrames);
++    CHECK(pres_warp_display_frames(-1) == kPresWarpMinFrames);
++}
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index d772386..3c101f9 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -799,6 +799,14 @@ public:
+         t.crater = pres_lower(aget(key, "Crater")).rfind("y", 0) == 0;
+         t.scorch = pres_lower(aget(key, "Scorch")).rfind("y", 0) == 0;
+         t.ydraw = num("YDrawOffset", 0);
++        // [RE: reading FUN_00427c80 @0x42813F/0x428255/0x428310 stores YSortAdjust
++        // at AnimType +0x340, ZAdjust at +0x33C, YDrawOffset at +0x344]: only
++        // YDrawOffset is applied by this draw path. What the other two do to the
++        // picture was not established (they read as sort / height adjustments,
++        // and BEHIND=2000 shows they are not a plain pixel shift), so they are
++        // not read. The chrono anims set them (WARPOUT YSortAdjust=-64,
++        // CHRONOSK YSortAdjust=100 ZAdjust=-124), which is where to start if the
++        // sparkles ever look off the cell.
+     }
+     std::shared_ptr<ra2assets::ShpFile> projectile_shp(const std::string& image) {
+         auto it = proj_shps_.find(image);
