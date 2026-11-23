@@ -1,0 +1,69 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -672,6 +672,10 @@
+     bool has_radar = false, has_side3 = false, has_addon = false, has_scroll = false,
+          has_repair_sell = false, has_optbtns = false;
+     ra2assets::Palette sb_pal;                       // sidebar.pal if present, else cameo.pal
++    // Yuri only: RADARYURI.PAL for the radar logo (the sb:radar* blits).
++    // Every other chrome SHP keeps sb_pal: sidec02.mix/sidebar.pal, the
++    // Soviet chrome retail gives Yuri as well -- see 0127.
++    ra2assets::Palette sb_radar_pal;
+     ra2assets::ShpFile sb_darken;                    // W2-UI-05 language.mix/cameo.mix/darken.shp
+     bool has_darken = false;
+     bool sidebar_ok = false;
+@@ -3016,6 +3020,7 @@
+         } else {
+             std::cerr << "[building] " << g_sidebar_mix << "/sidebar.pal missing; chrome uses cameo.pal\n";
+         }
++        ba.sb_radar_pal = ba.sb_pal;   // radar logo draws under the chrome palette unless Yuri overrides it
+         auto load_sb = [&](const char* fn) -> ShpFile {
+             const MixEntry* e = sb.find(std::string(fn));
+             if (!e) throw std::runtime_error(std::string("sidebar SHP missing: ") + fn);
+@@ -3042,9 +3047,15 @@
+         if (g_sidebar_yuri) {   // YR only: plain RA2 keeps the Soviet chrome
+             try {
+                 MixFile ymd = MixFile::open_path(env_install_dir() + "ra2md.mix").open_nested("sidec02md.mix");
++                // Yuri's radar palette, not the chrome's: the chrome SHPs are
++                // the Soviet art from sidec02.mix and keep sidebar.pal, as in
++                // retail (the Yuri sidebar is the Soviet one). RADARYURI.PAL
++                // only colours radary.shp; painting the chrome with it, as
++                // 0109 did, remaps the frame art to pink/purple/black specks.
++                // UIBKGDY.PAL is the bkgdlg*/bkgdmd*/bkgdsm* background palette.
+                 if (const MixEntry* pe = ymd.find(std::string("radaryuri.pal"))) {
+                     const auto raw = ymd.read(*pe);
+-                    ba.sb_pal = Palette::load(raw.data(), raw.size());
++                    ba.sb_radar_pal = Palette::load(raw.data(), raw.size());
+                 }
+                 if (const MixEntry* re = ymd.find(std::string("radary.shp"))) {
+                     ba.sb_radar = ShpFile::load(ymd.read(*re));
+@@ -5678,14 +5689,14 @@
+         // frame is the open frame drawn over the live map.
+         const int boot = (g_radar && ba.has_radar) ? g_radar->boot_frame(ba.sb_radar.count()) : -1;
+         if (boot > 0) {
+-            blit_shp(ren, tc, "sb:radar:" + std::to_string(boot), ba.sb_radar, boot, ba.sb_pal, lay.radar.x, lay.radar.y);
++            blit_shp(ren, tc, "sb:radar:" + std::to_string(boot), ba.sb_radar, boot, ba.sb_radar_pal, lay.radar.x, lay.radar.y);
+         } else {
+             // The open frame is opaque; the map draws into the radar gadget's
+             // viewport 140x108 at bar (16, 49) (W2-UI-09 [RE: construction.md
+             // §11a radar gadget 223]) -- draw and click share it (cell_at).
+             ra2engine::SbRect screen = lay.radar;
+             if (g_radar && ba.has_radar && ba.sb_radar.count() > 1) {
+-                blit_shp(ren, tc, "sb:radar:open", ba.sb_radar, ba.sb_radar.count() - 1, ba.sb_pal,
++                blit_shp(ren, tc, "sb:radar:open", ba.sb_radar, ba.sb_radar.count() - 1, ba.sb_radar_pal,
+                          lay.radar.x, lay.radar.y);
+                 screen = ra2engine::SbRect{lay.bar.x + 16, 49, 140, 108};
+             }
+@@ -5695,10 +5706,10 @@
+         // W2-UI-09: a radar that just went offline folds back (reverse boot).
+         const int close = g_radar ? g_radar->close_frame(ba.sb_radar.count()) : 0;
+         if (close > 0)
+-            blit_shp(ren, tc, "sb:radar:" + std::to_string(close), ba.sb_radar, close, ba.sb_pal, lay.radar.x,
++            blit_shp(ren, tc, "sb:radar:" + std::to_string(close), ba.sb_radar, close, ba.sb_radar_pal, lay.radar.x,
+                      lay.radar.y);
+         else
+-            blit_shp(ren, tc, "sb:radar", ba.sb_radar, 0, ba.sb_pal, lay.radar.x, lay.radar.y);
++            blit_shp(ren, tc, "sb:radar", ba.sb_radar, 0, ba.sb_radar_pal, lay.radar.x, lay.radar.y);
+     }
+     // side1 band (carries the repair/sell socket art), then the buttons.
+     blit_shp(ren, tc, "sb:side1", ba.sb_side1, 0, ba.sb_pal, lay.side1.x, lay.side1.y);
