@@ -1,0 +1,21 @@
+# ninja log v6
+298	312	1795344757549494263	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-done	13c9ba3d62acc371
+0	14	1795262358234726323	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-mkdir	663a24f325af9a7b
+0	233	1795344757469493458	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-download	2b6452f135298efe
+233	244	1795344757481493579	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-update	578a342d22a49861
+288	298	1795344757534494112	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-test	8134891266b8146a
+255	266	1795344757502493790	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-configure	a3f3a8e32b260fa8
+298	312	1795344757549494263	CMakeFiles/sdl2-populate-complete	13c9ba3d62acc371
+266	277	1795344757513493901	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-build	ebec25988eb05da3
+277	288	1795344757524494012	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-install	8a6d9b74d08a0157
+255	266	1795344757502493790	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-configure	a3f3a8e32b260fa8
+266	277	1795344757513493901	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-build	ebec25988eb05da3
+0	233	1795344757469493458	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-download	2b6452f135298efe
+233	244	1795344757481493579	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-update	578a342d22a49861
+0	14	1795262358234726323	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-mkdir	663a24f325af9a7b
+298	312	1795344757549494263	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-done	13c9ba3d62acc371
+288	298	1795344757534494112	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-test	8134891266b8146a
+244	255	1795344757491493679	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-patch	7417c827c5de49c3
+298	312	1795344757549494263	/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-subbuild/CMakeFiles/sdl2-populate-complete	13c9ba3d62acc371
+277	288	1795344757524494012	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-install	8a6d9b74d08a0157
+244	255	1795344757491493679	sdl2-populate-prefix/src/sdl2-populate-stamp/sdl2-populate-patch	7417c827c5de49c3

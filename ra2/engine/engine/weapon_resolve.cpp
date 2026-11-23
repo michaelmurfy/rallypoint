@@ -1,6 +1,7 @@
 #include "weapon_resolve.hpp"
 #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
 #include "abil_w5_rules.hpp"   // wave-5 (agent C)
+#include "gattling.hpp"
 
 #include "ra2assets/rules.hpp"
 #include <algorithm>
@@ -27,6 +28,7 @@ WeaponSlot resolve_weapon_slot(const ra2assets::Rules& rules, const std::string&
     s.percent_at_max = rules.section_double(wh, "PercentAtMax", 1.0);
     s.affects_allies = rules.section_flag(wh, "AffectsAllies", true);   // W5-B R-060
     s.never_use = rules.section_flag(weapon, "NeverUse", false);         // W7-01-01
+    s.drain_weapon = rules.section_flag(weapon, "DrainWeapon", false);   // Rallypoint: Floating Disc
     s.proj = resolve_projectile_spec(rules, weapon);
     // BulletType AA=/AG= [RE-FALLBACK defaults AA=no, AG=yes: the BulletType
     // loader sits in an unanalysed gap (voxel-render.md §7); these are the
@@ -127,9 +129,14 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
     // read into type+0x6A8 by FUN_00711510]: the deployed infantry fires that
     // slot through the normal target path. A RadLevel deploy weapon (DESO
     // RadEruptionWeapon) is the P4 eruption ability instead.
+    // T3.3 [RE: UnitType IsSimpleDeployer +0xe13 FUN_00747688 / UnitClass
+    // FUN_00739AC0]: Siege Chopper (SCHP) is DeployFire=yes Deployer=no with
+    // IsSimpleDeployer=yes -- same DeployFireWeapon arming as a Deployer.
     const bool deployer = rules.section_flag(type_id, "Deployer", false) &&
                           rules.section_flag(type_id, "DeployFire", false);
-    if (deployer) {
+    const bool simple_deployer = rules.section_flag(type_id, "IsSimpleDeployer", false) &&
+                                 rules.section_flag(type_id, "DeployFire", false);
+    if (deployer || simple_deployer) {
         const int slot = tw.deploy_fire_weapon == 0 ? 0 : 1;
         const WeaponSlot& dw = tw.slot[slot];
         const bool rad = dw.valid && rules.section_double(dw.id, "RadLevel", 0.0) > 0.0;
@@ -141,6 +148,10 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
     c.crusher = rules.section_flag(type_id, "Crusher", false);
     c.auto_crush = rules.section_flag(type_id, "AutoCrush", false);   // W5-B R-050
     c.is_infantry = rules.is_infantry(type_id);                         // W5-B R-061 (sub-cells)
+    {
+        const double w = rules.section_double(type_id, "Weight", 1.0);
+        c.weight_milli = std::max(1, om::ftol(w * 1000.0));
+    }
     {   // W5-B R-062: only the Drive {4A582741} and Ship {2BEA74E1} locomotors
         // read the GroundType speed table (FUN_004B2550 / FUN_006A1310); Hover,
         // Walk, Mech, Jumpjet, Teleport, Rocket... do not. Absent -> Drive.
@@ -173,6 +184,7 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
     // back to the occupant's weapon 0 when the slot is empty, FUN_004526E0).
     if (!c.occupy_weapon.valid) c.occupy_weapon = tw.slot[0];
     if (!c.elite_occupy_weapon.valid) c.elite_occupy_weapon = c.occupy_weapon;
+    fill_gattling(rules, type_id, c.gatt, c.gatt_weapons, c.gatt_weapons_elite);
     fill_unit_w7(rules, type_id, tw, c.w7);
 }
 
@@ -191,6 +203,7 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
     w.move_to_shroud = rules.section_flag(type_id, "MoveToShroud", true);
     w.default_to_guard_area = rules.section_flag(type_id, "DefaultToGuardArea", false);
     w.has_turret = rules.section_flag(type_id, "Turret", false);
+    w.turret_spins = w.has_turret && rules.section_flag(type_id, "TurretSpins", false);
     if (tw.slot[0].valid)
         w.fake_blink = om::ftol(rules.section_double(tw.slot[0].id, "DisguiseFakeBlinkTime", 0.0));
     w.fake_blink_elite = tw.elite[0].valid
@@ -209,6 +222,7 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
     // = InfiniteMindControl -- only for a primary whose warhead has MindControl.
     if (tw.slot[0].valid &&
         rules.section_flag(rules.section_string(tw.slot[0].id, "Warhead", ""), "MindControl", false)) {
+        w.mind_control = true;
         w.mc_capacity = std::max(1, om::ftol(rules.section_double(tw.slot[0].id, "Damage", 1.0)));
         w.mc_infinite = rules.section_flag(tw.slot[0].id, "InfiniteMindControl", false);
     }
@@ -220,6 +234,13 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
     d.weapon[0] = tw.slot[0];
     d.weapon[1] = tw.slot[1];
     d.armed = tw.slot[0].valid && tw.slot[0].range > 0.0 && tw.slot[0].damage != 0;
+    // Rallypoint: a structure whose primary warhead has MindControl=yes (Yuri's Psychic Tower)
+    // takes control of Damage= units instead of hurting them.
+    if (tw.slot[0].valid &&
+        rules.section_flag(rules.section_string(tw.slot[0].id, "Warhead", ""), "MindControl", false)) {
+        d.mc_capacity = std::max(1, om::ftol(rules.section_double(tw.slot[0].id, "Damage", 1.0)));
+        d.mc_infinite = rules.section_flag(tw.slot[0].id, "InfiniteMindControl", false);
+    }
     d.powered = rules.section_flag(type_id, "Powered", false);
     d.rot = rules.rot(type_id);
     d.turret = rules.has_turret(type_id);
@@ -231,7 +252,41 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
     d.max_occupants = om::ftol(rules.section_double(type_id, "MaxNumberOccupants", 0.0));
     d.bridge_repair_hut = rules.section_flag(type_id, "BridgeRepairHut", false);
     d.w6.gate = rules.section_flag(type_id, "Gate", false);   // R-210
+    fill_gattling(rules, type_id, d.gatt, d.gatt_weapons, d.gatt_weapons_elite);
     fill_building_abilities(rules, type_id, d);   // wave-5 (agent C): abil_w5_rules.cpp
+}
+
+void fill_gattling(const ra2assets::Rules& rules, const std::string& type_id, GattlingRules& gatt,
+                   std::vector<WeaponSlot>& weapons, std::vector<WeaponSlot>& elite) {
+    gatt = GattlingRules{};
+    weapons.clear();
+    elite.clear();
+    if (!rules.section_flag(type_id, "IsGattling", false)) return;
+    gatt.enabled = true;
+    gatt.rate_up = om::ftol(rules.section_double(type_id, "RateUp", 0.0));
+    gatt.rate_down = om::ftol(rules.section_double(type_id, "RateDown", 0.0));
+    gatt.weapon_stages = std::max(0, std::min(kGattlingMaxStages,
+                                              om::ftol(rules.section_double(type_id, "WeaponStages", 0.0))));
+    int elite_set = 0;
+    for (int i = 0; i < gatt.weapon_stages; ++i) {
+        gatt.stage_end[i] =
+            om::ftol(rules.section_double(type_id, "Stage" + std::to_string(i + 1), 0.0));
+        gatt.elite_stage_end[i] =
+            om::ftol(rules.section_double(type_id, "EliteStage" + std::to_string(i + 1), 0.0));
+        if (gatt.elite_stage_end[i] != 0) ++elite_set;
+    }
+    gatt.has_elite_stages = elite_set > 0;
+    // WeaponCount should be WeaponStages*2; load what the type lists.
+    const int n = std::max(gatt.weapon_stages * 2,
+                           om::ftol(rules.section_double(type_id, "WeaponCount", 0.0)));
+    weapons.resize(static_cast<std::size_t>(std::max(0, n)));
+    elite.resize(weapons.size());
+    for (int i = 0; i < n; ++i) {
+        weapons[static_cast<std::size_t>(i)] = resolve_weapon_slot(
+            rules, rules.section_string(type_id, "Weapon" + std::to_string(i + 1), ""));
+        elite[static_cast<std::size_t>(i)] = resolve_weapon_slot(
+            rules, rules.section_string(type_id, "EliteWeapon" + std::to_string(i + 1), ""));
+    }
 }
 
 }  // namespace ra2engine

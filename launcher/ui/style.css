@@ -126,6 +126,7 @@ main[data-page="online"] { --page: var(--c-online); } main[data-page="settings"]
 .card.hero > .heroart { position: absolute; z-index: 0; top: 0; right: 0; width: 62%; height: 100%; object-fit: cover; object-position: center; opacity: 0; transition: opacity .9s var(--ease);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); mask-image: linear-gradient(to right, transparent 0%, rgba(0, 0, 0, .55) 45%, #000 100%); }
 .card.hero > .heroart.shown { opacity: .5; }
+.card.hero > .heroart.flagart { object-fit: contain; object-position: right center; }
 @media (max-width: 760px) { .card.hero > .heroart { width: 100%; } .card.hero > .heroart.shown { opacity: .25; } }
 .heroact { gap: 14px; }
 .gamepath { overflow-wrap: anywhere; }
@@ -445,6 +446,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .skrow2.closed .swatch { background: var(--muted); box-shadow: none; }
 .skwho { font-weight: 650; padding-left: 9px; }
 .skrow2 select { height: 30px; font-size: 13px; min-width: 0; text-overflow: ellipsis; background-color: transparent; border-color: transparent; padding-left: 8px; padding-right: 26px; background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%; }
+.sidecell { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.sidecell select { flex: 1; min-width: 0; }
+.sideflag { width: 30px; height: 15px; flex: none; border-radius: 2px; object-fit: contain; }
+.sideflag.official { image-rendering: pixelated; }
 .skrow2 select:hover, .skrow2 select:focus-visible { border-color: var(--line); background-color: var(--surface); }
 .pc0 { --pc: #4d8dff; } .pc1 { --pc: #e5484d; } .pc2 { --pc: #46a758; } .pc3 { --pc: #f5c542; }
 .pc4 { --pc: #f08c3c; } .pc5 { --pc: #9a6bdc; } .pc6 { --pc: #3dc7c0; } .pc7 { --pc: #e5509b; }
@@ -623,29 +628,20 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .switch.small input::after { width: 13px; height: 13px; }
 .switch.small input:checked::after { transform: translateX(13px); }
 .ra2setup { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: start; }
-.ra2setup .mapview-canvas, .ra2preview .mapview-canvas { width: 220px; height: 220px; }
-.ra2setup .mapcol .stage, .ra2preview .stage { width: 220px; }
-.ra2maps { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: start; }
-.ra2maps .listbox .maplist { max-height: max(520px, 68vh); }
-.ra2preview { justify-items: start; width: 232px; gap: 8px; }
-.ra2preview .stack { width: 100%; gap: 4px; }
-.ra2preview .factline { margin: 0; }
-.maprow.ra2 { grid-template-columns: minmax(0, 1fr) auto 52px; gap: 8px; padding: 4px 10px; }
+.ra2setup .mapview-canvas { width: 220px; height: 220px; }
+.ra2setup .mapcol .stage { width: 220px; }
+.maprow.ra2 { grid-template-columns: minmax(0, 1fr) auto 52px 92px; gap: 8px; padding: 4px 10px; cursor: default; }
 .maprow.ra2 .maptags { display: none; } /* game tag is noise when the list is long; chips already filter */
 .maprow.ra2 .mapname { font-size: 13px; font-weight: 550; }
 .maprow.ra2 .mapplayers, .maprow.ra2 .mapsize { font-size: 12px; color: var(--muted); font-weight: 500; }
 .maprow.ra2 { min-height: 34px; }
-.maprow.ra2.on { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
-.maprow.ra2.on .mapname { color: var(--text); }
-.maprow.ra2:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ra2setup .sidehead { margin-bottom: 2px; }
 .ra2setup .mapside { display: grid; gap: 10px; align-content: start; }
 .ra2setup .mapcol { display: grid; gap: 8px; }
-.page:has(.ra2maps) > .card, .page:has(.ra2setup) > .card { gap: 10px; padding: 14px 16px; }
-@media (max-width: 1080px) { .ra2setup, .ra2maps { grid-template-columns: 1fr; } .ra2setup .mapcol { justify-items: start; } .ra2maps .listbox .maplist { max-height: 42vh; } }
+.page:has(.ra2setup) > .card { gap: 10px; padding: 14px 16px; }
+@media (max-width: 1080px) { .ra2setup { grid-template-columns: 1fr; } .ra2setup .mapcol { justify-items: start; } }
 @media (max-width: 760px) {
-  .ra2setup .mapview-canvas, .ra2preview .mapview-canvas { width: min(220px, 100%); height: auto; aspect-ratio: 1; }
-  .ra2preview { width: 100%; }
+  .ra2setup .mapview-canvas { width: min(220px, 100%); height: auto; aspect-ratio: 1; }
 }
 .skrow2 > .pill, .skrow2 > .switch, .skrow2 > .btn { justify-self: start; }
 /* lobby: the start markers are buttons over the map picture (drawn on the canvas under them) */
@@ -750,3 +746,11 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 /* the slim header: which game, and the screen it starts on */
 .card.hero.slim { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; padding: 18px 24px; }
 .herodisp { display: flex; align-items: baseline; gap: 10px; }
+
+/* Red Alert 2 Play: country tiles and the hero art (the flags come from the player's own game files) */
+.skoptions select:not(.speedsel) { width: auto; min-width: 160px; }
+.skplay { margin-left: auto; }
+.flagcard { width: 96px; height: 64px; border-radius: 8px; border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.18); object-fit: contain; flex: none; }
+.flagcard.official { image-rendering: pixelated; }
+.countryrow { display: flex; align-items: center; gap: 12px; }
+.countryrow select { flex: 1; min-width: 0; }

@@ -1,0 +1,332 @@
+diff --git a/engine/building.cpp b/engine/building.cpp
+index 5e8ed3c..607ba25 100644
+--- a/engine/building.cpp
++++ b/engine/building.cpp
+@@ -113,6 +113,18 @@ int building_frame(const Building& b, int shp_frame_count, double condition_yell
+     return frac <= condition_yellow ? 1 : 0;
+ }
+ 
++int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames) {
++    // [RE: Shape_Number FUN_0043ef90]: edi = AnimActive stage; when health <=
++    // ConditionYellow and the building is Idle, return stage+1 (SimpleDamage).
++    if (image_frames < 1) return 0;
++    if (count < 1) count = 1;
++    const int st = ((stage % count) + count) % count;
++    int f = start + st + (damaged ? 1 : 0);
++    if (f < 0) f = 0;
++    if (f >= image_frames) f = image_frames - 1;
++    return f;
++}
++
+ int buildup_frame(const Building& b, int buildup_shp_frame_count) {
+     int image_frames = buildup_shp_frame_count / 2;   // [RE-GATE: building-render.md §5]
+     if (image_frames < 1) return 0;
+diff --git a/engine/building.hpp b/engine/building.hpp
+index 13676b5..c61aaea 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -317,6 +317,11 @@ std::vector<std::uint8_t> buildable_static(const std::vector<std::uint8_t>& land
+ // fewer than 2 image frames. Only meaningful in State::Idle.
+ int building_frame(const Building& b, int shp_frame_count, double condition_yellow);
+ 
++// Art AnimActive=start,count,rate on the building's own SHP [RE: Shape_Number
++// FUN_0043ef90 -- Building+0xf8 stage; SimpleDamage adds 1 when hp/max <=
++// ConditionYellow]. `stage` is 0..count-1 (presentation advances it). Pure.
++int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames);
++
+ // Frame selection for the BUILDUP SHP during State::Buildup
+ // [RE-GATE APPLIED: building-render.md §5]: image frames = first half; the
+ // anim plays ONCE, one frame per fixed PERIOD, period = buildup_total /
+diff --git a/engine/inf_anim.cpp b/engine/inf_anim.cpp
+index 31ade3d..8c8d9d8 100644
+--- a/engine/inf_anim.cpp
++++ b/engine/inf_anim.cpp
+@@ -47,6 +47,8 @@ bool is_die(int q) {
+ bool is_deploy_group(int q) {   // 27..30 [FUN_00520810: Deploy/Deployed/DeployedFire/DeployedIdle]
+     return q >= kSqDeploy && q <= kSqDeployedIdle;
+ }
++// Deploy through Undeploy: fear / walk must not steal the one-shot poses.
++bool is_deploy_busy(int q) { return is_deploy_group(q) || q == kSqUndeploy; }
+ 
+ // The PlayAnim substitutions [RE: FUN_0051d4c0]: in water an amphibious
+ // soldier swaps to the Wet/Swim set; Walk becomes Panic above fear 199; and
+@@ -158,9 +160,10 @@ void finished(InfAnimState& s, const InfTable& t, int& facing, const InfTickCtx&
+         return;
+     }
+     int next;
+-    if (q == kSqDeploy || q == kSqDeployedFire) next = kSqDeployed;
+-    else if (q == kSqUndeploy || q == kSqCheer) next = kSqReady;
+-    else if (c.moving && !is_deploy_group(q)) next = s.prone ? kSqCrawl : kSqWalk;
++    if (q == kSqDeploy || q == kSqDeployedFire || q == kSqDeployedIdle) next = kSqDeployed;
++    else if (q == kSqUndeploy || q == kSqCheer)
++        next = c.moving ? (s.prone ? kSqCrawl : kSqWalk) : kSqReady;
++    else if (c.moving && !is_deploy_busy(q)) next = s.prone ? kSqCrawl : kSqWalk;
+     else if (is_deploy_group(q)) next = kSqDeployed;
+     else next = s.prone ? kSqProne : kSqReady;
+     if (next == q) {   // a looping sequence (Walk/Crawl/Panic/Swim/Deployed...)
+@@ -185,6 +188,12 @@ void idle_action(InfAnimState& s, const InfTable& t, int& facing, const InfTickC
+         if (c.scatter) c.scatter();
+         return;
+     }
++    // Deployed soldiers fidget with DeployedIdle when art defines frames
++    // (GI/GGI ship DeployedIdle=0,0,0 so play() keeps Deployed).
++    if (c.deployed) {
++        play(s, t, kSqDeployedIdle, c.in_water, false);
++        return;
++    }
+     switch (rnd(s, 0, 10)) {
+         case 1: case 2: case 7: play(s, t, kSqIdle2, c.in_water, false); break;
+         case 3: case 4: case 5: play(s, t, kSqIdle1, c.in_water, false); break;
+@@ -237,7 +246,7 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
+         // ---- fear [RE: FUN_0051fde0], only while armed (the live game) ----
+         if (s.armed) {
+             if (s.fear > 0 && !t.fearless) --s.fear;
+-            if (!is_deploy_group(s.seq) && s.seq != kSqCheer) {
++            if (!is_deploy_busy(s.seq) && s.seq != kSqCheer) {
+                 if (!s.prone) {
+                     if (s.fear > 49 && !(c.human && (c.has_destination || c.moving)) && !t.fraidycat)
+                         play(s, t, kSqDown, c.in_water, false);
+@@ -247,7 +256,7 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
+             }
+             // W7-07-27 / W7-09-12 [RE: FUN_0051FDE0 tail 0x51FF0C]: the panic
+             // scatter has no human gate (only the idle-roll scatter does).
+-            if (t.fraidycat && s.fear > 50 && !c.moving && !c.has_destination && !is_deploy_group(s.seq) &&
++            if (t.fraidycat && s.fear > 50 && !c.moving && !c.has_destination && !is_deploy_busy(s.seq) &&
+                 c.scatter)
+                 c.scatter();
+         }
+@@ -279,15 +288,17 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
+         }
+         // ---- walking vs standing ----
+         const InfDoControl& dc = inf_do_control(s.seq);
+-        if (c.moving && !dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_group(s.seq))
++        if (c.moving && !dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_busy(s.seq))
+             play(s, t, s.prone ? kSqCrawl : kSqWalk, c.in_water, false);
+-        else if (!c.moving && dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !(s.air && s.seq == kSqHover))
++        else if (!c.moving && dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_busy(s.seq) &&
++                 !(s.air && s.seq == kSqHover))
+             play(s, t, s.prone ? kSqProne : kSqReady, c.in_water, true);
+         else if (c.moving && (s.seq == kSqWalk || s.seq == kSqPanic))   // fear crossing 199 mid-walk
+             play(s, t, kSqWalk, c.in_water, false);
+         // ---- idle fidgets [RE: FUN_0051cb80 gated by FUN_00521400] ----
+         const bool can_idle = !c.moving && !s.prone && !c.has_target &&
+-                              (s.seq == kSqReady || s.seq == kSqGuard || s.seq == kSqTread);
++                              (s.seq == kSqReady || s.seq == kSqGuard || s.seq == kSqTread ||
++                               (c.deployed && (s.seq == kSqDeployed || s.seq == kSqDeployedIdle)));
+         if (can_idle && s.idle_timer > 0 && --s.idle_timer == 0) idle_action(s, t, facing, c);
+         else if (s.idle_timer <= 0) arm_idle(s, c);
+     }
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+index 653b88e..b4f5864 100644
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -52,6 +52,9 @@ struct BldEventState {
+     bool unloading = false;        // a harvester was dumping here last tick
+     int gate_stage = 0;            // 0 closed .. GateStages open
+     long gate_near = -100000;      // last tick a friendly unit stood at the gate
++    // Art AnimActive stage on the building's own SHP [RE: Building+0xf8].
++    int anim_active_stage = 0;
++    int anim_active_timer = 0;
+ };
+ std::map<long long, BldEventState> g_bld_events;
+ inline long long bld_event_key(const ra2engine::Building& b) {
+@@ -168,6 +171,14 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
+                 for (int s = kBsActive; s <= kBsActive4; ++s) start(st, a, s, now);
+             st.init_done = true;
+         }
++        // AnimActive on the main SHP [RE: UpdateAnimations FUN_004509c0 advances
++        // Building+0xf8 every Rate ticks; Shape_Number reads it].
++        if (a.anim_active_count > 1) {
++            if (++st.anim_active_timer >= a.anim_active_rate) {
++                st.anim_active_timer = 0;
++                st.anim_active_stage = (st.anim_active_stage + 1) % a.anim_active_count;
++            }
++        }
+         // Finished finite runs, chained at their exact end tick (frame-rate
+         // independent) [RE: FUN_00451b30].
+         for (int s = 0; s < PresFx::kBldSlots; ++s) {
+@@ -183,10 +194,19 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
+             } else if (s == kBsSpecial3 && r.unit_repair) {
+                 st.depot = 0;
+                 start(st, a, kBsIdle, end);
++            } else if (s == kBsSpecial && a.delayed_fire) {
++                // Tesla / Prism: SpecialAnim finished -- re-arm Active + Idle
++                // [RE: UpdateAnimations restarts Active after the fire slot clears].
++                if (!r.refinery && !a.slot[kBsSuper].t)
++                    for (int s2 = kBsActive; s2 <= kBsActive4; ++s2) start(st, a, s2, end);
++                start(st, a, kBsIdle, end);
+             } else if (s == kBsProduction) {
+-                // [RE-FALLBACK: the Idle restart point after a Production run
+-                // was not traced; it resumes when the run ends.]
++                // [RE: FUN_0043cc86 kills Idle before Production; Idle resumes
++                // when the one-shot ProductionAnim ends.]
+                 start(st, a, kBsIdle, end);
++            } else if (s >= kBsActive && s <= kBsActive4) {
++                // Finite Active* ended: keep Idle looping if it was stopped.
++                if (!st.run[kBsIdle].on) start(st, a, kBsIdle, end);
+             }
+         }
+         // Refinery storage level [RE: FUN_004509c0 Refinery=yes].
+@@ -243,20 +263,25 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
+         }
+     }
+     // Tesla Coil / Prism Tower: SpecialAnim on each shot (IsAnimDelayedFire).
++    // [RE: FUN_0044c565 -- Special start KillAnim(Active) + KillAnim(Idle)].
+     for (const ra2engine::World::FireEvent& e : fire) {
+         if (e.building < 0 || e.building >= static_cast<int>(bs.size())) continue;
+         const ra2engine::Building& b = bs[static_cast<std::size_t>(e.building)];
+         const std::string img = image_of(b);
+         if (img.empty()) continue;
+         const PresFx::BldAnims& a = fx.building(img);
+-        if (a.delayed_fire) start(g_bld_events[bld_event_key(b)], a, kBsSpecial, now);
++        if (!a.delayed_fire) continue;
++        BldEventState& st = g_bld_events[bld_event_key(b)];
++        for (int s = kBsActive; s <= kBsActive4; ++s) stop(st, s);
++        stop(st, kBsIdle);
++        start(st, a, kBsSpecial, now);
+     }
+ }
+ 
+-// W3-B: the main-image frame for CanBeOccupied / Gate=yes types
+-// [RE: Shape_Number FUN_0043ef10]: occupiable = (occupants ? 2 : 0) +
+-// (ratio <= ConditionYellow ? 1 : 0) (garrisonable types use the yellow
+-// threshold); a gate shows its open stage (+ GateStages+1 when damaged).
++// W3-B: the main-image frame for CanBeOccupied / Gate=yes / AnimActive types
++// [RE: Shape_Number FUN_0043ef90]: occupiable = (occupants ? 2 : 0) +
++// (ratio <= ConditionYellow ? 1 : 0); a gate shows its open stage
++// (+ GateStages+1 when damaged); otherwise AnimActive stage with SimpleDamage.
+ int pres_building_main_frame(const ra2engine::Building& b, const std::string& id, const std::string& image,
+                              int frame, int count, double yellow) {
+     if (!g_fx || id.empty()) return frame;
+@@ -267,13 +292,20 @@ int pres_building_main_frame(const ra2engine::Building& b, const std::string& id
+         const int f = (b.occupants.empty() ? 0 : 2) + (damaged ? 1 : 0);
+         return std::min(f, images - 1);
+     }
++    const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
+     if (r.gate) {
+-        const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
+         auto it = g_bld_events.find(bld_event_key(b));
+         const int stage = it == g_bld_events.end() ? 0 : it->second.gate_stage;
+         const int f = stage + (damaged ? a.gate_stages + 1 : 0);
+         return std::clamp(f, 0, images - 1);
+     }
++    // AnimActive (ConYard 0,26,3; Service Depot 0,7,2; …).
++    if (a.anim_active_count > 1 || a.anim_active_start != 0) {
++        auto it = g_bld_events.find(bld_event_key(b));
++        const int stage = it == g_bld_events.end() ? 0 : it->second.anim_active_stage;
++        return ra2engine::building_anim_active_frame(stage, a.anim_active_start, a.anim_active_count, damaged,
++                                                     images);
++    }
+     return frame;
+ }
+ // LeaveRubble=yes [RE: GetRubbleImage FUN_0045f150]: a destroyed building
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index f52604f..bf3c1bd 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -530,6 +530,9 @@ public:
+         std::vector<std::pair<int, int>> fire_offsets;
+         bool delayed_fire = false;   // art IsAnimDelayedFire (Tesla / Prism: SpecialAnim on fire)
+         int gate_stages = 0;         // art GateStages
++        // Art AnimActive=start,count,rate -- cycles the building's own SHP
++        // [RE: Shape_Number FUN_0043ef90 Building+0xf8; art reader 0x461692].
++        int anim_active_start = 0, anim_active_count = 1, anim_active_rate = 1;
+     };
+     static const char* bld_slot_key(int i) {
+         static const char* kKeys[kBldSlots] = {
+@@ -571,6 +574,24 @@ public:
+         a.under_roof_door = event_slot("UnderRoofDoorAnim");
+         a.delayed_fire = yes("IsAnimDelayedFire", false);
+         a.gate_stages = std::atoi(aget(image, "GateStages").c_str());
++        {
++            // AnimActive=start,count,rate (def 0,1,0 -- static frame 0).
++            const std::string aa = aget(image, "AnimActive");
++            if (!aa.empty()) {
++                int st = 0, cnt = 1, rate = 1;
++                const char* p = aa.c_str();
++                st = std::atoi(p);
++                while (*p && *p != ',') ++p;
++                if (*p == ',') {
++                    cnt = std::atoi(++p);
++                    while (*p && *p != ',') ++p;
++                    if (*p == ',') rate = std::atoi(++p);
++                }
++                a.anim_active_start = st;
++                a.anim_active_count = std::max(1, cnt);
++                a.anim_active_rate = std::max(1, rate);
++            }
++        }
+         const std::string bib = aget(image, "BibShape");
+         if (!bib.empty()) a.bib = theater_shp(bib);
+         for (int i = 0; i < 8; ++i) {
+diff --git a/tests/test_building.cpp b/tests/test_building.cpp
+index 063a3bd..64c6df0 100644
+--- a/tests/test_building.cpp
++++ b/tests/test_building.cpp
+@@ -86,6 +86,19 @@ TEST_CASE("building_frame: healthy/damaged at ConditionYellow") {
+     CHECK(building_frame(b, 2, 0.5) == 0);              // 1 image frame only
+ }
+ 
++TEST_CASE("building_anim_active_frame: AnimActive stage + SimpleDamage") {
++    // [RE: Shape_Number FUN_0043ef90] ConYard AnimActive=0,26,3; damaged = stage+1.
++    CHECK(building_anim_active_frame(0, 0, 26, false, 52) == 0);
++    CHECK(building_anim_active_frame(5, 0, 26, false, 52) == 5);
++    CHECK(building_anim_active_frame(5, 0, 26, true, 52) == 6);
++    CHECK(building_anim_active_frame(25, 0, 26, false, 52) == 25);
++    CHECK(building_anim_active_frame(25, 0, 26, true, 52) == 26);
++    // Static AnimActive=0,1,0 matches building_frame 0/1.
++    CHECK(building_anim_active_frame(0, 0, 1, false, 2) == 0);
++    CHECK(building_anim_active_frame(0, 0, 1, true, 2) == 1);
++    CHECK(building_anim_active_frame(3, 0, 1, false, 2) == 0);   // stage wraps
++}
++
+ TEST_CASE("buildup_frame + step_buildings: plays once then Idle") {
+     Building b = mk(0, 0, 2, 2);
+     b.state = Building::State::Buildup;
+diff --git a/tests/test_inf_anim.cpp b/tests/test_inf_anim.cpp
+index 8c2ad98..bae34f3 100644
+--- a/tests/test_inf_anim.cpp
++++ b/tests/test_inf_anim.cpp
+@@ -121,3 +121,42 @@ TEST_CASE("inf_anim: idle timer lies in [freq*450, freq*1800] ticks") {
+         CHECK(s.idle_timer <= static_cast<int>(0.15 * 1800.0));
+     }
+ }
++
++TEST_CASE("inf_anim: deploy then undeploy reaches Ready") {
++    InfTable t = gi_table();
++    InfAnimState s;
++    InfTickCtx c;
++    int facing = 0;
++    inf_anim_tick(s, t, facing, c);
++    c.deployed = true;
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqDeploy);
++    // Deploy is non-interruptible, rate 1, 15 frames.
++    for (int i = 0; i < 20; ++i) inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqDeployed);
++    c.deployed = false;
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqUndeploy);
++    for (int i = 0; i < 10; ++i) inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqReady);
++}
++
++TEST_CASE("inf_anim: Undeploy is not stolen by Walk") {
++    InfTable t = gi_table();
++    InfAnimState s;
++    InfTickCtx c;
++    int facing = 0;
++    inf_anim_tick(s, t, facing, c);
++    c.deployed = true;
++    for (int i = 0; i < 20; ++i) inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqDeployed);
++    c.deployed = false;
++    c.moving = true;
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqUndeploy);   // edge starts Undeploy, not Crawl/Walk
++    // Undeploy rate=1, count=2: start tick holds stage 0, next advances to end.
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqUndeploy);
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.seq == kSqWalk);       // finished while moving -> Walk
++}

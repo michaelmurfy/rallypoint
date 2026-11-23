@@ -78,6 +78,44 @@ struct Superweapon {
     }
 };
 
+// Which SuperAnim slot a superweapon building draws. Presentation only.
+// 0 SuperAnim (charge hold), 1 SuperAnimTwo (to-ready one-shot),
+// 2 SuperAnimThree (ready hold), 3 SuperAnimFour (fired one-shot), -1 none.
+//
+// artmd LoopCount is the authority, not the short ModEnc table: the charge
+// hold and the ready hold are the LoopCount=-1 anims (SuperAnim,
+// SuperAnimThree; GAWETH_E / GAWETH_G). SuperAnimTwo and SuperAnimFour are
+// one-shots (the ready sting and the fire). Looping Four for the whole
+// recharge paints the fire frame — the Weather Control's green orb
+// crescents — until the weapon is ready. ChargedAnimTime (minutes, already
+// converted to seconds) starts the sting that early.
+struct SwAnimInput {
+    int phase = -1;
+    bool have = false;
+    bool ready = false;
+    bool was_ready = false;
+    double remain_secs = 0;
+    double charged_secs = 0;
+    bool oneshot_done = false;
+};
+inline int sw_building_anim_phase(const SwAnimInput& in) {
+    if (!in.have) return -1;
+    if (in.was_ready && !in.ready && in.phase != 3) return 3;
+    if (in.phase < 0) {
+        if (in.ready) return 2;
+        if (in.charged_secs > 0.0 && in.remain_secs <= in.charged_secs) return 1;
+        return 0;
+    }
+    if (in.phase == 3) return in.oneshot_done ? 0 : 3;
+    if (in.phase == 1) return in.oneshot_done ? 2 : 1;
+    if (in.phase == 2) {
+        if (!in.ready && in.remain_secs > in.charged_secs) return 0;
+        return 2;
+    }
+    if (in.ready || (in.charged_secs > 0.0 && in.remain_secs <= in.charged_secs)) return 1;
+    return 0;
+}
+
 // The display name of a SuperweaponType (witnesses / RE-doc cross-checks).
 const char* superweapon_type_name(SuperweaponType t);
 

@@ -396,7 +396,9 @@ bool house_matches(const std::string& team_house, const std::string& house_name)
 int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
                            const std::vector<TeamInstance>& live, double credits,
                            const AiTeamRules& rules, std::uint32_t& rng,
-                           const std::vector<char>* team_buildable) {
+                           const std::vector<char>* team_buildable,
+                           int enemy_vehicles, int enemy_infantry, int ai_boost,
+                           const std::vector<UnitTypeDef>* unit_roster) {
     auto buildable = [&](int i) {
         return !team_buildable || i >= (int)team_buildable->size() || (*team_buildable)[i];
     };
@@ -444,6 +446,38 @@ int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
             if (t.teamtype == i) ++count;
         if (tt.max > 0 && count >= tt.max) continue;  // Max=0 -> uncapped
         if (tt.priority == best_priority) candidates.push_back(i);
+    }
+    // [RP-AI-BOOST] L3: among equal-priority candidates, prefer TaskForces that
+    // counter the known enemy mix (vehicles vs vehicle-heavy foes, infantry vs
+    // infantry-heavy). Stock Priority / Max / CreditReserve gates are unchanged.
+    if (ai_boost >= 3 && unit_roster && enemy_vehicles >= 0 && enemy_infantry >= 0 &&
+        candidates.size() > 1 && (enemy_vehicles + enemy_infantry) > 0) {
+        auto mix_score = [&](int team_ix) -> int {
+            const int tfi = aimd.teams[team_ix].taskforce;
+            if (tfi < 0 || tfi >= (int)aimd.taskforces.size()) return 0;
+            int veh = 0, inf = 0;
+            for (const TaskForceMember& m : aimd.taskforces[tfi].members) {
+                if (m.unit < 0 || m.unit >= (int)unit_roster->size()) continue;
+                const int n = m.count > 0 ? m.count : 0;
+                if ((*unit_roster)[m.unit].is_vehicle) veh += n;
+                else inf += n;
+            }
+            // Anti-tank when the enemy fields more vehicles; anti-inf otherwise.
+            return enemy_vehicles >= enemy_infantry ? veh * 3 + inf : inf * 3 + veh;
+        };
+        int best = mix_score(candidates[0]);
+        std::vector<int> preferred;
+        for (int c : candidates) {
+            const int s = mix_score(c);
+            if (s > best) {
+                best = s;
+                preferred.clear();
+                preferred.push_back(c);
+            } else if (s == best) {
+                preferred.push_back(c);
+            }
+        }
+        if (!preferred.empty()) candidates.swap(preferred);
     }
     // Seeded tie-break among the equal-highest-priority eligible candidates
     // [RE-FALLBACK: ai-team.md §4]. A single candidate still draws once so the

@@ -113,6 +113,41 @@ int building_frame(const Building& b, int shp_frame_count, double condition_yell
     return frac <= condition_yellow ? 1 : 0;
 }
 
+int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames) {
+    // [RE: Shape_Number FUN_0043ef90]: edi = AnimActive stage; when health <=
+    // ConditionYellow and the building is Idle, return stage+1 (SimpleDamage).
+    if (image_frames < 1) return 0;
+    if (count < 1) count = 1;
+    const int st = ((stage % count) + count) % count;
+    int f = start + st + (damaged ? 1 : 0);
+    if (f < 0) f = 0;
+    if (f >= image_frames) f = image_frames - 1;
+    return f;
+}
+
+bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red) {
+    return max_hp > 0 && hp <= (can_be_occupied ? red : yellow) * max_hp;
+}
+
+namespace {
+unsigned fire_hash(unsigned x) {   // integer mix, same on every compiler
+    x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
+    return x;
+}
+}  // namespace
+
+int building_damage_fire_type(unsigned seed, int fire, int types) {
+    if (types <= 0) return -1;
+    return static_cast<int>((fire_hash(seed) % static_cast<unsigned>(types) + static_cast<unsigned>(fire)) %
+                            static_cast<unsigned>(types));
+}
+
+int building_damage_fire_start(unsigned seed, int fire, int end) {
+    if (end <= 0) return 0;
+    return static_cast<int>(fire_hash(seed ^ (0x9E3779B9u * static_cast<unsigned>(fire + 1))) %
+                            static_cast<unsigned>(end));
+}
+
 int buildup_frame(const Building& b, int buildup_shp_frame_count) {
     int image_frames = buildup_shp_frame_count / 2;   // [RE-GATE: building-render.md §5]
     if (image_frames < 1) return 0;

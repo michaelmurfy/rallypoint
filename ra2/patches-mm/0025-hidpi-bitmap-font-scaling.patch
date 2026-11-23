@@ -1,0 +1,127 @@
+diff --git a/engine/platform.cpp b/engine/platform.cpp
+index 5194fe9..0b11c1d 100644
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -65,11 +65,17 @@ Platform Platform::create(const char* title, int w, int h, bool hidden) {
+     // arrive twice = a double-click); fingers go through TouchGestures. The
+     // SDL_TOUCH_MOUSEID filter in poll() backs this up.
+     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++    // Crisp upscaled UI / shell art: bilinear logical-size scaling blurs 1px
++    // Westwood bitmap fonts and SHP pixels on Retina and other HiDPI windows.
++    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+         throw std::runtime_error(SDL_GetError());
+     }
+ 
+     Uint32 flags = hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN;
++#if defined(__APPLE__) && !defined(__ANDROID__)
++    flags |= SDL_WINDOW_ALLOW_HIGHDPI;
++#endif
+ #ifdef __ANDROID__
+     // W2-AR-06: SDLActivity only goes immersive (status + navigation bars
+     // hidden, the whole panel) for a FULLSCREEN window; a plain SHOWN window
+@@ -117,6 +123,7 @@ Platform Platform::create(const char* title, int w, int h, bool hidden) {
+     //    drawn. Setting the logical size keeps rendering AND input in the
+     //    same fixed coordinate space on both platforms.
+     SDL_RenderSetLogicalSize(renderer, w, h);
++    SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
+ 
+     Platform p;
+     p.p_ = new Impl{window, renderer, w, h, TouchGestures{}};
+diff --git a/engine/texture_cache.cpp b/engine/texture_cache.cpp
+index 87f0954..2547173 100644
+--- a/engine/texture_cache.cpp
++++ b/engine/texture_cache.cpp
+@@ -9,6 +9,11 @@ namespace ra2engine {
+ 
+ static std::uint64_t g_next_cache_id = 1;
+ 
++static void texture_nearest_filter(SDL_Texture* tex) {
++    if (!tex) return;
++    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
++}
++
+ TextureCache::TextureCache(void* sdl_renderer) : renderer_(sdl_renderer), id_(g_next_cache_id++) {}
+ 
+ TextureCache::~TextureCache() {
+@@ -129,6 +134,7 @@ void* TextureCache::get(const std::string& key, const uint8_t* indices, int w,
+ 
+     SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
+     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
++    texture_nearest_filter(tex);
+ 
+     return insert(key, tex, w, h);
+ }
+@@ -169,6 +175,7 @@ void* TextureCache::get_rgba(const std::string& key, const uint8_t* rgba, int w,
+ 
+     SDL_UpdateTexture(tex, nullptr, rgba, w * 4);
+     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
++    texture_nearest_filter(tex);
+ 
+     return insert(key, tex, w, h);
+ }
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 0d6ad76..d7c077b 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -5186,9 +5186,11 @@ int fnt_text_width(const ra2assets::Font& font, const std::string& s) {
+ void draw_fnt_text(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
+                    const ra2assets::Palette& pal, const std::string& s, int x, int y,
+                    const std::string& keypfx, int scale = 1) {
++    const int sc = std::max(1, scale);
+     int cx = x;
+     for (unsigned char ch : s) {
+         const int w = font.width(ch);
++        const int adv = (w > 0 ? w : font.height() / 2) * sc;
+         if (ch != ' ' && ch >= font.first() && ch <= font.last() && w > 0) {
+             const ra2assets::FntGlyph& g = font.glyph(ch);
+             if (g.w > 0 && g.h > 0) {
+@@ -5196,23 +5198,26 @@ void draw_fnt_text(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2asse
+                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
+                 if (!tex)
+                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
+-                SDL_Rect dst{cx, y, g.w * scale, g.h * scale};
++                SDL_Rect dst{cx, y, g.w * sc, g.h * sc};
+                 SDL_RenderCopy(ren, tex, nullptr, &dst);
+             }
+         }
+-        cx += (w > 0 ? w : font.height() / 2) * scale;   // space/missing glyph advance
++        cx += adv;
+     }
+ }
+ 
+ // [P8] draw_fnt_text with a FRACTIONAL scale (the options controls use a ~12px
+-// face inside 16px logical rows, scaled by the letterbox factor). Glyph dst
+-// rects are rounded from accumulated float positions so spacing stays even.
++// face inside 16px logical rows, scaled by the letterbox factor). Scale snaps
++// to an integer pixel size so dst widths stay whole-pixel (no soft bevel blur).
+ void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
+                      const ra2assets::Palette& pal, const std::string& s, double x, double y,
+                      const std::string& keypfx, double scale) {
+-    double cx = x;
++    const int sc = std::max(1, static_cast<int>(std::lround(scale)));
++    int cx = static_cast<int>(std::lround(x));
++    const int y0 = static_cast<int>(std::lround(y));
+     for (unsigned char ch : s) {
+         const int w = font.width(ch);
++        const int adv = (w > 0 ? w : font.height() / 2) * sc;
+         if (ch != ' ' && ch >= font.first() && ch <= font.last() && w > 0) {
+             const ra2assets::FntGlyph& g = font.glyph(ch);
+             if (g.w > 0 && g.h > 0) {
+@@ -5220,14 +5225,11 @@ void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2as
+                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
+                 if (!tex)
+                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
+-                const int x0 = static_cast<int>(std::lround(cx));
+-                const int x1 = static_cast<int>(std::lround(cx + g.w * scale));
+-                SDL_Rect dst{x0, static_cast<int>(std::lround(y)), x1 - x0,
+-                             static_cast<int>(std::lround(g.h * scale))};
++                SDL_Rect dst{cx, y0, g.w * sc, g.h * sc};
+                 SDL_RenderCopy(ren, tex, nullptr, &dst);
+             }
+         }
+-        cx += (w > 0 ? w : font.height() / 2) * scale;
++        cx += adv;
+     }
+ }
+ 

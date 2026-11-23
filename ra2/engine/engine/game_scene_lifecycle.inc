@@ -29,8 +29,12 @@ bool lifecycle_event(const ra2engine::InputEvent& ev) {
             return true;
         }
         case ra2engine::InputEvent::AppForeground:
+            os_cursor_hidden_ = false;   // macOS / Android may re-show the OS cursor
             SDL_Log("[lifecycle] foreground: game stays paused in the options menu");
             return true;
+        case ra2engine::InputEvent::FocusGained:
+            os_cursor_hidden_ = false;   // next frame re-hides when the software cursor draws
+            return false;
         case ra2engine::InputEvent::AppLowMemory:
         case ra2engine::InputEvent::RenderReset:
             return true;   // the driver already trimmed / cleared the texture cache
@@ -74,19 +78,13 @@ void relayout_canvas() {
     int gw = kWinW, gh = kWinH;
     game_logical_size(gw, gh);
     if (gw == kWinW && gh == kWinH) return;
-    const int cx = -cam_.x + playfield_w_ / 2, cy = -cam_.y + kWinH / 2;   // world centre
+    const int cx = -cam_.x + ra2engine::zoom_view(playfield_w_, zoom_) / 2, cy = -cam_.y + ra2engine::zoom_view(kWinH, zoom_) / 2;   // world centre
     SDL_Log("[lifecycle] resize: canvas %dx%d -> %dx%d", kWinW, kWinH, gw, gh);
     set_canvas_size(gw, gh);
     lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_);
     playfield_w_ = kWinW - (sidebar_up_ ? lay_.bar.w : 0);
-    input_.set_viewport(playfield_w_, kWinH);
-    if (campaign_ && local_.valid) {   // the LocalSize clamp (campaign_view_setup)
-        const int W = local_.size_w;
-        const int top = 15 * (W - 5 + 2 * local_.y);
-        input_.set_view_limits(30 * (2 * local_.x - W) + 30, top, 30 * (2 * (local_.x + local_.w) - W) + 30,
-                               top + 30 * local_.h + 135);
-    }
-    cam_.x = playfield_w_ / 2 - cx;
-    cam_.y = kWinH / 2 - cy;
-    input_.pan(0, 0);   // clamp
+    zoom_ = std::max(zoom_limit(), zoom_);   // a monitor / canvas change moves the limit
+    cam_.x = ra2engine::zoom_view(playfield_w_, zoom_) / 2 - cx;
+    cam_.y = ra2engine::zoom_view(kWinH, zoom_) / 2 - cy;
+    zoom_apply_view();   // viewport, the campaign's LocalSize clamp, camera clamp
 }

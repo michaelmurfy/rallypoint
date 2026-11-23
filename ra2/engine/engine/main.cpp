@@ -48,6 +48,7 @@ static char* ra2_cli_pref_path() {
 #include <deque>         // G-80 EVA queue
 #include <set>           // G-81 registered sound keys
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <deque>
 #include <map>
@@ -58,8 +59,11 @@ static char* ra2_cli_pref_path() {
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
+#include "logical_canvas.hpp"  // desktop canvas height (app_robust.inc, inside namespace {})
+#include "ai_boost.hpp"     // [RP-AI-BOOST] used by ai_skirmish.inc (included inside namespace {})
 #include "audio_mixer.hpp"
 #include "bridges.hpp"      // G16 (agent G): bridge overlay classes
 #include "overlay_land.hpp"  // W8-03-02 / W8-03-01 (w8fix-place): overlay land + buildable grid
@@ -72,10 +76,12 @@ static char* ra2_cli_pref_path() {
 #include "capture.hpp"      // kNeutralHouse (Engineer/Spy Capture phase)
 #include "combat.hpp"       // armor_index
 #include "facing_cache.hpp"
+#include "slope_tilt.hpp"
 #include "factory.hpp"      // primary_factory (unit exit handoff)
 #include "roster2.hpp"      // P6 walls / naval yard / airfield [RE: roster2.md]
 #include "flight.hpp"       // altitude_to_screen_dy (CB-2 raised-sprite draw)
 #include "harvest.hpp"     // OreValues/HarvestEvent/dock_cell + step_harvest (Economy phase)
+#include "slave_miner.hpp" // Rallypoint: Yuri Enslaves=
 #include "input.hpp"
 #include "hotkeys.hpp"       // G-04 KeyboardMD.ini command table
 #include "bink_async.hpp"     // W5-E2 R-173: Bink decoding off the main thread
@@ -113,6 +119,8 @@ static char* ra2_cli_pref_path() {
 #include "weapon_resolve.hpp"  // Gap fix C: TechnoType weapon slots
 #include "gamespeed.hpp"       // Gap fix C: RE-T1 logic rate per GameSpeed
 #include "world.hpp"
+#include "present_motion.hpp"
+#include "yuri_side.hpp"   // Rallypoint: the third side
 #include "abil_w5_rules.hpp"   // wave-5 (agent C): requires_stolen_bits
 
 #include "ra2assets/art.hpp"
@@ -302,16 +310,31 @@ void place_load_overlay_rules(const std::string& dir, Assets& a) {
     }
 }
 
+// Rallypoint (--launch Map=<path>): a skirmish map named by a path ('/' or
+// '\\' in it) is read from that file; any other name is a multimd.mix entry.
+MapSelection mp_map_selection(const std::string& file) {
+    if (file.find('/') != std::string::npos || file.find('\\') != std::string::npos) return MapSelection{"", 0u, file};
+    return MapSelection{"multimd.mix", 0u, file};
+}
+// The selected map's bytes; empty when the entry or file is missing.
+std::vector<uint8_t> read_map_bytes(const std::string& dir, const MapSelection& sel) {
+    if (sel.mix.empty()) {
+        std::ifstream f(sel.name, std::ios::binary);
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    }
+    MixFile maps = MixFile::open_path(dir + sel.mix);
+    const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
+    return me ? maps.read(*me) : std::vector<uint8_t>{};
+}
+
 Assets load_assets(const std::string& dir, const ra2assets::MixFile& ra2,
                    const MapSelection& sel = MapSelection{}) {
     load_progress("MAP + THEATER");   // W2-AR-02 loading-screen checkpoint
     // Map: read the selected map INI. The default selection is byte-for-byte
     // the old hardcoded one (mapsmd03.mix / 0x133a0cb2).
-    MixFile maps = MixFile::open_path(dir + sel.mix);
-    const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
-    if (!me) throw std::runtime_error("map entry not found in " + sel.mix + ": " +
-                                      (sel.name.empty() ? "id 0x133a0cb2" : sel.name));
-    auto map_raw = maps.read(*me);
+    auto map_raw = read_map_bytes(dir, sel);
+    if (map_raw.empty()) throw std::runtime_error("map entry not found in " + (sel.mix.empty() ? std::string("file") : sel.mix) + ": " +
+                                                  (sel.name.empty() ? "id 0x133a0cb2" : sel.name));
     MapFile map = MapFile::parse(std::string(map_raw.begin(), map_raw.end()));
 
     // Theater chain [RE: maps.md §6 + §9.4]. Replaces the old TEMPERATE-only
@@ -654,6 +677,7 @@ struct BuildingAssets {
     // damaged building frame) [RE: task-7 review "ConditionYellow"], read via
     // rules.general_double in load_building_assets; 0.5 is only the fallback.
     double condition_yellow = 0.5;
+    double condition_red = 0.25;   // [General] ConditionRed (CanBeOccupied damage fires)
     // Repair & Sell phase [RE: repair-sell.md §A1/§B3]: the four [General]
     // scalars + the three survivor divisors, resolved ONCE here and handed to
     // World::set_repair_sell_rules. The struct's own defaults ARE this
@@ -1173,8 +1197,9 @@ ResolvedUnit resolve_combat_unit(const Rules& rules, const std::string& unit_id)
     // per-type experience/ability/elite-weapon keys. Inert unless a World
     // enables veterancy (World copies them into Unit::vet and reads them only
     // past that firewall), so resolving them here moves no existing gate.
-    r.combat.cost = rules.cost(unit_id);
-    r.combat.trainable = rules.section_flag(unit_id, "Trainable", true);      // default YES
+        r.combat.cost = rules.cost(unit_id);
+        r.combat.soylent = (int)rules.section_double(unit_id, "Soylent", 0.0);
+        r.combat.trainable = rules.section_flag(unit_id, "Trainable", true);      // default YES
     r.combat.dont_score = rules.section_flag(unit_id, "DontScore", false);
     r.combat.self_healing = rules.section_flag(unit_id, "SelfHealing", false);
     r.combat.crate_goodie = rules.section_flag(unit_id, "CrateGoodie", false);  // default NO
@@ -1341,6 +1366,8 @@ ra2engine::WeaponSpec resolve_weapon_spec(const Rules& rules, const Ini& ini, co
     else if (ability_flag(ini, wh, "Parasite", false)) s.kind = ra2engine::AbilityKind::Parasite;
     else if (ability_flag(ini, wh, "Temporal", false)) s.kind = ra2engine::AbilityKind::Temporal;
     else if (ability_flag(ini, wh, "IvanBomb", false)) s.kind = ra2engine::AbilityKind::IvanBomb;
+    else if (ability_flag(ini, wh, "IsLocomotor", false))
+        s.kind = ra2engine::AbilityKind::MagBeam;
     {   // wave-5 R-048: projectile AA/AG + flight, the same resolver units use
         const ra2engine::WeaponSlot ws = ra2engine::resolve_weapon_slot(rules, w);
         s.slot_set = ws.valid;
@@ -1413,16 +1440,24 @@ ra2engine::AbilityRules resolve_ability_rules(const Rules& rules, const Ini& ini
     r.c4_delay_minutes = rules.section_double("CombatDamage", "C4Delay", 0.03);
     r.ivan_damage = (int)rules.section_double("CombatDamage", "IvanDamage", 450.0);
     r.ivan_timed_delay = (int)rules.section_double("CombatDamage", "IvanTimedDelay", 450.0);
-    const std::string iwh = ability_ini_str(ini, "CombatDamage", "IvanWarhead");
-    if (!iwh.empty()) {
-        r.ivan_warhead.verses = rules.verses(iwh);
-        r.ivan_warhead.cell_spread = rules.section_double(iwh, "CellSpread", 1.5);
-        r.ivan_warhead.percent_at_max = rules.section_double(iwh, "PercentAtMax", 0.25);
-        r.ivan_warhead.affects_allies = rules.section_flag(iwh, "AffectsAllies", true);   // W6-04-03
-        r.ivan_warhead.prone_damage = ra2engine::warhead_prone_damage(rules, iwh);
-        r.ivan_warhead.inf_death = static_cast<int>(rules.section_double(iwh, "InfDeath", 0.0));
-        r.ivan_warhead.wall_flags = ra2engine::warhead_wall_flags(rules, iwh);   // W6-04-04
-    }
+    r.mag_falling_damage_milli =
+        (int)(rules.section_double("CombatDamage", "FallingDamageMultiplier", 1.0) * 1000.0 + 0.5);
+    r.mag_current_strength_damage = ability_flag(ini, "CombatDamage", "CurrentStrengthDamage", true);
+    r.mag_cruise_height = (int)rules.section_double("JumpjetControls", "CruiseHeight", 500.0);
+    r.mag_climb = (int)rules.section_double("JumpjetControls", "Climb", 5.0);
+    auto load_warhead = [&](const char* key, ra2engine::WeaponSpec& w) {
+        const std::string wh = ability_ini_str(ini, "CombatDamage", key);
+        if (wh.empty()) return;
+        w.verses = rules.verses(wh);
+        w.cell_spread = rules.section_double(wh, "CellSpread", w.cell_spread);
+        w.percent_at_max = rules.section_double(wh, "PercentAtMax", w.percent_at_max);
+        w.affects_allies = rules.section_flag(wh, "AffectsAllies", true);   // W6-04-03
+        w.prone_damage = ra2engine::warhead_prone_damage(rules, wh);
+        w.inf_death = static_cast<int>(rules.section_double(wh, "InfDeath", 0.0));
+        w.wall_flags = ra2engine::warhead_wall_flags(rules, wh);   // W6-04-04
+    };
+    load_warhead("IvanWarhead", r.ivan_warhead);
+    load_warhead("CrushWarhead", r.crush_warhead);   // Rallypoint: Magnetron drop blast
     r.ivan_warhead.damage = r.ivan_damage;
     return r;
 }
@@ -2134,6 +2169,50 @@ struct UnitRoster {
 // Hoisted from load_unit_roster so the AI-2 Soviet table reuses the loop.
 struct UnitRosterEnt { const char* id; bool vehicle; const char* prereq; };
 
+// Rallypoint: sidebar cameo SHP from the global search list (language/cameo
+// for RA2 icons, langmd/cameomd for the Yuri side — patches 0016 / 0046).
+inline bool yr_cameo_shp(const std::string& cameo, ra2assets::ShpFile& out) {
+    if (cameo.empty()) return false;
+    std::string cn = cameo;
+    for (char& ch : cn) ch = (char)std::tolower((unsigned char)ch);
+    std::vector<uint8_t> raw;
+    if (!asset_read(cn + ".shp", raw)) return false;
+    try { out = ra2assets::ShpFile::load(raw); } catch (const std::exception&) { return false; }
+    return true;
+}
+
+// T3.5 / T2.4: name for the sidebar icon when artmd Cameo= is blank.
+// Order matches gamemd/ModEnc: Cameo=, AltCameo=, then Image/id + "ICON" if
+// that SHP exists in the mix list, else XXICON (the retail missing-cameo tile).
+inline std::string resolve_cameo_name(const Art& art, const std::string& image,
+                                      const std::string& id) {
+    std::string c = art.cameo(image);
+    if (c.empty()) c = art.cameo(id);
+    if (c.empty()) c = art.alt_cameo(image);
+    if (c.empty()) c = art.alt_cameo(id);
+    auto probe_icon = [](const std::string& base) -> std::string {
+        if (base.empty()) return {};
+        std::string cn = base + "ICON";
+        std::string file = cn;
+        for (char& ch : file) ch = (char)std::tolower((unsigned char)ch);
+        file += ".shp";
+        return asset_fs().has(file) ? cn : std::string();
+    };
+    if (c.empty()) c = probe_icon(image);
+    if (c.empty() && id != image) c = probe_icon(id);
+    if (c.empty()) c = "XXICON";
+    return c;
+}
+
+// Load the named cameo; if absent, the stock XXICON placeholder (retail).
+inline bool load_cameo_shp(const std::string& cameo, ra2assets::ShpFile& out) {
+    if (yr_cameo_shp(cameo, out)) return true;
+    std::string low = cameo;
+    for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
+    if (low == "xxicon") return false;
+    return yr_cameo_shp("XXICON", out);
+}
+
 // Shared roster-loading loop [RE-GATE APPLIED: production.md §1.1/§1.6]. Loads
 // the given (ents, n) into a UnitRoster with EVERY guard identical to the
 // former load_unit_roster body (cost/tech/cameo drop, vehicle-asset drop,
@@ -2186,11 +2265,14 @@ UnitRoster load_unit_roster_table(const std::string& dir, const ra2assets::MixFi
             // Grizzly — while the legacy [MTNK] art section is the *Apocalypse*
             // (Cameo=MTNKICON). Keying on rules.image(id) yields GTNK->GTNKICON
             // (Grizzly), the correct cameo. Fall back to the id-keyed section if
-            // the image section has none.
+            // the image section has none. Blank Cameo= (YACOMD/YAROCK/…) takes
+            // AltCameo, Image+ICON when the SHP exists, else XXICON (T3.5).
             const std::string image = rules.image(e.id);
-            d.cameo = art.cameo(image);
-            if (d.cameo.empty()) d.cameo = art.cameo(e.id);
-            if (d.cost <= 0 || d.tech_level <= 0 || d.cameo.empty()) continue;  // not producible
+            d.cameo = resolve_cameo_name(art, image, e.id);
+            if (d.cost <= 0 || d.tech_level <= 0) continue;  // not producible
+            // Cameo name is never empty after resolve (XXICON at least); the
+            // old `cameo.empty()` gate dropped blank-Cameo types that retail
+            // still draws with XXICON. TechLevel/cost still decide producible.
 
             // Cameo SHP (guarded; absence only downgrades the sidebar icon).
             ra2assets::ShpFile cshp;
@@ -2203,6 +2285,7 @@ UnitRoster load_unit_roster_table(const std::string& dir, const ra2assets::MixFi
                     catch (const std::exception&) { have_cameo = false; }
                 }
             }
+            if (!have_cameo) have_cameo = load_cameo_shp(d.cameo, cshp);  // cameomd + XXICON
 
             if (e.vehicle && !art.voxel(image) &&
                 to_lower(rules.section_string(e.id, "Locomotor", "")).find("2bea74e1") != std::string::npos) {
@@ -2478,6 +2561,13 @@ void wire_economy(ra2engine::World& world, const BuildingAssets& ba, const Rules
     // W2-SK-02: [General] TiberiumLongScan=48 / TiberiumShortScan=6 (cells).
     world.set_harvest_scan(static_cast<int>(rules.general_double("TiberiumLongScan", 32.0)),
                            static_cast<int>(rules.general_double("TiberiumShortScan", 6.0)));
+    // Rallypoint: Yuri Slave Miner scan + SLAV combat prototype.
+    world.set_slave_scan(rules.slave_miner_slave_scan());
+    world.set_slave_miner_scoot(rules.slave_miner_short_scan(), rules.slave_miner_long_scan(),
+                                rules.slave_miner_scan_correction(),
+                                rules.slave_miner_kick_frame_delay());
+    if (rules.slaved("SLAV") || !rules.enslaves("YAREFN").empty())
+        world.set_slave_prototype(resolve_combat_unit(rules, "SLAV").combat);
 }
 
 // FreeUnit grand-opening spawn [RE: economy.md §6]: for every building that
@@ -2545,9 +2635,25 @@ ra2engine::World build_world(const Assets& a, const UnitAssets& ua, int count) {
 // individually guarded: a missing main SHP drops that type (art[i].ok=false)
 // but never crashes. `ra2`/`language` are already-open archives; `rules`/`art`
 // already loaded. Temperate only (letter 'T', isotemp/temperat/generic walk).
+// Rallypoint: the third side's own structures of [BuildingTypes] (YACNST,
+// YAPOWR, NAPSIS, NACLON, ...: yuri::is_yuri_type), in list order.
+std::vector<std::string> yuri_building_ids(const Rules& rules, const Ini& rules_ini) {
+    std::vector<std::string> out;
+    for (const std::string& id : ra2engine::ini_list_values(rules_ini, "BuildingTypes")) {
+        if (id.empty() || !rules_ini.has(id) || std::find(out.begin(), out.end(), id) != out.end()) continue;
+        if (ra2engine::yuri::is_yuri_type(rules.section_string(id, "Owner", ""),
+                                          rules.section_string(id, "AIBasePlanningSide", ""), "", {}))
+            out.push_back(id);
+    }
+    return out;
+}
+
+// `rules_ini` (real play only; every gate passes none): append the third
+// side's structures after the curated RA2 roster, so the indices of the 41
+// curated ones -- and every gate -- are unchanged.
 BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
                                     const ra2assets::MixFile& language, const Rules& rules,
-                                    const Art& art) {
+                                    const Art& art, const Ini* rules_ini = nullptr) {
     load_progress("BUILDING ART");   // W2-AR-02 loading-screen checkpoint
     BuildingAssets ba;
     // Economy phase adds GAREFN/NAREFN (appended so the existing 0..7 indices
@@ -2643,6 +2749,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
     // rulesmd [General] ConditionYellow=50 (percent HP threshold for the
     // damaged-vs-healthy building frame) [RE: task-7 review "ConditionYellow"].
     ba.condition_yellow = rules.general_double("ConditionYellow", 50.0) / 100.0;
+    ba.condition_red = rules.general_double("ConditionRed", 25.0) / 100.0;
 
     // rulesmd [General] repair/sell scalars [RE: repair-sell.md §A1/§B3,
     // CONFIRMED]. general_double reads [General] then [AudioVisual] and uses
@@ -2714,8 +2821,11 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
     ba.roster.reserve(40);
     ba.art.reserve(40);
     int ok_n = 0;
-    for (const char* id_c : kRoster) {
-        const std::string id = id_c;
+    std::vector<std::string> roster_ids(std::begin(kRoster), std::end(kRoster));
+    if (rules_ini)
+        for (const std::string& y : yuri_building_ids(rules, *rules_ini))
+            if (std::find(roster_ids.begin(), roster_ids.end(), y) == roster_ids.end()) roster_ids.push_back(y);
+    for (const std::string& id : roster_ids) {
         // [RE: roster2.md §A, RE-FALLBACK] P6 indices honour rules Image= for the
         // art lookups (AMRADR draws as GAAIRC). Gap owner A (G-26/G-64): ALL
         // indices now honour Image= -- keeping the id for 0..23 left the Prism
@@ -2740,13 +2850,16 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
         const std::string free_id = rules.free_unit(id);
         d.charge = free_id.empty() ? d.cost : std::max(0, d.cost - rules.cost(free_id));
         d.power = rules.power(id);
+        d.drainable = rules.section_flag(id, "Drainable", false);                     // Rallypoint: Disc
+        d.resource_destination = rules.section_flag(id, "ResourceDestination", false); // Rallypoint: Disc
         d.adjacent = rules.adjacent(id);
         d.tech_level = rules.tech_level(id);
         d.conyard = rules.is_construction_yard(id);
         d.prerequisite = rules.prerequisite(id);
         d.image = art_id;
         d.buildup = art.buildup(art_id);
-        d.cameo = art.cameo(art_id);
+        // T3.5: blank artmd Cameo= (YAROCK, …) → AltCameo / Image+ICON / XXICON.
+        d.cameo = resolve_cameo_name(art, art_id, id);
         d.explosion = rules.explosion_first(id);
         // Engineer/Spy Capture [RE: capture.md §D1]: neutral tech-structure
         // periodic income. Absent from every non-tech section -> 0 default keeps
@@ -2769,6 +2882,17 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
         d.crewed           = rules.section_flag(id, "Crewed", false);
         d.soylent          = (int)rules.section_double(id, "Soylent", 0.0);
         d.ore_purifier     = rules.section_flag(id, "OrePurifier", false);   // G-27
+        // Rallypoint: Yuri Slave Miner (Enslaves= on YAREFN; SMIN vehicle too).
+        d.enslaves         = rules.enslaves(id);
+        d.slaves_number    = rules.slaves_number(id);
+        d.slave_regen_rate = rules.slave_regen_rate(id);
+        d.slave_reload_rate = rules.slave_reload_rate(id);
+        d.slave_storage    = d.enslaves.empty() ? 0 : rules.storage(d.enslaves);
+        // Rallypoint: Yuri Grinder (YAGRND) / Bio Reactor (YAPOWR, not YABRCK).
+        d.grinding         = rules.section_flag(id, "Grinding", false);
+        d.infantry_absorb  = rules.section_flag(id, "InfantryAbsorb", false);
+        d.extra_power      = (int)rules.section_double(id, "ExtraPower", 0.0);
+        d.passengers       = (int)rules.section_double(id, "Passengers", 0.0);
         d.wall             = rules.section_flag(id, "Wall", false);            // W6-03-01
         d.insignificant    = rules.section_flag(id, "Insignificant", false);   // W6-03-01
         // W2-SK-12/19/20: Capturable= / Spyable= / UnitRepair= (absent = no in
@@ -2817,6 +2941,9 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
                         slot.has_cameo = true;
                     }
                 } catch (const std::exception&) { slot.has_cameo = false; }
+                // Rallypoint: YR cameomd + XXICON via AssetFS (language/cameo
+                // is also on that list after patch 0046).
+                if (!slot.has_cameo) slot.has_cameo = load_cameo_shp(d.cameo, slot.cameo);
             }
         } catch (const std::exception& ex) {
             std::cerr << "[building] " << id << " main image missing (" << ex.what() << ")\n";
@@ -2833,6 +2960,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
         std::cerr << "]\n";
         ra2engine::fill_building_weapons(rules, id, d);   // Gap fix C (G-40): defenses
         // W6-04-04: a Wall=yes building takes damage stages (art DamageLevels=).
+        d.build_limit = static_cast<int>(rules.section_double(id, "BuildLimit", 0.0));
         d.w6.wall_levels = d.wall ? art.damage_levels(art_id) : 0;   // reuses W6-03-01 BuildingTypeDef::wall
         d.w6.powers_unit = rules.image(rules.section_string(id, "PowersUnit", ""));   // W6-04-18
         if (rules.section_string(id, "PowersUnit", "").empty()) d.w6.powers_unit.clear();
@@ -2952,12 +3080,25 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
             {ra2engine::SuperweaponType::ChronoSphere, "chroicon"},
             {ra2engine::SuperweaponType::ChronoWarp, "chroicon"},
             {ra2engine::SuperweaponType::ParaDrop, "paraicon"},
-            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"}};
+            {ra2engine::SuperweaponType::AmerParaDrop, "aparicon"},
+            {ra2engine::SuperweaponType::SpyPlane, "spypicon"}};  // [SpyPlaneSpecial] SidebarImage
         for (const auto& kv : kSwIcons)
             if (const MixEntry* ce = cameo_mix.find(std::string(kv.second) + ".shp")) {
                 ra2assets::ShpFile shp = ShpFile::load(cameo_mix.read(*ce));
                 if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
             }
+        // YR cameos (SPYPICON, ...) live in langmd.mix/cameomd.mix, not inside language.mix.
+        try {
+            MixFile lmd = MixFile::open_path(env_install_dir() + "langmd.mix");
+            MixFile cmd = lmd.open_nested("cameomd.mix");
+            for (const auto& kv : kSwIcons) {
+                if (ba.sw_cameos.count(static_cast<int>(kv.first))) continue;
+                if (const MixEntry* ce = cmd.find(std::string(kv.second) + ".shp")) {
+                    ra2assets::ShpFile shp = ShpFile::load(cmd.read(*ce));
+                    if (shp.count() > 0) ba.sw_cameos[static_cast<int>(kv.first)] = std::move(shp);
+                }
+            }
+        } catch (const std::exception&) {}
     } catch (const std::exception&) {}
     std::cerr << "[sw] SW cameos loaded=" << ba.sw_cameos.size() << "\n";
 
@@ -3036,9 +3177,12 @@ ra2engine::AiHouseConfig make_ai_config(const BuildingAssets& ba, const Rules& r
     cfg.catalog.barracks = pick("BuildBarracks");
     cfg.catalog.war_factory = pick("BuildWeapons");
     cfg.catalog.radar = pick("BuildRadar");
+    // <Side>BaseDefenses, country-filtered (Owner / RequiredHouses /
+    // ForbiddenHouses). Stock lists have no country gates; a modded entry
+    // must not leak to the wrong house.
     for (const std::string& d : aiside::csv_tokens(rules.section_string(
-             "AI", side == ra2engine::World::Side::Soviet ? "SovietBaseDefenses"
-                                                          : "AlliedBaseDefenses", ""))) {
+             "AI", std::string(ra2engine::yuri::key_prefix(side)) + "BaseDefenses", ""))) {
+        if (!aiside::owned_by(rules, d, side, country)) continue;
         const int t = ok_index(d.c_str());
         if (t >= 0) cfg.catalog.defenses.push_back(t);
     }
@@ -3054,6 +3198,28 @@ ra2engine::AiHouseConfig make_ai_config(const BuildingAssets& ba, const Rules& r
         const int t = ok_index(d.id.c_str());
         if (t >= 0 && t != cfg.catalog.tech && t != cfg.catalog.radar)   // NARADR: SpyPlane
             cfg.catalog.superweapons.push_back(t);
+    }
+    // T2.2: AIBuildThis=yes Combat buildings the BaseDefenses list omits
+    // (French GTGCAN; also GAGAP / NACLON when stock lists skip them).
+    // SuperWeapon ones stay on `superweapons` above.
+    auto in_catalog = [&](int t) {
+        if (t < 0) return true;
+        if (t == cfg.catalog.tech || t == cfg.catalog.radar || t == cfg.catalog.wall) return true;
+        for (int x : cfg.catalog.defenses)
+            if (x == t) return true;
+        for (int x : cfg.catalog.superweapons)
+            if (x == t) return true;
+        return false;
+    };
+    for (const ra2engine::BuildingTypeDef& d : ba.roster) {
+        if (!rules.section_flag(d.id, "AIBuildThis", false)) continue;
+        if (!rules.section_string(d.id, "SuperWeapon", "").empty()) continue;
+        std::string cat = rules.section_string(d.id, "BuildCat", "");
+        for (char& c : cat) c = (char)std::toupper((unsigned char)c);
+        if (cat != "COMBAT") continue;
+        if (!aiside::owned_by(rules, d.id, side, country)) continue;
+        const int t = ok_index(d.id.c_str());
+        if (!in_catalog(t)) cfg.catalog.defenses.push_back(t);
     }
     // [AI] knobs from the real rulesmd [RE: ai-base.md §2] (constants are the
     // committed pins; the file read keeps us honest if a mod changes them).
@@ -3131,6 +3297,30 @@ ra2engine::AiHouseConfig make_ai_config(const BuildingAssets& ba, const Rules& r
         const int dc = aiside::defense_count(rules, side,
                                              ra2engine::difficulty_class_index(difficulty));
         if (dc >= 0) cfg.mods.defense_target = dc;
+    }
+    // Rallypoint: HouseType country Cost/Firepower/ROF (FUN_00511850). Category
+    // Cost*Mult is applied per roster entry; global Cost= folds into cost_mul.
+    {
+        const ra2engine::country::Bonuses bon = ra2engine::country::parse(rules, country);
+        cfg.mods.cost_mul *= bon.cost;
+        cfg.mods.firepower_mul *= bon.firepower;
+        cfg.mods.rof_mul *= bon.rof;
+        cfg.mods.build_time_mul *= bon.build_time;
+        for (ra2engine::BuildingTypeDef& d : cfg.roster) {
+            // Defenses sit in the Defense queue (BuildCat=Combat); treat
+            // BaseNormal=no walls/turrets as Defense when Wall= or the catalog
+            // defenses list contains them — CostDefensesMult otherwise uses
+            // CostBuildingsMult for every structure (stock keys are 1.0).
+            const bool wall = rules.section_flag(d.id, "Wall", false);
+            const ra2engine::country::Kind ck =
+                wall ? ra2engine::country::Kind::Defense : ra2engine::country::Kind::Building;
+            // Category mults are relative to Cost= already in cost_mul; apply
+            // only the category key here so Cost= is not squared.
+            ra2engine::country::Bonuses cat = bon;
+            cat.cost = 1.0;
+            d.cost = ra2engine::country::scale_cost(d.cost, cat, ck);
+            if (d.charge > 0) d.charge = ra2engine::country::scale_cost(d.charge, cat, ck);
+        }
     }
     cfg.build_speed = rules.general_double("BuildSpeed", 0.7);
     cfg.low_power_penalty = rules.general_double("LowPowerPenaltyModifier", 1.0);
@@ -3283,7 +3473,7 @@ void place_overlay_terrain(ra2engine::World& world, Assets& a, std::vector<ra2as
 // origin cell's terrain level (buildings flatten their footprint).
 void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engine::Building& b,
                    const BuildingAssets& ba, int level, double condition_yellow,
-                   const ra2engine::Camera& cam, int W, int H,
+                   const ra2engine::Camera& cam, int W, int H, const ra2engine::World* world,
                    const std::vector<ra2engine::Building>* all = nullptr) {
     if (b.type < 0 || b.type >= static_cast<int>(ba.art.size())) return;
     const BuildingArt& art = ba.art[b.type];
@@ -3376,10 +3566,14 @@ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engi
     // G-85: ActiveAnim/Bib/damage-fire overlays (live game only; g_fx null in gates).
     const bool overlay = g_fx && !buildup && b.state == ra2engine::Building::State::Idle;
     const bool bdamaged = b.max_hp > 0 && b.hp <= condition_yellow * b.max_hp;
+    const bool bfires = overlay && ra2engine::building_damage_fires_on(
+                                       b.hp, b.max_hp, g_fx->building_rules(def.id).occupiable,
+                                       condition_yellow, ba.condition_red);
+    const bool bpowered = pres_building_powered(world, b);
     const ra2assets::Palette opal = overlay ? ra2engine::house_draw_palette(ba.unit_pal, b.house) : ba.unit_pal;
     const std::string& oimg = def.image.empty() ? def.id : def.image;
     if (overlay)
-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, !(b.house == g_local_house && g_pres_low_power), opal,
+        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bfires, bpowered, opal,
                               ra2engine::house_draw_key(b.house), W, H, 0);
     // G-85: the shadow half (frame + Frames/2) first, darkened 50 % [RE:
     // presentation.md §7, FUN_00705290 + the Darken blitter dst = dst >> 1].
@@ -3417,7 +3611,7 @@ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engi
         ra2engine::blit_object(ren, tex, &dst);   // W5-PRES ObjTint (none in the gates)
     }
     if (overlay)
-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, !(b.house == g_local_house && g_pres_low_power), opal,
+        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bfires, bpowered, opal,
                               ra2engine::house_draw_key(b.house), W, H, 1);
     // W4-FIX-POS: RA2_POS_DBG=1 outlines the foundation (magenta) and marks
     // the draw point (green x) -- the visual check for the anchor.
@@ -3691,6 +3885,9 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
 
     const std::string& img = va.combat.image;
     const int bi = ra2engine::facing_to_index(u.body_facing, ra2engine::kVehicleFacings);
+    // Between-tick pose. Unbound (demos) this is the sim pose, sub-cell included.
+    double pfx, pfy;
+    ra2engine::present_ground(u, pfx, pfy);
 
     // CB-2 Aircraft [RE-GATE APPLIED: aircraft.md §3]: an airborne unit is drawn RAISED
     // by altitude_to_screen_dy, with a ground shadow at the un-raised cell.
@@ -3702,20 +3899,24 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
                                                   pres_jumpjet_wobble_px(g_draw_unit_idx, u)   // W5-PRES wobble
         : (u.an.sinking && u.die_time >= 0.0) ? -static_cast<int>(u.die_time * 24.0)   // W2-AN-25
         : 0;
+    // Ground height along a ramp. `u` may be the deck-lifted copy; draw_level
+    // keeps that lift and blends the two cells of the step.
+    const double dlv = ra2engine::color_world() ? ra2engine::color_world()->draw_level(u)
+                                               : static_cast<double>(u.level);
     if (u.an.t.no_shadow || g_sink_drop_px > 0) {   // W7-12-11: no shadow while sinking
         // W4: NoShadow=yes (V3ROCKET / DMISL) -- no ground shadow at all.
     } else if (extra_dy > 0 && g_map_dressing && vxl_shadow(va, bi)) {
         // W5-PRES [RE: Shadow_Point 0x55A550 / AircraftClass::Draw 0x4144B0 /
         // FUN_00755680]: an airborne voxel casts its own silhouette straight
         // down on the ground, same size at any height (live game).
-        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *vxl_shadow(va, bi), u.fx,
-                                     u.fy, u.level, cam, W, H, 0);
+        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *vxl_shadow(va, bi), pfx,
+                                     pfy, dlv, cam, W, H, 0);
     } else if (extra_dy > 0)
-        ra2engine::draw_ground_shadow(ren, u.fx, u.fy, u.level,
+        ra2engine::draw_ground_shadow(ren, pfx, pfy, dlv,
                                       vxl_set(va, 0, u.house).sprites[bi].w, cam, W, H);
     else if (const ra2engine::VoxelSprite* sh = vxl_shadow(va, bi))
-        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *sh, u.fx, u.fy,
-                                     u.level, cam, W, H, 0);   // W2-GA-12 ground shadow
+        ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *sh, pfx, pfy,
+                                     dlv, cam, W, H, 0);   // W2-GA-12 ground shadow
 
     // W3-B: a multi-frame HVA (Night Hawk / Spy Plane rotors, Kirov
     // propellers) shows frame WalkedFramesSoFar % frames [RE: voxel draw
@@ -3726,6 +3927,36 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
         return vxl_frame_sprite(va, part, u.house, fi, hf);
     };
     const std::string fkey = hf ? ":f" + std::to_string(hf) : std::string();
+    // T1.2: Drive-track slope tilt [RE: FUN_0055A7D0 / FUN_007559B0]. Presentation
+    // only — rockets keep their own pitch below.
+    double slope_pitch = 0.0;
+    if (!u.an.t.missile && !u.is_aircraft && va.vsrc) {
+        if (const ra2engine::World* cw = ra2engine::color_world()) {
+            const int cx = static_cast<int>(std::floor(pfx));
+            const int cy = static_cast<int>(std::floor(pfy));
+            slope_pitch = ra2engine::slope_tilt_pitch(cw->ramp_at(cx, cy), u.body_facing);
+        }
+    }
+    auto pitched_part = [&](int part, int fi, double pitch) -> const ra2engine::VoxelSprite& {
+        static std::map<std::string, ra2engine::VoxelSprite> cache;
+        if (!va.vsrc || std::fabs(pitch) < 1e-4) return part_sprite(part, fi);
+        const int pq = static_cast<int>(std::lround(pitch * 180.0 / 3.14159265358979 / 5.0));
+        const std::string key = "vxlst:" + img + ":" + std::to_string(part) + ":" +
+                                std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                std::to_string(fi) + ":" + std::to_string(hf) + ":" + std::to_string(pq);
+        std::lock_guard<std::mutex> lk(g_vxl_mu);
+        auto it = cache.find(key);
+        if (it != cache.end()) return it->second;
+        const VehicleAssets::VoxelSrc& s = *va.vsrc;
+        const ra2assets::VxlModel& m = part == 0 ? s.hull : part == 1 ? s.tur : s.barl;
+        const ra2assets::HvaModel& h = part == 0 ? s.hull_h : part == 1 ? s.tur_h : s.barl_h;
+        return cache
+            .emplace(key, ra2engine::rasterize_model(
+                              m, h, ra2engine::index_to_yaw(fi, ra2engine::kVehicleFacings), s.vpl,
+                              ra2engine::house_draw_palette(s.pal, u.house), hf,
+                              pq * 5.0 * 3.14159265358979 / 180.0))
+            .first->second;
+    };
     // W4: a RocketLocomotion rocket draws its hull at its pitch (the tilt on
     // the launcher, the climb, the arc, the dive) [FUN_00661D00 +0x50].
     if (u.an.t.missile && va.vsrc && std::fabs(u.an.rocket.pitch) > 1e-3) {
@@ -3741,7 +3972,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
                                           s.vpl, ra2engine::house_draw_palette(s.pal, u.house), 0,
                                           pq * 5.0 * 3.14159265358979 / 180.0)).first;
         }
-        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, u.fx, u.fy, u.level, cam, W, H, extra_dy);
+        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, dlv, cam, W, H, extra_dy);
         return;
     }
     // W7-06-12 / W7-04-27: out of spawns -> the xxxxWO hull [RE-FALLBACK: the
@@ -3761,15 +3992,20 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
                                                ra2engine::house_draw_palette(va.vsrc->pal, u.house), 0)).first;
             spr = &it->second;
         }
-        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, u.fx, u.fy, u.level, cam, W, H, extra_dy);
-    } else
-    ra2engine::draw_voxel_sprite(
-        ren, tc, "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(bi) + fkey,
-        part_sprite(0, bi), u.fx, u.fy, u.level, cam, W, H, extra_dy);
+        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, dlv, cam, W, H, extra_dy);
+    } else {
+        const std::string hkey = "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                 std::to_string(bi) + fkey +
+                                 (std::fabs(slope_pitch) > 1e-4
+                                      ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                                      : "");
+        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, dlv, cam, W, H,
+                                     extra_dy);
+    }
     if (va.has_turret) {
         const int ti = ra2engine::facing_to_index(u.turret_facing, ra2engine::kVehicleFacings);
         // W3-B TurretOffset: forward along the BODY facing (FLH axes, §6).
-        double tfx = u.fx, tfy = u.fy;
+        double tfx = pfx, tfy = pfy;
         if (va.turret_offset != 0) {
             const double yaw = ra2engine::index_to_yaw(bi, ra2engine::kVehicleFacings);
             const double f = va.turret_offset / 256.0;
@@ -3779,22 +4015,39 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
         const int tn = pres_turret_index(u, va);   // W7-03-05/07
         const ra2engine::VoxelSprite* alt = tn > 0 ? vxl_alt_turret(va, tn, u.house, ti, hf) : nullptr;
         auto draw_turret = [&]() {
-            if (alt)
+            if (alt && std::fabs(slope_pitch) < 1e-4)
                 ra2engine::draw_voxel_sprite(ren, tc,
                                              "vxl:" + img + ":t" + std::to_string(tn) + ":" +
                                                  std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
                                                  std::to_string(ti) + fkey,
-                                             *alt, tfx, tfy, u.level, cam, W, H, extra_dy);
-            else
+                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
+            else if (!alt)
                 ra2engine::draw_voxel_sprite(
-                    ren, tc, "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
-                    part_sprite(1, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
+                    ren, tc,
+                    "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                        std::to_string(ti) + fkey +
+                        (std::fabs(slope_pitch) > 1e-4
+                             ? ":sp" + std::to_string(static_cast<int>(
+                                           std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                             : ""),
+                    pitched_part(1, ti, slope_pitch), tfx, tfy, dlv, cam, W, H, extra_dy);
+            else
+                ra2engine::draw_voxel_sprite(ren, tc,
+                                             "vxl:" + img + ":t" + std::to_string(tn) + ":" +
+                                                 std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                                 std::to_string(ti) + fkey,
+                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
         };
         auto draw_barrel = [&]() {
-            if (va.has_barrel)
-                ra2engine::draw_voxel_sprite(
-                    ren, tc, "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
-                    part_sprite(2, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
+            if (!va.has_barrel) return;
+            const std::string bkey =
+                "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                std::to_string(ti) + fkey +
+                (std::fabs(slope_pitch) > 1e-4
+                     ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
+                     : "");
+            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, dlv, cam, W,
+                                         H, extra_dy);
         };
         // W7-12-41 [RE: 0x73A3A0 @0x73ACBB-0x73ADD4 -- q = ((turret facing
         // >> 13) + 1 >> 1) & 3; q 0 (N) or 3 (W) draws the barrel BEFORE the
@@ -3824,9 +4077,9 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
         // 30 px/cell diamond half-height that applies to the F/L ground plane.
         const int flash_dy =
             static_cast<int>(std::lround((mx - my) * 15.0 - (va.flh[2] / 256.0) * 36.74));
-        const int cx = static_cast<int>(std::lround((u.fx - u.fy) * 30.0)) + cam.x + 30;
+        const int cx = static_cast<int>(std::lround((pfx - pfy) * 30.0)) + cam.x + 30;
         const int cy =
-            static_cast<int>(std::lround((u.fx + u.fy) * 15.0 - u.level * 15)) + cam.y + 15 -
+            static_cast<int>(std::lround((pfx + pfy) * 15.0 - u.level * 15)) + cam.y + 15 -
             extra_dy;   // CB-2: track the raised hull when airborne
         SDL_Rect fr{cx + flash_dx - 3, cy + flash_dy - 3, 6, 6};
         if (!(fr.x + fr.w <= 0 || fr.y + fr.h <= 0 || fr.x >= W || fr.y >= H)) {
@@ -4007,11 +4260,12 @@ void draw_p5_chevrons(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2e
                                                    : (u.veteran_rank > 0 ? 1 : 0);
         if (rank <= 0) continue;
         const int frame = rank >= 2 ? 15 : 14;
-        const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;   // W5-B sub-cell
+        double ufx, ufy;
+        ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
         // W7-12-20 [RE: 0x709E10 offsets from the same draw point as the
         // health bar]: lifted by the flight altitude and a bridge deck.
         const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
-        const int lv = u.level + pres_unit_lift_levels(world, u);
+        const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);
         const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
         const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
         // W7-12-21: +(5,2) for InfantryClass only (the drone is a Unit).
@@ -4237,6 +4491,9 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
     // image is logged and skipped (not thrown) so one bad unit can't take
     // down the whole frame.
     auto draw_one_unit = [&](int idx) {
+        // A lifted copy is not an element of the unit array, so the blend
+        // looks the live unit up by index.
+        ra2engine::PresentIndex present_ix(idx);
         // W5-PRES R-100: a unit on a high-bridge deck draws BridgeHeight up.
         std::optional<ra2engine::Unit> lifted;
         const ra2engine::Unit* up = &us[idx];
@@ -4316,7 +4573,10 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
             g_draw_unit_idx = idx;   // W3-B: walk stage (HVA frame)
             // W3-B [RE: FUN_0073c1cc, Harvester=yes + unloading -> UnloadingClass]:
             // a harvester dumping at the refinery draws its UnloadingClass.
-            if (u.is_harvester && u.harv == ra2engine::HarvState::Unloading) {
+            // T3.3 [RE: IsSimpleDeployer FUN_00739AC0 / UnloadingClass=SCHD]:
+            // a deployed Siege Chopper draws its UnloadingClass (landed body).
+            if ((u.is_harvester && u.harv == ra2engine::HarvState::Unloading) ||
+                (u.deployed && u.deploy_fire && !u.is_infantry)) {
                 auto ul = g_unloading_class.find(draw_image);
                 if (ul != g_unloading_class.end() && ul->second) va = ul->second;
             }
@@ -4421,7 +4681,7 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
             const ra2assets::MapCell* mc = a.map.at(b.cx, b.cy);
             ra2engine::ObjTint btint;   // W5-PRES R-120 Iron Curtain envelope
             ra2engine::set_obj_tint(pres_building_tint(world, b, btint) ? &btint : nullptr);
-            draw_building(ren, tc, b, *ba, mc ? mc->level : 0, ba->condition_yellow, cam, W, H,
+            draw_building(ren, tc, b, *ba, mc ? mc->level : 0, ba->condition_yellow, cam, W, H, &world,
                           &world.buildings());
             if (g_turrets && b.type >= 0 && b.type < static_cast<int>(ba->roster.size()))   // W2-GA-13
                 g_turrets->draw(ren, tc, world, b, ba->roster[static_cast<std::size_t>(b.type)].id,
@@ -4436,7 +4696,11 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
     if (ba && g_map_dressing) {
         std::vector<DrawItem> air;
         for (int i : uorder)
-            if (pres_airborne(us[i])) air.push_back({us[i].fx + us[i].fy, 1, i});
+            if (pres_airborne(us[i])) {
+                double fx = us[i].fx, fy = us[i].fy;
+                ra2engine::present_cell(us[i], fx, fy);
+                air.push_back({fx + fy, 1, i});
+            }
         std::stable_sort(air.begin(), air.end(), [](const DrawItem& x, const DrawItem& y) { return x.key < y.key; });
         for (const DrawItem& d : air) draw_one_unit(d.idx);
     }
@@ -4481,8 +4745,14 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
         if (it == ua.shps.end()) continue;
         ra2engine::Unit tmp = u;
         const double lift = ra2engine::altitude_to_screen_dy(u.an.para_alt) / 30.0;
-        tmp.fx -= lift;
-        tmp.fy -= lift;
+        double gx, gy;
+        {
+            ra2engine::PresentIndex hold(i);
+            ra2engine::present_ground(u, gx, gy);
+        }
+        tmp.fx = gx - lift;
+        tmp.fy = gy - lift;
+        tmp.sub_x = tmp.sub_y = 0;   // gx/gy already include the sub-cell
         ra2engine::draw_unit(ren, tc, tmp, it->second, ua.pal, cam, W, H);
         pres_draw_parachute(ren, tc, i, tmp, cam, W, H);   // W5-PRES R-122
     }
@@ -4533,9 +4803,10 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
             const bool hovered = g_hover_unit == idx;   // W6-05-07
             if (usel(u) || hovered) {
                 const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
-                const double ufx = u.fx + u.sub_x / 256.0, ufy = u.fy + u.sub_y / 256.0;   // W5-B
+                double ufx, ufy;
+                ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
                 const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
-                const int lv = u.level + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
+                const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
                 const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
                 draw_unit_pips(ren, tc, u, sx, sy, g_pip_yellow, g_pip_red, usel(u));
                 // W7-12-04/05/16/17/18/22 [RE: DrawHealthBar 0x6F5A00 tail]: the
@@ -5090,6 +5361,14 @@ ra2assets::Palette make_font_palette_tinted(int r, int g, int b) {
     return p;
 }
 
+// Menu art is 640x480 (the shell) drawn 1.5x to 3x+ on a modern display: draw it
+// and the shell font with linear filtering, not as blocky nearest pixels. At 1:1
+// (scale 1) the two are identical, so this is only ever softer where the art grows.
+inline void render_copy_smooth(SDL_Renderer* r, SDL_Texture* t, const SDL_Rect* dst) {
+    SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
+    SDL_RenderCopy(r, t, nullptr, dst);
+}
+
 // [Task 5] Pixel width of a string in the shell font (for centering labels).
 int fnt_text_width(const ra2assets::Font& font, const std::string& s) {
     int w = 0;
@@ -5108,9 +5387,11 @@ int fnt_text_width(const ra2assets::Font& font, const std::string& s) {
 void draw_fnt_text(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
                    const ra2assets::Palette& pal, const std::string& s, int x, int y,
                    const std::string& keypfx, int scale = 1) {
+    const int sc = std::max(1, scale);
     int cx = x;
     for (unsigned char ch : s) {
         const int w = font.width(ch);
+        const int adv = (w > 0 ? w : font.height() / 2) * sc;
         if (ch != ' ' && ch >= font.first() && ch <= font.last() && w > 0) {
             const ra2assets::FntGlyph& g = font.glyph(ch);
             if (g.w > 0 && g.h > 0) {
@@ -5118,23 +5399,27 @@ void draw_fnt_text(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2asse
                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
                 if (!tex)
                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
-                SDL_Rect dst{cx, y, g.w * scale, g.h * scale};
-                SDL_RenderCopy(ren, tex, nullptr, &dst);
+                SDL_Rect dst{cx, y, g.w * sc, g.h * sc};
+                render_copy_smooth(ren, tex, &dst);
             }
         }
-        cx += (w > 0 ? w : font.height() / 2) * scale;   // space/missing glyph advance
+        cx += adv;
     }
 }
 
-// [P8] draw_fnt_text with a FRACTIONAL scale (the options controls use a ~12px
-// face inside 16px logical rows, scaled by the letterbox factor). Glyph dst
-// rects are rounded from accumulated float positions so spacing stays even.
+// [P8] draw_fnt_text with a FRACTIONAL scale: the glyphs are enlarged by exactly
+// `scale` (no rounding to a whole number, which made a 12 px label jump from 16
+// to 32 px tall between 1.4x and 1.5x) and drawn with linear filtering, each
+// glyph placed on the pixel its running advance falls on.
 void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
                      const ra2assets::Palette& pal, const std::string& s, double x, double y,
                      const std::string& keypfx, double scale) {
+    const double sc = std::max(1.0, scale);
     double cx = x;
+    const int y0 = static_cast<int>(std::lround(y));
     for (unsigned char ch : s) {
         const int w = font.width(ch);
+        const double adv = (w > 0 ? w : font.height() / 2) * sc;
         if (ch != ' ' && ch >= font.first() && ch <= font.last() && w > 0) {
             const ra2assets::FntGlyph& g = font.glyph(ch);
             if (g.w > 0 && g.h > 0) {
@@ -5142,14 +5427,13 @@ void draw_fnt_text_f(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2as
                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
                 if (!tex)
                     tex = static_cast<SDL_Texture*>(tc.get(key, g.pixels.data(), g.w, g.h, pal));
-                const int x0 = static_cast<int>(std::lround(cx));
-                const int x1 = static_cast<int>(std::lround(cx + g.w * scale));
-                SDL_Rect dst{x0, static_cast<int>(std::lround(y)), x1 - x0,
-                             static_cast<int>(std::lround(g.h * scale))};
-                SDL_RenderCopy(ren, tex, nullptr, &dst);
+                const int dx = static_cast<int>(std::lround(cx));
+                SDL_Rect dst{dx, y0, static_cast<int>(std::lround(cx + g.w * sc)) - dx,
+                             static_cast<int>(std::lround(g.h * sc))};
+                render_copy_smooth(ren, tex, &dst);
             }
         }
-        cx += (w > 0 ? w : font.height() / 2) * scale;
+        cx += adv;
     }
 }
 
@@ -5166,31 +5450,24 @@ void shade_rect(SDL_Renderer* ren, const ra2engine::SbRect& r, Uint8 alpha, Uint
 
 // CB-4 Superweapons [spec §6]: draw the SW cameo + recharge indicator in a
 // sidebar slot, reusing the EXISTING gclock2.shp 55-frame chrome + the flashing-
-// green READY tint. Drawn ONLY when house 0 has a granted SW, so no existing
-// demo (which grants none) changes its sidebar. `slot` is the target rect.
-// W2-AN-04/23: the sidebar rect of house 0's k-th superweapon (grant order),
-// a 2-wide grid from the radar area's top-left (the CB-4 slot is k = 0).
-ra2engine::SbRect sw_slot_rect(const ra2engine::SidebarLayout& lay, int k) {
-    return ra2engine::SbRect{lay.bar.x + ra2engine::kCameoX + (k % 2) * ra2engine::kCameoW,
-                             lay.radar.y + 2 + (k / 2) * ra2engine::kCameoH, ra2engine::kCameoW,
-                             ra2engine::kCameoH};
-}
-
+// green READY tint. Drawn ONLY when the local house has a granted SW, so no
+// existing demo (which grants none) changes its sidebar. The slot is a side2
+// cameo socket (SidebarLayout::sw_slot), the same wells the build icons use.
 void draw_sw_slot(SDL_Renderer* ren, ra2engine::TextureCache& tc, const BuildingAssets& ba,
-                  const ra2engine::World& world, const ra2engine::SbRect& slot0, double t_now) {
+                  const ra2engine::World& world, const ra2engine::SidebarLayout& lay, double t_now) {
     const std::vector<ra2engine::SuperweaponType> types = world.sw_types(g_local_house);
     for (int k = 0; k < static_cast<int>(types.size()); ++k) {
+    if (k / 2 >= lay.side2_rows) break;
     const ra2engine::SuperweaponType ty = types[k];
     const ra2engine::Superweapon* sw = world.sw_state(g_local_house, ty);
     if (!sw) continue;
-    const ra2engine::SbRect slot{slot0.x + (k % 2) * ra2engine::kCameoW,
-                                 slot0.y + (k / 2) * ra2engine::kCameoH, slot0.w, slot0.h};
+    const ra2engine::SbRect slot = lay.sw_slot(k);
     // Cameo (art-guarded): the SW's SidebarImage, else a placeholder shade.
     auto cam = ba.sw_cameos.find(static_cast<int>(ty));
     if (cam != ba.sw_cameos.end())
         blit_shp(ren, tc, "swcam:" + std::to_string(static_cast<int>(ty)), cam->second, 0,
                  ba.cameo_pal, slot.x, slot.y);
-    else if (ba.sw_has_cameo)
+    else if (ba.sw_has_cameo && ty == ra2engine::SuperweaponType::Nuke)   // never another SW's cameo
         blit_shp(ren, tc, "swcam:nukeicon", ba.sb_nukeicon, 0, ba.cameo_pal, slot.x, slot.y);
     else
         shade_rect(ren, slot, 140);                     // placeholder tile
@@ -5299,8 +5576,13 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
         // W5-PRES R-142 [RE: credits draw 0x4A2280, colour 0xB0E98C by side
         // FUN_0072E520]: Allied RGB(164,210,255), Soviet/other RGB(255,255,0).
         const bool allied = std::string(g_sidebar_mix) == "sidec01.mix";
-        hud_text_rgb(ren, tc, *g_game_font, cs, lay.credits.x + 84 - fnt_text_width(*g_game_font, cs) / 2,
-                     lay.credits.y + 1, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0);
+        // Drawn 1:1 on the canvas: the present scale (Platform) makes each
+        // canvas pixel whole screen pixels, so it stays the sidebar's size.
+        const int tw = fnt_text_width(*g_game_font, cs);
+        const int th = g_game_font->height();
+        const int tx = lay.credits.x + 84 - tw / 2;
+        const int ty = lay.credits.y + (lay.credits.h - th) / 2;
+        hud_text_rgb(ren, tc, *g_game_font, cs, tx, ty, allied ? 164 : 255, allied ? 210 : 255, allied ? 255 : 0);
     } else {
         draw_number_centered(ren, credits_shown, lay.credits.x + 84, lay.credits.y + 2, 2);
     }
@@ -5492,12 +5774,9 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
                 blit_shp_alpha(ren, tc, "sb:darkf", ba.sb_darken, 0, ba.sb_pal, c.rect.x, c.rect.y, 128);
         }
     }
-    // CB-4 Superweapons [spec §6]: the SW cameo + recharge clock in an unused
-    // slot (the radar-area top-left). draw_sw_slot no-ops unless house 0 has a
-    // granted SW, so no existing demo (which grants none) changes its sidebar.
-    const ra2engine::SbRect sw_slot{lay.bar.x + ra2engine::kCameoX, lay.radar.y + 2,
-                                    ra2engine::kCameoW, ra2engine::kCameoH};
-    draw_sw_slot(ren, tc, ba, world, sw_slot, t_now);
+    // Superweapon cameos sit in the top side2 sockets. The radar map is left
+    // clear. draw_sw_slot draws nothing unless the local house has a granted SW.
+    draw_sw_slot(ren, tc, ba, world, lay, t_now);
 }
 
 // Placement cursor: draw the fw*fh foundation cell diamonds green (cell OK) /
@@ -5559,12 +5838,13 @@ struct ModeCursor {
 // caller can hide the OS cursor).
 bool draw_mode_cursor(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ModeCursor& mc,
                       const ra2engine::World& world, const BuildingAssets& ba,
-                      const ra2engine::Input& input, int mx, int my, std::uint64_t game_frame) {
+                      const ra2engine::Input& input, int mx, int my, std::uint64_t game_frame,
+                      int vx = -1, int vy = -1) {   // vx/vy: the pointer in world-view pixels (zoomed out)
     const ra2engine::Input::BaseMode mode = input.base_mode();
     if (!mc.ok || mode == ra2engine::Input::BaseMode::None || mode == ra2engine::Input::BaseMode::PowerToggle)
         return false;   // W5-E2: no power-toggle cursor art in YR [RE-FALLBACK: the normal cursor]
     const bool repair = (mode == ra2engine::Input::BaseMode::Repair);
-    const int bi = input.building_under(mx, my);
+    const int bi = input.building_under(vx >= 0 ? vx : mx, vy >= 0 ? vy : my);
     // 0 = armed over nothing, 1 = valid target, 2 = refused target.
     int state = 0;
     if (bi >= 0) {
@@ -5811,9 +6091,9 @@ struct Scene {
     }
     virtual void   probe(std::map<std::string, long long>& out) const { (void)out; }
     virtual bool   cheat(const std::vector<std::string>& args) { (void)args; return false; }
-    // W2-AR-06: the logical canvas width this scene lays out for (height is
-    // always 720). The shell pages are fixed 1280 (the original's 800x600
-    // shell, centred); GameScene widens with the panel's aspect.
+    // W2-AR-06: shell pages stay 1280x720 (the original's 800x600 shell,
+    // centred). GameScene widens with the panel's aspect and, on desktop,
+    // grows taller with the window (desktop_logical_height).
     virtual int    logical_width() const                    { return 1280; }
     virtual int    logical_height() const                   { return 720; }
 };
@@ -6034,6 +6314,8 @@ void enable_p5_features(ra2engine::World& world, const Rules& rules, const Build
     if (!cfg.crates && !campaign) return;
     ra2engine::World::CrateConfig cc;
     cc.rules = resolve_crate_rules(rules);
+    // Rallypoint --launch CrateMinimum= (CnCNet Crates Increased/Extreme).
+    if (cfg.crate_minimum >= 0) cc.rules.minimum = cfg.crate_minimum;
     // Net L0 [RE: InitRandom FUN_0052F960]: ScenarioClass::Random is seeded
     // with the session Seed itself. The session seed was chosen by the
     // launcher (session_seed_for) -- no wall clock -- and is in the save.
@@ -6264,7 +6546,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
         if (!t) return;
         SDL_Rect d = dev(lx, ly, lw, lh);
         SDL_SetTextureColorMod(t, 255, 255, 255);
-        SDL_RenderCopy(ren, t, nullptr, &d);
+        render_copy_smooth(ren, t, &d);
     };
 
     // 1. Backdrop: mnscrns red radar map (472x448) under shell.pal.
@@ -6290,7 +6572,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
         if (mt) {
             SDL_SetTextureColorMod(mt, 255, 255, 255);
             SDL_Rect md = dev(508, 47, 92, 53);
-            SDL_RenderCopy(ren, mt, nullptr, &md);
+            render_copy_smooth(ren, mt, &md);
         }
     }
     // 4. Sidebar bottom: V-console + cables (bottom-anchored).
@@ -6315,7 +6597,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
             if (et) {
                 SDL_SetTextureColorMod(et, 255, 255, 255);
                 SDL_Rect ed = dev(484, ry, 156, 42);
-                SDL_RenderCopy(ren, et, nullptr, &ed);
+                render_copy_smooth(ren, et, &ed);
             }
         }
     }
@@ -6339,7 +6621,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
             if (b.enabled) SDL_SetTextureColorMod(bt, 255, 255, 255);
             else           SDL_SetTextureColorMod(bt, 120, 120, 130);   // disabled = dimmed
             SDL_Rect d = dev(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
-            SDL_RenderCopy(ren, bt, nullptr, &d);
+            render_copy_smooth(ren, bt, &d);
         } else if (art.btn) {                                    // legacy mnbttn fallback
             int frame = 0;
             if (b.enabled && i == pressed_ix)    frame = 2;
@@ -6351,7 +6633,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
             SDL_SetTextureColorMod(bt, b.enabled ? 255 : 120, b.enabled ? 255 : 120,
                                    b.enabled ? 255 : 130);
             SDL_Rect d = dev(b.rect.x, b.rect.y, b.rect.w, b.rect.h);
-            SDL_RenderCopy(ren, bt, nullptr, &d);
+            render_copy_smooth(ren, bt, &d);
         }
     }
 
@@ -6369,7 +6651,7 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
     if (bink_tex) {
         SDL_SetTextureColorMod(bink_tex, 255, 255, 255);
         SDL_Rect crt = dev(0, 0, 472, 448);
-        SDL_RenderCopy(ren, bink_tex, nullptr, &crt);
+        render_copy_smooth(ren, bink_tex, &crt);
     }
 
     // 8. Gold 12metfnt labels centered in each button + "Main Menu" header +
@@ -6477,11 +6759,11 @@ public:
                              ? MapSelection{camp::mix_for_map(cfg.campaign_map), 0u,
                                             camp::lower(cfg.campaign_map)}   // P10
                          : cfg.map_file.empty() ? MapSelection{}
-                                                : MapSelection{"multimd.mix", 0u, cfg.map_file})),
+                                                : mp_map_selection(cfg.map_file))),
           // G-86: the art loaders below follow this map's theater.
           ua_((g_art_chain = a_.chain,
                g_sidebar_mix = (soviet_campaign(cfg) || (cfg.campaign_map.empty() && !cfg.slots.empty() &&
-                                                         cfg.slots[(std::size_t)local_slot_of(cfg)].side == ra2engine::World::Side::Soviet))
+                                                         cfg.slots[(std::size_t)local_slot_of(cfg)].side != ra2engine::World::Side::Allied))   // Rallypoint: Yuri borrows the Soviet chrome
                                    ? "sidec02.mix" : "sidec01.mix",
                ra2engine::set_sidebar_style(std::string(g_sidebar_mix) == "sidec02.mix" ? 1 : 0),   // W2-UI-08
                load_unit_assets(dir_, ra2_))),
@@ -6497,7 +6779,7 @@ public:
           rules_(Rules::load(rules_ini_)),
           art_ini_(load_ini_from_ra2md(dir_, "artmd.ini")),
           art_(Art::load(art_ini_)),
-          ba_(load_building_assets(ra2_, language_, rules_, art_)),
+          ba_(load_building_assets(ra2_, language_, rules_, art_, &rules_ini_)),   // Rallypoint: + the Yuri structures
           miners_(load_miner_assets(dir_, ra2_, ua_.pal, rules_)),
           transport_(load_transport_assets(dir_, ra2_, ua_.pal)),
           ore_art_(load_ore_art(ra2_)),
@@ -6506,7 +6788,7 @@ public:
           ur_(rp_load_roster(dir_, ra2_, ua_, rules_, art_, rules_ini_, cfg)),
           // [G-60/G-64] both sides' AI combat roster (real prerequisites);
           // each AI house takes its Owner-filtered share (arm_skirmish_ai).
-          ur_ai_(load_ai_skirmish_roster(dir_, ra2_, ua_, rules_, art_)),
+          ur_ai_(load_ai_skirmish_roster(dir_, ra2_, ua_, rules_, art_, &rules_ini_)),   // Rallypoint: + Yuri units
           // Hardcoded 2964-3132 scenario REPLACED by launch_skirmish [D4].
           // P10: a campaign mission starts from the bare map world; its
           // CampaignRuntime (ctor body) places the mission's own objects.
@@ -6530,6 +6812,13 @@ public:
         world_.enable_projectiles(ra2engine::resolve_projectile_rules(rules_));
         depth_arm_rules(world_, rules_);   // G16 (agent G): garrison + bridge rules
         w5_arm_combat(world_, rules_, &a_.map, &a_.theater);   // W5-B: sub-cells, land speed, crush
+        // Rallypoint --launch AutoRepair=yes: CnCNet's [IQ] RepairSell=0 so the
+        // AI always auto-repairs (house IQ is never below 0).
+        if (cfg.auto_repair == 1) {
+            ra2engine::World::CombatW7Rules w7 = world_.combat_w7();
+            w7.iq_repair_sell = 0;
+            world_.arm_combat_w7(w7);
+        }
 
         // --- vehicle render list (voxel hulls for launched MTNK/FV/etc.) ---
         vlist_ = {&va_, &miners_.harv, &miners_.cmin};
@@ -6547,7 +6836,10 @@ public:
         g_gf_spawned.clear();
         start_vxl_prewarm();   // W2-GA-P4
         // gF G-23: clicking the selected MCV deploys it (ACTION_SELF, B's hook).
-        input_.set_deploy_check([](const ra2engine::Unit& u) { return u.deploys_into >= 0; });
+        // T3.3: DeployFire / IsSimpleDeployer (Siege Chopper) also get Deploy.
+        input_.set_deploy_check([](const ra2engine::Unit& u) {
+            return u.deploys_into >= 0 || u.deploy_fire;
+        });
 
         // Register each infantry def's SHP + anim into the shared UnitAssets store
         // so launched infantry (player + AI-2 Soviet rosters) render. Guarded: a
@@ -6647,10 +6939,12 @@ public:
         {
             const std::pair<ra2engine::World::Side, const char*> crews[] = {
                 {ra2engine::World::Side::Allied, "AlliedCrew"},
-                {ra2engine::World::Side::Soviet, "SovietCrew"}};
+                {ra2engine::World::Side::Soviet, "SovietCrew"},
+                {ra2engine::World::Side::Yuri, "ThirdCrew"}};   // Rallypoint: Yuri's survivors (INIT)
             for (const auto& [side, key] : crews) {
                 const std::string id = rules_.general_string(
-                    key, side == ra2engine::World::Side::Soviet ? "E2" : "E1");
+                    key, side == ra2engine::World::Side::Soviet ? "E2" : side == ra2engine::World::Side::Yuri ? "" : "E1");
+                if (id.empty()) continue;
                 const ResolvedUnit ru = resolve_combat_unit(rules_, id);
                 world_.set_survivor_crew(static_cast<int>(side), ru.combat);
                 if (ua_.anims.count(ru.combat.image))
@@ -6730,6 +7024,7 @@ public:
         }
     }
     ~GameScene() override {
+        if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
         net_teardown();   // NET-PLAY: a live session keeps flushing its EXIT
         if (cmd_rec_) {   // NET L1 --record: the end state the replay must reach
             const std::uint64_t h = sim_state_hash();
@@ -6763,6 +7058,16 @@ public:
         return cfg;
     }
 
+    // Keep the cameo strip's reserved superweapon rows in step with the local
+    // house. A layout built with the default (no reserve) is rewritten here
+    // before it is drawn or clicked.
+    void sync_sw_sidebar() {
+        if (!sidebar_up_) return;
+        const int slots = static_cast<int>(world_.sw_types(local_house_).size());
+        if (slots == lay_.sw_slots) return;
+        lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, lay_.top_row, slots);
+    }
+
     // The former poll-loop body (one event): sidebar consume-in-rect-before-world,
     // then Input. G-01: Esc never reaches here as a quit -- ui_handle maps it to
     // the options dialog (KeyboardMD.ini Options=27); right-click cancels modes.
@@ -6780,18 +7085,23 @@ public:
         // sidebar FUN_006ab0b0 ignore input -- only Esc reaches the options]:
         // every pointer / key / touch event past the options menu is dropped.
         if (input_locked_) return;
+        if (zoom_handle(ev)) return;   // tactical zoom: wheel, PgUp / PgDn
         if (hotkey(ev)) return;      // G-04: KeyboardMD.ini [Hotkey] commands
         if (touch_bar_handle(ev)) return;   // W2-AR-08 touch command bar (touch_bar.inc)
         if (touch_ui_handle(ev)) return;    // W4-AM touch router (touch_ui.inc)
+        SDL_Log("[radar-dbg] pre-sidebar kind=%d button=%d x=%d y=%d", static_cast<int>(ev.kind),
+                static_cast<int>(ev.button), ev.x, ev.y);
         if (sidebar_up_ && ev.kind == ra2engine::InputEvent::PointerDown &&
             lay_.contains(ev.x, ev.y)) {
+            sync_sw_sidebar();
             if (ev.button == ra2engine::InputEvent::Left) {
                 // SW cameo slots (W2-AN-04: one per granted type): left-click
                 // arms that SW's targeting when it is READY.
                 {
                     const std::vector<ra2engine::SuperweaponType> swt = world_.sw_types(local_house_);
                     for (int k = 0; k < static_cast<int>(swt.size()); ++k) {
-                        if (!sw_slot_rect(lay_, k).contains(ev.x, ev.y)) continue;
+                        if (k / 2 >= lay_.side2_rows) break;
+                        if (!lay_.sw_slot(k).contains(ev.x, ev.y)) continue;
                         if (world_.sw_ready(local_house_, swt[k])) w2_arm_sw(swt[k]);
                         return;  // consumed by the SW slot
                     }
@@ -6837,6 +7147,12 @@ public:
         // one-mode cancel chain is the RIGHT-click-up handler (Input owns it);
         // Esc is the Options hotkey (FUN_00646AE0 queues the options event and
         // cancels nothing), handled in ui_handle.
+        if (zoom_ < 1.0 && !ev.touch && ev.x < playfield_w_ &&
+            (ev.kind == ra2engine::InputEvent::PointerMove || ev.kind == ra2engine::InputEvent::PointerDown ||
+             ev.kind == ra2engine::InputEvent::PointerUp)) {
+            ev.x = zx(ev.x);   // Input works in world-view pixels (the zoomed canvas)
+            ev.y = zy(ev.y);
+        }
         input_.handle(ev);
     }
 
@@ -6872,7 +7188,7 @@ public:
         // G0/G-71: the pointer position comes from the event stream
         // (track_pointer), and only a real MOUSE edge-scrolls -- a lifted
         // finger leaves no pointer at the edge, so touch never scrolls forever.
-        const int kEdge = 24;   // window-edge scroll band (true screen edge, incl. sidebar)
+        const int kEdge = scroll_edge_band();   // window-edge scroll band (true screen edge, incl. sidebar), ~24 screen px
         if (mouse_present_) {
             if (mx_ <= kEdge) dir_x += 1;
             else if (mx_ >= kWinW - kEdge) dir_x -= 1;
@@ -6968,6 +7284,7 @@ public:
         }
         campaign_audio_pump();   // W2-CA-12: trigger speech/sound/music
         campaign_visuals_pump();   // W3-FX: trigger anims/camera/radar/particles/flashes
+        motion_.capture(world_.units());   // pose before this tick, for the draw blend
         world_.step(dt);   // L2: every human house's production runs inside the step
         pres_.note_launches(world_, world_.take_econ_launches());   // W7-12-01: EVA_UnitReady per launch (drained per tick)
         r210_track_steps();   // R-210 --play probes (scene-side, never saved)
@@ -7006,6 +7323,7 @@ public:
         // refill ran in world_.step (World::step_player_economies); the
         // sidebar strip follows the buildable set.
         rp_refresh_sidebar();
+        sync_sw_sidebar();   // cameo sockets follow a grant even when the build list did not change
         // FreeUnit grand-opening spawns (a just-built refinery drops its miner).
         if (ba_.ok) spawn_free_units_on_open(world_, ba_, rules_, miners_, bstates_);
         // Chrono Miner teleport sounds.
@@ -7039,6 +7357,7 @@ public:
             credits_shown_ = static_cast<double>(cur + (d > 0 ? step : -step));
             pres_.credit_tick(d > 0);   // W5-E CreditTicks up / down (FUN_004A2280)
         }
+        motion_.alpha = ra2engine::present_alpha(logic_acc_, kLogicDt);
         follow_tick();   // W5-E Follow hotkey
         input_.touch_tick(dt);   // W6-01-05: a deferred touch deploy
         // Consume input actions ONCE per frame.
@@ -7093,8 +7412,9 @@ public:
         // when there is no audio device; pumps the sink when there is one.
         pres_.observe_selection(input_.selection(), input_);   // W7-12-26 first-selected speaker / W7-12-04 groups
         pres_.observe_mind_control(world_, campaign_ ? campaign_->mind_control_pairs()
-                                                     : std::vector<std::pair<int, int>>{});   // W7-10-05
-        pres_.update(dt, world_, lq(), ba_, lcredits(), act, cam_, playfield_w_, kWinH,
+                                                     : world_.mind_control_pairs());   // W7-10-05 / W7-08-14
+        pres_.set_zoom(zoom_);
+        pres_.update(dt, world_, lq(), ba_, lcredits(), act, cam_, ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_),
                      pres_vet_, net_ ? net_take(net_proj_buf_) : world_.take_projectile_events());   // (W3-B: drained per tick; normally empty)
         pres_vet_.clear();
         // (L2: the win-time cheer is a sim rule now -- World::step_house_outcomes
@@ -7127,11 +7447,9 @@ public:
             const MapSelection sel =
                 !cfg_.campaign_map.empty()
                     ? MapSelection{camp::mix_for_map(cfg_.campaign_map), 0u, camp::lower(cfg_.campaign_map)}
-                    : cfg_.map_file.empty() ? MapSelection{} : MapSelection{"multimd.mix", 0u, cfg_.map_file};
-            MixFile maps = MixFile::open_path(dir_ + sel.mix);
-            const MixEntry* me = sel.name.empty() ? maps.find(sel.id) : maps.find(sel.name);
-            if (!me) return;
-            const auto raw = maps.read(*me);
+                    : cfg_.map_file.empty() ? MapSelection{} : mp_map_selection(cfg_.map_file);
+            const auto raw = read_map_bytes(dir_, sel);
+            if (raw.empty()) return;
             const Ini map_ini = Ini::parse(std::string(raw.begin(), raw.end()));
             // W2-GA-05: the map's [Lighting] (tiles baked per height + ambient).
             light_.load(map_ini, a_.pal);
@@ -7277,24 +7595,37 @@ public:
     void render(ra2engine::Platform& plat, ra2engine::TextureCache& tc) override {
         NetRenderClock net_rclock_(net_render_ms_);   // W9-01-03: render CPU time for PROCESS_TIME
         SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
-        radar_.set_view(cam_, playfield_w_, kWinH);   // G-09 viewport box
+        radar_.set_view(cam_, ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));   // G-09 viewport box
         update_light_sources();   // W3-FIX-A
         // W6-05-07: the hovered unit's health pips (a real mouse over the
         // tactical view; a touch has no hover).
-        g_hover_unit = (mouse_present_ && mx_ < playfield_w_ && !input_locked_) ? input_.pick_unit_at(mx_, my_) : -1;
-        render_world(ren, tc, a_, ua_, world_, cam_, kWinW, kWinH, &input_,
-                     &vlist_, ba_.ok ? &ba_ : nullptr, ore_art_.any ? &ore_art_ : nullptr);
+        g_hover_unit = (mouse_present_ && mx_ < playfield_w_ && !input_locked_) ? input_.pick_unit_at(zx(mx_), zy(my_)) : -1;
+        // Zoomed out the world and its overlays are drawn into a smaller
+        // texture (the world view) and scaled onto the playfield.
+        const bool zoomed = zoom_begin(ren);
+        const int vw = zoomed ? zoom_tw_ : playfield_w_, vh = zoomed ? zoom_th_ : kWinH;
+        pip_tc_ = &tc;
+        {
+            ra2engine::PresentScope present_scope(motion_, world_.units());
+            render_world(ren, tc, a_, ua_, world_, cam_, zoomed ? vw : kWinW, vh, &input_,
+                         &vlist_, ba_.ok ? &ba_ : nullptr, ore_art_.any ? &ore_art_ : nullptr);
+        }
         hidden_.rules = &rules_ini_;   // W5-E2 R-146: the Behind= marker over occluded objects
-        hidden_.draw(ren, tc, world_, ba_, cam_, playfield_w_, kWinH, g_user_settings && g_user_settings->show_hidden);
+        hidden_.draw(ren, tc, world_, ba_, cam_, vw, vh, g_user_settings && g_user_settings->show_hidden);
         if (!(sidebar_up_ && lay_.contains(mx_, my_))) {
             int pcx = 0, pcy = 0;
             input_.placement_cell(pcx, pcy);
             const ra2engine::PlacementCheck pchk =
                 placement_eval(input_.placement_type(), pcx, pcy);   // gap owner A rules
-            draw_placement_cursor(ren, tc, world_, ba_, input_, a_, cam_, kWinW, kWinH,
+            draw_placement_cursor(ren, tc, world_, ba_, input_, a_, cam_, zoomed ? vw : kWinW, vh,
                                   input_.placement_active() ? &pchk : nullptr);
         }
+        draw_production_chrome(ren, world_, input_, a_, cam_, vw, &tc);
+        draw_selected_building(ren);   // G-10 / W2-UI-11
+        draw_beacons(ren, tc);         // W9-05-08: own + mutual allies' beacons
+        if (zoomed) zoom_end(ren);
         if (ba_.ok && ba_.sidebar_ok) {
+            sync_sw_sidebar();
             for (int t = 0; t < 4; ++t) g_tab_has[t] = tab_buildable(t).empty() ? 0 : 1;   // W2-UI-06
             g_tab_flash[0] = lq().state(ra2engine::QueueCat::Structure).slot.ready ? 1 : 0;   // W5-PRES R-142
             g_tab_flash[1] = lq().state(ra2engine::QueueCat::Defense).slot.ready ? 1 : 0;
@@ -7312,9 +7643,6 @@ public:
                          bm == ra2engine::Input::BaseMode::Repair ? 1
                          : bm == ra2engine::Input::BaseMode::Sell ? 2 : 0);
         }
-        draw_production_chrome(ren, world_, input_, a_, cam_, playfield_w_, &tc);
-        pip_tc_ = &tc;
-        draw_selected_building(ren);   // G-10 / W2-UI-11
         draw_queue_badges(ren, tc);    // G-07 / W2-UI-03/04
         draw_tooltip(ren, tc);         // W2-UI-07
         // Repair / Sell software cursor over the playfield [RE: §D8]; the OS
@@ -7326,7 +7654,7 @@ public:
         bool drew = input_locked_ ||
                     (mouse_present_ && !(sidebar_up_ && lay_.contains(mx_, my_)) && ba_.ok &&
                      draw_mode_cursor(ren, tc, mouse_, world_, ba_, input_, mx_, my_,
-                                      world_.repair_frame()));
+                                      world_.repair_frame(), zx(mx_), zy(my_)));
         // G-08 (draw half): every other pointer is the MOUSE.SHP action cursor.
         if (!drew && mouse_present_)
             drew = pres_.draw_cursor(ren, tc, mouse_, world_, input_, mx_, my_,
@@ -7336,7 +7664,6 @@ public:
             SDL_ShowCursor(drew ? SDL_DISABLE : SDL_ENABLE);
             os_cursor_hidden_ = drew;
         }
-        draw_beacons(ren, tc);    // W9-05-08: own + mutual allies' beacons
         draw_messages(ren, tc);   // W2-UI-21 (game saved, defeated, low power)
         draw_timer_stack(ren, tc);   // W6-05-04/05 mission timer + SW countdowns
         draw_touch_bar(ren);      // W2-AR-08 (touch only)
@@ -7772,17 +8099,87 @@ private:
 #include "touch_bar.inc"              // W2-AR-07/-08/-16: touch command bar
 #include "touch_ui.inc"               // W4-AM: touch router, mode banner, hold ring, hint
     friend struct CombatProbe;   // gap owner C: --probe-combat drives the real scene
-    // The window is always created at 1280x720 (see run_interactive); the sidebar
-    // layout/camera/input all key off these, so the driver's plat matches.
-    // W2-AR-06: the game canvas is 720 high and as wide as the panel's aspect
-    // (1280 at 16:9 -- the --play harness / gates -- up to 1720 at ~21:9);
-    // the original's tactical view grows with ScreenWidth and the sidebar
-    // stays anchored right. Set by defer_game_scene before construction.
+    // Sidebar layout, camera and input key off these. defer_game_scene sets
+    // them from the window before construction; relayout_canvas updates them
+    // if the window changes mid-match.
+    // W2-AR-06: width follows the panel's aspect (1280 at 16:9 -- the --play
+    // harness / gates -- up to ~21:9). On desktop the height follows the
+    // window (720..1440) so a larger screen shows more map; the sidebar stays
+    // anchored right.
     static inline int kWinW = 1280;
-    // W2-AR-07: 720 on desktop; ~480 on a phone (touch canvas: every sidebar
-    // button and cameo ~1.5x bigger, >= 40 dp) -- like the original running
-    // at a low ScreenHeight.
+    // W2-AR-07: 720 until the first layout; ~480 on a phone (touch canvas:
+    // every sidebar button and cameo ~1.5x bigger, >= 40 dp).
     static inline int kWinH = 720;
+    // Tactical zoom (presentation only): canvas pixels per world pixel, 1 =
+    // normal, down to zoom_min(). Nothing of it reaches the simulation, the
+    // commands or the saves; Input, the camera and the radar box work in
+    // world-view pixels (the canvas divided by zoom), see logical_canvas.hpp.
+    double zoom_ = 1.0;
+    SDL_Texture* zoom_tex_ = nullptr;
+    int zoom_tw_ = 0, zoom_th_ = 0;
+    SDL_Texture* zoom_prev_ = nullptr;
+    int zx(int canvas_x) const { return ra2engine::zoom_to_view(canvas_x, zoom_); }
+    int zy(int canvas_y) const { return ra2engine::zoom_to_view(canvas_y, zoom_); }
+    double zoom_limit() const {
+        return ra2engine::zoom_min(g_platform ? g_platform->present_fit() : 1.0);
+    }
+    // Re-fit Input and the camera to the world view after the zoom (or the
+    // canvas) changed; keeps the campaign's LocalSize clamp.
+    void zoom_apply_view() {
+        input_.set_viewport(ra2engine::zoom_view(playfield_w_, zoom_), ra2engine::zoom_view(kWinH, zoom_));
+        if (campaign_ && local_.valid) {
+            const int W = local_.size_w;
+            const int top = 15 * (W - 5 + 2 * local_.y);
+            input_.set_view_limits(30 * (2 * local_.x - W) + 30, top, 30 * (2 * (local_.x + local_.w) - W) + 30,
+                                   top + 30 * local_.h + 135);
+        }
+        input_.pan(0, 0);   // clamp
+    }
+    // Zoom to `z` keeping the world point under canvas pixel (ax, ay) fixed.
+    void zoom_to(double z, int ax, int ay) {
+        z = std::max(zoom_limit(), std::min(1.0, z));
+        if (z == zoom_) return;
+        cam_.x = ra2engine::zoom_keep_point(cam_.x, ax, zoom_, z);
+        cam_.y = ra2engine::zoom_keep_point(cam_.y, ay, zoom_, z);
+        zoom_ = z;
+        zoom_apply_view();
+    }
+    bool zoom_handle(const ra2engine::InputEvent& ev) {
+        int dir = 0, ax = playfield_w_ / 2, ay = kWinH / 2;
+        if (ev.kind == ra2engine::InputEvent::Wheel && !ev.touch && ev.x < playfield_w_) {
+            dir = ev.dy > 0 ? 1 : -1;   // wheel away = zoom in
+            ax = ev.x;
+            ay = ev.y;
+        } else if (ev.kind == ra2engine::InputEvent::Key && !ev.ctrl && !ev.alt && (ev.vk == 33 || ev.vk == 34)) {
+            dir = ev.vk == 33 ? 1 : -1;   // PgUp in, PgDn out
+        } else {
+            return false;
+        }
+        zoom_to(ra2engine::zoom_step(zoom_, dir, zoom_limit()), ax, ay);
+        return true;
+    }
+    bool zoom_begin(SDL_Renderer* ren) {
+        if (zoom_ >= 1.0) return false;
+        const int tw = ra2engine::zoom_view(playfield_w_, zoom_), th = ra2engine::zoom_view(kWinH, zoom_);
+        if (!zoom_tex_ || zoom_tw_ != tw || zoom_th_ != th) {
+            if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
+            zoom_tex_ = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, tw, th);
+            zoom_tw_ = zoom_tex_ ? tw : 0;
+            zoom_th_ = zoom_tex_ ? th : 0;
+        }
+        if (!zoom_tex_) return false;
+        zoom_prev_ = SDL_GetRenderTarget(ren);
+        if (SDL_SetRenderTarget(ren, zoom_tex_) != 0) return false;
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+        SDL_RenderClear(ren);
+        return true;
+    }
+    void zoom_end(SDL_Renderer* ren) {
+        SDL_SetRenderTarget(ren, zoom_prev_);
+        SDL_SetTextureScaleMode(zoom_tex_, SDL_ScaleModeLinear);
+        const SDL_Rect dst{0, 0, playfield_w_, kWinH};
+        SDL_RenderCopy(ren, zoom_tex_, nullptr, &dst);
+    }
     int logical_width() const override { return kWinW; }
     int logical_height() const override { return kWinH; }
 public:
@@ -9632,7 +10029,8 @@ int run_menu(bool no_audio) {
     ra2engine::Settings user = load_user_settings();
     g_user_settings = &user;
     // G-89: honour RA2.INI [Video] ScreenWidth/ScreenHeight for the window.
-    if (user.screen_width > 0 && user.screen_height > 0 && !plat.set_window_size(user.screen_width, user.screen_height)) {
+    if (!ra2engine::Platform::launch_window_sized() && user.screen_width > 0 && user.screen_height > 0 &&
+        !plat.set_window_size(user.screen_width, user.screen_height)) {
         user.screen_width = 1280;   // W6-06-12: rewrite [Video] so the next start is clean too
         user.screen_height = 720;
         save_user_settings(user);
@@ -14412,6 +14810,13 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
     load_progress("SKIRMISH WORLD");   // W2-AR-02 loading-screen checkpoint
     ra2engine::World world = build_world(a, ua, 0);          // count=0 -> launcher spawns everything
     ra2engine::configure_skirmish_houses(world, cfg);       // house table + toggles + credit seed + minimal AI
+    // Rallypoint: HouseType country bonuses (FUN_00511850) for every slot.
+    for (int i = 0; i < (int)cfg.slots.size(); ++i) {
+        const ra2engine::SkirmishSlot& s = cfg.slots[i];
+        const std::string country =
+            aiside::house_country(s.side, s.country, &rules);
+        world.set_house_country_bonuses(i, ra2engine::country::parse(rules, country));
+    }
     // Repair & Sell [RE: repair-sell.md §A1]: the interactive game's World never
     // routes through wire_economy, so the rulesmd-resolved [General] scalars are
     // handed over here too. NOT byte-relevant (repair_rules_ is unhashed and read
@@ -14482,7 +14887,8 @@ ra2engine::World launch_skirmish(const ra2engine::SkirmishConfig& cfg,
             const int mcv = gf_spawn_start_force(world, *gf_rules_ini, rules, i, country, bx, by,
                                                  cfg.unit_count, cfg.tech_level, rng, gf_spawned);
             if (s.is_ai && ba.ok) {
-                world.enable_ai_house(i, make_ai_config(ba, rules, s.diff, cfg.starting_cash));
+                world.enable_ai_house(
+                    i, make_ai_config(ba, rules, s.diff, cfg.starting_cash, s.side, country));
                 // An AI house unfolds its MCV at once (the AI's "deploy the
                 // BaseUnit when there is no ConYard" step; D owns the full AI
                 // MCV logic -- this is the World-level order it calls).
@@ -18706,6 +19112,9 @@ int run_demo_saveload() {
 #include "ai_soak.inc"   // gap owner D: --ai-soak (real GameScene AI acceptance harness)
 #include "realplay_combat_probe.inc"   // gap owner C: --probe-combat (real GameScene harness)
 
+#include "launch_file.inc"   // Rallypoint: --launch <file.ini>
+#include "extract_maps.inc"  // Rallypoint: --extract-maps <outdir>
+
 int main(int argc, char** argv) {
     // W2-AR-30: SDL-internal assertions log and continue; they never block on
     // a console prompt (desktop) or a modal dialog (Android).
@@ -18745,6 +19154,42 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "Red Alert 2 engine %s (log: %s)\n", RA2_VERSION, log.c_str());
             }
         }
+        // Rallypoint launcher: --launch <file.ini>, the window (--title, --width,
+        // --height, --fullscreen / --windowed; RA2_WINDOW_TITLE).
+        // --extract-maps runs with no window (handled before set_launch_window).
+        std::string launch_file;
+        std::string extract_maps_dir;
+        {
+            for (int i = 1; i < argc; ++i) {
+                const std::string a = argv[i];
+                if (a == "--data" && i + 1 < argc) {
+                    g_data_dir_cli = argv[i + 1];
+                    reset_data_dir();
+                    ++i;
+                } else if (a == "--extract-maps" && i + 1 < argc) {
+                    extract_maps_dir = argv[++i];
+                }
+            }
+            if (!extract_maps_dir.empty()) {
+                ra2engine::os_attach_parent_console();
+                return extractmaps::run(extract_maps_dir);
+            }
+        }
+        {
+            const char* t = std::getenv("RA2_WINDOW_TITLE");
+            std::string title = t ? t : "";
+            int ww = 0, wh = 0, fs = -1;
+            for (int i = 1; i < argc; ++i) {
+                const std::string a = argv[i];
+                if (a == "--launch" && i + 1 < argc) launch_file = argv[++i];
+                else if (a == "--title" && i + 1 < argc) title = argv[++i];
+                else if (a == "--width" && i + 1 < argc) ww = std::atoi(argv[++i]);
+                else if (a == "--height" && i + 1 < argc) wh = std::atoi(argv[++i]);
+                else if (a == "--fullscreen") fs = 1;
+                else if (a == "--windowed") fs = 0;
+            }
+            ra2engine::Platform::set_launch_window(title, ww, wh, fs);
+        }
         // W2-AR-22/-23: --version, --help, --data <dir> (any position).
         for (int i = 1; i < argc; ++i) {
             const std::string a = argv[i];
@@ -18766,6 +19211,9 @@ int main(int argc, char** argv) {
                             "  --record-input <f>  record the raw input events to <f>\n"
                             "  --replay <f>   replay a command log or an input recording (--hidden: no window)\n"
                             "  --version      print the version\n"
+                            "  --launch <f>   start the skirmish or network game described in <f> (Rallypoint)\n"
+                            "  --extract-maps <dir>  write every multiplayer map as plain INI + index.json (no window)\n"
+                            "  --width <w> --height <h>  window size; --fullscreen / --windowed; --title <t>\n"
                             "developer modes: --play <script> [--out <dir>], --ai-soak, --demo-*\n",
                             RA2_VERSION);
                 return 0;
@@ -18964,6 +19412,7 @@ int main(int argc, char** argv) {
         if (!screenshot.empty()) return run_screenshot(screenshot);
         if (!campaign_map.empty()) return run_campaign_direct(campaign_map, no_audio);
         if (quick_skirmish) return run_interactive(no_audio);
+        if (!launch_file.empty()) return run_launch_file(launch_file, no_audio);
         return run_menu(no_audio);
 #endif
     } catch (const std::exception& ex) {

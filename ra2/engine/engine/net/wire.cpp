@@ -94,4 +94,15 @@ bool is_tunnel_ping_reply(const uint8_t* data, size_t len, uint32_t cookie) {
     return get_u32le(data + 8) == cookie;
 }
 
+std::vector<uint8_t> make_tunnel_auth(const uint8_t token[kTunnelAuthTokenSize]) {
+    std::vector<uint8_t> p(kTunnelAuthSize);
+    std::memcpy(p.data(), kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix));
+    std::memcpy(p.data() + sizeof(kTunnelAuthPrefix), token, kTunnelAuthTokenSize);
+    return p;
+}
+
+bool is_tunnel_auth_reply(const uint8_t* data, size_t len) {
+    return len == sizeof(kTunnelAuthPrefix) && std::memcmp(data, kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix)) == 0;
+}
+
 }  // namespace ra2::net

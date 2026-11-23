@@ -11,6 +11,7 @@
 #include "weapon.hpp"
 #include "unit_combat.hpp"
 #include "building.hpp"
+#include "gattling.hpp"
 
 namespace ra2assets { class Rules; }
 
@@ -56,5 +57,10 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
 // (same slot rule as units), Powered=, ROT=, Turret=, GuardRange=.
 void fill_building_weapons(const ra2assets::Rules& rules, const std::string& type_id,
                            BuildingTypeDef& d);
+
+// Rallypoint: IsGattling keys + Weapon1..N / EliteWeapon1..N into `gatt` /
+// `weapons` / `elite` (ModEnc Gattling Weapon System). No-op when IsGattling=no.
+void fill_gattling(const ra2assets::Rules& rules, const std::string& type_id, GattlingRules& gatt,
+                   std::vector<WeaponSlot>& weapons, std::vector<WeaponSlot>& elite);
 
 }  // namespace ra2engine

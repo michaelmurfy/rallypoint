@@ -36,6 +36,9 @@ struct UnitTypeW7 {
     // W7-03-02 [RE: 0x735A60 @0x735A9C, type +0xCA1]: Turret= -- a turretless
     // vehicle turns its hull to the target before it fires.
     bool has_turret = true;
+    // Rallypoint [RE: FUN_00736990 @0x736A95, TechnoType +0xD21 loaded from
+    // "TurretSpins" @0x713360]: the turret spins on its own (Floating Disc).
+    bool turret_spins = false;
     // W7-03-04 [RE: 0x740150, WeaponType +0x13C]: the primary / elite
     // primary weapon's DisguiseFakeBlinkTime= (MirageGun 15, MirageGunE 5).
     int fake_blink = 0;
@@ -45,8 +48,10 @@ struct UnitTypeW7 {
     // (-1 = never).
     bool deploy_area_fire = false;
     int undeploy_delay = -1;
-    // W7-10-02 [RE: CaptureManager ctor 0x4716F0]: the mind-control capacity
-    // = the primary weapon's Damage; InfiniteMindControl= lifts the cap.
+    // W7-10-02 [RE: CaptureManager ctor 0x4716F0]: primary warhead MindControl=
+    // arms the CaptureManager; capacity = the weapon's Damage; InfiniteMindControl=
+    // lifts the cap. mind_control false = no CaptureManager (mc_capacity unused).
+    bool mind_control = false;
     int mc_capacity = 1;
     bool mc_infinite = false;
     // W7-04-03 [RE: Time_To_Build FUN_006F3D00 @0x6F3D4E, type +0x608]:
@@ -86,6 +91,9 @@ struct UnitW7 {
     int mc_controller = -1;
     std::vector<int> mc_victims;
     int mc_shot = -1;   // W7-10-04: the victim of this frame's Controller shot
+    // House the victim had when first captured (World skirmish/MP path; campaign
+    // keeps the same value on its Track::mc_orig for save/load).
+    int mc_orig_house = -1;
     // (W7-04-08's per-unit missile_holds list was removed in fv7c / save v40:
     // the PauseFrames + TiltFrames hold lives in the spawn-manager node,
     // AnUnit::sp_state / sp_timer [RE: SpawnManagerClass::AI FUN_006B68B0 / 0x6B72E0].)

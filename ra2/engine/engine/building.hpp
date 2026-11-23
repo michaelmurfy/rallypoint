@@ -12,6 +12,7 @@
 #include "unit_w6.hpp"   // wave-6 #4 (BldW6)
 #include "target_w6.hpp" // W6 fix #2 (BldTgt)
 #include "unit_w7.hpp"   // wave-7 fix (units) (BldW7)
+#include "gattling.hpp"  // Rallypoint: IsGattling stages
 
 namespace ra2engine {
 
@@ -24,6 +25,7 @@ struct BuildingTypeDef {
     std::string id;                  // "GAPOWR"
     int fw = 1, fh = 1;              // Art Foundation=WxH
     int strength = 1;
+    int build_limit = 0;             // rules BuildLimit= (0 = none): at most this many owned per house
     int armor_ix = 0;                // armor_index(Rules armor)
     int cost = 0;
     // Credits actually deducted by production.cpp's per-stage charge math
@@ -39,6 +41,9 @@ struct BuildingTypeDef {
     // charge_basis in production.hpp).
     int charge = 0;
     int power = 0;                   // + output, - drain
+    // Rallypoint: Floating Disc drain (rules Drainable= / ResourceDestination=).
+    bool drainable = false;
+    bool resource_destination = false;
     int adjacent = 2;
     int tech_level = 0;
     bool conyard = false;
@@ -74,6 +79,13 @@ struct BuildingTypeDef {
     // MCV turns to before it unfolds into this type.
     int  deploy_facing    = 0x80;
     bool ore_purifier     = false;  // OrePurifier=     gap owner A (G-27) [RE: economy.md §2]
+    // Rallypoint: Yuri Slave Miner (Enslaves=). Buildings (YAREFN) and vehicles
+    // (SMIN) both host SlaveManager in gamemd; Enslaves= names an InfantryType.
+    std::string enslaves;           // Enslaves= infantry type id ("" = none)
+    int slaves_number = 0;          // SlavesNumber=
+    int slave_regen_rate = 0;       // SlaveRegenRate= frames
+    int slave_reload_rate = 0;      // SlaveReloadRate= frames
+    int slave_storage = 0;          // Storage= of the Enslaves infantry type
     // --- W2-SK-12/19/20 (save v13) ---
     bool capturable       = false;  // Capturable=  (rulesmd: absent = no; walls/defences no)
     bool spyable          = false;  // Spyable=     (absent = no)
@@ -95,6 +107,11 @@ struct BuildingTypeDef {
     bool can_be_occupied = false;   // CanBeOccupied=     (BuildingType +0x157B)
     bool can_occupy_fire = false;   // CanOccupyFire=     (+0x157C)
     int max_occupants = 0;          // MaxNumberOccupants= (+0x1580)
+    // Rallypoint: Yuri Grinder / Bio Reactor (rulesmd YAGRND / YAPOWR).
+    bool grinding = false;          // Grinding=          (YAGRND)
+    bool infantry_absorb = false;   // InfantryAbsorb=    (YAPOWR Bio Reactor)
+    int  extra_power = 0;           // ExtraPower=        per absorbed infantry
+    int  passengers = 0;            // Passengers=        absorb slot count
     bool bridge_repair_hut = false; // BridgeRepairHut=   (+0x16B6)
     // W6-03-01 [RE: rulesmd [OverlayTypes] 3=GAWALL / 27=NAWALL -- a placed
     // Wall=yes type becomes an OVERLAY in the original, never a BuildingClass,
@@ -105,6 +122,14 @@ struct BuildingTypeDef {
     bool insignificant = false;     // Insignificant=
     BldTypeW5 w5;                   // wave-5 abilities (abil_w5.hpp)
     BldTypeW6 w6;                   // wave-6 #4 (unit_w6.hpp): wall damage levels
+    // Rallypoint: IsGattling (GTGCAN). Inert unless enabled.
+    GattlingRules gatt;
+    std::vector<WeaponSlot> gatt_weapons;
+    std::vector<WeaponSlot> gatt_weapons_elite;
+    // Rallypoint: Psychic Tower (YAPSYT): the primary's warhead has MindControl=yes;
+    // Damage= is the number of victims at once (InfiniteMindControl lifts it).
+    int mc_capacity = 0;
+    bool mc_infinite = false;
 };
 
 // A placed building instance.
@@ -153,6 +178,15 @@ struct Building {
     // are set ONLY by World::set_repair / World::begin_sell, which no existing
     // demo calls.
     bool   being_repaired = false;  // [§A2 bldg+0x6E8] the per-building wrench toggle
+    // Rallypoint: SlaveManager spawn delay in logic frames (15/s). 0 = ready.
+    // Regen uses SlaveRegenRate after a death; initial fill uses SlaveReloadRate.
+    int  slave_spawn_frames = 0;
+    bool slave_needs_regen = false;
+    // Rallypoint: AI scoot KickFrameDelay accumulator (save v58).
+    int  slave_guard_frames = 0;
+    // Rallypoint [RE: TechnoClass+0x1D0 DrainingMe]: the Disc draining this
+    // building, -1 none. One slot: the latest DrainStart wins (save v63).
+    int  drained_by = -1;
     // fv7c [RE: FUN_00450620 AI repair gate `HasBeenCaptured || +0x6CB`]:
     // AIRepairable (+0x6CB) -- [Structures] field 16 (reader FUN_0044F810),
     // true for an AI-placed building (FUN_00440500) and a non-human MCV deploy
@@ -188,6 +222,8 @@ struct Building {
     int def_slot = 0;                // weapon slot of the last shot
     double def_fire_flash = 0.0;     // seconds of muzzle flash left (renderer)
     bool def_offline = false;        // Powered=yes and the house is low on power
+    int gatt_timer = 0;              // Rallypoint: IsGattling firing timer
+    std::vector<int> mc_victims;     // Rallypoint: units this Psychic Tower controls
     // --- G16 garrison (agent G, world_depth.cpp) --- BuildingClass::Occupants
     // (+0x688) / FiringOccupantIndex (+0x69C). Inert; NOT read by world_hash.
     std::vector<int> occupants;      // unit indices, in entry order
@@ -291,6 +327,24 @@ std::vector<std::uint8_t> buildable_static(const std::vector<std::uint8_t>& land
 // hp/max_hp <= condition_yellow (0..1 fraction). Returns 0 when the SHP has
 // fewer than 2 image frames. Only meaningful in State::Idle.
 int building_frame(const Building& b, int shp_frame_count, double condition_yellow);
+
+// Art AnimActive=start,count,rate on the building's own SHP [RE: Shape_Number
+// FUN_0043ef90 -- Building+0xf8 stage; SimpleDamage adds 1 when hp/max <=
+// ConditionYellow]. `stage` is 0..count-1 (presentation advances it). Pure.
+int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames);
+
+// Building damage fires [RE: damage-state update FUN_0043fb4a @0x43FC39..
+// 0x43FCBE; create FUN_0043c0d0]. They spring up once health <= ConditionYellow
+// (Rules+0x1700), or ConditionRed (+0x1708) for CanBeOccupied (type +0x157B),
+// and go away above it.
+bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red);
+// FUN_0043c0d0 picks DamageFireTypes[Random(0, n-1)] for the first offset and
+// steps through the list for each next one; each fire starts on frame
+// Random(0, End-1) (AnimType +0x2C0 -> AnimClass stage +0xAC). The original
+// draws from the scenario RNG; ours hashes `seed` (the building) so the picture
+// never touches the simulation. Pure.
+int building_damage_fire_type(unsigned seed, int fire, int types);
+int building_damage_fire_start(unsigned seed, int fire, int end);
 
 // Frame selection for the BUILDUP SHP during State::Buildup
 // [RE-GATE APPLIED: building-render.md §5]: image frames = first half; the

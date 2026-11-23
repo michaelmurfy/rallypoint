@@ -25,6 +25,7 @@
 #include "ra2assets/pal.hpp"  // ra2assets::Palette (house_palette render entry)
 #include "unit_combat.hpp"  // UnitCombat (moved here to break the include cycle
                             // production.hpp -> unit_type.hpp -> world.hpp)
+#include "country_bonuses.hpp"  // Rallypoint: HouseType country bonuses
 
 namespace ra2engine {
 
@@ -55,6 +56,18 @@ enum class HarvState : std::uint8_t {
     ReturnToRef,   // driving (HARV) or warping (CMIN) home
     WaitDock,      // at the refinery, dock busy
     Unloading,     // draining bales into credits
+};
+
+// Yuri Slave Miner infantry AI (Enslaves=). Separate from HarvState so classic
+// HARV/CMIN saves and missions stay unchanged.
+enum class SlaveState : std::uint8_t {
+    None = 0,
+    SeekOre,
+    MoveToOre,
+    Harvesting,
+    ReturnToMaster,
+    Delivering,
+    WaitReload,
 };
 
 // CB-2 Aircraft [RE: aircraft.md]: the flight-locomotor state machine. A
@@ -119,16 +132,19 @@ struct Unit {
     double w_cell_spread = 0.0;    // warhead CellSpread (cells) [aircraft.md §4]
     double w_percent_at_max = 1.0; // warhead PercentAtMax (edge damage scale)
     bool w_affects_allies = true;  // W5-B R-060: warhead AffectsAllies= (default yes)
-    // Campaign mind control [RE: BulletClass::Detonate FUN_004690A0 -- a
-    // warhead with MindControl (+0x155) skips the whole DamageArea
-    // FUN_00489190 branch and only calls the owner's CaptureManager
-    // (+0x2BC) Capture FUN_00471C80 @0x4692C0: the victim is taken, never
-    // damaged]: set every frame by CampaignRuntime
-    // (poll_mind_control, BEFORE World::step) on a live MindControl=yes
-    // controller; try_fire then deals no damage and the runtime captures the
-    // victim (same 3-D range rule). Re-armed each frame; saved (v24) only
-    // because every Unit member is (the save tripwire).
+    // Mind control [RE: BulletClass::Detonate FUN_004690A0 -- a warhead with
+    // MindControl (+0x155) skips DamageArea and only calls CaptureManager
+    // Capture]: set every frame on a live MindControl controller (World::
+    // step_mind_control in skirmish/MP; CampaignRuntime::poll_mind_control in
+    // campaign). try_fire then deals no damage and stamps mc_shot; the same
+    // pass consumes it next frame. Re-armed each frame; saved (v24).
     bool w_mind_control = false;
+    // Rallypoint: active weapon is DrainWeapon=yes (Floating Disc DiskDrain).
+    bool w_drain_weapon = false;
+    // [RE: TechnoClass+0x1CC DrainTarget, set by DrainStart FUN_0070FD70,
+    // cleared by DrainEnd FUN_0070FE50]: the building this Disc drains, -1 none.
+    // Outlives target_building (Fire clears the target, FireOnce).
+    int drain_target = -1;
     // W5-B R-061 infantry sub-cells [RE: FindInfantrySubposition FUN_00481090,
     // spot coords DAT_0089D960]: the spot (2 right, 3 left, 4 down; 0 centre =
     // vehicles / sub-cells off) the unit holds in its cell, and its lepton
@@ -169,8 +185,14 @@ struct Unit {
     // Facings live in the original's 16-bit space [0, 65536); 32768 faces
     // screen-South like the infantry spawn (docs/re/voxel-render.md §2/§5).
     bool is_vehicle = false;
+    int weight_milli = 1000;
     double body_facing = 32768.0;
     double turret_facing = 32768.0;
+    // Rallypoint [RE: UnitClass turret AI FUN_00736990 @0x736B21]: frames
+    // since this unit last fired (TechnoClass +0x120 LastFireFrame, stamped by
+    // Fire @0x6FF743). An idle turret goes home only after
+    // GuardAreaTargetingDelay + 5 frames. Starts "long ago" (save v59).
+    int turret_idle_frames = 1 << 20;
     double rot_u16_per_sec = 0.0;  // ROT * kRotU16PerRotPerSec
     double speed_cps = 0.0;        // per-unit speed; 0 = use World move_cps
 
@@ -197,6 +219,21 @@ struct Unit {
     double harv_timer = 0.0;         // gulp/unload/rescan/warp accumulator
     bool manual_hold = false;        // player move order: pause auto-resume until arrival
     int harv_skip_x = -1, harv_skip_y = -1;   // W2-SK-04: ore cell the last move failed to reach
+    // Rallypoint: Yuri Slave Miner worker (rules Enslaves= / Slaved=yes).
+    bool is_slave = false;
+    int slave_master = -1;           // Building or Unit index of the master
+    bool slave_master_is_unit = false;  // true = slave_master indexes units_
+    SlaveState slave = SlaveState::None;
+    // Undeployed SMIN (VehicleTypes with Enslaves=): SlaveManager on the unit.
+    bool is_slave_master = false;
+    int slaves_number = 0;
+    int slave_regen_rate = 0;
+    int slave_reload_rate = 0;
+    int slave_worker_storage = 0;
+    int slave_spawn_frames = 0;
+    bool slave_needs_regen = false;
+    // Rallypoint: AI scoot KickFrameDelay accumulator (not saved).
+    int slave_guard_frames = 0;
 
     // --- CB-1 Transports/Cargo [RE: transport-cargo.md] ---------------------
     // ALL defaults INERT (spec §8): no existing demo issues a load/unload
@@ -342,6 +379,9 @@ struct Unit {
     int last_hp = -1;                // host: HP at the end of the previous pass (§B3)
     int temporal_target = -1;        // CLEG: unit being erased (§C2)
     int temporal_target_building = -1;  // CLEG: building being erased
+    int magnet_victim = -1;
+    int magnet_holder = -1;
+    int magnet_drop_bld = -1;
     int warp_remaining = 0;          // victim: WarpRemaining (§C2); 0 = not warped
     std::int64_t bomb_frame = -1;    // Ivan bomb DetonationFrame on this unit (§E)
     int bomb_owner = -1;             // the planting unit
@@ -364,6 +404,11 @@ struct Unit {
     bool p_proj_elite_set = false;
     int w_active = 0;                // 0 = primary in w_*, 1 = secondary
     bool w_aa = false, w_ag = true;  // ACTIVE weapon's AA/AG
+    // Rallypoint: IsGattling (YTNK). Timer + Weapon1..N; w_* holds the stage weapon.
+    GattlingRules gatt;
+    std::vector<WeaponSlot> gatt_weapons;
+    std::vector<WeaponSlot> gatt_weapons_elite;
+    int gatt_timer = 0;
     // Deployed infantry fire weapon (GI Para, GGI MissileLauncher):
     // DeployFireWeapon slot resolved; deploy_fire=true makes the deployed unit
     // immobile and fire this slot through the normal step_combat path (G-45).
@@ -642,7 +687,11 @@ void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passa
 // predating this fix, and any test that doesn't attack a building) this new
 // branch is unreachable, so behavior is byte-identical to the old 2-arg
 // signature.
-void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt);
+// Rallypoint [RE: FUN_00736990]: `home_delay_frames` (World passes
+// GuardAreaTargetingDelay + 5) is how long an idle turret holds after the last
+// shot; 0 = go home at once. Idle and moving, it faces the destination.
+void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt,
+                  int home_delay_frames = 0);
 
 // Picks a passable (Clear/grass, `tile == 0` -- confirmed in Task 9 /
 // task-9-report.md: "tile index 0 is Clear") cell close to the centroid of
@@ -719,6 +768,9 @@ struct AiTeamConfig {
     // HarvestersPerRefinery (2,2,1 by house+0x184) miners alive. 0 = off
     // (the AI gates' synthetic configs).
     int harvesters_per_refinery = 0;
+    // Rallypoint: [General] AISlaveMinerNumber=h,m,e (FUN_004FEACA). Target
+    // count of ResourceGatherer slave miners (YAREFN + SMIN). 0 = off.
+    int ai_slave_miner_number = 0;
     AiTeamRules rules;                    // recovered team knobs
 
     // --- AI-3 AITriggerTypes [RE: ai-trigger.md] -----------------------------
@@ -736,6 +788,11 @@ struct AiTeamConfig {
                                     // filter (house >= field passes)
                                     // [RE-FALLBACK: skirmish ceiling — no
                                     // recovered per-house tech input]
+    // [RE: FUN_0041e740 / Rules UseMinDefenseRule + MinimumAIDefensiveTeams]:
+    // skirmish arms these from rulesmd (UseMinDefenseRule=yes, CSV 1,1,1 at
+    // house+0x184). false / 0 keep every synthetic gate bit-identical.
+    bool use_min_defense_rule = false;
+    int min_defense_teams = 0;
 };
 
 struct AiHouseConfig {
@@ -785,6 +842,10 @@ struct AiHouseConfig {
     // to 6 idle units of its house onto the attacker. Per team.unit_roster
     // index; empty = off.
     std::vector<std::uint8_t> roster_to_protect;
+    // [RP-AI-BOOST] Rallypoint optional smarter AI (0 = stock; 1..3). Applied
+    // only to computer houses; timers/credit are mutated at arm time; level is
+    // kept for runtime defense response and trigger-weight nudges.
+    int ai_boost = 0;
 };
 
 // --- L2 per-house economy [RE: HouseClass / FactoryClass; docs/re/production.md
@@ -875,6 +936,13 @@ public:
     // W5-B: terrain height level of a cell (0 off-map) -- the Z of 3-D
     // distances (level * 104 leptons, Unsorted::LevelHeight).
     int cell_level(int x, int y) const;
+    // Ground height the sprite is drawn at. While a ground unit walks between
+    // two cells the height is the blend of those cells, so a paved ramp (the
+    // lower cell of each one-level step is the TMP slope) is followed instead
+    // of the unit staying painted at the level it spawned on. A deck lift
+    // already added to `u.level` is kept. Aircraft keep `u.level` (altitude
+    // is a separate offset).
+    double draw_level(const Unit& u) const;
     // W5-B R-061: up to three infantry per cell (sub-cell spots). Called by
     // the real game (GameScene, w5_arm_combat); off = one unit per cell.
     void enable_subcells();
@@ -1245,6 +1313,24 @@ public:
         harvest_scan_.short_scan = short_scan > 0 ? short_scan : 6;
     }
     const HarvestScan& harvest_scan() const { return harvest_scan_; }
+    // Rallypoint: [General] SlaveMinerSlaveScan= (cells; default 14).
+    void set_slave_scan(int cells) {
+        slave_scan_ = cells > 0 ? cells : 14;
+    }
+    int slave_scan() const { return slave_scan_; }
+    // Rallypoint: scoot keys (Short/Long/Correction/Kick). Defaults match rulesmd.
+    void set_slave_miner_scoot(int short_scan, int long_scan, int correction, int kick_delay) {
+        slave_short_scan_ = short_scan > 0 ? short_scan : 8;
+        slave_long_scan_ = long_scan > 0 ? long_scan : 48;
+        slave_scan_correction_ = correction >= 0 ? correction : 3;
+        slave_kick_delay_ = kick_delay > 0 ? kick_delay : 150;
+    }
+    // Prototype combat stats for spawned Enslaves= infantry (SLAV). Optional;
+    // without it, step() uses a minimal infantry stub.
+    void set_slave_prototype(const UnitCombat& c) {
+        slave_proto_ = c;
+        slave_proto_ok_ = true;
+    }
     // W2-SK: total refinery unload income a house has earned (probe/soak).
     double harvest_income(int house) const {
         return house >= 0 && house < (int)harvest_income_.size() ? harvest_income_[(std::size_t)house] : 0.0;
@@ -1282,6 +1368,21 @@ public:
         u.chrono_miner = chrono;
         u.storage_bales = storage_bales;
         u.harv = HarvState::SeekOre;
+    }
+    // Undeployed SMIN: SlaveManager on the vehicle (Enslaves=). No-op if
+    // slaves_number <= 0 or a bad index. [RE: FUN_006AF1A0]
+    void make_slave_master(int unit_idx, int slaves_number, int regen, int reload,
+                           int storage) {
+        if (unit_idx < 0 || unit_idx >= static_cast<int>(units_.size())) return;
+        if (slaves_number <= 0) return;
+        Unit& u = units_[unit_idx];
+        u.is_slave_master = true;
+        u.slaves_number = slaves_number;
+        u.slave_regen_rate = regen;
+        u.slave_reload_rate = reload;
+        u.slave_worker_storage = storage > 0 ? storage : 4;
+        u.slave_spawn_frames = 0;
+        u.slave_needs_regen = false;
     }
 
     // Player orders (the issuer's own harvesters among `ids` only). Simplified per
@@ -1753,6 +1854,10 @@ public:
     // (houses_configured_ = true). No existing gate calls this -> byte-identical.
     void set_house(int h, HouseRec rec);
     bool houses_configured() const { return houses_configured_; }
+    // Rallypoint: HouseType country bonuses (FUN_00511850). Not saved — the
+    // host re-arms from rules + HouseRec.country after a load (like PlayerEconRules).
+    void set_house_country_bonuses(int h, country::Bonuses b);
+    const country::Bonuses* house_country_bonuses(int h) const;
 
     // --- Multi-house / Alliances phase [RE: multihouse.md §3/§4, D3] ---
     // Pairwise relationship predicates. With houses_configured_ FALSE ->
@@ -2230,7 +2335,7 @@ public:
         enum class Kind {
             Infect, ParasiteTick, DroneExit, DroneLost, Teleport, Unfreeze, TemporalAttach,
             Erase, BombPlant, BombBlast, C4Plant, C4Blast, Suicide, DeathWeapon, Eruption,
-            RadDamage, IfvSwap, Deploy
+            RadDamage, IfvSwap, Deploy, MagLift, MagDrop
         };
         Kind kind = Kind::Infect;
         int a = -1;          // the acting unit (or victim for damage events)
@@ -2358,6 +2463,9 @@ public:
     bool defense_power_ok(int house) const;
     // The per-frame defense pass (public for tests; called from step()).
     void step_building_combat(double dt);
+    // Rallypoint: Floating Disc DrainWeapon — money / power while hovering
+    // above a Drainable building (disc_drain.hpp).
+    void step_disc_drain();
 
     // Advance all units by dt seconds: step_units (collision-aware movement)
     // -> step_combat (targeting/firing/deaths, returns pursuit/return-to-
@@ -2426,7 +2534,12 @@ public:
     void set_buildup_totals(std::vector<double> t) { buildup_totals_ = std::move(t); }
     // UndeploysInto [RE: repair-sell.md §B6]: the unit a ConstructionYard packs
     // back into when sold by a human in a skirmish session with MCVRedeploys.
+    // Also registers YAREFN→SMIN (Enslaves= transplant via order_undeploy_building).
     void set_undeploy_unit(int btype, const UnitCombat& c);
+    // YAREFN Deploy: pack into UndeploysInto=SMIN and transplant SlaveManager
+    // [RE: FUN_00449C30 @0x44A03C / FUN_006AF580]. false = not a slave miner /
+    // no UndeploysInto / no free cell.
+    bool order_undeploy_building(int b_idx);
     void set_mcv_redeploys(bool on) { mcv_redeploys_ = on; }
     bool mcv_redeploys() const { return mcv_redeploys_; }
     void set_skirmish_session(bool on) { skirmish_session_ = on; }
@@ -2557,6 +2670,35 @@ public:
     // W6-02-12: may a mind-control shot of `house` take unit j (not
     // ImmuneToPsionics, map overrides merged into the type data)?
     bool psionic_target_ok(int unit_idx) const;
+    // W7-08-14: skirmish/MP CaptureManager (world_mind_control.cpp). Campaign
+    // sets set_campaign_mind_control(true) and keeps its own poll (teams/fate).
+    void set_campaign_mind_control(bool on);
+    bool campaign_mind_control() const { return campaign_mind_control_; }
+    void step_mind_control();
+    void mc_release(int ctl, int vi);
+    void mc_release_all(int ctl);
+    bool mc_capture(int ctl, int vi);
+    // Free CaptureManager slot without restoring mc_orig_house (Grinder kill /
+    // Bio Reactor absorb — unit stays under the controller's house).
+    void mc_free_keep_owner(int ctl, int vi);
+    // Rallypoint: Psychic Tower (a building with a MindControl primary). Its victims
+    // carry mc_controller = kTowerCtl + building index (>= 0, so every "already
+    // controlled" test still holds) and are listed in Building::mc_victims.
+    static constexpr int kTowerCtl = 1 << 24;
+    bool tower_mc_ok(int b_idx, int vi) const;
+    bool tower_capture(int b_idx, int vi);
+    void tower_release_all(int b_idx);
+    void step_tower_mind_control();
+    // Cloning Vats (Cloning=yes): a free copy of each infantry unit a barracks trains.
+    void clone_infantry(int house, const UnitCombat& c);
+    std::vector<std::pair<int, int>> mind_control_pairs() const;
+    // Yuri Grinder (Grinding=) / Bio Reactor (InfantryAbsorb=).
+    bool can_grind(int unit_idx, int b_idx) const;
+    bool grind_now(int unit_idx, int b_idx);
+    void order_grind(int unit_idx, int b_idx);
+    bool can_absorb(int unit_idx, int b_idx) const;
+    bool absorb_now(int unit_idx, int b_idx);
+    void order_absorb(int unit_idx, int b_idx);
     bool garrison_firing(int b_idx) const;                   // CanOccupyFire && occupants
     double garrison_range(int b_idx) const;                  // cells
     struct GarrisonEvent { enum Kind { Entered, Garrisoned, Abandoned, Unloaded } kind = Entered; int building = -1; int house = -1; };
@@ -2887,6 +3029,10 @@ private:
     void an_nuke_detonate(const SwStrike& s);
     void an_storm_bolt(SwStrike& s, int x, int y);
     void an_paradrop(int house, SuperweaponType type, int cx, int cy);
+    // [RE: FUN_006CD66F / FUN_004155F0 / FUN_004157C0]: SPYP Approach → Overfly
+    // camera sweep that reveals SpyCameraWeapon Damage= cells along the path.
+    void an_spyplane(int house, int cx, int cy);
+    void an_spy_camera_shot(int plane);  // one Reveal disc + Ammo--
     bool an_para_jump(int plane);   // W8-05-07: one trooper out (FUN_00415C60)
     void an_step_parachutes(double dt);  // W4-SQ-06: falling paratroopers
     void an_chrono(int house, int sx, int sy, int dx, int dy);
@@ -2983,6 +3129,8 @@ private:
     // construction (0=Allied/team0/comb, 1=Soviet/team1/comb, 2=Neutral/team2/
     // non-comb) so house_count()==3 and today's world is reproduced. NOT hashed.
     std::vector<HouseRec> houses_;
+    // Rallypoint: per-house HouseType bonuses (not saved; re-armed from rules).
+    std::vector<country::Bonuses> house_country_bonuses_;
     std::vector<std::uint8_t> ally_pairs_;   // W2-CA-10: n*n, empty = team model
     bool houses_configured_ = false;   // the side/color/enmity/AllyReveal firewall;
                                        // false in every existing gate.
@@ -3117,6 +3265,13 @@ private:
     double spread_pct_ = 0.0;
     double purifier_bonus_ = 0.0;   // rules [General] PurifierBonus (gap owner A, G-27)
     HarvestScan harvest_scan_;      // W2-SK-02 (save v13)
+    int slave_scan_ = 14;           // Rallypoint: SlaveMinerSlaveScan
+    int slave_short_scan_ = 8;      // Rallypoint: SlaveMinerShortScan
+    int slave_long_scan_ = 48;      // Rallypoint: SlaveMinerLongScan
+    int slave_scan_correction_ = 3; // Rallypoint: SlaveMinerScanCorrection
+    int slave_kick_delay_ = 150;    // Rallypoint: SlaveMinerKickFrameDelay
+    UnitCombat slave_proto_{};
+    bool slave_proto_ok_ = false;
     std::vector<double> harvest_income_;   // W2-SK: cumulative unload income per house (v13)
     // T3 [RE: multihouse.md §D2]: double[3] -> std::vector sized house_count().
     // per-house income; index 2 (kNeutralHouse) inert -- neutral holds no credits
@@ -3139,6 +3294,8 @@ private:
     // refund, then kill + mark sold. See world.cpp for the recovered ordering.
     void complete_sell(int b_idx);
 
+    // W7-08-14: campaign owns mind control (poll_mind_control); World skips.
+    bool campaign_mind_control_ = false;
     // --- P4 Unit special abilities [RE: abilities.md] (world_abilities.cpp) ---
     bool abilities_any_ = false;                      // THE firewall
     std::uint64_t ability_frame_ = 0;                 // logic frame counter

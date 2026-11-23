@@ -236,3 +236,241 @@ TEST_CASE("fv7c: a hit unit WITHOUT ToProtect calls nobody") {
     CHECK(g.world.units()[(std::size_t)v].hp < 100000);
     CHECK_FALSE(g.helped(h, a));
 }
+
+TEST_CASE("T1.3: call_for_help skips ResourceGatherer helpers (UnitType +0x5EC)") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    const int v = g.add(0, 1, protect_victim(true));
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    const int a = g.add(3, 0, atk);
+    ra2engine::UnitCombat harv = threat_gi(40);
+    harv.range = 1.0;
+    const int hv = g.add(2, 1, harv);
+    REQUIRE(hv >= 0);
+    g.world.units()[(std::size_t)hv].is_harvester = true;
+    g.world.units()[(std::size_t)hv].is_infantry = false;
+    ra2engine::UnitCombat helper = threat_gi(5);
+    helper.range = 1.0;
+    const int h = g.add(9, 1, helper);
+    REQUIRE((v >= 0 && a >= 0 && h >= 0));
+    g.world.order_unit_attack(a, v);
+    bool called = false;
+    for (int f = 0; f < 120 && !called; ++f) {
+        g.world.step(1.0 / 15.0);
+        called = g.helped(h, a);
+    }
+    CHECK(called);
+    CHECK_FALSE(g.helped(hv, a));
+}
+
+TEST_CASE("0054: a loaded transport still answers -- techno +0x2E4 is the Tank Bunker link, not cargo") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    // Victim is a building so call_for_help runs the vehicle pass filters
+    // (ResourceGatherer / cargo) the same way a structure hit does.
+    ra2engine::BuildingTypeDef bt;
+    bt.id = "GACNST";
+    bt.strength = 100000;
+    bt.fw = bt.fh = 2;
+    g.world.set_building_types({bt});
+    int bx = 0, by = 0;
+    REQUIRE(ring_cell(g.world, g.vx, g.vy, 0, bx, by));
+    const int bi = g.world.add_building(/*type*/ 0, bx, by, /*fw*/ 2, /*fh*/ 2, /*house*/ 1,
+                                       /*strength*/ 100000, /*armor*/ 0, /*buildup*/ 0.0, /*instant*/ true);
+    REQUIRE(bi >= 0);
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    atk.is_infantry = false;
+    atk.is_vehicle = true;
+    const int a = g.add(3, 0, atk);
+    ra2engine::UnitCombat apc = threat_gi(30);
+    apc.range = 1.0;
+    apc.is_infantry = false;
+    apc.is_vehicle = true;
+    apc.passengers = 5;
+    const int tr = g.add(2, 1, apc);
+    ra2engine::UnitCombat pass = threat_gi(1);
+    pass.is_infantry = true;
+    const int p = g.add(4, 1, pass);
+    REQUIRE((tr >= 0 && p >= 0 && a >= 0));
+    g.world.units()[(std::size_t)tr].cargo.push_back(p);
+    g.world.units()[(std::size_t)p].cargo_of = tr;
+    REQUIRE_FALSE(g.world.units()[(std::size_t)tr].cargo.empty());
+    ra2engine::UnitCombat helper = threat_gi(5);
+    helper.range = 1.0;
+    helper.is_infantry = false;
+    helper.is_vehicle = true;
+    const int h = g.add(9, 1, helper);
+    REQUIRE(h >= 0);
+    g.world.call_for_help(1, -1, bi, a);
+    CHECK(g.helped(h, a));
+    CHECK(g.helped(tr, a));
+}
+
+// Rallypoint 0057 [RE: FUN_00708080 leftovers]. These call call_for_help
+// directly (no world step) so the RNG and the hit log stay out of the way.
+namespace {
+ra2engine::UnitCombat inf_gi(int threat) {
+    ra2engine::UnitCombat u = threat_gi(threat);
+    u.range = 1.0;
+    u.is_infantry = true;
+    return u;
+}
+ra2engine::UnitCombat vehicle_gi(int threat) {
+    ra2engine::UnitCombat u = threat_gi(threat);
+    u.range = 1.0;
+    u.is_infantry = false;
+    u.is_vehicle = true;
+    return u;
+}
+int add_house1_building(HelpRig& g) {
+    ra2engine::BuildingTypeDef bt;
+    bt.id = "GACNST";
+    bt.strength = 100000;
+    bt.fw = bt.fh = 2;
+    g.world.set_building_types({bt});
+    int bx = 0, by = 0;
+    if (!ring_cell(g.world, g.vx, g.vy, 0, bx, by)) return -1;
+    return g.world.add_building(0, bx, by, 2, 2, 1, 100000, 0, 0.0, true);
+}
+}  // namespace
+
+TEST_CASE("0054: no vehicle answers a slave's call (victim +0x2DC SlaveOwner, @0x7085AD)") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    const int v = g.add(0, 1, protect_victim(true));
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    const int a = g.add(3, 0, atk);
+    ra2engine::UnitCombat inf = inf_gi(5);
+    const int i = g.add(6, 1, inf);
+    const int t = g.add(8, 1, vehicle_gi(5));
+    REQUIRE((v >= 0 && a >= 0 && i >= 0 && t >= 0));
+    g.world.units()[(std::size_t)v].is_slave = true;
+    g.world.units()[(std::size_t)v].slave_master = 0;
+    g.world.call_for_help(1, v, -1, a);
+    CHECK(g.helped(i, a));
+    CHECK_FALSE(g.helped(t, a));
+    // A free victim gets the vehicle too.
+    g.world.units()[(std::size_t)v].is_slave = false;
+    g.world.units()[(std::size_t)v].slave_master = -1;
+    g.world.call_for_help(1, v, -1, a);
+    CHECK(g.helped(t, a));
+}
+
+TEST_CASE("0054: the x100 infantry boost needs victim ArchiveTarget == victim; a building never has it") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    const int bi = add_house1_building(g);
+    const int v = g.add(0, 1, protect_victim(true));
+    ra2engine::UnitCombat atk = threat_gi(10);   // budget 10 x 3 = 30
+    atk.strength = 100000;
+    const int a = g.add(3, 0, atk);
+    ra2engine::UnitCombat busy = inf_gi(1);   // already on the attacker: help_value -1
+    const int d = g.add(5, 1, busy);
+    ra2engine::UnitCombat inf = inf_gi(5);
+    const int h = g.add(7, 1, inf);
+    REQUIRE((bi >= 0 && v >= 0 && a >= 0 && d >= 0 && h >= 0));
+    REQUIRE(d < h);   // the infantry array is walked in index order
+    auto reset = [&] {
+        g.world.units()[(std::size_t)d].target = a;
+        g.world.units()[(std::size_t)h].target = -1;
+    };
+    // A building victim: budget 30 - 1 -> the helper goes.
+    reset();
+    g.world.call_for_help(1, -1, bi, a);
+    CHECK(g.helped(h, a));
+    // A unit victim without ArchiveTarget == self: the same.
+    reset();
+    g.world.call_for_help(1, v, -1, a);
+    CHECK(g.helped(h, a));
+    // ArchiveTarget == self: the busy unit costs 100 and nobody goes.
+    reset();
+    g.world.units()[(std::size_t)v].tg.archive_self = true;
+    g.world.call_for_help(1, v, -1, a);
+    CHECK_FALSE(g.helped(h, a));
+}
+
+TEST_CASE("0054: recruits guard around the victim (ArchiveTarget = victim, @0x70871F)") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    const int bi = add_house1_building(g);
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    const int a = g.add(3, 0, atk);
+    std::vector<int> hs;
+    for (int k = 0; k < 6; ++k) {
+        ra2engine::UnitCombat inf = inf_gi(1);
+        hs.push_back(g.add(6, 1, inf));
+        REQUIRE(hs.back() >= 0);
+    }
+    REQUIRE((bi >= 0 && a >= 0));
+    const ra2engine::Building& B = g.world.buildings()[(std::size_t)bi];
+    int guards = 0;
+    for (int round = 0; round < 20 && guards == 0; ++round) {   // Area_Guard on roll(0,99) >= 66
+        for (int h : hs) {
+            g.world.units()[(std::size_t)h].target = -1;
+            g.world.units()[(std::size_t)h].tg.area_guard = false;
+        }
+        g.world.call_for_help(1, -1, bi, a);
+        for (int h : hs) {
+            const ra2engine::Unit& u = g.world.units()[(std::size_t)h];
+            CHECK(u.target == a);
+            CHECK_FALSE(u.tg.archive_self);
+            if (u.tg.area_guard) {
+                ++guards;
+                CHECK(u.tg.home_x == B.cx + B.fw / 2);
+                CHECK(u.tg.home_y == B.cy + B.fh / 2);
+            }
+        }
+    }
+    CHECK(guards > 0);
+}
+
+TEST_CASE("0054: an armed victim that answers its own call archives itself; a move clears it") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    ra2engine::UnitCombat vic = threat_gi(5);
+    vic.tg.to_protect = true;
+    vic.strength = 100000;
+    const int v = g.add(0, 1, vic);
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    const int a = g.add(2, 0, atk);
+    REQUIRE((v >= 0 && a >= 0));
+    g.world.call_for_help(1, v, -1, a);
+    CHECK(g.helped(v, a));
+    CHECK(g.world.units()[(std::size_t)v].tg.archive_self);
+    int mx = 0, my = 0;
+    REQUIRE(ring_cell(g.world, g.vx, g.vy, 4, mx, my));
+    g.world.order_unit_move(v, mx, my);
+    CHECK_FALSE(g.world.units()[(std::size_t)v].tg.archive_self);
+}
+
+TEST_CASE("0054: the zone is the victim's under the helper's movement rules (FUN_0056D100)") {
+    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
+    HelpRig g;
+    REQUIRE(g.ok);
+    const int v = g.add(0, 1, protect_victim(true));
+    ra2engine::UnitCombat atk = threat_gi(10);
+    atk.strength = 100000;
+    const int a = g.add(3, 0, atk);
+    ra2engine::UnitCombat inf = inf_gi(5);
+    const int land = g.add(6, 1, inf);
+    const int boat = g.add(8, 1, inf);
+    REQUIRE((v >= 0 && a >= 0 && land >= 0 && boat >= 0));
+    // The attacker's domain does not matter (the 0044 stand-in compared it).
+    g.world.units()[(std::size_t)a].movement_domain = ra2engine::MovementDomain::Water;
+    // A Water mover on dry land is not in the victim's water zone.
+    g.world.units()[(std::size_t)boat].movement_domain = ra2engine::MovementDomain::Water;
+    g.world.call_for_help(1, v, -1, a);
+    CHECK(g.helped(land, a));
+    CHECK_FALSE(g.helped(boat, a));
+}

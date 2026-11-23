@@ -453,7 +453,7 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
     // [RE-GATE APPLIED: ai-base.md §1/§2 — FUN_004fe200: a drainer that
     // would push drain > output - PowerSurplus(50) gets a Power node
     // INSERTED ahead of it. PowerSurplus (the reserve), this preemption
-    // gate, and PowerEmergency=0.75 (a SELL trigger, unused in AI-1) are
+    // gate, and PowerEmergency=0.75 (a SELL trigger in World::step_ai_houses) are
     // THREE DISTINCT rules — the pre-hunt conflated them.]
     auto roster = ai_roster();
     auto cat = ai_catalog();
@@ -469,6 +469,7 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
     // after the barracks; drain 20): 90+20 > 150-50 -> preempt with power.
     // NOT a PowerEmergency (150 >= 0.75 x 90): the preemption gate alone
     // fires [RE: ai-base.md §2].
+    CHECK_FALSE(power_emergency_sell(v, ai));
     CHECK(v.power_output >= ai.power_emergency * v.power_drain);
     const BuildDecision d = next_build(st, v, cat, roster, ai, m);
     CHECK(d.type == cat.power);
@@ -477,6 +478,20 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
     // ai-base.md §2a — expected head position moved with the topo order]:
     REQUIRE(d.node + 1 < (int)st.plan.size());
     CHECK(st.plan[d.node + 1].type == cat.refinery);
+}
+
+TEST_CASE("ai_base: PowerEmergency sells when output < drain * 0.75") {
+    // [RE: Rules+0x10B0]: distinct from low-power (output < drain) and from
+    // PowerSurplus preemption in next_build.
+    AiRules ai;
+    BaseView v;
+    v.power_output = 100;
+    v.power_drain = 90;
+    CHECK_FALSE(power_emergency_sell(v, ai));   // 100 >= 0.75*90
+    v.power_output = 60;
+    CHECK(power_emergency_sell(v, ai));          // 60 < 67.5
+    v.power_drain = 0;
+    CHECK_FALSE(power_emergency_sell(v, ai));   // no drain: never
 }
 
 TEST_CASE("ai_base: economy expansion appends a node when affordable and under limit") {

@@ -17,7 +17,7 @@ namespace ra2engine {
 // values from the [AI] loader FUN_00672520 + the real rulesmd; every value
 // below is a hunt output, cited by §] ---
 constexpr double kAiPowerSurplus = 50.0;      // [AI] PowerSurplus= — build power until surplus >= this (the RESERVE/top-up) [RE: ai-base.md §2]
-constexpr double kAiPowerEmergency = 0.75;    // [AI] PowerEmergency= (the key is PowerEmergency, NOT PowerEmergencyFraction) — SELL trigger below 75% power; recorded for later sub-phases, AI-1 does not sell. DISTINCT from PowerSurplus and from the drainer-preemption gate [RE: ai-base.md §2]
+constexpr double kAiPowerEmergency = 0.75;    // [AI] PowerEmergency= (the key is PowerEmergency, NOT PowerEmergencyFraction) — SELL when power_output < power_drain * this (Rules+0x10B0). DISTINCT from PowerSurplus and from the drainer-preemption gate [RE: ai-base.md §2]
 constexpr int kAiBaseSizeAdd = 3;             // [AI] BaseSizeAdd= — AI base <= largest RIVAL base + this [RE: ai-base.md §2]
 constexpr int kAiBaseSpacing = 1;             // [AI] AIBaseSpacing= — cell gap between AI-placed buildings [RE: ai-base.md §2/§3]
 constexpr double kAiRefineryRatio = 0.16;     // [AI] RefineryRatio= [RE: ai-base.md §2]
@@ -113,7 +113,7 @@ struct DifficultyMods {
 // [RE-GATE APPLIED: ai-base.md §2].
 struct AiRules {
     double power_surplus = kAiPowerSurplus;
-    double power_emergency = kAiPowerEmergency;  // recorded; sell trigger, unused in AI-1
+    double power_emergency = kAiPowerEmergency;  // sell when output < drain * this (World::step_ai_houses)
     int base_size_add = kAiBaseSizeAdd;
     int base_spacing = kAiBaseSpacing;
     double refinery_ratio = kAiRefineryRatio;
@@ -319,8 +319,8 @@ std::vector<PlannedNode> build_base_plan(const BaseView& view, const AiCatalog& 
 // (b) ECONOMY EXPANSION — separately APPEND an extra refinery/war-factory
 // node when affordable and under its Ratio/Limit (FUN_004fdb30).
 // PowerSurplus=50 (reserve/top-up), the drainer-preemption gate, and
-// PowerEmergency=0.75 (a SELL trigger, unused in AI-1) are THREE DISTINCT
-// rules — never conflated [RE: ai-base.md §2]. Affordability gates the
+// PowerEmergency=0.75 (a SELL trigger consumed in World::step_ai_houses) are
+// THREE DISTINCT rules — never conflated [RE: ai-base.md §2]. Affordability gates the
 // START: credits >= cost*cost_mul + CreditReserve, else wait/bank — never a
 // cheaper substitute. Prereq/tech gating stays with the CALLER's shared
 // can_start (the same player path, ai-base.md §6); the build clock is gated
@@ -329,6 +329,14 @@ BuildDecision next_build(AiBaseState& state, const BaseView& view,
                          const AiCatalog& cat,
                          const std::vector<BuildingTypeDef>& roster,
                          const AiRules& ai, const DifficultyMods& mods);
+
+// True when the house should sell to recover power [RE: Rules+0x10B0
+// PowerEmergency]: output < drain * power_emergency (drain > 0). Distinct from
+// house_low_power (output < drain) and from PowerSurplus preemption.
+inline bool power_emergency_sell(const BaseView& view, const AiRules& ai) {
+    return view.power_drain > 0 &&
+           view.power_output < ai.power_emergency * static_cast<double>(view.power_drain);
+}
 
 // Deterministic placement scan [RE-GATE APPLIED: ai-base.md §3 — the exact
 // outward scan was NOT pinned; RE-FALLBACK (calibrated, keep): nearest-first

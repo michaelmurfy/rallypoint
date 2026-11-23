@@ -17,7 +17,9 @@ const char* inf_seq_name(int seq) {
 }
 
 const InfDoControl& inf_do_control(int seq) {
-    // Dumped from gamemd.exe 0x7E9F7C (42 x {Interrupt, IsMobile, RandomStart, Rate}).
+    // Dumped from gamemd.exe 0x7E9F7C (42 x {Interrupt, IsMobile, RandomStart, Rate}). Re-checked
+    // byte for byte against the Steam YR binary, where it sits at 0x7EAF7C
+    // (read by PlayAnim @0x51D1BD / @0x51D928).
     static const InfDoControl kTable[kSqCount] = {
         {1, 0, 0, 0}, {1, 0, 0, 0}, {1, 0, 0, 6}, {1, 1, 1, 3}, {1, 0, 0, 1}, {0, 1, 0, 1}, {1, 1, 1, 1},
         {0, 0, 0, 1}, {1, 0, 0, 1}, {1, 0, 0, 3}, {1, 0, 0, 3}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1},
@@ -47,6 +49,8 @@ bool is_die(int q) {
 bool is_deploy_group(int q) {   // 27..30 [FUN_00520810: Deploy/Deployed/DeployedFire/DeployedIdle]
     return q >= kSqDeploy && q <= kSqDeployedIdle;
 }
+// Deploy through Undeploy: fear / walk must not steal the one-shot poses.
+bool is_deploy_busy(int q) { return is_deploy_group(q) || q == kSqUndeploy; }
 
 // The PlayAnim substitutions [RE: FUN_0051d4c0]: in water an amphibious
 // soldier swaps to the Wet/Swim set; Walk becomes Panic above fear 199; and
@@ -158,9 +162,10 @@ void finished(InfAnimState& s, const InfTable& t, int& facing, const InfTickCtx&
         return;
     }
     int next;
-    if (q == kSqDeploy || q == kSqDeployedFire) next = kSqDeployed;
-    else if (q == kSqUndeploy || q == kSqCheer) next = kSqReady;
-    else if (c.moving && !is_deploy_group(q)) next = s.prone ? kSqCrawl : kSqWalk;
+    if (q == kSqDeploy || q == kSqDeployedFire || q == kSqDeployedIdle) next = kSqDeployed;
+    else if (q == kSqUndeploy || q == kSqCheer)
+        next = c.moving ? (s.prone ? kSqCrawl : kSqWalk) : kSqReady;
+    else if (c.moving && !is_deploy_busy(q)) next = s.prone ? kSqCrawl : kSqWalk;
     else if (is_deploy_group(q)) next = kSqDeployed;
     else next = s.prone ? kSqProne : kSqReady;
     if (next == q) {   // a looping sequence (Walk/Crawl/Panic/Swim/Deployed...)
@@ -183,6 +188,12 @@ void idle_action(InfAnimState& s, const InfTable& t, int& facing, const InfTickC
     arm_idle(s, c);
     if (t.fraidycat && !c.human && s.fear > 50) {
         if (c.scatter) c.scatter();
+        return;
+    }
+    // Deployed soldiers fidget with DeployedIdle when art defines frames
+    // (GI/GGI ship DeployedIdle=0,0,0 so play() keeps Deployed).
+    if (c.deployed) {
+        play(s, t, kSqDeployedIdle, c.in_water, false);
         return;
     }
     switch (rnd(s, 0, 10)) {
@@ -236,8 +247,12 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
     } else {
         // ---- fear [RE: FUN_0051fde0], only while armed (the live game) ----
         if (s.armed) {
+            // [RE: fear AI FUN_005200b0 -- the Steam binary's address; older
+            // notes said FUN_0051fde0] Down / Up are only asked for while
+            // fear > 0 on entry (@0x5200BB jle skips both), after the decrement.
+            const bool afraid = s.fear > 0;
             if (s.fear > 0 && !t.fearless) --s.fear;
-            if (!is_deploy_group(s.seq) && s.seq != kSqCheer) {
+            if (afraid && !is_deploy_busy(s.seq) && s.seq != kSqCheer) {
                 if (!s.prone) {
                     if (s.fear > 49 && !(c.human && (c.has_destination || c.moving)) && !t.fraidycat)
                         play(s, t, kSqDown, c.in_water, false);
@@ -247,7 +262,7 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
             }
             // W7-07-27 / W7-09-12 [RE: FUN_0051FDE0 tail 0x51FF0C]: the panic
             // scatter has no human gate (only the idle-roll scatter does).
-            if (t.fraidycat && s.fear > 50 && !c.moving && !c.has_destination && !is_deploy_group(s.seq) &&
+            if (t.fraidycat && s.fear > 50 && !c.moving && !c.has_destination && !is_deploy_busy(s.seq) &&
                 c.scatter)
                 c.scatter();
         }
@@ -279,15 +294,17 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
         }
         // ---- walking vs standing ----
         const InfDoControl& dc = inf_do_control(s.seq);
-        if (c.moving && !dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_group(s.seq))
+        if (c.moving && !dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_busy(s.seq))
             play(s, t, s.prone ? kSqCrawl : kSqWalk, c.in_water, false);
-        else if (!c.moving && dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !(s.air && s.seq == kSqHover))
+        else if (!c.moving && dc.mobile && s.seq != kSqDown && s.seq != kSqUp && !is_deploy_busy(s.seq) &&
+                 !(s.air && s.seq == kSqHover))
             play(s, t, s.prone ? kSqProne : kSqReady, c.in_water, true);
         else if (c.moving && (s.seq == kSqWalk || s.seq == kSqPanic))   // fear crossing 199 mid-walk
             play(s, t, kSqWalk, c.in_water, false);
         // ---- idle fidgets [RE: FUN_0051cb80 gated by FUN_00521400] ----
         const bool can_idle = !c.moving && !s.prone && !c.has_target &&
-                              (s.seq == kSqReady || s.seq == kSqGuard || s.seq == kSqTread);
+                              (s.seq == kSqReady || s.seq == kSqGuard || s.seq == kSqTread ||
+                               (c.deployed && (s.seq == kSqDeployed || s.seq == kSqDeployedIdle)));
         if (can_idle && s.idle_timer > 0 && --s.idle_timer == 0) idle_action(s, t, facing, c);
         else if (s.idle_timer <= 0) arm_idle(s, c);
     }

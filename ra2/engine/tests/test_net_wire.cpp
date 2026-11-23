@@ -1,6 +1,8 @@
 // tests/test_net_wire.cpp -- datagram checksum, tunnel headers, the 0xAA04 /
 // 0x1236 channel layer, NetManager over loopback and real UDP sockets.
 // Golden bytes follow gamemd.exe (docs/re/net-protocol.md).
+#include <chrono>
+#include <thread>
 #include "doctest.h"
 
 #include "net/channel.hpp"
@@ -9,6 +11,7 @@
 #include "net/udp_socket.hpp"
 #include "net/wire.hpp"
 
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -82,6 +85,16 @@ TEST_CASE("net wire: tunnel V2 (BE u16) and V3 (LE u32) headers") {
     auto ping = make_tunnel_ping(0xCAFEu);
     CHECK(ping.size() == 50);
     CHECK(is_tunnel_ping_reply(ping.data(), 12, 0xCAFEu));
+    // Rallypoint agent token: sender=receiver=0xFFFF + "RPAU" + 16 bytes; reply is the 8-byte prefix.
+    uint8_t tok[16];
+    for (int i = 0; i < 16; ++i) tok[i] = static_cast<uint8_t>(0xA0 + i);
+    auto auth = make_tunnel_auth(tok);
+    REQUIRE(auth.size() == kTunnelAuthSize);
+    CHECK(std::memcmp(auth.data(), kTunnelAuthPrefix, sizeof(kTunnelAuthPrefix)) == 0);
+    CHECK(std::memcmp(auth.data() + 8, tok, 16) == 0);
+    CHECK(is_tunnel_auth_reply(auth.data(), 8));
+    CHECK_FALSE(is_tunnel_auth_reply(auth.data(), auth.size()));
+    CHECK_FALSE(tunnel_unwrap(TunnelMode::V2, auth.data(), auth.size(), &f, &t, &q, &n, 3));
 }
 
 TEST_CASE("net channel: private header golden bytes and PacketID counters") {
@@ -255,6 +268,7 @@ TEST_CASE("net manager: reliable delivery over a lossy loopback hub") {
         int id;
         while (B.get_private(p, id)) got.push_back(p[0]);
         now += 16;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
     }
     CHECK(sent == 200);
     std::map<int, int> seen;
@@ -305,6 +319,7 @@ TEST_CASE("net udp: real sockets on 127.0.0.1, direct and through a V2 tunnel re
         B.service();
         B.get_private(got, id);
         now += 16;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
     }
     CHECK(got == msg);
     CHECK(id == 0);
@@ -341,6 +356,7 @@ TEST_CASE("net udp: real sockets on 127.0.0.1, direct and through a V2 tunnel re
         std::vector<uint8_t> p;
         if (TB.get_private(p, id)) got = p;
         now += 16;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));   // real loopback delivery is not instant (macOS runners)
     }
     CHECK(got == msg);
 }

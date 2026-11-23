@@ -1,0 +1,628 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fe0f124..0834a14 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -305,6 +305,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
+ # Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
+ target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
++# Rallypoint: IsGattling RateUp/RateDown stages (gattling.hpp).
++target_sources(ra2assets_tests PRIVATE tests/test_gattling.cpp)
+ # Skirmish page (dialog 0x102): the pure lobby model + RA2.INI persistence +
+ # LobbyState -> SkirmishConfig converter (docs/gap/07-skirmish-page.md).
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish_lobby.cpp engine/skirmish_lobby.cpp)
+diff --git a/engine/building.hpp b/engine/building.hpp
+index 9206abb..8c93779 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -12,6 +12,7 @@
+ #include "unit_w6.hpp"   // wave-6 #4 (BldW6)
+ #include "target_w6.hpp" // W6 fix #2 (BldTgt)
+ #include "unit_w7.hpp"   // wave-7 fix (units) (BldW7)
++#include "gattling.hpp"  // Rallypoint: IsGattling stages
+ 
+ namespace ra2engine {
+ 
+@@ -105,6 +106,10 @@ struct BuildingTypeDef {
+     bool insignificant = false;     // Insignificant=
+     BldTypeW5 w5;                   // wave-5 abilities (abil_w5.hpp)
+     BldTypeW6 w6;                   // wave-6 #4 (unit_w6.hpp): wall damage levels
++    // Rallypoint: IsGattling (GTGCAN). Inert unless enabled.
++    GattlingRules gatt;
++    std::vector<WeaponSlot> gatt_weapons;
++    std::vector<WeaponSlot> gatt_weapons_elite;
+ };
+ 
+ // A placed building instance.
+@@ -188,6 +193,7 @@ struct Building {
+     int def_slot = 0;                // weapon slot of the last shot
+     double def_fire_flash = 0.0;     // seconds of muzzle flash left (renderer)
+     bool def_offline = false;        // Powered=yes and the house is low on power
++    int gatt_timer = 0;              // Rallypoint: IsGattling firing timer
+     // --- G16 garrison (agent G, world_depth.cpp) --- BuildingClass::Occupants
+     // (+0x688) / FiringOccupantIndex (+0x69C). Inert; NOT read by world_hash.
+     std::vector<int> occupants;      // unit indices, in entry order
+diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
+index 78ef27d..5b93b44 100644
+--- a/engine/building_combat.cpp
++++ b/engine/building_combat.cpp
+@@ -9,6 +9,7 @@
+ #include "combat.hpp"      // deliver_hit_from, apply_spread_damage, damage_vs
+ #include "production.hpp"  // power_totals
+ #include "weapon_unit.hpp"
++#include "gattling.hpp"
+ #include "world.hpp"
+ 
+ namespace ra2engine {
+@@ -34,6 +35,18 @@ bool World::defense_power_ok(int house) const {
+     return !house_low_power(house);
+ }
+ 
++// Rallypoint: stage WeaponX for IsGattling (timer already ticked this frame).
++const WeaponSlot& gattling_defense_weapon(const BuildingTypeDef& t, const Building& b, int slot,
++                                          bool air) {
++    if (t.gatt.enabled && t.gatt.weapon_stages > 0) {
++        const int stage = gattling_stage(b.gatt_timer, t.gatt, false);
++        const WeaponSlot& gw = gattling_pick(t.gatt_weapons, t.gatt_weapons_elite,
++                                            gattling_weapon_index(stage, air), false);
++        if (gw.valid) return gw;
++    }
++    return t.weapon[slot];
++}
++
+ Unit World::defense_shooter(int b_idx, int slot) const {
+     const Building& b = buildings_[b_idx];
+     const BuildingTypeDef& t = btypes()[b.type];
+@@ -222,6 +235,11 @@ void World::step_building_combat(double dt) {
+             }
+         }
+         if (b.def_rearm_frames > 0) --b.def_rearm_frames;   // Net L0: whole frames
++        // Rallypoint: IsGattling — one tick per frame (engage if a target held).
++        if (t.gatt.enabled) {
++            const bool eng = b.def_target >= 0 || b.w6.def_target_building >= 0;
++            b.gatt_timer = gattling_tick(b.gatt_timer, eng, t.gatt);
++        }
+ 
+         const double cx = bcenter_x(b), cy = bcenter_y(b);
+         auto slot_for = [&](const Unit& v) {
+@@ -233,6 +251,13 @@ void World::step_building_combat(double dt) {
+             // airborne Kirov; the forced index skipped the test and they shot
+             // airships down.
+             const bool air = unit_airborne(v);
++            if (t.gatt.enabled) {
++                const int stage = gattling_stage(b.gatt_timer, t.gatt, false);
++                const WeaponSlot& gw =
++                    gattling_pick(t.gatt_weapons, t.gatt_weapons_elite,
++                                  gattling_weapon_index(stage, air), false);
++                return (gw.valid && slot_can_target(gw, air, v.armor_ix)) ? 0 : -1;
++            }
+             if (w5_.armed && t.w5.prism)   // PrismSupport is the beam, not a gun
+                 return slot_can_target(t.weapon[0], air, v.armor_ix) ? 0 : -1;
+             // Wave-5 (R-045) [TechnoClass::SelectWeapon FUN_006F2890]: an
+@@ -252,7 +277,7 @@ void World::step_building_combat(double dt) {
+         int bx = 0, by = 0, bz = 0;
+         building_aim_lept(b, cell_level(b.cx, b.cy), bx, by, bz);
+         auto in_range = [&](const Unit& v, int slot) {
+-            const WeaponSlot& ws = t.weapon[slot];
++            const WeaponSlot& ws = gattling_defense_weapon(t, b, slot, unit_airborne(v));
+             // W9-02-07: ONE scratch shooter, reused (a default Unit was
+             // constructed + destroyed per candidate unit per defence per
+             // frame); only w_range / w_proj are ever set on it, the rest stays
+@@ -438,7 +463,8 @@ void World::step_building_combat(double dt) {
+             b.w5.prism_stage = 1;
+             continue;
+         }
+-        const WeaponSlot& w = t.weapon[slot];
++        const Unit& tv = units_[b.def_target];
++        const WeaponSlot& w = gattling_defense_weapon(t, b, slot, unit_airborne(tv));
+         // W6-02-03 [RE: Building vtbl 0x7E2EBC +0x318 = GetROF FUN_006FC460]: the owner's
+         // handicap ROF multiplies a defence rearm too.
+         b.def_rearm_frames = burst_rearm_frames(b.w6.burst_index, w.burst, house_rof_frames(b.house, w.rof), &combat_rng_);   // G-50 jitter, W6-04-01 Burst
+@@ -449,9 +475,23 @@ void World::step_building_combat(double dt) {
+             launch_defense_projectile(bi, b.def_target, slot);
+             continue;
+         }
+-        const Unit shooter = defense_shooter(bi, slot);
++        Unit shooter = defense_shooter(bi, slot);
++        // Rallypoint: IsGattling stage stats override the type's Primary slot.
++        if (t.gatt.enabled && w.valid) {
++            shooter.w_damage = w.damage;
++            shooter.w_rof = w.rof;
++            shooter.w_range = w.range;
++            shooter.w_verses = w.verses;
++            shooter.w_cell_spread = w.cell_spread;
++            shooter.w_percent_at_max = w.percent_at_max;
++            shooter.w_affects_allies = w.affects_allies;
++            shooter.w_proj = w.proj;
++            shooter.w_aa = w.aa;
++            shooter.w_ag = w.ag;
++            shooter.w6.burst = w.burst;
++            shooter.w6.wall_flags = w.wall_flags;
++        }
+         // W5-B R-060 [RE: DamageArea FUN_00489190]: detonate at the target.
+-        const Unit& tv = units_[b.def_target];
+         damage_area(*this, units_, buildings_, occ_, shooter, -1, bi, unit_lept_x(tv),
+                     unit_lept_y(tv), unit_lept_z(tv));
+     }
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index f5025a6..aa5d377 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1187,6 +1187,25 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
+         u.fire_flash -= dt;
+         if (u.fire_flash < 0.0) u.fire_flash = 0.0;
+ 
++        // Rallypoint: IsGattling RateUp while engaging, RateDown when idle;
++        // load the stage WeaponX into w_* before SelectWeapon / fire.
++        if (u.gatt.enabled) {
++            bool eng = false, air = false;
++            if (u.target >= 0 && u.target < n) {
++                const Unit& tv = units[u.target];
++                if (tv.alive && tv.die_time < 0.0 && tv.cargo_of < 0) {
++                    eng = true;
++                    air = unit_airborne(tv);
++                }
++            } else if (u.target_building >= 0 &&
++                       u.target_building < static_cast<int>(buildings.size()) &&
++                       buildings[u.target_building].alive &&
++                       buildings[u.target_building].state != Building::State::Dead) {
++                eng = true;
++            }
++            gattling_update_unit(u, eng, air, vet_rules_of(world));
++        }
++
+         // --- Buildings & Construction Task 4: explicit attack-building path.
+         // target_building is ONLY ever set by World::order_attack_building
+         // (never by auto-acquire -- units NEVER auto-acquire buildings, and
+diff --git a/engine/gattling.hpp b/engine/gattling.hpp
+new file mode 100644
+index 0000000..a8d5a76
+--- /dev/null
++++ b/engine/gattling.hpp
+@@ -0,0 +1,76 @@
++#pragma once
++// Rallypoint: Yuri's Revenge IsGattling weapon stages (ModEnc "Gattling Weapon
++// System"). Pure integers: a firing timer climbs by RateUp while engaging and
++// falls by RateDown when idle (RateDown=0 clears). Stage1..N are endpoints;
++// the last is the timer cap. Odd WeaponX = anti-ground, even = anti-air.
++// EliteStageX / EliteWeaponX replace the base ones when the techno is elite.
++
++#include <algorithm>
++#include <vector>
++
++#include "weapon.hpp"
++
++namespace ra2engine {
++
++inline constexpr int kGattlingMaxStages = 8;
++
++struct GattlingRules {
++    bool enabled = false;
++    int rate_up = 0;
++    int rate_down = 0;
++    int weapon_stages = 0;                 // WeaponStages= (pairs of weapons)
++    int stage_end[kGattlingMaxStages] = {};       // Stage1..N
++    int elite_stage_end[kGattlingMaxStages] = {}; // EliteStage1..N
++    bool has_elite_stages = false;
++};
++
++// Timer after one logic frame. `engaging` = has a live attack target.
++// Caps at the last Stage endpoint (StageMax). RateDown=0 resets when idle.
++inline int gattling_tick(int timer, bool engaging, const GattlingRules& r) {
++    if (!r.enabled || r.weapon_stages <= 0) return 0;
++    const int cap = r.stage_end[std::max(0, r.weapon_stages - 1)];
++    if (engaging) {
++        long long t = static_cast<long long>(timer) + r.rate_up;
++        if (t < 0) t = 0;
++        if (t > cap) t = cap;
++        return static_cast<int>(t);
++    }
++    if (r.rate_down == 0) return 0;
++    long long t = static_cast<long long>(timer) - r.rate_down;
++    if (t < 0) t = 0;
++    return static_cast<int>(t);
++}
++
++// 0-based stage from the timer and the (elite) endpoints. Monotonic YR tables
++// (Stage1 < Stage2 < Stage3) map timer in [StageK, StageK+1) to stage K.
++inline int gattling_stage(int timer, const GattlingRules& r, bool elite) {
++    const int n = r.weapon_stages;
++    if (n <= 0) return 0;
++    const int* ends = (elite && r.has_elite_stages) ? r.elite_stage_end : r.stage_end;
++    int s = 0;
++    for (int i = 0; i < n - 1; ++i) {
++        if (timer >= ends[i]) s = i + 1;
++    }
++    if (s >= n) s = n - 1;
++    return s;
++}
++
++// 0-based WeaponX index: stage 0 -> Weapon1/2, stage 1 -> Weapon3/4, ...
++inline int gattling_weapon_index(int stage, bool air) {
++    if (stage < 0) stage = 0;
++    return stage * 2 + (air ? 1 : 0);
++}
++
++// Pick a slot from a loaded weapon list; invalid elite falls back to base.
++inline const WeaponSlot& gattling_pick(const std::vector<WeaponSlot>& base,
++                                      const std::vector<WeaponSlot>& elite_w, int index,
++                                      bool elite) {
++    static const WeaponSlot kEmpty;
++    if (index < 0) return kEmpty;
++    const std::size_t i = static_cast<std::size_t>(index);
++    if (elite && i < elite_w.size() && elite_w[i].valid) return elite_w[i];
++    if (i < base.size() && base[i].valid) return base[i];
++    return kEmpty;
++}
++
++}  // namespace ra2engine
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 1e71a26..5cf4e5b 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -568,6 +568,16 @@ template <class Ar> void fields(Ar& ar, World::FireEvent& v) {
+     io(ar, v.unit); io(ar, v.building); io(ar, v.target_unit); io(ar, v.target_building);
+     io(ar, v.slot); io(ar, v.weapon);
+ }
++// Rallypoint: IsGattling rules (gattling.hpp).
++template <class Ar> void fields(Ar& ar, GattlingRules& v) {
++    io(ar, v.enabled);
++    io(ar, v.rate_up);
++    io(ar, v.rate_down);
++    io(ar, v.weapon_stages);
++    for (int i = 0; i < kGattlingMaxStages; ++i) io(ar, v.stage_end[i]);
++    for (int i = 0; i < kGattlingMaxStages; ++i) io(ar, v.elite_stage_end[i]);
++    io(ar, v.has_elite_stages);
++}
+ // Gap fix C: one resolved weapon slot.
+ template <class Ar> void fields(Ar& ar, WeaponSlot& v) {
+     io(ar, v.valid);
+@@ -1000,6 +1010,9 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
+     io(ar, v.tg);   // W6 fix #2 (save v29)
+     io(ar, v.loco);   // W7 locomotion (save v35)
+     io(ar, v.w7);   // v35: wave-7 fix (units)
++    io(ar, v.gatt);                 // Rallypoint: IsGattling
++    io(ar, v.gatt_weapons);
++    io(ar, v.gatt_weapons_elite);
+ }
+ template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
+     io(ar, v.id);
+@@ -1086,6 +1099,9 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
+     io(ar, v.wall);            // W6-03-01 (v25)
+     io(ar, v.insignificant);   // W6-03-01 (v25)
+     io(ar, v.w6);   // v25: W6-04-04 wall damage levels
++    io(ar, v.gatt);                 // Rallypoint: IsGattling
++    io(ar, v.gatt_weapons);
++    io(ar, v.gatt_weapons_elite);
+ }
+ 
+ // --- the live objects ---
+@@ -1218,6 +1234,10 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
+     io(ar, v.p_proj_elite_set);
+     io(ar, v.w_active);
+     io(ar, v.w_aa); io(ar, v.w_ag);
++    io(ar, v.gatt);                 // Rallypoint: IsGattling
++    io(ar, v.gatt_weapons);
++    io(ar, v.gatt_weapons_elite);
++    io(ar, v.gatt_timer);
+     io(ar, v.deploy_fire);
+     io(ar, v.deploy_fire_slot);
+     io(ar, v.crusher);
+@@ -1296,6 +1316,7 @@ template <class Ar> void fields(Ar& ar, Building& v) {
+     io(ar, v.def_slot);
+     io(ar, v.def_fire_flash);
+     io(ar, v.def_offline);
++    io(ar, v.gatt_timer);   // Rallypoint: IsGattling
+     // G16 garrison
+     io(ar, v.occupants);
+     io(ar, v.firing_occupant);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index ae01a4e..50a98e5 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 49;   // 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 50;   // 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/unit_combat.hpp b/engine/unit_combat.hpp
+index b96cec7..17e3225 100644
+--- a/engine/unit_combat.hpp
++++ b/engine/unit_combat.hpp
+@@ -10,6 +10,7 @@
+ #include "target_w6.hpp"  // W6 fix #2 (missions): UnitTypeTgt (pure)
+ #include "locomotion.hpp" // W7: LocoType (pure)
+ #include "unit_w7.hpp"    // wave-7 fix (units): UnitTypeW7 (pure)
++#include "gattling.hpp"   // Rallypoint: IsGattling stages
+ 
+ namespace ra2engine {
+ 
+@@ -190,6 +191,10 @@ struct UnitCombat {
+     UnitTypeW6 w6;                    // wave-6 #4 type data (unit_w6.hpp)
+     UnitTypeTgt tg;                   // W6 fix #2: rules id + targeting type data (target_w6.hpp)
+     UnitTypeW7 w7;                    // wave-7 fix (units): unit_w7.hpp (save v35)
++    // Rallypoint: IsGattling (YTNK / GTGCAN). Inert unless enabled.
++    GattlingRules gatt;
++    std::vector<WeaponSlot> gatt_weapons;        // Weapon1..N
++    std::vector<WeaponSlot> gatt_weapons_elite;  // EliteWeapon1..N
+ };
+ 
+ }  // namespace ra2engine
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 526c3a8..86c4e5f 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -1,6 +1,7 @@
+ #include "weapon_resolve.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ #include "abil_w5_rules.hpp"   // wave-5 (agent C)
++#include "gattling.hpp"
+ 
+ #include "ra2assets/rules.hpp"
+ #include <algorithm>
+@@ -173,6 +174,7 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
+     // back to the occupant's weapon 0 when the slot is empty, FUN_004526E0).
+     if (!c.occupy_weapon.valid) c.occupy_weapon = tw.slot[0];
+     if (!c.elite_occupy_weapon.valid) c.elite_occupy_weapon = c.occupy_weapon;
++    fill_gattling(rules, type_id, c.gatt, c.gatt_weapons, c.gatt_weapons_elite);
+     fill_unit_w7(rules, type_id, tw, c.w7);
+ }
+ 
+@@ -231,7 +233,41 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
+     d.max_occupants = om::ftol(rules.section_double(type_id, "MaxNumberOccupants", 0.0));
+     d.bridge_repair_hut = rules.section_flag(type_id, "BridgeRepairHut", false);
+     d.w6.gate = rules.section_flag(type_id, "Gate", false);   // R-210
++    fill_gattling(rules, type_id, d.gatt, d.gatt_weapons, d.gatt_weapons_elite);
+     fill_building_abilities(rules, type_id, d);   // wave-5 (agent C): abil_w5_rules.cpp
+ }
+ 
++void fill_gattling(const ra2assets::Rules& rules, const std::string& type_id, GattlingRules& gatt,
++                   std::vector<WeaponSlot>& weapons, std::vector<WeaponSlot>& elite) {
++    gatt = GattlingRules{};
++    weapons.clear();
++    elite.clear();
++    if (!rules.section_flag(type_id, "IsGattling", false)) return;
++    gatt.enabled = true;
++    gatt.rate_up = om::ftol(rules.section_double(type_id, "RateUp", 0.0));
++    gatt.rate_down = om::ftol(rules.section_double(type_id, "RateDown", 0.0));
++    gatt.weapon_stages = std::max(0, std::min(kGattlingMaxStages,
++                                              om::ftol(rules.section_double(type_id, "WeaponStages", 0.0))));
++    int elite_set = 0;
++    for (int i = 0; i < gatt.weapon_stages; ++i) {
++        gatt.stage_end[i] =
++            om::ftol(rules.section_double(type_id, "Stage" + std::to_string(i + 1), 0.0));
++        gatt.elite_stage_end[i] =
++            om::ftol(rules.section_double(type_id, "EliteStage" + std::to_string(i + 1), 0.0));
++        if (gatt.elite_stage_end[i] != 0) ++elite_set;
++    }
++    gatt.has_elite_stages = elite_set > 0;
++    // WeaponCount should be WeaponStages*2; load what the type lists.
++    const int n = std::max(gatt.weapon_stages * 2,
++                           om::ftol(rules.section_double(type_id, "WeaponCount", 0.0)));
++    weapons.resize(static_cast<std::size_t>(std::max(0, n)));
++    elite.resize(weapons.size());
++    for (int i = 0; i < n; ++i) {
++        weapons[static_cast<std::size_t>(i)] = resolve_weapon_slot(
++            rules, rules.section_string(type_id, "Weapon" + std::to_string(i + 1), ""));
++        elite[static_cast<std::size_t>(i)] = resolve_weapon_slot(
++            rules, rules.section_string(type_id, "EliteWeapon" + std::to_string(i + 1), ""));
++    }
++}
++
+ }  // namespace ra2engine
+diff --git a/engine/weapon_resolve.hpp b/engine/weapon_resolve.hpp
+index 653b616..9095823 100644
+--- a/engine/weapon_resolve.hpp
++++ b/engine/weapon_resolve.hpp
+@@ -11,6 +11,7 @@
+ #include "weapon.hpp"
+ #include "unit_combat.hpp"
+ #include "building.hpp"
++#include "gattling.hpp"
+ 
+ namespace ra2assets { class Rules; }
+ 
+@@ -57,4 +58,9 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
+ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& type_id,
+                            BuildingTypeDef& d);
+ 
++// Rallypoint: IsGattling keys + Weapon1..N / EliteWeapon1..N into `gatt` /
++// `weapons` / `elite` (ModEnc Gattling Weapon System). No-op when IsGattling=no.
++void fill_gattling(const ra2assets::Rules& rules, const std::string& type_id, GattlingRules& gatt,
++                   std::vector<WeaponSlot>& weapons, std::vector<WeaponSlot>& elite);
++
+ }  // namespace ra2engine
+diff --git a/engine/weapon_unit.cpp b/engine/weapon_unit.cpp
+index 3b25254..a24c82a 100644
+--- a/engine/weapon_unit.cpp
++++ b/engine/weapon_unit.cpp
+@@ -1,5 +1,6 @@
+ #include "weapon_unit.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
++#include "gattling.hpp"
+ 
+ #include "capture.hpp"  // veteran_firepower (legacy rank bake)
+ 
+@@ -171,4 +172,47 @@ void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr) {
+     u.w_active = slot;
+ }
+ 
++void gattling_update_unit(Unit& u, bool engaging, bool air, const VeterancyRules* vr) {
++    if (!u.gatt.enabled || u.gatt.weapon_stages <= 0) return;
++    u.gatt_timer = gattling_tick(u.gatt_timer, engaging, u.gatt);
++    const bool elite = vr && u.vet.recv && is_elite(u.vet.veterancy);
++    const int stage = gattling_stage(u.gatt_timer, u.gatt, elite);
++    const int ix = gattling_weapon_index(stage, air);
++    const WeaponSlot& w = gattling_pick(u.gatt_weapons, u.gatt_weapons_elite, ix, elite);
++    if (!w.valid) return;
++    const bool vet = vr && u.vet.recv;
++    auto has = [&](Ability a) {
++        return has_ability(u.vet.veterancy, u.vet.vet_abilities, u.vet.elite_abilities, a);
++    };
++    const double hfp = u.tg.w7_rof ? u.tg.house_fp : 1.0, hrof = u.tg.w7_rof ? u.tg.house_rof : 1.0;
++    if (vet) {
++        u.w_damage =
++            fire_damage(w.damage, u.vet.firepower_mult, has(Ability::Firepower), vr->combat, hfp);
++        u.w_rof = rof_frames(w.rof, has(Ability::Rof), vr->rof, hrof);
++    } else {
++        u.w_damage = u.veteran_rank > 0 ? veteran_firepower(w.damage, u.veteran_rank) : w.damage;
++        u.w_rof = w.rof;
++    }
++    if (u.tg.w7_rof) u.tg.rof_raw = w.rof;
++    u.w6.burst = w.burst;
++    u.w6.omni_fire = w.omni_fire;
++    u.w6.sonic = w.sonic;
++    u.w6.wall_flags = w.wall_flags;
++    u.shrapnel_count = w.shrapnel_count;
++    u.shrapnel_damage = w.shrapnel_damage;
++    u.shrapnel_range = w.shrapnel_range;
++    u.shrapnel_verses = w.shrapnel_verses;
++    u.w_range = w.range;
++    u.w_verses = w.verses;
++    u.w_cell_spread = w.cell_spread;
++    u.w_percent_at_max = w.percent_at_max;
++    u.w_affects_allies = w.affects_allies;
++    u.w_inf_death = w.inf_death;
++    u.w_prone_damage = w.prone_damage;
++    u.w_proj = w.proj;
++    u.w_aa = u.p_aa = w.aa;
++    u.w_ag = u.p_ag = w.ag;
++    u.w_active = 0;
++}
++
+ }  // namespace ra2engine
+diff --git a/engine/weapon_unit.hpp b/engine/weapon_unit.hpp
+index eb9c6f7..fe5ffaa 100644
+--- a/engine/weapon_unit.hpp
++++ b/engine/weapon_unit.hpp
+@@ -40,4 +40,8 @@ int unit_weapon_for_building(const Unit& u, int armor_ix, bool target_bombed = f
+ // slot == u.w_active. Slot 1 without a valid secondary is ignored.
+ void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr);
+ 
++// Rallypoint: IsGattling — tick the RateUp/RateDown timer and load the stage
++// weapon for an air/ground target into w_* (slot 0). No-op when disabled.
++void gattling_update_unit(Unit& u, bool engaging, bool air, const VeterancyRules* vr);
++
+ }  // namespace ra2engine
+diff --git a/engine/world.cpp b/engine/world.cpp
+index b8f6cd7..32e7982 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1198,6 +1198,10 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
+     u.p_proj = c.proj;
+     u.p_proj_elite = c.elite_proj;
+     u.p_proj_elite_set = c.has_elite_proj;
++    u.gatt = c.gatt;   // Rallypoint: IsGattling
++    u.gatt_weapons = c.gatt_weapons;
++    u.gatt_weapons_elite = c.gatt_weapons_elite;
++    u.gatt_timer = 0;
+     u.deploy_fire = c.deploy_fire;
+     u.deploy_fire_slot = c.deploy_fire_slot;
+     u.crusher = c.crusher;
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 88b7607..7ba1b47 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -364,6 +364,11 @@ struct Unit {
+     bool p_proj_elite_set = false;
+     int w_active = 0;                // 0 = primary in w_*, 1 = secondary
+     bool w_aa = false, w_ag = true;  // ACTIVE weapon's AA/AG
++    // Rallypoint: IsGattling (YTNK). Timer + Weapon1..N; w_* holds the stage weapon.
++    GattlingRules gatt;
++    std::vector<WeaponSlot> gatt_weapons;
++    std::vector<WeaponSlot> gatt_weapons_elite;
++    int gatt_timer = 0;
+     // Deployed infantry fire weapon (GI Para, GGI MissileLauncher):
+     // DeployFireWeapon slot resolved; deploy_fire=true makes the deployed unit
+     // immobile and fire this slot through the normal step_combat path (G-45).
+diff --git a/tests/test_gattling.cpp b/tests/test_gattling.cpp
+new file mode 100644
+index 0000000..339072a
+--- /dev/null
++++ b/tests/test_gattling.cpp
+@@ -0,0 +1,81 @@
++// Rallypoint: IsGattling stage timer and weapon-slot pick (synthetic rules).
++#include "doctest.h"
++#include "gattling.hpp"
++
++using ra2engine::GattlingRules;
++using ra2engine::WeaponSlot;
++using ra2engine::gattling_pick;
++using ra2engine::gattling_stage;
++using ra2engine::gattling_tick;
++using ra2engine::gattling_weapon_index;
++
++static GattlingRules ytnk_rules() {
++    GattlingRules r;
++    r.enabled = true;
++    r.rate_up = 1;
++    r.rate_down = 50;
++    r.weapon_stages = 3;
++    r.stage_end[0] = 200;
++    r.stage_end[1] = 400;
++    r.stage_end[2] = 600;
++    r.elite_stage_end[0] = 100;
++    r.elite_stage_end[1] = 200;
++    r.elite_stage_end[2] = 300;
++    r.has_elite_stages = true;
++    return r;
++}
++
++TEST_CASE("gattling: RateUp climbs to StageMax; RateDown decays; 0 resets") {
++    const GattlingRules r = ytnk_rules();
++    int t = 0;
++    for (int i = 0; i < 250; ++i) t = gattling_tick(t, true, r);
++    CHECK(t == 250);
++    CHECK(gattling_stage(t, r, false) == 1);   // past Stage1=200
++
++    for (int i = 0; i < 400; ++i) t = gattling_tick(t, true, r);
++    CHECK(t == 600);                           // capped at Stage3
++    CHECK(gattling_stage(t, r, false) == 2);
++
++    t = gattling_tick(t, false, r);            // RateDown=50
++    CHECK(t == 550);
++    GattlingRules instant = r;
++    instant.rate_down = 0;
++    CHECK(gattling_tick(550, false, instant) == 0);
++}
++
++TEST_CASE("gattling: stage endpoints and elite spool faster") {
++    const GattlingRules r = ytnk_rules();
++    CHECK(gattling_stage(0, r, false) == 0);
++    CHECK(gattling_stage(199, r, false) == 0);
++    CHECK(gattling_stage(200, r, false) == 1);
++    CHECK(gattling_stage(400, r, false) == 2);
++    CHECK(gattling_stage(600, r, false) == 2);
++
++    CHECK(gattling_stage(100, r, true) == 1);  // EliteStage1=100
++    CHECK(gattling_stage(200, r, true) == 2);
++    CHECK(gattling_stage(50, r, true) == 0);
++}
++
++TEST_CASE("gattling: weapon index is AG odd / AA even per stage") {
++    CHECK(gattling_weapon_index(0, false) == 0);  // Weapon1
++    CHECK(gattling_weapon_index(0, true) == 1);   // Weapon2
++    CHECK(gattling_weapon_index(1, false) == 2);  // Weapon3
++    CHECK(gattling_weapon_index(1, true) == 3);   // Weapon4
++    CHECK(gattling_weapon_index(2, false) == 4);  // Weapon5
++    CHECK(gattling_weapon_index(2, true) == 5);   // Weapon6
++}
++
++TEST_CASE("gattling: pick prefers elite slot when present") {
++    std::vector<WeaponSlot> base(6), elite(6);
++    base[0].valid = true;
++    base[0].damage = 25;
++    base[4].valid = true;
++    base[4].damage = 40;
++    elite[4].valid = true;
++    elite[4].damage = 50;
++
++    CHECK(gattling_pick(base, elite, 0, false).damage == 25);
++    CHECK(gattling_pick(base, elite, 4, false).damage == 40);
++    CHECK(gattling_pick(base, elite, 4, true).damage == 50);
++    CHECK_FALSE(gattling_pick(base, elite, 1, false).valid);  // empty AA slot
++}

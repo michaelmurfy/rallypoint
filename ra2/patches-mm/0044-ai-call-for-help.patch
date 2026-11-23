@@ -1,0 +1,350 @@
+diff --git a/engine/ai_base.cpp b/engine/ai_base.cpp
+index 7f7512f..9a33181 100644
+--- a/engine/ai_base.cpp
++++ b/engine/ai_base.cpp
+@@ -329,8 +329,8 @@ BuildDecision next_build(AiBaseState& state, const BaseView& view,
+         // FUN_004fe200 step 4]: before a drainer that would push
+         // drain > output - PowerSurplus(50), INSERT a Power node ahead of
+         // it. PowerSurplus (the reserve), this gate, and
+-        // PowerEmergency=0.75 (a SELL trigger — recorded in kAiPowerEmergency,
+-        // NOT consumed by AI-1) are THREE DISTINCT rules [RE: §2].
++        // PowerEmergency=0.75 (a SELL trigger — consumed in World::step_ai_houses,
++        // not in next_build) are THREE DISTINCT rules [RE: §2].
+         const BuildingTypeDef& t = roster[n.type];
+         if (t.power < 0 && cat.power >= 0 && n.type != cat.power &&
+             view.power_drain + (-t.power) >
+diff --git a/engine/ai_base.hpp b/engine/ai_base.hpp
+index 74944dd..1a31c61 100644
+--- a/engine/ai_base.hpp
++++ b/engine/ai_base.hpp
+@@ -17,7 +17,7 @@ namespace ra2engine {
+ // values from the [AI] loader FUN_00672520 + the real rulesmd; every value
+ // below is a hunt output, cited by §] ---
+ constexpr double kAiPowerSurplus = 50.0;      // [AI] PowerSurplus= — build power until surplus >= this (the RESERVE/top-up) [RE: ai-base.md §2]
+-constexpr double kAiPowerEmergency = 0.75;    // [AI] PowerEmergency= (the key is PowerEmergency, NOT PowerEmergencyFraction) — SELL trigger below 75% power; recorded for later sub-phases, AI-1 does not sell. DISTINCT from PowerSurplus and from the drainer-preemption gate [RE: ai-base.md §2]
++constexpr double kAiPowerEmergency = 0.75;    // [AI] PowerEmergency= (the key is PowerEmergency, NOT PowerEmergencyFraction) — SELL when power_output < power_drain * this (Rules+0x10B0). DISTINCT from PowerSurplus and from the drainer-preemption gate [RE: ai-base.md §2]
+ constexpr int kAiBaseSizeAdd = 3;             // [AI] BaseSizeAdd= — AI base <= largest RIVAL base + this [RE: ai-base.md §2]
+ constexpr int kAiBaseSpacing = 1;             // [AI] AIBaseSpacing= — cell gap between AI-placed buildings [RE: ai-base.md §2/§3]
+ constexpr double kAiRefineryRatio = 0.16;     // [AI] RefineryRatio= [RE: ai-base.md §2]
+@@ -113,7 +113,7 @@ struct DifficultyMods {
+ // [RE-GATE APPLIED: ai-base.md §2].
+ struct AiRules {
+     double power_surplus = kAiPowerSurplus;
+-    double power_emergency = kAiPowerEmergency;  // recorded; sell trigger, unused in AI-1
++    double power_emergency = kAiPowerEmergency;  // sell when output < drain * this (World::step_ai_houses)
+     int base_size_add = kAiBaseSizeAdd;
+     int base_spacing = kAiBaseSpacing;
+     double refinery_ratio = kAiRefineryRatio;
+@@ -319,8 +319,8 @@ std::vector<PlannedNode> build_base_plan(const BaseView& view, const AiCatalog&
+ // (b) ECONOMY EXPANSION — separately APPEND an extra refinery/war-factory
+ // node when affordable and under its Ratio/Limit (FUN_004fdb30).
+ // PowerSurplus=50 (reserve/top-up), the drainer-preemption gate, and
+-// PowerEmergency=0.75 (a SELL trigger, unused in AI-1) are THREE DISTINCT
+-// rules — never conflated [RE: ai-base.md §2]. Affordability gates the
++// PowerEmergency=0.75 (a SELL trigger consumed in World::step_ai_houses) are
++// THREE DISTINCT rules — never conflated [RE: ai-base.md §2]. Affordability gates the
+ // START: credits >= cost*cost_mul + CreditReserve, else wait/bank — never a
+ // cheaper substitute. Prereq/tech gating stays with the CALLER's shared
+ // can_start (the same player path, ai-base.md §6); the build clock is gated
+@@ -330,6 +330,14 @@ BuildDecision next_build(AiBaseState& state, const BaseView& view,
+                          const std::vector<BuildingTypeDef>& roster,
+                          const AiRules& ai, const DifficultyMods& mods);
+ 
++// True when the house should sell to recover power [RE: Rules+0x10B0
++// PowerEmergency]: output < drain * power_emergency (drain > 0). Distinct from
++// house_low_power (output < drain) and from PowerSurplus preemption.
++inline bool power_emergency_sell(const BaseView& view, const AiRules& ai) {
++    return view.power_drain > 0 &&
++           view.power_output < ai.power_emergency * static_cast<double>(view.power_drain);
++}
++
+ // Deterministic placement scan [RE-GATE APPLIED: ai-base.md §3 — the exact
+ // outward scan was NOT pinned; RE-FALLBACK (calibrated, keep): nearest-first
+ // Chebyshev rings from the base center, row-major within a ring; defenses
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 56e622b..c6b1ab9 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -4014,7 +4014,7 @@ void World::step_ai_houses(double dt) {
+         // W2-SK-10 base defence interim: every ~7 s, idle un-teamed combat
+         // units engage enemies inside 12 cells of the base — ONLY while the
+         // house has no live IsBaseDefense team. Once UseMinDefenseRule has
+-        // raised a guard team, call_for_help (FUN_00707500, ComputerBaseDefenseResponse)
++        // raised a guard team, call_for_help (FUN_00708080, ComputerBaseDefenseResponse)
+         // owns the response and this path must not steal recruits.
+         if ((repair_frame_ + (std::uint64_t)h) % 105u == 0u) {
+             bool has_bd = false;
+@@ -4187,9 +4187,10 @@ void World::step_ai_houses(double dt) {
+         // 6b) [G-65] AI sell [RE: FUN_00450620 -- money < [AI] CreditReserve,
+         //     health ratio < ConditionRed (Rules+0x1708) and rand(0,50) <
+         //     house+0x1d4 (the house TechLevel, ai-trigger.md; 10 in skirmish)
+-        //     -> Sell. Evaluated on the house AI tick; the conyard is never
+-        //     sold (the ConYard-loss path would end the house).]
+-        if (ai_econ(rec).credits < cfg.ai.credit_reserve) {
++        //     -> Sell. IQ >= [IQ] RepairSell when W7 is armed. The conyard is
++        //     never sold (the ConYard-loss path would end the house).]
++        if (ai_econ(rec).credits < cfg.ai.credit_reserve &&
++            (!w7_rules_.armed || house_iq(h) >= w7_rules_.iq_repair_sell)) {
+             for (int bi = 0; bi < (int)buildings_.size(); ++bi) {
+                 const Building& b = buildings_[bi];
+                 if (!b.alive || b.house != h || b.state != Building::State::Idle || b.selling ||
+@@ -4202,6 +4203,30 @@ void World::step_ai_houses(double dt) {
+                 break;
+             }
+         }
++        // 6b2) PowerEmergency sell [RE: Rules+0x10B0 / kAiPowerEmergency]: when
++        //     output < drain * PowerEmergency, sell the standing own building
++        //     with the largest power drain (most negative Power=), never the
++        //     ConYard / a refinery / a power plant. IQ-gated like repair/sell.
++        {
++            const BaseView bv_pe = make_ai_base_view(h, rec);
++            if (power_emergency_sell(bv_pe, cfg.ai) &&
++                (!w7_rules_.armed || house_iq(h) >= w7_rules_.iq_repair_sell)) {
++                int best = -1, best_drain = 0;
++                for (int bi = 0; bi < (int)buildings_.size(); ++bi) {
++                    const Building& b = buildings_[(std::size_t)bi];
++                    if (!b.alive || b.house != h || b.state != Building::State::Idle || b.selling)
++                        continue;
++                    if (b.type < 0 || b.type >= (int)cfg.roster.size()) continue;
++                    const BuildingTypeDef& t = cfg.roster[(std::size_t)b.type];
++                    if (t.conyard || t.power > 0) continue;   // keep power plants
++                    if (b.type == cfg.catalog.refinery || t.resource_destination) continue;
++                    if (t.power >= 0) continue;   // only power consumers
++                    const int drain = -t.power;
++                    if (best < 0 || drain > best_drain) { best = bi; best_drain = drain; }
++                }
++                if (best >= 0) begin_sell(best, h);
++            }
++        }
+         // 6c') W6-03-08 raise money [RE: FUN_004fd320 -> FUN_004fd7c0 urgency,
+         //     FUN_004fdb30]: a computer house with no refinery (house+0x15c <
+         //     1) that cannot afford its BuildRefinery, or with refineries but
+diff --git a/engine/world_w7.cpp b/engine/world_w7.cpp
+index f54d7b2..91ccde4 100644
+--- a/engine/world_w7.cpp
++++ b/engine/world_w7.cpp
+@@ -251,13 +251,12 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
+     return v < 2 ? 1 : v;
+ }
+ 
+-// fv7c (13b #3/#4): ONE call for help, FUN_00707500 (gamemd 0x707500; listing
+-// D:\ra2-re\w7-shc-B-out\b5.txt + disassembly 0x707560..0x707C33), for every
+-// computer house -- it replaces the W7-04-18 skirmish-only ai_protect and the
+-// earlier most-expensive-six stand-in. Callers: a ToProtect unit's hit
+-// (TechnoClass::ReceiveDamage 0x701C74) and every building hit
+-// (BuildingClass::ReceiveDamage 0x44223C), both with the real attacker from
+-// the hit log, so splash and opportunity hits call too.
++// fv7c (13b #3/#4): ONE call for help. Steam YR gamemd entry is FUN_00708080
++// (older notes said FUN_00707500 / 0x707500 — that VA is a different routine in
++// this binary; callers 0x4422BC building, 0x7027E9 techno, 0x4D749A foot).
++// Replaces the W7-04-18 skirmish-only ai_protect and the earlier
++// most-expensive-six stand-in. Callers: a ToProtect unit's hit and every
++// building hit, both with the real attacker from the hit log.
+ //   head: no call for an allied attacker, a human victim house, an attacker
+ //     in limbo, an armed campaign victim, an attacker that is not Infantry/Unit
+ //     (an AircraftType: fixed-wing or a missile -- a Jumpjet Rocketeer IS
+@@ -267,18 +266,22 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
+ //   candidates, infantry array then unit array: same owner, no team or an
+ //     IsBaseDefense team, armed, Recruitable mission (campaign only;
+ //     SessionType != 0 skips it), GetFireError(attacker, 0) != ILLEGAL,
+-//     reachable, help_value != 0; a negative value is spent at once; the six
+-//     best kept with the original's replace-the-minimum quirk;
++//     zone-reachable (FUN_0056D100; backlog's FUN_0056CC30 was a wrong VA),
++//     help_value != 0; a negative value is spent at once; the six best kept
++//     with the original's replace-the-minimum quirk;
++//   when victim ArchiveTarget (+0x218) == victim: infantry help_value x100,
++//     vehicle help_value x10 (relative ranking prefers infantry 10:1);
++//   unit array also skips ResourceGatherer (UnitType +0x5EC) and helpers with
++//     +0x2E4 set (loaded transport / cargo);
+ //   then sorted (exchange sort, descending), each recruit gets Mission
+ //     Area_Guard (roll(0,99) >= 66, or a base-defense team) or Rescue, and
+ //     TarCom = attacker; the spent ThreatPosed passing the budget stops it and
+ //     arms the attacker's cooldown, ftol(BaseDefenseDelay x 900) frames.
+-// [RE-OPEN, not modelled: the x100 / x10 value multipliers taken when the
+-// victim's +0x218 equals itself; the unit-array tests UnitType +0x5EC, unit
+-// +0x2E4 and victim +0x2DC; FUN_0056CC30 zone reachability -- a water/land
+-// domain test stands in.] [RE-FALLBACK: Rescue (21) has no clone mission; it
+-// is an attack order on the attacker. Area Guard keeps the recruit's area
+-// guard home at its cell with the attacker as TarCom.]
++// [RE-OPEN: victim +0x2DC non-null skips the vehicle pass (pointer not cloned);
++//   full MapClass zone ids from FUN_0056D100/FUN_0056D230 — Amphibious domain
++//   sharing stands in.] [RE-FALLBACK: ArchiveTarget==self is not stored; building
++//   victims take the x100/x10 boost (stock structure defense). Rescue (21) has
++//   no clone mission; it is an attack order on the attacker.]
+ void World::call_for_help(int victim_house, int victim_unit, int victim_building, int attacker) {
+     if (attacker < 0 || attacker >= static_cast<int>(units_.size())) return;
+     const Unit& A = units_[static_cast<std::size_t>(attacker)];
+@@ -314,9 +317,30 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+     int budget = A.tg.t.threat_posed *
+                  static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
+     const int nu = static_cast<int>(units_.size());
++    // [RE: FUN_00708080 @0x708351 / 0x7085BB]: ArchiveTarget (+0x218) == this
++    // multiplies infantry help_value by 100 and vehicle by 10. Buildings take
++    // the boost (structure defense); unit victims leave ArchiveTarget untracked.
++    const bool archive_self = victim_building >= 0;
+     auto tflags = [&](int i) -> std::uint8_t {
+         return i < static_cast<int>(team_flags_.size()) ? team_flags_[static_cast<std::size_t>(i)] : 0;
+     };
++    // FUN_0056D100 stand-in: same movement domain, or either side Amphibious
++    // (Amphibious* MovementZones share land and water path grids).
++    auto zone_ok = [&](const Unit& u) -> bool {
++        if (u.movement_domain == A.movement_domain) return true;
++        if (u.movement_domain == MovementDomain::Amphibious ||
++            A.movement_domain == MovementDomain::Amphibious)
++            return true;
++        return false;
++    };
++    auto scale_help = [&](int v, bool infantry) -> int {
++        if (!archive_self || v == 0) return v;
++        const long long mul = infantry ? 100LL : 10LL;
++        const long long nv = static_cast<long long>(v) * mul;
++        if (nv > 2147483647LL) return 2147483647;
++        if (nv < -2147483647LL - 1) return static_cast<int>(-2147483647LL - 1);
++        return static_cast<int>(nv);
++    };
+     int objs[6] = {0}, vals[6] = {0};
+     int count = 0, minv = 0;
+     for (int pass = 0; pass < 2; ++pass) {   // the infantry array, then the units
+@@ -332,11 +356,14 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
+             if (u.deployed && !u.deploy_fire) continue;   // a deployed Desolator cannot go
+             if (playfield_.campaign && !mission_recruitable(unit_mission(u))) continue;
+             if (!unit_primary_can_fire_at(u, A)) continue;
+-            // Movement zone stand-in: a ship only against an attacker on
+-            // water; a land unit only against one it can walk to.
+-            if (u.movement_domain == MovementDomain::Water && A.movement_domain != MovementDomain::Water) continue;
+-            if (u.movement_domain == MovementDomain::Land && A.movement_domain == MovementDomain::Water) continue;
+-            const int v = help_value(i, attacker, tf);
++            if (pass == 1) {
++                // UnitType ResourceGatherer (+0x5EC): ore trucks stay on ore.
++                if (u.is_harvester) continue;
++                // techno +0x2E4 non-null: a loaded transport is not recruited.
++                if (!u.cargo.empty()) continue;
++            }
++            if (!zone_ok(u)) continue;
++            const int v = scale_help(help_value(i, attacker, tf), pass == 0);
+             if (v == 0) continue;
+             if (v < 0) {
+                 budget += v;
+diff --git a/tests/test_ai_base.cpp b/tests/test_ai_base.cpp
+index 8b58be2..9f71f73 100644
+--- a/tests/test_ai_base.cpp
++++ b/tests/test_ai_base.cpp
+@@ -453,7 +453,7 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
+     // [RE-GATE APPLIED: ai-base.md §1/§2 — FUN_004fe200: a drainer that
+     // would push drain > output - PowerSurplus(50) gets a Power node
+     // INSERTED ahead of it. PowerSurplus (the reserve), this preemption
+-    // gate, and PowerEmergency=0.75 (a SELL trigger, unused in AI-1) are
++    // gate, and PowerEmergency=0.75 (a SELL trigger in World::step_ai_houses) are
+     // THREE DISTINCT rules — the pre-hunt conflated them.]
+     auto roster = ai_roster();
+     auto cat = ai_catalog();
+@@ -469,6 +469,7 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
+     // after the barracks; drain 20): 90+20 > 150-50 -> preempt with power.
+     // NOT a PowerEmergency (150 >= 0.75 x 90): the preemption gate alone
+     // fires [RE: ai-base.md §2].
++    CHECK_FALSE(power_emergency_sell(v, ai));
+     CHECK(v.power_output >= ai.power_emergency * v.power_drain);
+     const BuildDecision d = next_build(st, v, cat, roster, ai, m);
+     CHECK(d.type == cat.power);
+@@ -479,6 +480,20 @@ TEST_CASE("ai_base: power preemption inserts a Power node before a drainer") {
+     CHECK(st.plan[d.node + 1].type == cat.refinery);
+ }
+ 
++TEST_CASE("ai_base: PowerEmergency sells when output < drain * 0.75") {
++    // [RE: Rules+0x10B0]: distinct from low-power (output < drain) and from
++    // PowerSurplus preemption in next_build.
++    AiRules ai;
++    BaseView v;
++    v.power_output = 100;
++    v.power_drain = 90;
++    CHECK_FALSE(power_emergency_sell(v, ai));   // 100 >= 0.75*90
++    v.power_output = 60;
++    CHECK(power_emergency_sell(v, ai));          // 60 < 67.5
++    v.power_drain = 0;
++    CHECK_FALSE(power_emergency_sell(v, ai));   // no drain: never
++}
++
+ TEST_CASE("ai_base: economy expansion appends a node when affordable and under limit") {
+     // [RE-GATE APPLIED: ai-base.md §2 — FUN_004fdb30: a SEPARATE trigger
+     // from the plan walk; appends an extra refinery/war-factory node at the
+diff --git a/tests/test_ai_w7.cpp b/tests/test_ai_w7.cpp
+index 480cc0a..3cc61f3 100644
+--- a/tests/test_ai_w7.cpp
++++ b/tests/test_ai_w7.cpp
+@@ -236,3 +236,76 @@ TEST_CASE("fv7c: a hit unit WITHOUT ToProtect calls nobody") {
+     CHECK(g.world.units()[(std::size_t)v].hp < 100000);
+     CHECK_FALSE(g.helped(h, a));
+ }
++
++TEST_CASE("T1.3: call_for_help skips ResourceGatherer helpers (UnitType +0x5EC)") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    const int v = g.add(0, 1, protect_victim(true));
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    const int a = g.add(3, 0, atk);
++    ra2engine::UnitCombat harv = threat_gi(40);
++    harv.range = 1.0;
++    const int hv = g.add(2, 1, harv);
++    REQUIRE(hv >= 0);
++    g.world.units()[(std::size_t)hv].is_harvester = true;
++    g.world.units()[(std::size_t)hv].is_infantry = false;
++    ra2engine::UnitCombat helper = threat_gi(5);
++    helper.range = 1.0;
++    const int h = g.add(9, 1, helper);
++    REQUIRE((v >= 0 && a >= 0 && h >= 0));
++    g.world.order_unit_attack(a, v);
++    bool called = false;
++    for (int f = 0; f < 120 && !called; ++f) {
++        g.world.step(1.0 / 15.0);
++        called = g.helped(h, a);
++    }
++    CHECK(called);
++    CHECK_FALSE(g.helped(hv, a));
++}
++
++TEST_CASE("T1.3: call_for_help skips a loaded transport (+0x2E4)") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    HelpRig g;
++    REQUIRE(g.ok);
++    // Victim is a building so call_for_help runs the vehicle pass filters
++    // (ResourceGatherer / cargo) the same way a structure hit does.
++    ra2engine::BuildingTypeDef bt;
++    bt.id = "GACNST";
++    bt.strength = 100000;
++    bt.fw = bt.fh = 2;
++    g.world.set_building_types({bt});
++    int bx = 0, by = 0;
++    REQUIRE(ring_cell(g.world, g.vx, g.vy, 0, bx, by));
++    const int bi = g.world.add_building(/*type*/ 0, bx, by, /*fw*/ 2, /*fh*/ 2, /*house*/ 1,
++                                       /*strength*/ 100000, /*armor*/ 0, /*buildup*/ 0.0, /*instant*/ true);
++    REQUIRE(bi >= 0);
++    ra2engine::UnitCombat atk = threat_gi(10);
++    atk.strength = 100000;
++    atk.is_infantry = false;
++    atk.is_vehicle = true;
++    const int a = g.add(3, 0, atk);
++    ra2engine::UnitCombat apc = threat_gi(30);
++    apc.range = 1.0;
++    apc.is_infantry = false;
++    apc.is_vehicle = true;
++    apc.passengers = 5;
++    const int tr = g.add(2, 1, apc);
++    ra2engine::UnitCombat pass = threat_gi(1);
++    pass.is_infantry = true;
++    const int p = g.add(4, 1, pass);
++    REQUIRE((tr >= 0 && p >= 0 && a >= 0));
++    g.world.units()[(std::size_t)tr].cargo.push_back(p);
++    g.world.units()[(std::size_t)p].cargo_of = tr;
++    REQUIRE_FALSE(g.world.units()[(std::size_t)tr].cargo.empty());
++    ra2engine::UnitCombat helper = threat_gi(5);
++    helper.range = 1.0;
++    helper.is_infantry = false;
++    helper.is_vehicle = true;
++    const int h = g.add(9, 1, helper);
++    REQUIRE(h >= 0);
++    g.world.call_for_help(1, -1, bi, a);
++    CHECK(g.helped(h, a));
++    CHECK_FALSE(g.helped(tr, a));
++}

@@ -1,0 +1,17 @@
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2assets.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2assets_tests.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2netpeer.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2extract.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/art_census.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2engine_obj.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/ra2engine.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/test.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/edit_cache.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/CMakeFiles/rebuild_cache.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/sdl_headers_copy.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/SDL2main.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/SDL2-static.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/uninstall.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/test.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/edit_cache.dir
+/home/mmurphy/projects/rallypoint/ra2/build-linux/_deps/sdl2-build/CMakeFiles/rebuild_cache.dir

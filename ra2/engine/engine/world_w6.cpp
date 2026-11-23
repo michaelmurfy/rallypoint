@@ -124,15 +124,23 @@ void World::set_house_handicap(int h, double firepower, double rof) {
 }
 
 double World::house_rof_mul(int h) const {
+    double m = 1.0;
     if (h >= 0 && h < static_cast<int>(handicap_set_.size()) && handicap_set_[static_cast<std::size_t>(h)])
-        return handicap_rof_[static_cast<std::size_t>(h)];
-    return ai_enabled(h) ? ai_houses_[static_cast<std::size_t>(h)].cfg.mods.rof_mul : 1.0;
+        m = handicap_rof_[static_cast<std::size_t>(h)];
+    else if (ai_enabled(h))
+        m = ai_houses_[static_cast<std::size_t>(h)].cfg.mods.rof_mul;
+    if (const country::Bonuses* b = house_country_bonuses(h)) m *= b->rof;
+    return m;
 }
 
 double World::house_firepower_mul(int h) const {
+    double m = 1.0;
     if (h >= 0 && h < static_cast<int>(handicap_set_.size()) && handicap_set_[static_cast<std::size_t>(h)])
-        return handicap_fp_[static_cast<std::size_t>(h)];
-    return ai_enabled(h) ? ai_houses_[static_cast<std::size_t>(h)].cfg.mods.firepower_mul : 1.0;
+        m = handicap_fp_[static_cast<std::size_t>(h)];
+    else if (ai_enabled(h))
+        m = ai_houses_[static_cast<std::size_t>(h)].cfg.mods.firepower_mul;
+    if (const country::Bonuses* b = house_country_bonuses(h)) m *= b->firepower;
+    return m;
 }
 
 int World::house_rof_frames(int h, int rof) const {

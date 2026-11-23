@@ -11,7 +11,7 @@
     // Agent E draws the cursor art from this; over the sidebar it is None.
     ra2engine::Input::Action cursor_action() const {
         if (sidebar_up_ && lay_.contains(mx_, my_)) return ra2engine::Input::Action::None;
-        return input_.action_at(mx_, my_);
+        return input_.action_at(zx(mx_), zy(my_));
     }
 
     // G-10: selection bracket + health bar over the selected own building.
@@ -20,7 +20,17 @@
     // Colour thresholds = [General] ConditionYellow / ConditionRed.
     mutable ra2engine::TextureCache* pip_tc_ = nullptr;   // W2-UI-11 (set by render)
     void draw_selected_building(SDL_Renderer* ren) const {
-        const int sb = input_.selected_building();
+        int sb = input_.selected_building();
+        // W6-05-07 parity: hovered own buildings show pips when none is selected.
+        if (sb < 0 && mouse_present_ && mx_ < playfield_w_ && !input_locked_) {
+            const int hb = input_.building_under(zx(mx_), zy(my_));
+            if (hb >= 0 && hb < static_cast<int>(world_.buildings().size())) {
+                const ra2engine::Building& hbld = world_.buildings()[hb];
+                if (hbld.alive && hbld.state != ra2engine::Building::State::Dead &&
+                    hbld.house == local_house_)
+                    sb = hb;
+            }
+        }
         if (sb < 0 || sb >= static_cast<int>(world_.buildings().size())) return;
         const ra2engine::Building& b = world_.buildings()[sb];
         if (!b.alive || b.state == ra2engine::Building::State::Dead) return;
@@ -243,7 +253,9 @@
         if (follow_unit_ >= static_cast<int>(world_.units().size())) { follow_unit_ = -1; return; }
         const ra2engine::Unit& u = world_.units()[static_cast<std::size_t>(follow_unit_)];
         if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) { follow_unit_ = -1; return; }
-        input_.center_on_cell(u.fx, u.fy);
+        double fx = u.fx, fy = u.fy, sx, sy;
+        motion_.blend(u, follow_unit_, fx, fy, sx, sy);   // same glide as the sprite
+        input_.center_on_cell(fx, fy);
     }
     bool unit_on_screen(const ra2engine::Unit& u) const {
         const double sx = (u.fx - u.fy) * 30.0 + cam_.x + 30.0;
@@ -381,6 +393,7 @@
     static constexpr double kLogicDt = 1.0 / 15.0;
     static constexpr int kMaxLogicSteps = 4;
     double logic_acc_ = 0.0;
+    ra2engine::PresentMotion motion_;   // previous tick's poses; draw only
 
     // --- G-07: build-queue click semantics ---------------------------------------
     // [RE: gamemd fixB hunt, StripClass cameo action FUN_006AA390; event ids
@@ -515,6 +528,9 @@
     bool radar_click(const ra2engine::InputEvent& ev) {
         if (!lay_.radar.contains(ev.x, ev.y)) return false;
         int cx = 0, cy = 0;
+        SDL_Log("[radar-dbg] radar_click x=%d y=%d button=%d touch=%d active=%d cell_ok=%d", ev.x, ev.y,
+                static_cast<int>(ev.button), static_cast<int>(ev.touch), static_cast<int>(radar_active()),
+                static_cast<int>(radar_cell_at(ev.x, ev.y, cx, cy)));
         if (!radar_active() || !radar_cell_at(ev.x, ev.y, cx, cy)) return true;   // consumed, inert
         bool any = false;
         for (const ra2engine::Unit& u : world_.units())

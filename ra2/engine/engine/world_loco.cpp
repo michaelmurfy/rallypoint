@@ -929,6 +929,26 @@ void step_hover(StepEnv& e, Unit& u, int self) {
     u.frame = seq_frame(seq.walk, u.facing, phase);
 }
 
+// The height grid the step is using (the pathfinder's, else the speed
+// grid). Empty when this step has no terrain: unit.level is left alone.
+const std::vector<std::int8_t>* ground_levels(const StepEnv& e) {
+    if (e.terrain && e.terrain->land.level &&
+        e.terrain->land.level->size() == static_cast<std::size_t>(e.w) * e.h)
+        return e.terrain->land.level;
+    if (e.sc.level && e.sc.level->size() == static_cast<std::size_t>(e.w) * e.h) return e.sc.level;
+    return nullptr;
+}
+
+// A ground unit's level is the cell it occupies. It used to stay at the
+// spawn cell, so a tank ordered down a ramp kept the terrace's height
+// [RE: CellClass Level +0x11B; the height gate is FUN_004D9C60].
+void adopt_ground_level(const StepEnv& e, Unit& u) {
+    const std::vector<std::int8_t>* lv = ground_levels(e);
+    if (!lv || u.is_aircraft) return;
+    if (u.cell_x < 0 || u.cell_y < 0 || u.cell_x >= e.w || u.cell_y >= e.h) return;
+    u.level = (*lv)[static_cast<std::size_t>(u.cell_y) * e.w + u.cell_x];
+}
+
 }  // namespace
 
 void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passable,
@@ -1022,6 +1042,7 @@ void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passa
             }
             step_walk(e, u, self, static_cast<double>(s) / 256.0);
         }
+        adopt_ground_level(e, u);
     }
 }
 

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 
+#include "ai_boost.hpp"     // [RP-AI-BOOST] ComputerBaseDefenseResponse scale
 #include "combat.hpp"       // threat_value_unit, unit_in_weapon_range, HitLog
 #include "locomotion.hpp"   // leptons_per_frame (fv7c call for help)
 #include "orig_math.hpp"
@@ -212,6 +213,7 @@ void World::order_scatter_from(int idx, int ax, int ay) {
         units_[static_cast<std::size_t>(idx)].tg.area_guard = keep.area_guard;
         units_[static_cast<std::size_t>(idx)].tg.home_x = keep.home_x;
         units_[static_cast<std::size_t>(idx)].tg.home_y = keep.home_y;
+        units_[static_cast<std::size_t>(idx)].tg.archive_self = keep.archive_self;
         return;
     }
 }
@@ -250,13 +252,12 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
     return v < 2 ? 1 : v;
 }
 
-// fv7c (13b #3/#4): ONE call for help, FUN_00707500 (gamemd 0x707500; listing
-// D:\ra2-re\w7-shc-B-out\b5.txt + disassembly 0x707560..0x707C33), for every
-// computer house -- it replaces the W7-04-18 skirmish-only ai_protect and the
-// earlier most-expensive-six stand-in. Callers: a ToProtect unit's hit
-// (TechnoClass::ReceiveDamage 0x701C74) and every building hit
-// (BuildingClass::ReceiveDamage 0x44223C), both with the real attacker from
-// the hit log, so splash and opportunity hits call too.
+// fv7c (13b #3/#4): ONE call for help. Steam YR gamemd entry is FUN_00708080
+// (older notes said FUN_00707500 / 0x707500 — that VA is a different routine in
+// this binary; callers 0x4422BC building, 0x7027E9 techno, 0x4D749A foot).
+// Replaces the W7-04-18 skirmish-only ai_protect and the earlier
+// most-expensive-six stand-in. Callers: a ToProtect unit's hit and every
+// building hit, both with the real attacker from the hit log.
 //   head: no call for an allied attacker, a human victim house, an attacker
 //     in limbo, an armed campaign victim, an attacker that is not Infantry/Unit
 //     (an AircraftType: fixed-wing or a missile -- a Jumpjet Rocketeer IS
@@ -266,18 +267,32 @@ int World::help_value(int ci, int a, std::uint8_t tf) const {
 //   candidates, infantry array then unit array: same owner, no team or an
 //     IsBaseDefense team, armed, Recruitable mission (campaign only;
 //     SessionType != 0 skips it), GetFireError(attacker, 0) != ILLEGAL,
-//     reachable, help_value != 0; a negative value is spent at once; the six
-//     best kept with the original's replace-the-minimum quirk;
+//     zone-reachable (FUN_0056D100; backlog's FUN_0056CC30 was a wrong VA),
+//     help_value != 0; a negative value is spent at once; the six best kept
+//     with the original's replace-the-minimum quirk;
+//   when victim ArchiveTarget (+0x218) == victim: infantry help_value x100
+//     (@0x708351, negative values too), vehicle help_value x10 only when
+//     positive (@0x7085B7);
+//   unit array also skips ResourceGatherer (UnitType +0x5EC), a vehicle in a
+//     Tank Bunker (+0x2E4, the building<->unit link FUN_00459301 / 0x4596E6;
+//     no bunkers here) and, after help_value, every vehicle while the victim
+//     has a SlaveOwner (+0x2DC, written only by SlaveManager FUN_006AF5D7 /
+//     0x6AF68B / 0x6AF701: a slave's master) @0x7085AD;
 //   then sorted (exchange sort, descending), each recruit gets Mission
-//     Area_Guard (roll(0,99) >= 66, or a base-defense team) or Rescue, and
-//     TarCom = attacker; the spent ThreatPosed passing the budget stops it and
-//     arms the attacker's cooldown, ftol(BaseDefenseDelay x 900) frames.
-// [RE-OPEN, not modelled: the x100 / x10 value multipliers taken when the
-// victim's +0x218 equals itself; the unit-array tests UnitType +0x5EC, unit
-// +0x2E4 and victim +0x2DC; FUN_0056CC30 zone reachability -- a water/land
-// domain test stands in.] [RE-FALLBACK: Rescue (21) has no clone mission; it
-// is an attack order on the attacker. Area Guard keeps the recruit's area
-// guard home at its cell with the attacker as TarCom.]
+//     Area_Guard (roll(0,99) >= 66, or a base-defense team) or Rescue (21),
+//     ArchiveTarget = victim (@0x70871F; Area_Guard FUN_004D41A0 guards around
+//     it) and TarCom = attacker; the spent ThreatPosed passing the budget stops
+//     it and arms the attacker's cooldown, ftol(BaseDefenseDelay x 900) frames.
+// 0054 zone (FUN_0056D100(candidate cell, victim cell, candidate MovementZone,
+//   candidate on bridge, 0, 0)): MovementZone -1 -> yes; a candidate cell
+//   outside the usable area (FUN_00578460(cell, 1)) but on the map -> yes; else
+//   zone(victim) == zone(candidate) (FUN_0056D230). Cells are GetDestination
+//   (vtbl +0x4C): a foot's NavCom or its cell; a building's dock coord
+//   (BuildingClass FUN_00447E90, dock types) or its centre.
+// [RE-OPEN: whether a building-occupied zone block shares the zone of the
+//   ground around it (Zone_Reset's blocking rule) is not pinned; the clone seeds
+//   the zone from the cells around the foundation.] [RE-FALLBACK: Rescue (21) has
+//   no clone mission; it is an attack order on the attacker.]
 void World::call_for_help(int victim_house, int victim_unit, int victim_building, int attacker) {
     if (attacker < 0 || attacker >= static_cast<int>(units_.size())) return;
     const Unit& A = units_[static_cast<std::size_t>(attacker)];
@@ -299,10 +314,75 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
     if (A.an.t.fixed_wing || A.an.t.missile) return;   // WhatAmI not 0xF / 1
     const int now = static_cast<int>(vet_frame_);
     if (A.tg.help_frame > now) return;   // the +0x650 timer
-    int budget = A.tg.t.threat_posed * static_cast<int>(w7_rules_.call_for_help_budget);
+    // [RP-AI-BOOST] L2+: scale ComputerBaseDefenseResponse (Rules+0xB18) for
+    // computer houses only; humans never reach this path (human_commanded).
+    double defense_mul = 1.0;
+    int defense_delay = w7_rules_.base_defense_delay;
+    if (ai_enabled(victim_house)) {
+        const int boost = ai_houses_[static_cast<std::size_t>(victim_house)].cfg.ai_boost;
+        defense_mul = ai_boost_defense_response_mul(boost);
+        defense_delay = std::max(
+            1, static_cast<int>(w7_rules_.base_defense_delay *
+                                ai_boost_defense_delay_mul(boost) + 0.5));
+    }
+    int budget = A.tg.t.threat_posed *
+                 static_cast<int>(w7_rules_.call_for_help_budget * defense_mul + 0.5);
     const int nu = static_cast<int>(units_.size());
+    // [RE: FUN_00708080 @0x708351 / 0x7085BB]: ArchiveTarget (+0x218) == this.
+    // Only a unit that answered its own call has it (no gamemd path archives a
+    // building to itself: BuildingClass::SetDestination FUN_00455D50 stores a
+    // rally cell).
+    const bool archive_self = victim_unit >= 0 && units_[static_cast<std::size_t>(victim_unit)].tg.archive_self;
+    // victim +0x2DC SlaveOwner: no vehicle helps a slave.
+    const bool victim_slaved = victim_unit >= 0 && units_[static_cast<std::size_t>(victim_unit)].is_slave &&
+                               units_[static_cast<std::size_t>(victim_unit)].slave_master >= 0;
     auto tflags = [&](int i) -> std::uint8_t {
         return i < static_cast<int>(team_flags_.size()) ? team_flags_[static_cast<std::size_t>(i)] : 0;
+    };
+    // FUN_0056D100: the victim's zone under the candidate's movement rules,
+    // flooded once per (domain, crusher) on first use.
+    auto dest_cell = [](const Unit& u) -> Cellxy {
+        return u.moving() ? u.path.back() : Cellxy{u.cell_x, u.cell_y};
+    };
+    std::vector<Cellxy> seeds;
+    if (victim_unit >= 0) {
+        seeds.push_back(dest_cell(units_[static_cast<std::size_t>(victim_unit)]));
+    } else if (victim_building >= 0) {
+        const Building& B = buildings_[static_cast<std::size_t>(victim_building)];
+        for (int y = B.cy - 1; y <= B.cy + B.fh; ++y)
+            for (int x = B.cx - 1; x <= B.cx + B.fw; ++x)
+                if (x < B.cx || y < B.cy || x >= B.cx + B.fw || y >= B.cy + B.fh) seeds.push_back({x, y});
+    }
+    std::vector<std::uint8_t> zones[6];
+    bool zone_built[6] = {false, false, false, false, false, false};
+    auto zone_ok = [&](const Unit& u) -> bool {
+        // MovementZone Fly (jumpjets, choppers) is one zone.
+        if (u.is_aircraft || u.loco.t.kind == static_cast<int>(LocoKind::Jumpjet)) return true;
+        const Cellxy c = dest_cell(u);
+        if (c.x < 0 || c.y < 0 || c.x >= grid_w_ || c.y >= grid_h_) return false;
+        if (!cell_in_playfield(c.x, c.y)) return true;   // @0x56D16B
+        const bool crush = crush_paths(u);
+        const int k = static_cast<int>(u.movement_domain) * 2 + (crush ? 1 : 0);
+        if (k < 0 || k >= 6) return false;
+        if (!zone_built[k]) {
+            PathTerrain terr;
+            std::vector<int> gates;
+            const PathTerrain* tp = terrain_for(u, terr, gates);
+            const std::vector<std::uint8_t>* leak =
+                u.movement_domain == MovementDomain::Water ? nullptr : crush ? crush_leak() : wall_leak();
+            zones[k] = reach_mask(crush ? crush_grid() : grid_for(u.movement_domain), grid_w_, grid_h_, seeds, leak, tp);
+            zone_built[k] = true;
+        }
+        const std::size_t ci = static_cast<std::size_t>(c.y) * static_cast<std::size_t>(grid_w_) + static_cast<std::size_t>(c.x);
+        return ci < zones[k].size() && zones[k][ci] != 0;
+    };
+    auto scale_help = [&](int v, bool infantry) -> int {
+        if (!archive_self || v == 0) return v;
+        const long long mul = infantry ? 100LL : 10LL;
+        const long long nv = static_cast<long long>(v) * mul;
+        if (nv > 2147483647LL) return 2147483647;
+        if (nv < -2147483647LL - 1) return static_cast<int>(-2147483647LL - 1);
+        return static_cast<int>(nv);
     };
     int objs[6] = {0}, vals[6] = {0};
     int count = 0, minv = 0;
@@ -319,12 +399,16 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
             if (u.deployed && !u.deploy_fire) continue;   // a deployed Desolator cannot go
             if (playfield_.campaign && !mission_recruitable(unit_mission(u))) continue;
             if (!unit_primary_can_fire_at(u, A)) continue;
-            // Movement zone stand-in: a ship only against an attacker on
-            // water; a land unit only against one it can walk to.
-            if (u.movement_domain == MovementDomain::Water && A.movement_domain != MovementDomain::Water) continue;
-            if (u.movement_domain == MovementDomain::Land && A.movement_domain == MovementDomain::Water) continue;
-            const int v = help_value(i, attacker, tf);
-            if (v == 0) continue;
+            if (pass == 1) {
+                // UnitType ResourceGatherer (+0x5EC): ore trucks stay on ore.
+                if (u.is_harvester) continue;
+                // techno +0x2E4 is the Tank Bunker link: no bunkers in this engine.
+            }
+            if (!zone_ok(u)) continue;
+            const int v0 = help_value(i, attacker, tf);
+            if (v0 == 0) continue;
+            if (pass == 1 && victim_slaved) continue;   // @0x7085AD victim +0x2DC
+            const int v = scale_help(v0, pass == 0);
             if (v < 0) {
                 budget += v;
             } else if (count < 6) {
@@ -356,6 +440,16 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
         for (int k = 0; k < count; ++k) {
             const int ri = objs[k];
             const bool base_def = (tflags(ri) & kTeamBaseDefense) != 0;
+            // ArchiveTarget = victim (@0x70871F): the Area_Guard centre.
+            int ax = units_[static_cast<std::size_t>(ri)].cell_x, ay = units_[static_cast<std::size_t>(ri)].cell_y;
+            if (victim_unit >= 0) {
+                ax = units_[static_cast<std::size_t>(victim_unit)].cell_x;
+                ay = units_[static_cast<std::size_t>(victim_unit)].cell_y;
+            } else if (victim_building >= 0) {
+                const Building& B = buildings_[static_cast<std::size_t>(victim_building)];
+                ax = B.cx + B.fw / 2;
+                ay = B.cy + B.fh / 2;
+            }
             const int roll = combat_rng_.random(0, 99);
             if (roll >= 66 || base_def) {
                 // Mission_Set(Area_Guard) + Assign_Target(attacker)
@@ -366,19 +460,21 @@ void World::call_for_help(int victim_house, int victim_unit, int victim_building
                 r.target_building = -1;
                 r.target = attacker;
                 r.tg.area_guard = true;
-                r.tg.home_x = r.cell_x;
-                r.tg.home_y = r.cell_y;
+                r.tg.home_x = ax;
+                r.tg.home_y = ay;
                 r.guard_x = r.cell_x;
                 r.guard_y = r.cell_y;
             } else {
                 // Mission_Set(Rescue) + Assign_Target(attacker) [RE-FALLBACK]
                 order_unit_attack(ri, attacker);
             }
+            units_[static_cast<std::size_t>(ri)].tg.archive_self = ri == victim_unit;
             spent += units_[static_cast<std::size_t>(ri)].tg.t.threat_posed;
             if (spent > budget) break;
         }
     }
-    if (spent > budget) units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + w7_rules_.base_defense_delay;
+    if (spent > budget)
+        units_[static_cast<std::size_t>(attacker)].tg.help_frame = now + defense_delay;
 }
 
 void World::wake_unit(int idx) {

@@ -82,6 +82,9 @@ bool prerequisites_met(const std::vector<std::string>& tokens,
 // (the BuildingType factory); slot must be idle; prereqs met; TechLevel > 0.
 // Affordability is NOT gated here — RA2 starts a build with any credits and
 // stalls at 0 [RE: construction.md §10].
+// BuildLimit= (rules, per house): true when the house already owns that many of this building type.
+bool build_limit_reached(const std::vector<BuildingTypeDef>& types, const std::vector<Building>& buildings,
+                         int house, int type);
 bool can_start(const ProductionState& ps, int type,
                const std::vector<BuildingTypeDef>& types,
                const std::vector<Building>& buildings, int house,

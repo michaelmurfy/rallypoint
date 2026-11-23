@@ -14,6 +14,7 @@
 
 #include "building.hpp"
 #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+#include "slave_miner.hpp" // Rallypoint: SMIN↔YAREFN SlaveManager transplant
 #include "world.hpp"
 
 namespace ra2engine {
@@ -123,6 +124,8 @@ void World::finish_deploy(int idx) {
     can_deploy_at(idx, u.cell_x, u.cell_y, &ox, &oy);
     const double ratio = u.max_hp > 0 ? static_cast<double>(u.hp) / u.max_hp : 1.0;
     const int house = u.house;
+    // SMIN→YAREFN: remember before consume_unit clears alive [RE: FUN_006AF580].
+    const bool transplant_slaves = u.is_slave_master || u.slaves_number > 0;
     // The unit leaves first (its cell becomes part of the foundation).
     consume_unit(idx);
     units_[idx].deployed_away = true;
@@ -137,6 +140,10 @@ void World::finish_deploy(int idx) {
     Building& nb = buildings_[static_cast<std::size_t>(b)];
     nb.hp = std::max(1, om::ftol(ratio * nb.max_hp));
     nb.ai_repairable = !human_commanded(house);   // fv7c [RE: FUN_007383E0, non-human deploy]
+    // [RE: FUN_007383E0 @0x739956]: FUN_006B0D10 then FUN_006AF580 — move the
+    // SlaveManager onto the new building so SLAV workers keep their master.
+    if (transplant_slaves)
+        transplant_slave_manager_to_building(units_, nb, idx, b);
     deploy_events_.push_back({DeployEvent::Kind::Deployed, idx, b, house});
 }
 
@@ -191,18 +198,26 @@ void World::set_undeploy_unit(int btype, const UnitCombat& c) {
 // [RE: repair-sell.md §B6, FUN_0044F5C0 + Mission_Selling 0x00449C2A]: a
 // ConstructionYard packs back into its UndeploysInto unit only in a
 // multiplayer/skirmish session, for a human owner, with MCVRedeploys on, and
-// when the unit can be placed; health ratio carried (min 1). Returns true when
-// the building was converted (the caller then skips the refund).
+// when the unit can be placed; health ratio carried (min 1).
+// YAREFN (Enslaves= + UndeploysInto=SMIN, Unsellable): Deploy packs via
+ // order_undeploy_building — same Mission_Selling transplant @0x44A03C
+ // (FUN_006AF580), no MCVRedeploys / human gate.
+// Returns true when the building was converted (the caller then skips the refund).
 bool World::try_undeploy(int b_idx) {
-    if (!skirmish_session_ || !mcv_redeploys_) return false;
+    if (b_idx < 0 || b_idx >= static_cast<int>(buildings_.size())) return false;
     Building& b = buildings_[static_cast<std::size_t>(b_idx)];
-    if (ai_enabled(b.house)) return false;   // !Is_Human(Owner) -> plain refund
+    if (!b.alive) return false;
     const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(b.type)];
-    if (!t.conyard) return false;
+    const bool slave_miner = !t.enslaves.empty() && t.slaves_number > 0;
+    if (!slave_miner) {
+        if (!skirmish_session_ || !mcv_redeploys_) return false;
+        if (ai_enabled(b.house)) return false;   // !Is_Human(Owner) -> plain refund
+        if (!t.conyard) return false;
+    }
     std::size_t k = 0;
     while (k < undeploy_types_.size() && undeploy_types_[k] != b.type) ++k;
     if (k == undeploy_types_.size()) return false;
-    // Inverse of the deploy offset: the MCV stands where it unfolded.
+    // Inverse of the deploy offset: the MCV / SMIN stands where it unfolded.
     int ux = b.cx, uy = b.cy;
     if (b.fw > 2 || b.fh > 2) { ux += 1; uy += 1; }
     if (!walkable(ux, uy) || !occ_.is_free(ux, uy)) return false;   // fallback: refund
@@ -213,7 +228,30 @@ bool World::try_undeploy(int b_idx) {
     u.body_facing = u.turret_facing =
         static_cast<double>((t.deploy_facing & 0xFF) << 8);
     const int ui = static_cast<int>(units_.size()) - 1;
+    // [RE: FUN_00449C30 @0x44A03C]: FUN_006AF580 — SlaveManager onto the SMIN.
+    if (slave_miner)
+        transplant_slave_manager_to_unit(units_, b, b_idx, ui, t.slaves_number,
+                                         t.slave_regen_rate, t.slave_reload_rate,
+                                         t.slave_storage);
     deploy_events_.push_back({DeployEvent::Kind::Undeployed, ui, b_idx, house});
+    return true;
+}
+
+bool World::order_undeploy_building(int b_idx) {
+    if (b_idx < 0 || b_idx >= static_cast<int>(buildings_.size())) return false;
+    Building& b = buildings_[static_cast<std::size_t>(b_idx)];
+    if (!b.alive || b.state != Building::State::Idle) return false;
+    const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(b.type)];
+    if (t.enslaves.empty() || t.slaves_number <= 0) return false;
+    if (!try_undeploy(b_idx)) return false;
+    // Pack succeeded: tombstone the foundation (same as complete_sell after try).
+    for (const Cellxy& cell : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
+        if (cell.x < 0 || cell.y < 0 || cell.x >= grid_w_ || cell.y >= grid_h_) continue;
+        passable_[static_cast<std::size_t>(cell.y) * grid_w_ + cell.x] = 1;
+    }
+    b.blocking_released = true;
+    kill_building(b);
+    b.sold = true;
     return true;
 }
 

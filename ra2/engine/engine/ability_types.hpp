@@ -17,7 +17,8 @@ namespace ra2engine {
 //   Temporal  <- warhead Temporal=yes      (TemporalClass::Fire, §C2)
 //   IvanBomb  <- warhead IvanBomb=yes      (BombList::Plant, §E)
 //   Suicide   <- weapon  Suicide=yes       (TechnoClass::Fire early-out, §F)
-enum class AbilityKind : std::uint8_t { None = 0, Parasite, Temporal, IvanBomb, Suicide };
+//   MagBeam   <- warhead IsLocomotor=yes   (Magnetron MagneticBeam; Rallypoint)
+enum class AbilityKind : std::uint8_t { None = 0, Parasite, Temporal, IvanBomb, Suicide, MagBeam };
 
 // One resolved weapon (rules id -> numbers). valid=false = "no such weapon".
 struct WeaponSpec {
@@ -87,6 +88,19 @@ inline WeaponSpec default_ivan_warhead() {
     return w;
 }
 
+// [Crush] ([CombatDamage] CrushWarhead=) on this install: Verses 100% x11,
+// CellSpread=.5, InfDeath=2. The Magnetron drop detonates it at the landing
+// point [RE: UnitClass falling-landing 0x746209..0x7462DA].
+inline WeaponSpec default_crush_warhead() {
+    WeaponSpec w;
+    w.valid = true;
+    w.verses = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+    w.cell_spread = 0.5;
+    w.percent_at_max = 1.0;
+    w.inf_death = 2;
+    return w;
+}
+
 // The recovered global knobs. Defaults ARE this install's real rulesmd values
 // ([Radiation] / [General] / [CombatDamage]) so a World that never calls
 // set_ability_rules already behaves like the original [RE: abilities.md].
@@ -105,6 +119,11 @@ struct AbilityRules {
     int ivan_damage = 450;             // IvanDamage (+0xFCC)
     int ivan_timed_delay = 450;        // IvanTimedDelay (+0xFD0)
     WeaponSpec ivan_warhead = default_ivan_warhead();  // IvanWarhead=IvanWH
+    int mag_cruise_height = 500;
+    int mag_climb = 5;
+    int mag_falling_damage_milli = 1000;
+    bool mag_current_strength_damage = true;
+    WeaponSpec crush_warhead = default_crush_warhead();   // CrushWarhead=Crush
 };
 
 }  // namespace ra2engine

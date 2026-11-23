@@ -106,6 +106,10 @@ struct FxWeapon {
     // Flare)]: two more beam kinds. [RE-FALLBACK: colours / life -- the rad
     // beam in [Radiation] RadColor, the flare line red, LaserDuration-like life.]
     bool rad_beam = false, line = false;
+    // T3.4 [RE: WeaponType IsMagBeam +0x15c; TechnoClass::Fire FUN_006ff5f5
+    // -> WaveClass ctor FUN_0075e950 type 3; Draw_Magnetic FUN_00762070]:
+    // Magnetron / MagneShake coloured wave (MagnaBeamColor).
+    bool mag_beam = false;
     int laser_frames = 15;
     bool conventional = false;   // W3-FX warhead Conventional= (water -> SplashList)
     // W7-12-30 [RE: TechnoClass::Fire FUN_006fd210 builds the bullet, muzzle
@@ -199,17 +203,28 @@ public:
                               pres_lower(rget(pj, "Rotates")).rfind("t", 0) == 0;
             fw.shrapnel = rget(pj, "ShrapnelWeapon");
         }
+        // W7-12-06 [RE: NeutronRifle IsRadBeam + ChronoBeam Temporal]: chrono
+        // weapons are RadBeam (wavy ChronoBeamColor), never IsElectricBolt.
+        if (!fw.temporal && !fw.warhead.empty()) {
+            const std::string whl = pres_lower(fw.warhead);
+            if (whl == "chronobeam") fw.temporal = true;
+        }
+        if (fw.temporal) {
+            fw.rad_beam = true;
+            fw.bolt = false;
+        }
     }
     void fill_beam(FxWeapon& fw, const std::string& w) {
         auto yes = [&](const char* k) {
             const std::string v = pres_lower(rget(w, k));
-            return v.rfind("y", 0) == 0 || v.rfind("t", 0) == 0;
+            return !v.empty() && (v[0] == 'y' || v[0] == 't' || v[0] == '1');
         };
         fw.bolt = yes("IsElectricBolt");
         fw.laser = yes("IsLaser");
         fw.laser_house = yes("IsHouseColor");
         fw.rad_beam = yes("IsRadBeam");   // W6-04-24
         fw.line = yes("IsLine");
+        fw.mag_beam = yes("IsMagBeam");   // T3.4 Magnetron wave
         const std::string ld = rget(w, "LaserDuration");
         if (!ld.empty()) fw.laser_frames = std::max(1, std::atoi(ld.c_str()));
         fw.alt_color = yes("IsAlternateColor");   // W7-12-31 (weapon +0x153, loader 0x77148c)
@@ -248,16 +263,17 @@ public:
         long age = 0;      // W3-B: logic ticks
         SDL_Color inner, outer;
         uint32_t seed;
-        int kind = 0;      // 0 laser/line, 1 bolt, 2 rad beam (wave), 3 house laser
+        int kind = 0;      // 0 laser/line, 1 bolt, 2 rad beam (wave), 3 house laser, 4 mag beam
         double ox0 = 0;    // screen-x offset of the start (the muzzle FLH)
         double seg_lep = 20.0;   // W7-12-06 rad beam segment length (leptons)
         double len_lep = 0.0;    // the beam's length in leptons
         bool white_core = true;  // W7-12-31 bolt: one of the 3 arcs in PALETTE[15]
     };
     // W7-12-06 / W7-12-32 colours, read once at init (Presentation::init).
-    void set_beam_colors(SDL_Color rad, SDL_Color chrono) {
+    void set_beam_colors(SDL_Color rad, SDL_Color chrono, SDL_Color magna = SDL_Color{255, 200, 255, 255}) {
         rad_color_ = rad;
         chrono_color_ = chrono;
+        magna_color_ = magna;
     }
     // W7-12-32 [RE: HouseClass LaserColor 0x50b820 -- c * 240 / |c| per
     // channel, clamped to 255, a channel below 96 becomes 0; c = the house
@@ -276,13 +292,24 @@ public:
         // W7-12-31 [RE: EBolt 0x4c1d30 / 0x4c2750 -- +0x28 = 0x10000 shifted
         // right once per frame: a bolt lives 17 frames; drawn as 3 lines, two
         // in PALETTE.PAL[IsAlternateColor ? 5 : 10] and one in PALETTE.PAL[15]].
-        Beam b{x0, y0, lift0, x1, y1, lift1, l0, l1, fw.bolt, fw.bolt ? 17 : fw.laser_frames, 0,
+        const bool chrono_rad = fw.rad_beam || fw.temporal;
+        const bool bolt = fw.bolt && !chrono_rad && !fw.mag_beam;
+        Beam b{x0, y0, lift0, x1, y1, lift1, l0, l1, bolt, bolt ? 17 : fw.laser_frames, 0,
                SDL_Color{252, 252, 252, 255},
                fw.alt_color ? SDL_Color{252, 252, 84, 255} : SDL_Color{80, 80, 252, 255}, beam_seed_++ * 2654435761u};
-        b.kind = fw.bolt ? 1 : 0;
+        b.kind = bolt ? 1 : 0;
         b.ox0 = ox0;
         b.len_lep = std::hypot(x1 - x0, y1 - y0) * 256.0;
-        if (fw.rad_beam) {
+        if (fw.mag_beam) {
+            // T3.4 [RE: WaveClass::Draw_Magnetic FUN_00762070 / Update_Wave
+            // FUN_00762af0 case type 3; MagnaBeamColor @ Rules+0x1869]: wavy
+            // magenta beam held while the MagBeam Wave lives.
+            b.kind = 4;
+            b.outer = magna_color_;
+            b.inner = magna_color_;
+            b.life = 15;
+            b.seg_lep = 16.0;
+        } else if (chrono_rad) {
             // W7-12-06 [RE: RadBeam 0x6fcae0 / 0x658b50.. -- kind 1 (Temporal
             // warhead) ChronoBeamColor, else RadColor; Period 15, Amplitude 40,
             // 10-lepton segments for chrono, 20 otherwise].
@@ -324,6 +351,17 @@ public:
     void attach(int unit, const std::string& name, double lift) {
         const FxAnimType* t = type(name);
         if (!t || t->frames <= 0) return;
+        attached_[unit] = Attached{t, 0, lift};
+    }
+    // Keep age when the same looping anim is still attached (DrainWeapon DISKRAY).
+    void ensure_attach(int unit, const std::string& name, double lift) {
+        const FxAnimType* t = type(name);
+        if (!t || t->frames <= 0) return;
+        auto it = attached_.find(unit);
+        if (it != attached_.end() && it->second.t == t) {
+            it->second.lift = lift;
+            return;
+        }
         attached_[unit] = Attached{t, 0, lift};
     }
     void detach(int unit) { attached_.erase(unit); }
@@ -374,13 +412,15 @@ public:
             pt(b.x1, b.y1, b.l1, b.lift1, bx, by);
             const double fade = 1.0 - static_cast<double>(b.age) / std::max(1, b.life);
             const Uint8 a = static_cast<Uint8>(std::clamp(fade, 0.0, 1.0) * 255.0);
-            if (b.kind == 2) {
+            if (b.kind == 2 || b.kind == 4) {
                 // W7-12-06 [RE: RadBeam draw 0x659090 / 0x659500]: n segments of
                 // seg leptons; point k displaced (screen z) by sin(k/n * len*2
                 // degrees) * 40 * frame/Period leptons, colour jittered per
                 // segment; gone at frame >= Period (15).
+                // T3.4 kind 4: same path for MagBeam (Draw_Magnetic FUN_00762070).
                 const int n = std::max(2, static_cast<int>(b.len_lep / b.seg_lep));
-                const double amp = 40.0 * static_cast<double>(b.age) / 15.0 * (36.74 / 256.0);
+                const double amp = (b.kind == 4 ? 28.0 : 40.0) * static_cast<double>(b.age) / 15.0 *
+                                   (36.74 / 256.0);
                 uint32_t r = b.seed ^ static_cast<uint32_t>(beam_tick_ * 2246822519u);
                 int px = ax, py = ay;
                 for (int k = 1; k <= n; ++k) {
@@ -478,6 +518,7 @@ public:
     }
     SDL_Color rad_color_{0, 255, 0, 255};
     SDL_Color chrono_color_{128, 200, 255, 255};   // W7-12-06 [AudioVisual] ChronoBeamColor
+    SDL_Color magna_color_{255, 200, 255, 255};  // T3.4 [AudioVisual] MagnaBeamColor
     int rad_max_ = 0;
     void set_instant(const std::string& image, bool instant) {
         auto it = weapons_.find(image);
@@ -530,6 +571,9 @@ public:
         std::vector<std::pair<int, int>> fire_offsets;
         bool delayed_fire = false;   // art IsAnimDelayedFire (Tesla / Prism: SpecialAnim on fire)
         int gate_stages = 0;         // art GateStages
+        // Art AnimActive=start,count,rate -- cycles the building's own SHP
+        // [RE: Shape_Number FUN_0043ef90 Building+0xf8; art reader 0x461692].
+        int anim_active_start = 0, anim_active_count = 1, anim_active_rate = 1;
     };
     static const char* bld_slot_key(int i) {
         static const char* kKeys[kBldSlots] = {
@@ -557,7 +601,9 @@ public:
             sl.x = std::atoi(aget(image, s + "X").c_str());
             sl.y = std::atoi(aget(image, s + "Y").c_str());
             sl.powered = yes(s + "Powered", true);
-            sl.powered_light = yes(s + "PoweredLight", false);
+            const bool active_slot =
+                s == "ActiveAnim" || s == "ActiveAnimTwo" || s == "ActiveAnimThree" || s == "ActiveAnimFour";
+            sl.powered_light = yes(s + "PoweredLight", active_slot && sl.powered);
             return sl;
         };
         int n = 0;
@@ -571,13 +617,32 @@ public:
         a.under_roof_door = event_slot("UnderRoofDoorAnim");
         a.delayed_fire = yes("IsAnimDelayedFire", false);
         a.gate_stages = std::atoi(aget(image, "GateStages").c_str());
+        {
+            // AnimActive=start,count,rate (def 0,1,0 -- static frame 0).
+            const std::string aa = aget(image, "AnimActive");
+            if (!aa.empty()) {
+                int st = 0, cnt = 1, rate = 1;
+                const char* p = aa.c_str();
+                st = std::atoi(p);
+                while (*p && *p != ',') ++p;
+                if (*p == ',') {
+                    cnt = std::atoi(++p);
+                    while (*p && *p != ',') ++p;
+                    if (*p == ',') rate = std::atoi(++p);
+                }
+                a.anim_active_start = st;
+                a.anim_active_count = std::max(1, cnt);
+                a.anim_active_rate = std::max(1, rate);
+            }
+        }
         const std::string bib = aget(image, "BibShape");
         if (!bib.empty()) a.bib = theater_shp(bib);
         for (int i = 0; i < 8; ++i) {
+            // [RE: FUN_0043c0d0 @0x43C124] the list ends at the first unset offset.
             const std::string v = aget(image, "DamageFireOffset" + std::to_string(i));
-            if (v.empty()) continue;
+            if (v.empty()) break;
             const std::size_t k = v.find(',');
-            if (k == std::string::npos) continue;
+            if (k == std::string::npos) break;
             a.fire_offsets.push_back({std::atoi(v.c_str()), std::atoi(v.c_str() + k + 1)});
         }
         std::cerr << "[fx] building " << image << " anims=" << n << " bib=" << (a.bib ? 1 : 0)

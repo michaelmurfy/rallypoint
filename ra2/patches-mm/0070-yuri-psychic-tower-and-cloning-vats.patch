@@ -1,0 +1,380 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0c6dbe2..35a08a4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -311,6 +311,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
+ # Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
+ target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_yuri_roster.cpp)
+ # Rallypoint: HouseType country bonuses (Cost*/Veteran*/Owner filters).
+ target_sources(ra2assets_tests PRIVATE tests/test_country_bonuses.cpp)
+ # Rallypoint: IsGattling RateUp/RateDown stages (gattling.hpp).
+diff --git a/engine/building.hpp b/engine/building.hpp
+index d3272b9..0225067 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -126,6 +126,10 @@ struct BuildingTypeDef {
+     GattlingRules gatt;
+     std::vector<WeaponSlot> gatt_weapons;
+     std::vector<WeaponSlot> gatt_weapons_elite;
++    // Rallypoint: Psychic Tower (YAPSYT): the primary's warhead has MindControl=yes;
++    // Damage= is the number of victims at once (InfiniteMindControl lifts it).
++    int mc_capacity = 0;
++    bool mc_infinite = false;
+ };
+ 
+ // A placed building instance.
+@@ -219,6 +223,7 @@ struct Building {
+     double def_fire_flash = 0.0;     // seconds of muzzle flash left (renderer)
+     bool def_offline = false;        // Powered=yes and the house is low on power
+     int gatt_timer = 0;              // Rallypoint: IsGattling firing timer
++    std::vector<int> mc_victims;     // Rallypoint: units this Psychic Tower controls
+     // --- G16 garrison (agent G, world_depth.cpp) --- BuildingClass::Occupants
+     // (+0x688) / FiringOccupantIndex (+0x69C). Inert; NOT read by world_hash.
+     std::vector<int> occupants;      // unit indices, in entry order
+diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
+index 5b93b44..034f6ab 100644
+--- a/engine/building_combat.cpp
++++ b/engine/building_combat.cpp
+@@ -297,6 +297,7 @@ void World::step_building_combat(double dt) {
+             const Unit& v = units_[j];
+             if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0) return false;
+             if (!is_enemy(b.house, v.house) || disguise_fools(b.house, v)) return false;   // W7-01-02
++            if (t.mc_capacity > 0 && !tower_mc_ok(bi, j)) return false;   // Psychic Tower: only what it can take
+             // W2-AN-13/14: base defenses are NavalTargeting=0 (UNDERWATER_NEVER).
+             if (v.an.submerged) return false;
+             if (rocket_on_launcher(v)) return false;   // W4: not yet in the air
+@@ -471,6 +472,11 @@ void World::step_building_combat(double dt) {
+         b.def_fire_flash = kFireFlashSecs;
+         b.def_slot = slot;
+         fire_events_.push_back({-1, bi, b.def_target, -1, slot, w.id});
++        if (t.mc_capacity > 0) {   // Psychic Tower: the Controller shot takes control, no damage
++            tower_capture(bi, b.def_target);
++            b.def_target = -1;
++            continue;
++        }
+         if (projectiles_enabled_ && w.proj.flies()) {
+             launch_defense_projectile(bi, b.def_target, slot);
+             continue;
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 19f784a..42b0646 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1095,6 +1095,7 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
+     io(ar, v.fw); io(ar, v.fh);
+     io(ar, v.strength);
+     io(ar, v.build_limit);   // v64: BuildLimit=
++    io(ar, v.mc_capacity); io(ar, v.mc_infinite);   // v65: Psychic Tower
+     io(ar, v.armor_ix);
+     io(ar, v.cost);
+     io(ar, v.charge);
+@@ -1389,6 +1390,7 @@ template <class Ar> void fields(Ar& ar, Building& v) {
+     io(ar, v.def_fire_flash);
+     io(ar, v.def_offline);
+     io(ar, v.gatt_timer);   // Rallypoint: IsGattling
++    io(ar, v.mc_victims);   // v65: Psychic Tower
+     // G16 garrison
+     io(ar, v.occupants);
+     io(ar, v.firing_occupant);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 3ac6aaa..d17b85a 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 64;   // 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 65;   // 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 1e9d457..2c953f3 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -234,6 +234,13 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
+     d.weapon[0] = tw.slot[0];
+     d.weapon[1] = tw.slot[1];
+     d.armed = tw.slot[0].valid && tw.slot[0].range > 0.0 && tw.slot[0].damage != 0;
++    // Rallypoint: a structure whose primary warhead has MindControl=yes (Yuri's Psychic Tower)
++    // takes control of Damage= units instead of hurting them.
++    if (tw.slot[0].valid &&
++        rules.section_flag(rules.section_string(tw.slot[0].id, "Warhead", ""), "MindControl", false)) {
++        d.mc_capacity = std::max(1, om::ftol(rules.section_double(tw.slot[0].id, "Damage", 1.0)));
++        d.mc_infinite = rules.section_flag(tw.slot[0].id, "InfiniteMindControl", false);
++    }
+     d.powered = rules.section_flag(type_id, "Powered", false);
+     d.rot = rules.rot(type_id);
+     d.turret = rules.has_turret(type_id);
+diff --git a/engine/world.cpp b/engine/world.cpp
+index ee2135e..e14333a 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -5463,6 +5463,7 @@ bool World::ai_launch_unit_ready(int house, HouseAiRec& rec, QueueCat cat) {
+     const BuildingTypeDef& fdef = rec.cfg.roster[buildings_[fi].type];
+     const int uidx = launch_unit(fi, fdef, tc.unit_roster[uslot].combat);
+     if (uidx < 0) return false;  // exit blocked -> HOLD ready (retry next frame)
++    if (cat == QueueCat::Infantry) clone_infantry(house, tc.unit_roster[uslot].combat);   // Cloning Vats
+     // W7-01-03: the AI spy's invented enemy-colour look is gone -- every spy
+     // starts with its side's PermaDisguise (add_combat_unit).
+     if (!tc.unit_roster[uslot].combat.deploys_into.empty()) {   // W2-SK-07: unfold it
+diff --git a/engine/world.hpp b/engine/world.hpp
+index cd68910..cb7e5ab 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -2681,6 +2681,16 @@ public:
+     // Free CaptureManager slot without restoring mc_orig_house (Grinder kill /
+     // Bio Reactor absorb — unit stays under the controller's house).
+     void mc_free_keep_owner(int ctl, int vi);
++    // Rallypoint: Psychic Tower (a building with a MindControl primary). Its victims
++    // carry mc_controller = kTowerCtl + building index (>= 0, so every "already
++    // controlled" test still holds) and are listed in Building::mc_victims.
++    static constexpr int kTowerCtl = 1 << 24;
++    bool tower_mc_ok(int b_idx, int vi) const;
++    bool tower_capture(int b_idx, int vi);
++    void tower_release_all(int b_idx);
++    void step_tower_mind_control();
++    // Cloning Vats (Cloning=yes): a free copy of each infantry unit a barracks trains.
++    void clone_infantry(int house, const UnitCombat& c);
+     std::vector<std::pair<int, int>> mind_control_pairs() const;
+     // Yuri Grinder (Grinding=) / Bio Reactor (InfantryAbsorb=).
+     bool can_grind(int unit_idx, int b_idx) const;
+diff --git a/engine/world_econ.cpp b/engine/world_econ.cpp
+index 8add1a3..1e139cf 100644
+--- a/engine/world_econ.cpp
++++ b/engine/world_econ.cpp
+@@ -217,6 +217,21 @@ void World::step_player_econ(int house, double dt) {
+ // Exit handoff: each READY unit queue launches from its category's primary
+ // factory [RE: production.md §1.3, KickOutUnit FUN_00443BC0]; a HARV/CMIN
+ // becomes a working miner [RE: economy.md §1].
++// Cloning Vats (rulesmd Cloning=yes, YAClon/NACLON): every infantry unit the house's
++// barracks trains is copied for free at the vats, which stand idle and owned.
++void World::clone_infantry(int house, const UnitCombat& c) {
++    for (std::size_t i = 0; i < buildings_.size(); ++i) {
++        const Building& b = buildings_[i];
++        if (!b.alive || b.house != house || b.state != Building::State::Idle || b.selling) continue;
++        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
++        const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(b.type)];
++        if (!t.w5.cloning) continue;
++        const BuildingTypeDef def = t;   // launch_unit may grow the unit list, not the roster
++        launch_unit(static_cast<int>(i), def, c);
++        return;
++    }
++}
++
+ void World::econ_launch_ready_units(int house) {
+     HouseEcon& e = econ_[static_cast<std::size_t>(house)];
+     const PlayerEconRules& r = econ_rules_[static_cast<std::size_t>(house)];
+@@ -236,6 +251,7 @@ void World::econ_launch_ready_units(int house) {
+         const BuildingTypeDef fdef = btypes()[static_cast<std::size_t>(ft)];
+         const int uidx = launch_unit(fi, fdef, ud.combat);
+         if (uidx >= 0) {
++            if (cat == QueueCat::Infantry) clone_infantry(house, ud.combat);   // Cloning Vats
+             if (ud.harvester) make_harvester(uidx, ud.chrono_miner, ud.storage > 0 ? ud.storage : 20);
+             if (!ud.enslaves.empty() && ud.slaves_number > 0)
+                 make_slave_master(uidx, ud.slaves_number, ud.slave_regen_rate,
+diff --git a/engine/world_mind_control.cpp b/engine/world_mind_control.cpp
+index bf2957a..397eb71 100644
+--- a/engine/world_mind_control.cpp
++++ b/engine/world_mind_control.cpp
+@@ -79,8 +79,77 @@ bool World::mc_capture(int ctl, int vi) {
+     return true;
+ }
+ 
++// --- Psychic Tower (Rallypoint) ------------------------------------------------
++bool World::tower_mc_ok(int bi, int vi) const {
++    if (campaign_mind_control_) return false;   // the campaign poll only knows unit controllers
++    if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return false;
++    if (vi < 0 || vi >= static_cast<int>(units_.size())) return false;
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    const Unit& v = units_[static_cast<std::size_t>(vi)];
++    if (!b.alive || b.state == Building::State::Dead || b.type < 0 ||
++        b.type >= static_cast<int>(btypes().size()))
++        return false;
++    const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(b.type)];
++    if (t.mc_capacity <= 0 || !mc_live(v) || mc_boarded(v) || v.house == b.house || v.is_aircraft) return false;
++    if (!psionic_target_ok(vi) || v.an.iron_left_frames > 0 || v.w7.mc_controller >= 0) return false;
++    return t.mc_infinite || static_cast<int>(b.mc_victims.size()) < t.mc_capacity;
++}
++
++bool World::tower_capture(int bi, int vi) {
++    if (!tower_mc_ok(bi, vi)) return false;
++    Building& b = buildings_[static_cast<std::size_t>(bi)];
++    Unit& v = units_[static_cast<std::size_t>(vi)];
++    if (v.w7.mc_orig_house < 0) v.w7.mc_orig_house = v.house;
++    set_unit_owner(vi, b.house);
++    v.w7.mc_controller = kTowerCtl + bi;
++    b.mc_victims.push_back(vi);
++    return true;
++}
++
++void World::tower_release_all(int bi) {
++    Building& b = buildings_[static_cast<std::size_t>(bi)];
++    const std::vector<int> vv = b.mc_victims;
++    b.mc_victims.clear();
++    for (int vi : vv) {
++        if (vi < 0 || vi >= static_cast<int>(units_.size())) continue;
++        Unit& vu = units_[static_cast<std::size_t>(vi)];
++        if (vu.w7.mc_controller != kTowerCtl + bi) continue;
++        vu.w7.mc_controller = -1;
++        const int orig = vu.w7.mc_orig_house;
++        vu.w7.mc_orig_house = -1;
++        if (orig >= 0 && mc_live(vu)) set_unit_owner(vi, orig);
++    }
++}
++
++void World::step_tower_mind_control() {
++    for (std::size_t i = 0; i < buildings_.size(); ++i) {
++        Building& b = buildings_[i];
++        if (b.mc_victims.empty()) continue;
++        const int bi = static_cast<int>(i);
++        // A dead, captured, sold or powered-down tower lets everyone go.
++        if (!b.alive || b.state == Building::State::Dead || b.def_offline || b.power_off) {
++            tower_release_all(bi);
++            continue;
++        }
++        auto& lst = b.mc_victims;
++        for (std::size_t k = 0; k < lst.size();) {
++            const int vi = lst[k];
++            bool drop = vi < 0 || vi >= static_cast<int>(units_.size());
++            if (!drop) {
++                Unit& vu = units_[static_cast<std::size_t>(vi)];
++                if (vu.w7.mc_controller != kTowerCtl + bi) drop = true;      // someone else holds it now
++                else if (!mc_live(vu)) { vu.w7.mc_controller = -1; vu.w7.mc_orig_house = -1; drop = true; }
++                else if (mc_boarded(vu)) { vu.w7.mc_controller = -1; vu.w7.mc_orig_house = -1; drop = true; }   // absorbed: keeps the owner
++            }
++            if (drop) lst.erase(lst.begin() + static_cast<std::ptrdiff_t>(k));
++            else ++k;
++        }
++    }
++}
++
+ void World::step_mind_control() {
+     if (campaign_mind_control_) return;
++    step_tower_mind_control();
+     for (std::size_t i = 0; i < units_.size(); ++i) {
+         Unit& u = units_[i];
+         const int ci = static_cast<int>(i);
+diff --git a/tests/test_yuri_roster.cpp b/tests/test_yuri_roster.cpp
+new file mode 100644
+index 0000000..9a04ff7
+--- /dev/null
++++ b/tests/test_yuri_roster.cpp
+@@ -0,0 +1,115 @@
++// Rallypoint: Yuri roster and structures (Psychic Tower mind control, Cloning Vats).
++// Synthetic values only (no game data).
++#include "doctest.h"
++
++#include "asset_fixture.hpp"
++#include "world.hpp"
++
++using namespace ra2engine;
++
++namespace {
++
++WeaponSlot controller_weapon() {   // [MultipleMindControlTower], warhead [Controller]
++    WeaponSlot s;
++    s.valid = true;
++    s.id = "MultipleMindControlTower";
++    s.damage = 3;
++    s.rof = 100;
++    s.range = 7.0;
++    s.ag = true;
++    s.verses = std::vector<int>(11, 100);
++    return s;
++}
++
++BuildingTypeDef psychic_tower() {
++    BuildingTypeDef t;
++    t.id = "YAPSYT";
++    t.strength = 455;
++    t.weapon[0] = controller_weapon();
++    t.armed = true;
++    t.mc_capacity = 3;
++    return t;
++}
++
++UnitCombat gi() {
++    UnitCombat c;
++    c.image = "E1";
++    c.strength = 125;
++    c.armor = "none";
++    c.verses = std::vector<int>(11, 100);
++    return c;
++}
++
++int owned_by(const World& w, int house) {
++    int n = 0;
++    for (const Unit& u : w.units()) n += u.alive && u.house == house;
++    return n;
++}
++
++}  // namespace
++
++TEST_CASE("yuri: a Psychic Tower takes three units without hurting them, then lets go") {
++    ra2assets::MapFile map;
++    World w(map);
++    w.set_building_types({psychic_tower()});
++    w.add_building(0, 2, 2, 1, 1, 0, 455, 0, 0.0, /*instant=*/true);
++    for (int i = 0; i < 4; ++i) w.add_combat_unit(5 + i % 2, 2 + i / 2, 1, gi());
++    for (int f = 0; f < 600; ++f) w.step(1.0 / 15.0);
++    CHECK(owned_by(w, 0) == 3);   // capacity = the weapon's Damage=
++    CHECK(owned_by(w, 1) == 1);
++    for (const Unit& u : w.units()) CHECK(u.hp == 125);
++    CHECK(w.buildings()[0].mc_victims.size() == 3);
++
++    w.buildings()[0].alive = false;   // the tower is destroyed
++    w.step(1.0 / 15.0);
++    CHECK(owned_by(w, 1) == 4);
++    CHECK(w.buildings()[0].mc_victims.empty());
++}
++
++TEST_CASE("yuri: a Psychic Tower refuses ImmuneToPsionics units, aircraft and its own side") {
++    ra2assets::MapFile map;
++    World w(map);
++    w.set_building_types({psychic_tower()});
++    w.add_building(0, 2, 2, 1, 1, 0, 455, 0, 0.0, /*instant=*/true);
++    w.add_combat_unit(5, 2, 1, gi());
++    w.add_combat_unit(5, 3, 1, gi());
++    w.add_combat_unit(6, 2, 0, gi());
++    w.units()[1].tg.t.immune_psionics = true;
++    CHECK(w.tower_mc_ok(0, 0));
++    CHECK_FALSE(w.tower_mc_ok(0, 1));   // ImmuneToPsionics
++    CHECK_FALSE(w.tower_mc_ok(0, 2));   // already the tower's house
++    CHECK(w.tower_capture(0, 0));
++    CHECK_FALSE(w.tower_mc_ok(0, 0));   // no stealing a controlled unit
++    CHECK(w.units()[0].house == 0);
++    CHECK(w.units()[0].w7.mc_orig_house == 1);
++}
++
++TEST_CASE("yuri: Cloning Vats copy each infantry unit trained, only while they stand") {
++    if (!ra2fixture::mapsmd03_available()) { MESSAGE("skipped: real map assets not found"); return; }
++    World w(ra2fixture::mapsmd03_map());
++    int x = 0, y = 0;
++    for (int yy = 4; yy + 6 < w.grid_h() && x == 0; ++yy)
++        for (int xx = 4; xx + 6 < w.grid_w() && x == 0; ++xx) {
++            bool ok = true;
++            for (int dy = -2; dy <= 2; ++dy)
++                for (int dx = -2; dx <= 2; ++dx) ok = ok && w.walkable(xx + dx, yy + dy);
++            if (ok) { x = xx; y = yy; }
++        }
++    REQUIRE(x > 0);
++    BuildingTypeDef vats;
++    vats.id = "NACLON";
++    vats.strength = 1000;
++    vats.w5.cloning = true;
++    w.set_building_types({vats});
++    w.add_building(0, x, y, 1, 1, 0, 1000, 0, 0.0, /*instant=*/true);
++    const std::size_t before = w.units().size();
++    w.clone_infantry(0, gi());
++    REQUIRE(w.units().size() == before + 1);
++    CHECK(w.units().back().house == 0);
++    CHECK(w.units().back().image == "E1");
++    w.clone_infantry(1, gi());   // another house has no vats
++    CHECK(w.units().size() == before + 1);
++    w.buildings()[0].alive = false;
++    w.clone_infantry(0, gi());
++    CHECK(w.units().size() == before + 1);
++}

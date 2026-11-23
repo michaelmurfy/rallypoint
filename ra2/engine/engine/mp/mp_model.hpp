@@ -71,6 +71,13 @@ struct MpOptions {
     bool mcv_repacks = true;
     bool crates = true;
     int tech_level = 10;
+    // Rallypoint --launch: -1 = use the GameMode's AlliesAllowed; 0/1 override mid-game alliances.
+    int allies_allowed = -1;
+    // Rallypoint --launch AutoRepair= / CrateMinimum= (CnCNet Game Options ideas).
+    int auto_repair = -1;         // -1 leave rules; 1 = [IQ] RepairSell=0
+    int crate_minimum = -1;       // -1 leave [CrateRules]; else floor count
+    // [RP-AI-BOOST] Rallypoint --launch AIBoost= (0..3); -1 = env / off.
+    int ai_boost = -1;
     // NET-PLAY (clone extensions, 05-transport-infra.md §6.3 / §7):
     bool ai_takeover = false;      // a player who leaves / drops: an AI takes the house over (else defeated)
     bool cross_platform = false;   // "Cross-platform (experimental)": admit Windows + Android peers

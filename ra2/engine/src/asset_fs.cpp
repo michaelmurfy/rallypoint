@@ -23,7 +23,7 @@ std::string lower(std::string s) {
 //   FUN_0051a2b0 (scenario start):       NEUTRAL
 // then the YR tail [RE-FALLBACK], in gamemd's relative order (FUN_005301a0 +
 // its Init_Theater "%sMD.MIX"): md patches, CACHEMD, LOCALMD, CONQMD, GENERMD,
-// ISOGENMD, CAMEOMD, then the theater md overlays.
+// ISOGENMD, CAMEOMD (from langmd.mix), then the theater md overlays.
 std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
                                              const std::vector<std::string>& patch_tops) {
     const TheaterChain* c = chain ? chain : theater_chain("TEMPERATE");
@@ -44,6 +44,11 @@ std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
     for (const std::string& p : patch_tops)
         if (lower(p).rfind("ecache", 0) == 0 || lower(p).rfind("elocal", 0) == 0) top(p);
     ra2("conquer.mix");
+    // CAMEO is nested in language.mix (stock RA2), same as CAMEOMD in langmd.
+    // Without it AssetFS misses XXICON/FIXICON/GIICON and every RA2 cameo;
+    // sidebar loaders had to open language/cameo by hand, and blank-Cameo
+    // fallbacks to XXICON could not go through the global list.
+    out.push_back({"language.mix", "cameo.mix"});
     if (!snow) ra2("generic.mix");
     ra2(c->art_mix);                                   // TEMPERAT / SNOW / URBAN
     ra2(std::string(c->ext) + ".mix");                 // TEM / SNO / URB
@@ -65,7 +70,9 @@ std::vector<AssetMixSpec> asset_search_order(const TheaterChain* chain,
     md("conqmd.mix");
     md("genermd.mix");
     md("isogenmd.mix");
-    md("cameomd.mix");
+    // CAMEOMD lives in langmd.mix (stock YR), not ra2md.mix. Looking under
+    // ra2md left every Yuri sidebar icon (YCONICON, YPWRICON, ...) absent.
+    out.push_back({"langmd.mix", "cameomd.mix"});
     // Theater md overlays: "%sMD.MIX" over the theater names.
     const std::string an = lower(c->art_mix);          // "temperat.mix"
     md(an.substr(0, an.size() - 4) + "md.mix");        // temperatmd.mix / snowmd.mix / urbanmd.mix

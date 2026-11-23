@@ -121,3 +121,42 @@ TEST_CASE("inf_anim: idle timer lies in [freq*450, freq*1800] ticks") {
         CHECK(s.idle_timer <= static_cast<int>(0.15 * 1800.0));
     }
 }
+
+TEST_CASE("inf_anim: deploy then undeploy reaches Ready") {
+    InfTable t = gi_table();
+    InfAnimState s;
+    InfTickCtx c;
+    int facing = 0;
+    inf_anim_tick(s, t, facing, c);
+    c.deployed = true;
+    inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqDeploy);
+    // Deploy is non-interruptible, rate 1, 15 frames.
+    for (int i = 0; i < 20; ++i) inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqDeployed);
+    c.deployed = false;
+    inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqUndeploy);
+    for (int i = 0; i < 10; ++i) inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqReady);
+}
+
+TEST_CASE("inf_anim: Undeploy is not stolen by Walk") {
+    InfTable t = gi_table();
+    InfAnimState s;
+    InfTickCtx c;
+    int facing = 0;
+    inf_anim_tick(s, t, facing, c);
+    c.deployed = true;
+    for (int i = 0; i < 20; ++i) inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqDeployed);
+    c.deployed = false;
+    c.moving = true;
+    inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqUndeploy);   // edge starts Undeploy, not Crawl/Walk
+    // Undeploy rate=1, count=2: start tick holds stage 0, next advances to end.
+    inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqUndeploy);
+    inf_anim_tick(s, t, facing, c);
+    CHECK(s.seq == kSqWalk);       // finished while moving -> Walk
+}

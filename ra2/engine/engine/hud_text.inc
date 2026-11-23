@@ -225,9 +225,11 @@ std::string cameo_tooltip_text(const std::string& ui_name, int cost) {
 }
 
 // W5-PRES: game-font text in one RGB colour (every non-zero glyph pixel white,
-// tinted by a texture colour mod) -- the credits tally's side colour.
+// tinted by a texture colour mod) -- the credits tally's side colour. `scale`
+// enlarges glyphs with nearest-neighbour sampling (integer steps only).
 inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2assets::Font& font,
-                        const std::string& s, int x, int y, Uint8 r, Uint8 g, Uint8 b) {
+                        const std::string& s, int x, int y, Uint8 r, Uint8 g, Uint8 b, int scale = 1) {
+    if (scale < 1) scale = 1;
     static ra2assets::Palette white{};
     static bool ok = false;
     if (!ok) {
@@ -243,14 +245,17 @@ inline int hud_text_rgb(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra
             if (gl.w > 0 && gl.h > 0) {
                 const std::string key = "fntw:" + std::to_string((int)ch);
                 SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
-                if (!tex) tex = static_cast<SDL_Texture*>(tc.get(key, gl.pixels.data(), gl.w, gl.h, white));
-                const SDL_Rect dst{cx, y, gl.w, gl.h};
+                if (!tex) {
+                    tex = static_cast<SDL_Texture*>(tc.get(key, gl.pixels.data(), gl.w, gl.h, white));
+                    if (tex) SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+                }
+                const SDL_Rect dst{cx, y, gl.w * scale, gl.h * scale};
                 SDL_SetTextureColorMod(tex, r, g, b);
                 SDL_RenderCopy(ren, tex, nullptr, &dst);
                 SDL_SetTextureColorMod(tex, 255, 255, 255);
             }
         }
-        cx += w > 0 ? w : font.height() / 2;
+        cx += (w > 0 ? w : font.height() / 2) * scale;
     }
     return cx - x;
 }

@@ -1,0 +1,239 @@
+diff --git a/engine/app_robust.inc b/engine/app_robust.inc
+index dd2aa94..40e2885 100644
+--- a/engine/app_robust.inc
++++ b/engine/app_robust.inc
+@@ -253,6 +253,9 @@ double window_px_per_dp() {
+     return (ddpi / 160.0) / phys_per_win;
+ }
+ 
++// The edge-scroll band in canvas pixels for the current window scale.
++int scroll_edge_band() { return ra2engine::edge_scroll_band(g_platform ? g_platform->present_fit() : 1.0); }
++
+ // A first scene that immediately hands over to `n` (typically a
+ // DeferredScene, so even the first game of a run gets the loading screen).
+ struct BootScene : Scene {
+diff --git a/engine/logical_canvas.hpp b/engine/logical_canvas.hpp
+index 336087b..a661bde 100644
+--- a/engine/logical_canvas.hpp
++++ b/engine/logical_canvas.hpp
+@@ -90,4 +90,37 @@ inline int zoom_keep_point(int cam, int anchor, double z_old, double z_new) {
+     return cam + static_cast<int>(std::lround(anchor / z_new - anchor / z_old));
+ }
+ 
++
++// A pointer reported in canvas coordinates can lie in the letterbox bars (SDL
++// maps the whole window, so a bar is x < 0 or x >= w). The software cursor and
++// the edge scroll live on the canvas: keep the pointer on it, as cnc-ddraw
++// does by clipping the cursor to the game area.
++inline int clamp_pointer(int v, int size) {
++    return size <= 0 ? v : std::max(0, std::min(size - 1, v));
++}
++
++// The edge-scroll band in canvas pixels: 24 screen pixels (the 1:1 band of a
++// 1080p window), so at 2 or 3 screen pixels per canvas pixel it does not grow
++// to 48 or 72 screen pixels of dead map. At most 24 canvas pixels (a window
++// smaller than the canvas), at least 8.
++inline int edge_scroll_band(double fit) {
++    const double f = fit > 0.0 ? fit : 1.0;
++    return std::max(8, std::min(24, static_cast<int>(std::lround(24.0 / f))));
++}
++
++// First window size on a display that scales its UI (Windows 125-300%): the
++// per-monitor-DPI-aware window is real pixels, so a 1280x720 request would
++// shrink to 1280/scale device-independent points. Scale by the display DPI in
++// quarter steps (96 dpi = 1), and keep the window inside 90% of the display.
++// ddpi <= 0 (unknown) or an explicit size from the caller: unchanged.
++inline void scaled_window_size(int w, int h, double ddpi, int display_w, int display_h, int& out_w, int& out_h) {
++    double s = ddpi > 0.0 ? std::round(ddpi / 96.0 * 4.0) / 4.0 : 1.0;
++    s = std::max(1.0, std::min(4.0, s));
++    if (display_w > 0) s = std::min(s, display_w * 0.9 / w);
++    if (display_h > 0) s = std::min(s, display_h * 0.9 / h);
++    s = std::max(1.0, s);
++    out_w = static_cast<int>(std::lround(w * s));
++    out_h = static_cast<int>(std::lround(h * s));
++}
++
+ }  // namespace ra2engine
+diff --git a/engine/main.cpp b/engine/main.cpp
+index c68601e..4c9f2a8 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -7175,7 +7175,7 @@ public:
+         // G0/G-71: the pointer position comes from the event stream
+         // (track_pointer), and only a real MOUSE edge-scrolls -- a lifted
+         // finger leaves no pointer at the edge, so touch never scrolls forever.
+-        const int kEdge = 24;   // window-edge scroll band (true screen edge, incl. sidebar)
++        const int kEdge = scroll_edge_band();   // window-edge scroll band (true screen edge, incl. sidebar), ~24 screen px
+         if (mouse_present_) {
+             if (mx_ <= kEdge) dir_x += 1;
+             else if (mx_ >= kWinW - kEdge) dir_x -= 1;
+diff --git a/engine/platform.cpp b/engine/platform.cpp
+index 4c586dd..144b64d 100644
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -58,6 +58,15 @@ struct Platform::Impl {
+         if (foreground_at && SDL_GetTicks() - foreground_at < 1000) return true;
+         return motion_no_buttons && x == 0 && y == 0;
+     }
++    // Fullscreen with the focus: keep the pointer in the window, so edge
++    // scrolling does not leave onto a second monitor (cnc-ddraw locks the
++    // cursor too). Windowed play and a lost focus release it.
++    void update_grab() const {
++#ifndef __ANDROID__
++        const Uint32 f = SDL_GetWindowFlags(window);
++        SDL_SetWindowMouseGrab(window, ((f & SDL_WINDOW_FULLSCREEN_DESKTOP) && (f & SDL_WINDOW_INPUT_FOCUS)) ? SDL_TRUE : SDL_FALSE);
++#endif
++    }
+     // W9-04-06: the tap / drag slop is Android's touch slop, 8 dp, in the
+     // window (logical) pixels the fingers are reported in -- 12 px was ~4.6
+     // dp on a 420-dpi phone, so a rolling fingertip turned taps into
+@@ -119,10 +128,24 @@ Platform Platform::create(const char* title, int w, int h, bool hidden) {
+ #endif
+     if (!hidden && g_launch_fs == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+     if (!hidden && g_launch_w > 0) flags |= SDL_WINDOW_RESIZABLE;
++    int win_w = !hidden && g_launch_w > 0 ? g_launch_w : w, win_h = !hidden && g_launch_h > 0 ? g_launch_h : h;
++#ifdef _WIN32
++    // A per-monitor-DPI-aware window is real pixels: without a size from the
++    // launcher, a 150% display would get a window 2/3 the size it had when
++    // Windows stretched it. (macOS / Wayland windows are in points already.)
++    if (!hidden && g_launch_w <= 0) {
++        float ddpi = 0.0f;
++        SDL_Rect db{0, 0, 0, 0};
++        if (SDL_GetDisplayDPI(0, &ddpi, nullptr, nullptr) == 0 && ddpi > 0.0f) {
++            SDL_GetDisplayBounds(0, &db);
++            scaled_window_size(w, h, ddpi, db.w, db.h, win_w, win_h);
++        }
++    }
++#endif
+     SDL_Window* window = SDL_CreateWindow(
+         title,
+         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+-        !hidden && g_launch_w > 0 ? g_launch_w : w, !hidden && g_launch_h > 0 ? g_launch_h : h,
++        win_w, win_h,
+         flags);
+     if (!window) {
+         std::string err = SDL_GetError();
+@@ -201,6 +224,7 @@ bool Platform::set_window_size(int w, int h) {
+ void Platform::set_fullscreen(bool on) {
+     if (!p_) return;
+     SDL_SetWindowFullscreen(p_->window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
++    p_->update_grab();
+ }
+ 
+ void Platform::set_logical_size(int w, int h) {
+@@ -362,13 +386,18 @@ bool Platform::poll(InputEvent& ev) {
+             break;
+         case SDL_WINDOWEVENT:
+             // R-162: foldables, split screen, a resized desktop window.
+-            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
++            // A window dragged to a monitor with another scale keeps its size in
++            // points but not its pixels: the canvas is re-fitted for it too.
++            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED) {
+                 p_->update_slop();
+                 ev.kind = InputEvent::Resize;
+-                ev.x = e.window.data1;
+-                ev.y = e.window.data2;
++                SDL_GetWindowSize(p_->window, &ev.x, &ev.y);
+             } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
++                p_->update_grab();
+                 ev.kind = InputEvent::FocusGained;
++            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
++                SDL_SetWindowMouseGrab(p_->window, SDL_FALSE);
++                ev.kind = InputEvent::None;
+             } else {
+                 ev.kind = InputEvent::None;
+             }
+@@ -384,8 +413,8 @@ bool Platform::poll(InputEvent& ev) {
+             if (notches == 0) { ev.kind = InputEvent::None; break; }
+             ev.kind = InputEvent::Wheel;
+             ev.dy = notches;
+-            ev.x = e.wheel.mouseX;
+-            ev.y = e.wheel.mouseY;
++            ev.x = clamp_pointer(e.wheel.mouseX, p_->w);
++            ev.y = clamp_pointer(e.wheel.mouseY, p_->h);
+             break;
+         }
+         case SDL_TEXTINPUT:
+@@ -397,8 +426,8 @@ bool Platform::poll(InputEvent& ev) {
+             if (p_->drop_mouse(e.button.x, e.button.y, false)) break;   // W9-04-04
+             p_->last_touch = false;
+             ev.kind = InputEvent::PointerDown;
+-            ev.x = e.button.x;
+-            ev.y = e.button.y;
++            ev.x = clamp_pointer(e.button.x, p_->w);
++            ev.y = clamp_pointer(e.button.y, p_->h);
+             ev.button = (e.button.button == SDL_BUTTON_RIGHT) ? InputEvent::Right
+                                                               : InputEvent::Left;
+             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+@@ -410,8 +439,8 @@ bool Platform::poll(InputEvent& ev) {
+             if (e.button.which == SDL_TOUCH_MOUSEID) break;
+             if (p_->drop_mouse(e.button.x, e.button.y, false)) break;   // W9-04-04
+             ev.kind = InputEvent::PointerUp;
+-            ev.x = e.button.x;
+-            ev.y = e.button.y;
++            ev.x = clamp_pointer(e.button.x, p_->w);
++            ev.y = clamp_pointer(e.button.y, p_->h);
+             ev.button = (e.button.button == SDL_BUTTON_RIGHT) ? InputEvent::Right
+                                                               : InputEvent::Left;
+             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+@@ -424,8 +453,8 @@ bool Platform::poll(InputEvent& ev) {
+             if (p_->drop_mouse(e.motion.x, e.motion.y, e.motion.state == 0)) break;   // W9-04-04
+             p_->last_touch = false;
+             ev.kind = InputEvent::PointerMove;
+-            ev.x = e.motion.x;
+-            ev.y = e.motion.y;
++            ev.x = clamp_pointer(e.motion.x, p_->w);
++            ev.y = clamp_pointer(e.motion.y, p_->h);
+             ev.t_ms = e.motion.timestamp;
+             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+             ev.ctrl = (SDL_GetModState() & KMOD_CTRL) != 0;
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index 5487868..b5df12e 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -377,7 +377,7 @@ private:
+     int probe_cursor(const ra2engine::World& w, const ra2engine::Input& in, int cmx, int cmy,
+                      bool over_sidebar, int view_w, int win_w, int win_h) const {
+         const int mx = ra2engine::zoom_to_view(cmx, zoom_), my = ra2engine::zoom_to_view(cmy, zoom_);
+-        constexpr int kEdge = 24;   // GameScene's edge-scroll band
++        const int kEdge = scroll_edge_band();   // GameScene's edge-scroll band
+         int dx = (cmx >= win_w - kEdge) - (cmx <= kEdge), dy = (cmy >= win_h - kEdge) - (cmy <= kEdge);
+         if (dx || dy) {
+             static const int dir[3][3] = {{7, 0, 1}, {6, -1, 2}, {5, 4, 3}};   // [dy+1][dx+1]
+diff --git a/tests/test_logical_canvas.cpp b/tests/test_logical_canvas.cpp
+index b2b2b8d..1194708 100644
+--- a/tests/test_logical_canvas.cpp
++++ b/tests/test_logical_canvas.cpp
+@@ -96,3 +96,32 @@ TEST_CASE("tactical zoom coordinates") {
+     // zoom in again returns to the same camera
+     CHECK(zoom_keep_point(cam2, ax, z1, z0) == cam);
+ }
++
++TEST_CASE("pointer is kept on the canvas, edge band is 24 screen pixels") {
++    CHECK(clamp_pointer(-5, 1280) == 0);
++    CHECK(clamp_pointer(1280, 1280) == 1279);
++    CHECK(clamp_pointer(640, 1280) == 640);
++    CHECK(clamp_pointer(7, 0) == 7);
++    CHECK(edge_scroll_band(1.0) == 24);
++    CHECK(edge_scroll_band(2.0) == 12);
++    CHECK(edge_scroll_band(3.0) == 8);
++    CHECK(edge_scroll_band(1.5) == 16);
++    CHECK(edge_scroll_band(0.5) == 24);   // window smaller than the canvas
++    CHECK(edge_scroll_band(0.0) == 24);
++}
++
++TEST_CASE("first window size follows the display scale, inside the display") {
++    int w = 0, h = 0;
++    scaled_window_size(1280, 720, 96.0, 1920, 1080, w, h);   // 100%
++    CHECK((w == 1280 && h == 720));
++    scaled_window_size(1280, 720, 144.0, 3840, 2160, w, h);  // 150% on 4K
++    CHECK((w == 1920 && h == 1080));
++    scaled_window_size(1280, 720, 192.0, 3840, 2160, w, h);  // 200%
++    CHECK((w == 2560 && h == 1440));
++    scaled_window_size(1280, 720, 192.0, 2560, 1440, w, h);  // 200% on a 1440p panel: 90% of it
++    CHECK((w == 2304 && h == 1296));
++    scaled_window_size(1280, 720, 0.0, 1920, 1080, w, h);    // unknown DPI
++    CHECK((w == 1280 && h == 720));
++    scaled_window_size(1280, 720, 96.0, 1024, 600, w, h);    // never below the request
++    CHECK((w == 1280 && h == 720));
++}

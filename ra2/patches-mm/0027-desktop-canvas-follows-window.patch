@@ -1,0 +1,196 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 53278d5..ffe9bf2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -333,6 +333,7 @@ target_sources(ra2assets_tests PRIVATE engine/rectfont.cpp)
+ # OptionsClass defaults/clamps/save list, slider/trackbar math, the recovered
+ # edge-scroll table) [RE: docs/re/options.md]. SDL-free; main.cpp owns the UI.
+ target_sources(ra2assets_tests PRIVATE tests/test_settings.cpp engine/settings.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_logical_canvas.cpp)
+ # G0 --play harness: the pure script parser / assertion evaluator / play_hash.
+ target_sources(ra2assets_tests PRIVATE tests/test_play_script.cpp engine/play_script.cpp)
+ # P7 Save/Load [RE: docs/re/saveload.md]: the archive core, field visitors,
+diff --git a/engine/app_robust.inc b/engine/app_robust.inc
+index b17e092..e3824ba 100644
+--- a/engine/app_robust.inc
++++ b/engine/app_robust.inc
+@@ -17,13 +17,17 @@ bool g_session_no_audio = false;
+ // Scene::logical_width()) and the Platform it drives.
+ int g_ui_w = 1280, g_ui_h = 720;
+ ra2engine::Platform* g_platform = nullptr;
+-// The game canvas for the panel: H = 720 on desktop; on Android (touch) the
+-// height that makes one canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi
+-// phone -> ~548, clamped 520..720 -- tablets keep 720; it was 0.85 dp / 484
+-// px, which showed only 42% of the desktop's map area), so the sidebar's
+-// 60x48 cameos stay ~45x36 dp. W = H * aspect, at least 16:9 (narrower panels
+-// letterbox, as before) and at most ~21:9: a 20:9 phone gets the extra width
+-// as more map. 1280x720 under --play (hidden 1280x720 window).
++// The game canvas for the panel. On Android (touch) the height makes one
++// canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi phone -> ~548, clamped
++// 520..720 -- tablets keep 720; it was 0.85 dp / 484 px, which showed only
++// 42% of the desktop's map area), so the sidebar's 60x48 cameos stay ~45x36
++// dp. On desktop the height follows the window's pixel height (720 floor,
++// 1440 cap): --width/--height, RA2.INI [Video] ScreenWidth/ScreenHeight and
++// the Options resolution all size that window, so 1920x1080 is a 1080-line
++// tactical view, not a magnified 720. W = H * aspect, at least 16:9 (narrower
++// panels letterbox) and at most ~21:9. Menus stay 1280x720 (Scene's own
++// logical size). --play `set canvas` wins; otherwise a hidden 1280x720
++// harness window stays 1280x720.
+ void game_logical_size(int& out_w, int& out_h) {
+     out_w = 1280;
+     out_h = 720;
+@@ -44,10 +48,10 @@ void game_logical_size(int& out_w, int& out_h) {
+         lh = static_cast<int>(std::lround(h / (0.75 * px_per_dp)));
+         lh = std::max(520, std::min(720, lh)) & ~1;
+     }
++#else
++    lh = ra2engine::desktop_logical_height(h);
+ #endif
+-    const int lw = static_cast<int>(std::lround(static_cast<double>(lh) * w / h)) & ~1;
+-    out_h = lh;
+-    out_w = std::max(lh * 16 / 9, std::min(lh * 239 / 100, lw));
++    ra2engine::logical_size_for_height(lh, w, h, out_w, out_h);
+ }
+ bool g_interactive_session = false;   // run_menu: fatal errors also get a message box
+ #ifndef RA2_VERSION
+diff --git a/engine/logical_canvas.hpp b/engine/logical_canvas.hpp
+new file mode 100644
+index 0000000..81b2f37
+--- /dev/null
++++ b/engine/logical_canvas.hpp
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++
++namespace ra2engine {
++
++// Desktop tactical-view height from the window's pixel height. A bigger
++// window shows more of the map (the original grew with ScreenHeight) instead
++// of magnifying a 720-line picture. 720 is the floor so a small window keeps
++// today's canvas; 1440 is the cap so a 4K window does not draw 4K of sprites.
++inline int desktop_logical_height(int output_h) {
++    int lh = output_h;
++    if (lh < 720) lh = 720;
++    if (lh > 1440) lh = 1440;
++    return lh & ~1;
++}
++
++// Width is `lh` times the window's aspect, kept between 16:9 and ~21:9.
++// Narrower windows letterbox; wider ones gain map until the cap.
++inline void logical_size_for_height(int lh, int window_w, int window_h, int& out_w, int& out_h) {
++    const int lw = static_cast<int>(std::lround(static_cast<double>(lh) * window_w / window_h)) & ~1;
++    out_h = lh;
++    out_w = std::max(lh * 16 / 9, std::min(lh * 239 / 100, lw));
++}
++
++}  // namespace ra2engine
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 1e5fdcb..e1cae56 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -62,6 +62,7 @@ static char* ra2_cli_pref_path() {
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "logical_canvas.hpp"  // desktop canvas height (app_robust.inc, inside namespace {})
+ #include "audio_mixer.hpp"
+ #include "bridges.hpp"      // G16 (agent G): bridge overlay classes
+ #include "overlay_land.hpp"  // W8-03-02 / W8-03-01 (w8fix-place): overlay land + buildable grid
+@@ -5897,9 +5898,9 @@ struct Scene {
+     }
+     virtual void   probe(std::map<std::string, long long>& out) const { (void)out; }
+     virtual bool   cheat(const std::vector<std::string>& args) { (void)args; return false; }
+-    // W2-AR-06: the logical canvas width this scene lays out for (height is
+-    // always 720). The shell pages are fixed 1280 (the original's 800x600
+-    // shell, centred); GameScene widens with the panel's aspect.
++    // W2-AR-06: shell pages stay 1280x720 (the original's 800x600 shell,
++    // centred). GameScene widens with the panel's aspect and, on desktop,
++    // grows taller with the window (desktop_logical_height).
+     virtual int    logical_width() const                    { return 1280; }
+     virtual int    logical_height() const                   { return 720; }
+ };
+@@ -7867,16 +7868,16 @@ private:
+ #include "touch_bar.inc"              // W2-AR-07/-08/-16: touch command bar
+ #include "touch_ui.inc"               // W4-AM: touch router, mode banner, hold ring, hint
+     friend struct CombatProbe;   // gap owner C: --probe-combat drives the real scene
+-    // The window is always created at 1280x720 (see run_interactive); the sidebar
+-    // layout/camera/input all key off these, so the driver's plat matches.
+-    // W2-AR-06: the game canvas is 720 high and as wide as the panel's aspect
+-    // (1280 at 16:9 -- the --play harness / gates -- up to 1720 at ~21:9);
+-    // the original's tactical view grows with ScreenWidth and the sidebar
+-    // stays anchored right. Set by defer_game_scene before construction.
++    // Sidebar layout, camera and input key off these. defer_game_scene sets
++    // them from the window before construction; relayout_canvas updates them
++    // if the window changes mid-match.
++    // W2-AR-06: width follows the panel's aspect (1280 at 16:9 -- the --play
++    // harness / gates -- up to ~21:9). On desktop the height follows the
++    // window (720..1440) so a larger screen shows more map; the sidebar stays
++    // anchored right.
+     static inline int kWinW = 1280;
+-    // W2-AR-07: 720 on desktop; ~480 on a phone (touch canvas: every sidebar
+-    // button and cameo ~1.5x bigger, >= 40 dp) -- like the original running
+-    // at a low ScreenHeight.
++    // W2-AR-07: 720 until the first layout; ~480 on a phone (touch canvas:
++    // every sidebar button and cameo ~1.5x bigger, >= 40 dp).
+     static inline int kWinH = 720;
+     int logical_width() const override { return kWinW; }
+     int logical_height() const override { return kWinH; }
+diff --git a/tests/test_logical_canvas.cpp b/tests/test_logical_canvas.cpp
+new file mode 100644
+index 0000000..d9c49e8
+--- /dev/null
++++ b/tests/test_logical_canvas.cpp
+@@ -0,0 +1,34 @@
++#include "doctest.h"
++#include "../engine/logical_canvas.hpp"
++
++static void canvas(int ww, int wh, int& w, int& h) {
++    ra2engine::logical_size_for_height(ra2engine::desktop_logical_height(wh), ww, wh, w, h);
++}
++
++TEST_CASE("desktop logical canvas follows the window, 720..1440") {
++    int w = 0, h = 0;
++    canvas(800, 600, w, h);
++    CHECK(w == 1280);
++    CHECK(h == 720);
++    canvas(1280, 720, w, h);
++    CHECK(w == 1280);
++    CHECK(h == 720);
++    canvas(1600, 900, w, h);
++    CHECK(w == 1600);
++    CHECK(h == 900);
++    canvas(1920, 1080, w, h);
++    CHECK(w == 1920);
++    CHECK(h == 1080);
++    canvas(2560, 1440, w, h);
++    CHECK(w == 2560);
++    CHECK(h == 1440);
++    canvas(3840, 2160, w, h);
++    CHECK(w == 2560);
++    CHECK(h == 1440);
++    canvas(3440, 1440, w, h);
++    CHECK(w == 3440);
++    CHECK(h == 1440);
++    canvas(5120, 1440, w, h);
++    CHECK(w == 1440 * 239 / 100);
++    CHECK(h == 1440);
++}
+diff --git a/tests/test_sidebar.cpp b/tests/test_sidebar.cpp
+index 822347a..d771a5d 100644
+--- a/tests/test_sidebar.cpp
++++ b/tests/test_sidebar.cpp
+@@ -141,3 +141,12 @@ TEST_CASE("sidebar layout: G-12 strip scrolling by top_row") {
+     auto few = SidebarLayout::compute(1280, 720, {1, 2, 3}, 3);
+     CHECK(few.top_row == 0);
+ }
++
++TEST_CASE("sidebar layout: a taller canvas stays right-anchored and adds cameo rows") {
++    auto lay = SidebarLayout::compute(1920, 1080, {1, 2, 3});
++    CHECK(lay.bar.x == 1920 - 168);
++    CHECK(lay.bar.y == 0);
++    CHECK(lay.bar.w == 168);
++    CHECK(lay.bar.h == 1080);
++    CHECK(lay.side2_rows == (1080 - 234 - 26) / 50);
++}

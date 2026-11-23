@@ -1,3 +1,5 @@
+#include "present_motion.hpp"
+
 // pres_layers.inc -- W5-PRES R-100 / R-101: render layers for the real game.
 // Included by main.cpp after pres_map.inc (needs g_map_dressing).
 //
@@ -37,7 +39,9 @@ inline bool pres_on_high_deck(const ra2engine::World& w, const ra2engine::Unit& 
 
 // The unit's ground-layer sort key.
 inline double pres_unit_key(const ra2engine::World& w, const ra2engine::Unit& u) {
-    return u.fx + u.fy + (pres_on_high_deck(w, u) ? kPresOnDeckBias : 0.0);
+    double fx = u.fx, fy = u.fy;
+    ra2engine::present_cell(u, fx, fy);   // draw-only; unbound leaves fx/fy
+    return fx + fy + (pres_on_high_deck(w, u) ? kPresOnDeckBias : 0.0);
 }
 
 // Levels the draw position is raised by (bridge deck).

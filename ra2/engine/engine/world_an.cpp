@@ -26,7 +26,17 @@ constexpr double kFlyClimbLps = 100.0 * 15.0;   // [RE-FALLBACK roster2.md §C] 
 constexpr double kRocketDeckZ = 40.0;
 constexpr int kRocketMaxFrames = 1800;
 enum Sortie : int { kDocked = 0, kOutbound = 1, kMoveTo = 2, kReturn = 3, kLanding = 4, kParadrop = 5,
-                    kLoiter = 6 };   // W7-06-03: a launched spawn gathering by its owner
+                    kLoiter = 6,   // W7-06-03: a launched spawn gathering by its owner
+                    // [RE: Mission SpyplaneApproach=30 / SpyplaneOverfly=31]
+                    kSpyplaneApproach = 7, kSpyplaneOverfly = 8 };
+// Stock YR SpyCameraWeapon / SpyPlaneCameraFrames (rulesmd). Kept out of
+// SwParams so save format / sizeof(World) stay put; mods that retune these
+// keys are a follow-up.
+constexpr int kSpyCameraReveal = 6;     // [SpyCameraWeapon] Damage=
+constexpr int kSpyCameraRange = 20;     // [SpyCameraWeapon] Range= (cells)
+constexpr int kSpyCameraFrames = 16;    // [AudioVisual] SpyPlaneCameraFrames=
+constexpr int kSpyApproachLept = 0x300; // FUN_004155F0 @0x415700
+constexpr const char* kSpyPlaneType = "SPYP";
 bool live(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0; }
 double cdist(double ax, double ay, double bx, double by) { return om::hypot(ax - bx, ay - by); }
 }  // namespace
@@ -994,6 +1004,57 @@ void World::an_step_fixed_wing(double dt) {
                 }
                 break;
             }
+            case kSpyplaneApproach: {
+                // [RE: Mission_SpyplaneApproach FUN_004155F0]: fly to the
+                // target; inside SpyCameraWeapon Range= (cells) take photos;
+                // at <= 0x300 leptons switch to SpyplaneOverfly (push 0x1F).
+                goal_x = u.an.drop_x;
+                goal_y = u.an.drop_y;
+                fly = true;
+                {
+                    const double d_cells = cdist(u.fx, u.fy, goal_x, goal_y);
+                    const double d_lept = d_cells * kLept;
+                    if (d_cells <= static_cast<double>(kSpyCameraRange)) {
+                        if (u.an.para_timer > 0) --u.an.para_timer;
+                        if (u.an.para_timer <= 0 && u.an.ammo > 0) {
+                            an_spy_camera_shot(i);
+                            u.an.para_timer = kSpyCameraFrames;
+                        }
+                    }
+                    if (d_lept <= static_cast<double>(kSpyApproachLept)) {
+                        u.an.sortie = kSpyplaneOverfly;
+                        u.an.para_overfly = true;
+                    }
+                }
+                break;
+            }
+            case kSpyplaneOverfly: {
+                // [RE: Mission_SpyplaneOverfly FUN_004157C0]: keep photographing
+                // while Ammo remains and the target is still set; then leave
+                // over the far map edge (loaner Retreat), like a spent PDPLANE.
+                const bool shooting = u.an.ammo > 0 && u.an.drop_x >= 0;
+                goal_x = shooting ? u.an.drop_x : u.an.exit_x;
+                goal_y = shooting ? u.an.drop_y : u.an.exit_y;
+                fly = true;
+                if (shooting) {
+                    const double d_cells = cdist(u.fx, u.fy, goal_x, goal_y);
+                    if (d_cells <= static_cast<double>(kSpyCameraRange)) {
+                        if (u.an.para_timer > 0) --u.an.para_timer;
+                        if (u.an.para_timer <= 0 && u.an.ammo > 0) {
+                            an_spy_camera_shot(i);
+                            u.an.para_timer = kSpyCameraFrames;
+                        }
+                    }
+                    // Past the target with no ammo left: head for the exit.
+                    if (u.an.ammo <= 0) u.an.drop_x = u.an.drop_y = -1;
+                } else if (cdist(u.fx, u.fy, goal_x, goal_y) < 0.5) {
+                    units_[i].alive = false;
+                    units_[i].die_time = 1.0;
+                    units_[i].deployed_away = true;
+                    continue;
+                }
+                break;
+            }
             case kReturn:
                 if (!home_ok) {
                     // AirportBound=yes with no airfield (or a spawn whose carrier
@@ -1269,6 +1330,58 @@ void World::an_paradrop(int house, SuperweaponType type, int cx, int cy) {
         // the infantry type must be registered for an_spawn
         p.an.drop_left = 0;
     }
+}
+
+// -------------------------------------------------------------- spy plane --
+
+// [RE: SuperClass::Launch FUN_006CC390 case SpyPlane=8 @0x6CD66F]:
+// FUN_0041CAA0 finds AircraftType SPYP; FUN_0065EAB0 creates a loaner
+// (+0x3D4) on Mission SpyplaneApproach (0x1E) aimed at the clicked cell.
+void World::an_spyplane(int house, int cx, int cy) {
+    const SwParams& P = an_.sw;
+    const bool from_left = cx < grid_w_ / 2;
+    const int sx = from_left ? 0 : grid_w_ - 1;
+    const int ex = from_left ? grid_w_ - 1 : 0;
+    const int pi = an_spawn(kSpyPlaneType, house, sx, cy);
+    if (pi < 0) {
+        // No SPYP type registered (headless / missing art): still clear the
+        // shroud at the target so the SW is not a no-op.
+        if (shroud_enabled()) reveal_source(house, cx, cy, kSpyCameraReveal);
+        return;
+    }
+    Unit& p = units_[pi];
+    p.an.loaner = true;   // FUN_0065EAB0 @0x65EB10: techno +0x3D4 = 1
+    p.fx = sx;
+    p.fy = static_cast<double>(cy);
+    p.altitude = P.flight_level;
+    p.flight_state = FlightState::Cruising;
+    p.an.sortie = kSpyplaneApproach;
+    p.an.drop_x = cx;
+    p.an.drop_y = cy;
+    p.an.exit_x = ex;
+    p.an.exit_y = cy;
+    p.an.drop_left = 0;
+    p.an.drop_type.clear();
+    p.an.para_timer = 0;
+    p.an.para_overfly = false;
+    // Ammo from the type (SPYP Ammo=100); camera shots consume it.
+    if (p.an.ammo <= 0) p.an.ammo = std::max(1, p.an.t.ammo);
+    const int f = facing_from_delta(cx - sx, 0);
+    if (f >= 0) p.facing = f;
+    p.body_facing = facing_u16_from_delta(cx - sx, 0);
+}
+
+// One SpyCameraWeapon "shot": reveal Damage= cells and spend one Ammo.
+// [RE: Approach/Overfly Fire path; SpyPlaneCameraFrames paces the Report=.]
+void World::an_spy_camera_shot(int plane) {
+    if (plane < 0 || plane >= static_cast<int>(units_.size())) return;
+    Unit& u = units_[plane];
+    if (!u.alive || u.die_time >= 0.0 || u.an.ammo <= 0) return;
+    if (shroud_enabled()) reveal_source(u.house, u.cell_x, u.cell_y, kSpyCameraReveal);
+    --u.an.ammo;
+    // Presentation: reuse Dropped so the camera-click can be wired to
+    // SpyPlaneCamera / SpyPlaneSnapshot without a new SwEvent kind.
+    an_event(SwEvent::Dropped, u.house, SuperweaponType::SpyPlane, u.cell_x, u.cell_y);
 }
 
 // ------------------------------------------------- W4-SQ-06 team paradrop --
@@ -1708,8 +1821,11 @@ void World::step_air_naval(double dt) {
         // W7-05-13 [RE: FootClass Mission_Attack FUN_004D4CE0 / Guard
         // FUN_004D4F90: a HoverAttack (+0x390) unit at height 0 with a target
         // gets SetDestination(its own cell) -- it lifts off and fights hovering].
+        // T3.3: a deployed IsSimpleDeployer (Siege Chopper) holds the ground
+        // post -- HoverAttack must not lift it for air combat.
         if (u.an.t.hover_attack && u.is_aircraft && !u.an.t.fixed_wing && live(u) &&
-            u.flight_state == FlightState::Grounded && (u.target >= 0 || u.target_building >= 0)) {
+            !u.deployed && u.flight_state == FlightState::Grounded &&
+            (u.target >= 0 || u.target_building >= 0)) {
             occ_.release_all_of(i, -1, -1);
             u.flight_state = FlightState::TakingOff;
             u.flight_goal_x = u.cell_x;

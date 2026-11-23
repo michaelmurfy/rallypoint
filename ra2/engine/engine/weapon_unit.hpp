@@ -40,4 +40,8 @@ int unit_weapon_for_building(const Unit& u, int armor_ix, bool target_bombed = f
 // slot == u.w_active. Slot 1 without a valid secondary is ignored.
 void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr);
 
+// Rallypoint: IsGattling — tick the RateUp/RateDown timer and load the stage
+// weapon for an air/ground target into w_* (slot 0). No-op when disabled.
+void gattling_update_unit(Unit& u, bool engaging, bool air, const VeterancyRules* vr);
+
 }  // namespace ra2engine

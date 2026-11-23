@@ -9,6 +9,11 @@ namespace ra2engine {
 
 static std::uint64_t g_next_cache_id = 1;
 
+static void texture_nearest_filter(SDL_Texture* tex) {
+    if (!tex) return;
+    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+}
+
 TextureCache::TextureCache(void* sdl_renderer) : renderer_(sdl_renderer), id_(g_next_cache_id++) {}
 
 TextureCache::~TextureCache() {
@@ -129,6 +134,7 @@ void* TextureCache::get(const std::string& key, const uint8_t* indices, int w,
 
     SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    texture_nearest_filter(tex);
 
     return insert(key, tex, w, h);
 }
@@ -169,6 +175,7 @@ void* TextureCache::get_rgba(const std::string& key, const uint8_t* rgba, int w,
 
     SDL_UpdateTexture(tex, nullptr, rgba, w * 4);
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    texture_nearest_filter(tex);
 
     return insert(key, tex, w, h);
 }

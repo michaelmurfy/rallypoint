@@ -133,6 +133,128 @@ struct RealPlayProbe {
             g.update(1.0 / 15.0);
         }
     }
+    // RADAR (temporary probe): minimap clicks issue orders.
+    void radar_case(const Rules& rules) {
+    // ---- RADAR: minimap clicks issue orders (Rallypoint, temporary probe) ----
+        ra2engine::SkirmishConfig cfg = menu_config(rules);
+        GameScene g(/*no_audio=*/true, cfg);
+        deploy_start(g);
+        ra2engine::World& w = world(g);
+        add_instant(g, "GAPOWR");
+        add_instant(g, "GAPOWR");
+        check(add_instant(g, "AMRADR") >= 0, "radar: own Radar Tower placed");
+        run(g, 15 * 40);
+        check(g.radar_active(), "radar: minimap live (powered radar, boot done)");
+        const ra2engine::SbRect pic{g.lay_.radar.x + 16, 49, 140, 108};
+        // Draw once into a software renderer so PresRadar knows its projection.
+        SDL_Surface* sfc = SDL_CreateRGBSurfaceWithFormat(0, 640, 480, 32, SDL_PIXELFORMAT_RGBA32);
+        SDL_Renderer* sren = SDL_CreateSoftwareRenderer(sfc);
+        g.radar_.set_view(g.cam_, 800, 600);
+        g.radar_.draw(sren, pic, w, g.ba_);
+        int minu = INT_MAX, maxu = INT_MIN, minv = INT_MAX, maxv = INT_MIN;
+        for (const ra2assets::MapCell& c : w.map().cells()) {
+            minu = std::min(minu, c.x - c.y);
+            maxu = std::max(maxu, c.x - c.y);
+            minv = std::min(minv, c.x + c.y);
+            maxv = std::max(maxv, c.x + c.y);
+        }
+        const int uw = maxu - minu + 1, vh = maxv - minv + 1;
+        const double sc = std::min(pic.w / (uw * 1.0), pic.h / (vh * 0.5));
+        const int ox = pic.x + static_cast<int>((pic.w - uw * sc) / 2);
+        const int oy = pic.y + static_cast<int>((pic.h - vh * 0.5 * sc) / 2);
+        auto cell_px = [&](int cx, int cy, int& px, int& py) {
+            px = static_cast<int>(ox + (cx - cy - minu + 0.5) * sc);
+            py = static_cast<int>(oy + (cx + cy - minv + 0.5) * 0.5 * sc);
+        };
+        auto free_cell = [&](int x0, int y0, int& fx, int& fy) {
+            for (int r0 = 0; r0 < 24; ++r0)
+                for (int dy = -r0; dy <= r0; ++dy)
+                    for (int dx = -r0; dx <= r0; ++dx) {
+                        const int x = x0 + dx, y = y0 + dy;
+                        if (x < 1 || y < 1 || x >= w.grid_w() - 1 || y >= w.grid_h() - 1) continue;
+                        if (w.walkable(x, y) && w.unit_at_cell(x, y) < 0 && w.building_at_cell(x, y) < 0) {
+                            fx = x; fy = y; return true;
+                        }
+                    }
+            return false;
+        };
+        int ux = -1, uy = -1;
+        check(free_cell(w.grid_w() / 2, w.grid_h() / 2, ux, uy), "radar: a free walkable cell for the test unit");
+        const int gi = static_cast<int>(w.units().size());
+        w.add_unit(ux, uy, "E1");
+        g.input_.selection().clear();
+        g.input_.selection().set(gi);
+        // 1) the pixel under a cell's centre maps back to that cell
+        int tx = ux + 6, ty = uy;
+        int px = 0, py = 0;
+        cell_px(tx, ty, px, py);
+        int mx = -1, my = -1;
+        const bool mapped = g.radar_cell_at(px, py, mx, my);
+        std::cout << "[probe] radar pixel " << px << "," << py << " -> cell " << mx << "," << my
+                  << " (want " << tx << "," << ty << ")\n";
+        check(mapped && mx == tx && my == ty, "radar: a drawn pixel maps back to its own cell");
+        // 2) RIGHT click: the order must arrive at that cell
+        ra2engine::InputEvent rev;
+        rev.kind = ra2engine::InputEvent::PointerDown;
+        rev.button = ra2engine::InputEvent::Right;
+        rev.x = px;
+        rev.y = py;
+        g.handle(rev);
+        run(g, 3);
+        const ra2engine::Unit& u = w.units()[gi];
+        const bool ordered = u.moving() && !u.path.empty() && u.path.back().x == tx && u.path.back().y == ty;
+        std::cout << "[probe] radar right-click: moving=" << u.moving()
+                  << " path=" << u.path.size();
+        if (!u.path.empty()) std::cout << " goal=" << u.path.back().x << "," << u.path.back().y;
+        std::cout << "\n";
+        check(ordered, "radar: right-click ordered the selection to the clicked cell");
+        // 3) LEFT click elsewhere: retail re-centres the view, no order
+        int lcx = -1, lcy = -1;
+        int lx = 0, ly = 0;
+        if (free_cell(ux - 10, uy, lcx, lcy)) cell_px(lcx, lcy, lx, ly);
+        const int cam0x = g.cam_.x, cam0y = g.cam_.y;
+        ra2engine::InputEvent lev;
+        lev.kind = ra2engine::InputEvent::PointerDown;
+        lev.button = ra2engine::InputEvent::Left;
+        lev.x = lx;
+        lev.y = ly;
+        g.handle(lev);
+        run(g, 3);
+        const ra2engine::Unit& u2 = w.units()[gi];
+        const bool left_ordered = !u2.path.empty() && u2.path.back().x == lcx && u2.path.back().y == lcy;
+        std::cout << "[probe] radar left-click: cam " << cam0x << "," << cam0y << " -> " << g.cam_.x << ","
+                  << g.cam_.y << " ordered=" << left_ordered << "\n";
+        check((g.cam_.x != cam0x || g.cam_.y != cam0y) && !left_ordered,
+                "radar: left-click re-centres the view and issues no order");
+        // 4) RIGHT click on an ENEMY: retail attacks it
+        int ex = -1, ey = -1;
+        const bool have_enemy_cell = free_cell(w.grid_w() / 3, w.grid_h() / 3, ex, ey);
+        check(have_enemy_cell, "radar: a free cell for the enemy");
+        const int ei = static_cast<int>(w.units().size());
+        w.add_unit(ex, ey, "E1").house = 1;
+        const int gi2 = static_cast<int>(w.units().size());
+        int hx = -1, hy = -1;
+        free_cell(ux, uy + 4, hx, hy);
+        w.add_unit(hx, hy, "E1");
+        g.input_.selection().clear();
+        g.input_.selection().set(gi2);
+        int epx = 0, epy = 0;
+        cell_px(ex, ey, epx, epy);
+        ra2engine::InputEvent eev;
+        eev.kind = ra2engine::InputEvent::PointerDown;
+        eev.button = ra2engine::InputEvent::Right;
+        eev.x = epx;
+        eev.y = epy;
+        g.handle(eev);
+        run(g, 3);
+        const ra2engine::Unit& a = w.units()[gi2];
+        std::cout << "[probe] radar right-click on enemy: target=" << a.target
+                  << " attack_order=" << a.attack_order << " path=" << a.path.size() << "\n";
+        check(a.target == ei || a.attack_order, "radar: right-click on an enemy issues an ATTACK, not a move");
+        SDL_DestroyRenderer(sren);
+        SDL_FreeSurface(sfc);
+        }
+
     static int count_cameos_not_laid_out(GameScene& g) {
         return static_cast<int>(g.buildable_.size()) - static_cast<int>(g.lay_.cameos.size());
     }
@@ -308,6 +430,59 @@ int run_probe_realplay() {
         p.check(tnkd, "row 18 Germans get the Tank Destroyer (RequiredHouses=Germans)");
     }
 
+    // ---- T2.2: country uniques for every stock RequiredHouses country ----
+    {
+        auto has_unit = [](GameScene& g, const char* id) {
+            for (const ra2engine::UnitTypeDef& d : P::ur(g).defs)
+                if (d.id == id) return true;
+            return false;
+        };
+        struct Expect {
+            const char* country;
+            ra2engine::World::Side side;
+            const char* unit;  // nullptr = building-only check below
+        };
+        const Expect kExp[] = {
+            {"Alliance", ra2engine::World::Side::Allied, "BEAG"},
+            {"British", ra2engine::World::Side::Allied, "SNIPE"},
+            {"Germans", ra2engine::World::Side::Allied, "TNKD"},
+            {"Americans", ra2engine::World::Side::Allied, "ORCA"},
+            {"Arabs", ra2engine::World::Side::Soviet, "DESO"},
+            {"Africans", ra2engine::World::Side::Soviet, "DTRUCK"},
+            {"Confederation", ra2engine::World::Side::Soviet, "TERROR"},
+            {"Russians", ra2engine::World::Side::Soviet, "TTNK"},
+            {"YuriCountry", ra2engine::World::Side::Yuri, "YADOG"},
+        };
+        for (const Expect& e : kExp) {
+            ra2engine::SkirmishConfig cfg = P::menu_config(rules);
+            cfg.tech_level = 10;
+            cfg.slots[0].side = e.side;
+            cfg.slots[0].country = e.country;
+            GameScene g(/*no_audio=*/true, cfg);
+            P::deploy_start(g);
+            p.check(has_unit(g, e.unit),
+                    std::string("T2.2 ") + e.country + " roster has " + e.unit);
+            if (std::string(e.country) == "Americans") {
+                for (const char* id : {"GAPOWR", "GAREFN"}) P::add_instant(g, id);
+                P::run(g, 2);
+                p.check(P::has(P::tab_ids(g, 0), "AMRADR") && !P::has(P::tab_ids(g, 0), "GAAIRC"),
+                        "T2.2 Americans get AMRADR, not GAAIRC");
+            }
+        }
+        {
+            ra2engine::SkirmishConfig cfg = P::menu_config(rules);
+            cfg.tech_level = 10;
+            cfg.slots[0].country = "French";
+            GameScene g(/*no_audio=*/true, cfg);
+            P::deploy_start(g);
+            for (const char* id : {"GAPOWR", "GAREFN", "GAPILE", "GAWEAP", "GAAIRC"})
+                P::add_instant(g, id);
+            P::run(g, 2);
+            p.check(P::has(P::tab_ids(g, 1), "GTGCAN"),
+                    "T2.2 French sidebar offers Grand Cannon after radar");
+        }
+    }
+
     // ---- G-24 Naval Yard on water + ship production; G-30 walls ----
     {
         ra2engine::SkirmishConfig cfg = P::menu_config(rules);
@@ -478,6 +653,8 @@ int run_probe_realplay() {
         P::run(g, 15 * 10);
         p.check(!w.sw_state(0), "G-25 selling the silo revokes the Nuke");
     }
+
+    p.radar_case(rules);
 
     std::cout << "[probe-realplay] " << (p.fails ? "FAILED" : "ok") << " fails=" << p.fails << "\n";
     return p.fails ? 1 : 0;

@@ -31,7 +31,12 @@ public:
                 return k == 3 ? SDL_Color{Uint8(c[0]), Uint8(c[1]), Uint8(c[2]), 255} : d;
             };
             fx_.set_beam_colors(rgb(rules_ini.get("Radiation", "RadColor"), SDL_Color{0, 255, 0, 255}),
-                                rgb(rules_ini.get("AudioVisual", "ChronoBeamColor"), SDL_Color{128, 200, 255, 255}));
+                                rgb(rules_ini.get("AudioVisual", "ChronoBeamColor"), SDL_Color{128, 200, 255, 255}),
+                                rgb(rules_ini.get("AudioVisual", "MagnaBeamColor"), SDL_Color{255, 200, 255, 255}));
+            // T3.4 [RE: Rules DrainAnimationType FUN_0066c950 -> FUN_0070fd70]:
+            // Floating Disc DrainWeapon loops DISKRAY on the firer.
+            drain_anim_ = pres_clean(rules_ini.get("CombatDamage", "DrainAnimationType"));
+            if (drain_anim_.empty()) drain_anim_ = "DISKRAY";
         }
         // W3-FX: particles, debris, trails, wakes, twinkles (pres_effects.inc).
         effects_.init(fx_, rules_ini, ra2, dir);
@@ -246,6 +251,9 @@ public:
         fire_seen_ = fe.size();
         defense_fire_tick(w, fresh);   // muzzle / beam / report on the tick of the shot
         fragment_fx(w);                // W7-12-07 shrapnel beams
+        temporal_beam_tick(w);         // W7-12-06: chrono erase holds a RadBeam on the victim
+        magnetron_beam_tick(w);        // T3.4: IsMagBeam / IsLocomotor Wave while lifting
+        disc_drain_anim_tick(w);       // T3.4: DrainWeapon DISKRAY on the Disc
         pres_bld_anim_tick(w, ba, fx_, g_pres_tick, fresh, units_seen_, bld_seen_,
                            [&](int h) { return w.credits(h); });   // L2: every house's wallet
         (void)player_credits;
@@ -360,10 +368,17 @@ private:
     // Fallback "what would a click do" probe [G-08: B owns the authoritative
     // cursor state; this mirrors the current Input order semantics so the
     // pointer never lies about them]. Returns a MouseCursorType id.
-    int probe_cursor(const ra2engine::World& w, const ra2engine::Input& in, int mx, int my,
+    // Tactical zoom (GameScene::zoom_): picks use the pointer in world-view
+    // pixels, the edge-scroll band and the cursor sprite the canvas ones.
+    double zoom_ = 1.0;
+public:
+    void set_zoom(double z) { zoom_ = z; }
+private:
+    int probe_cursor(const ra2engine::World& w, const ra2engine::Input& in, int cmx, int cmy,
                      bool over_sidebar, int view_w, int win_w, int win_h) const {
-        constexpr int kEdge = 24;   // GameScene's edge-scroll band
-        int dx = (mx >= win_w - kEdge) - (mx <= kEdge), dy = (my >= win_h - kEdge) - (my <= kEdge);
+        const int mx = ra2engine::zoom_to_view(cmx, zoom_), my = ra2engine::zoom_to_view(cmy, zoom_);
+        const int kEdge = scroll_edge_band();   // GameScene's edge-scroll band
+        int dx = (cmx >= win_w - kEdge) - (cmx <= kEdge), dy = (cmy >= win_h - kEdge) - (cmy <= kEdge);
         if (dx || dy) {
             static const int dir[3][3] = {{7, 0, 1}, {6, -1, 2}, {5, 4, 3}};   // [dy+1][dx+1]
             return kScrollN + dir[dy + 1][dx + 1];
@@ -409,7 +424,7 @@ private:
             if (b.house == g_local_house) return any_sel ? kNoMove : kDefault;
         }
         if (!any_sel) return kDefault;
-        if (mx >= view_w) return kDefault;
+        if (cmx >= view_w) return kDefault;
         // Ground: move where passable (or unexplored -- the original lets you
         // order into the shroud), no-move otherwise.
         int cx = 0, cy = 0;
@@ -425,8 +440,9 @@ private:
     // FUN_004aada0]: Attack shows AttackOutOfRange when the selection cannot
     // reach; over a shrouded cell Attack and Move both show Move.
     int cursor_for_action(ra2engine::Input::Action a, const ra2engine::World& w, const ra2engine::Input& in,
-                          int mx, int my) const {
+                          int cmx, int cmy) const {
         using A = ra2engine::Input::Action;
+        const int mx = ra2engine::zoom_to_view(cmx, zoom_), my = ra2engine::zoom_to_view(cmy, zoom_);
         int cx = 0, cy = 0;
         ra2engine::screen_to_cell(mx - cam_.x, my - cam_.y, 60, 30, cx, cy);
         const bool shrouded = !w.explored_at(g_local_house, cx, cy);
@@ -529,6 +545,7 @@ private:
     //  * Ready (own): EVA_*Ready.
     //  * Bolt: WeatherConBolts=WCLBOLT1 + WeatherConBoltExplosion + LightningSounds.
     int sw_seen_ = 0;
+    long last_dropped_eva_ = -1;   // frame of the last "reinforcements have arrived"
     std::string gen_s(const char* k) const {
         std::string v = pres_clean(rules_ini_->get("General", k));
         if (v.empty()) v = pres_clean(rules_ini_->get("AudioVisual", k));
@@ -559,6 +576,7 @@ private:
                     else if (t == T::ChronoSphere) snd_.eva("EVA_ChronosphereReady");
                     else if (t == T::LightningStorm) snd_.eva("EVA_LightningStormReady");
                     else if (t == T::ParaDrop || t == T::AmerParaDrop) snd_.eva("EVA_ReinforcementsReady");
+                    else if (t == T::SpyPlane) snd_.eva("EVA_SpyPlaneReady");
                     break;
                 case E::Launched:
                     fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0);
@@ -584,6 +602,8 @@ private:
                         fx_.spawn(gen_s("ChronoBlast"), e.x, e.y, level_at(w, e.x, e.y), 0.0);
                         fx_.spawn(gen_s("ChronoBlastDest"), e.x2, e.y2, level_at(w, e.x2, e.y2), 0.0);
                         snd_.eva("EVA_ChronosphereActivated");
+                    } else if (t == T::SpyPlane) {
+                        if (own) snd_.eva("EVA_SpyPlaneEnRoute");
                     } else if (t == T::LightningStorm) {
                         fx_.spawn(gen_s("WeatherConClouds"), e.x, e.y, level_at(w, e.x, e.y), 60.0);
                         snd_.eva("EVA_LightningStormCreated");
@@ -597,7 +617,16 @@ private:
                     snd_.play_at(gen_s("LightningSounds"), e.x, e.y, "bolt");
                     break;
                 case E::Dropped:
-                    if (own) snd_.eva("EVA_ReinforcementsHaveArrived");
+                    // The spy plane reuses Dropped for each camera shot: a click, not an EVA line.
+                    if (t == T::SpyPlane) {
+                        snd_.play_at(gen_s("SpyPlaneCamera"), e.x, e.y, "spy camera");
+                        break;
+                    }
+                    // One Dropped per paratrooper: say it once per drop, not once per man.
+                    if (own && (last_dropped_eva_ < 0 || frame_ - last_dropped_eva_ > 450)) {
+                        last_dropped_eva_ = frame_;
+                        snd_.eva("EVA_ReinforcementsHaveArrived");
+                    }
                     break;
                 default:
                     break;
@@ -834,12 +863,18 @@ private:
         }
         // W6-04-24: a slot-1 shot draws the Secondary's beam (Boris's Flare);
         // W7-12-30: the fired weapon's own beam flags.
-        if (wp->bolt || wp->laser || wp->rad_beam || wp->line) {   // W2-GA-15 Tesla / Prism beams
+        if (wp->bolt || wp->laser || wp->rad_beam || wp->line || wp->mag_beam) {   // W2-GA-15 + T3.4 MagBeam
             double tx = 0, ty = 0, tl = 0;
             int tlev = 0;
             if (target_point(w, u.target, u.target_building, tx, ty, tlev, tl)) {
-                fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, u.is_vehicle ? 18.0 : 15.0), tx, ty, tlev, tl, *wp,
-                             house_color(w, u.house), ox);
+                // MagBeam vs vehicles draws target->firer (ModEnc / Ares Wave.ReverseAgainstVehicles).
+                if (wp->mag_beam && u.target >= 0) {
+                    fx_.add_beam(tx, ty, tlev, tl, u.fx, u.fy, pres_unit_fx_level(w, u),
+                                 std::max(lift, u.is_vehicle ? 18.0 : 15.0), *wp, house_color(w, u.house));
+                } else {
+                    fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, u.is_vehicle ? 18.0 : 15.0), tx, ty,
+                                 tlev, tl, *wp, house_color(w, u.house), ox);
+                }
                 // W7-12-31 [RE: EBolt::Fire 0x4c2980 -- ParticleSystem([General]
                 // DefaultSparkSystem=SparkSys) at the bolt end].
                 if (wp->bolt) {
@@ -928,6 +963,80 @@ private:
         }
         return false;
     }
+    // W7-12-06 [RE: TemporalClass::Update -- RadBeam stays on the victim while
+    // WarpRemaining counts down]: refresh the chrono beam each logic tick.
+    void temporal_beam_tick(const ra2engine::World& w) {
+        const auto& us = w.units();
+        for (std::size_t i = 0; i < us.size(); ++i) {
+            const ra2engine::Unit& u = us[i];
+            if (u.cargo_of >= 0 || !u.alive || u.die_time >= 0.0) continue;
+            if (u.temporal_target < 0 && u.temporal_target_building < 0) continue;
+            if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+            const std::string wid = fired_weapon(w, u);
+            if (wid.empty()) continue;
+            const FxWeapon& fw = fx_.weapon_fx(wid);
+            if (!fw.rad_beam && !fw.temporal) continue;
+            double ox = 0, lift = 0;
+            muzzle_point(w, u, ox, lift);
+            double tx = 0, ty = 0, tl = 0;
+            int tlev = 0;
+            const int tu = u.temporal_target;
+            const int tb = u.temporal_target_building;
+            if (!target_point(w, tu, tb, tx, ty, tlev, tl)) continue;
+            fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, 15.0), tx, ty, tlev, tl, fw,
+                         house_color(w, u.house), ox);
+        }
+    }
+    // T3.4 [RE: TechnoClass::Fire IsMagBeam FUN_006ff5f5 -> WaveClass ctor
+    // FUN_0075e950 type 3; Draw_Magnetic FUN_00762070 while Update_Wave
+    // FUN_00762af0 keeps the Wave]: MagBeam stays on the IsLocomotor victim.
+    void magnetron_beam_tick(const ra2engine::World& w) {
+        const auto& us = w.units();
+        for (std::size_t i = 0; i < us.size(); ++i) {
+            const ra2engine::Unit& u = us[i];
+            if (u.cargo_of >= 0 || !u.alive || u.die_time >= 0.0) continue;
+            if (u.magnet_victim < 0) continue;
+            if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+            const std::string wid = fired_weapon(w, u);
+            FxWeapon fw = wid.empty() ? FxWeapon{} : fx_.weapon_fx(wid);
+            if (!fw.mag_beam) {
+                fw.mag_beam = true;   // hold beam even if Secondary was last fired
+                fw.id = wid.empty() ? "MagneticBeam" : wid;
+            }
+            double ox = 0, lift = 0;
+            muzzle_point(w, u, ox, lift);
+            double tx = 0, ty = 0, tl = 0;
+            int tlev = 0;
+            if (!target_point(w, u.magnet_victim, -1, tx, ty, tlev, tl)) continue;
+            // Vehicle targets: wave grows target -> firer (ModEnc IsMagBeam).
+            fx_.add_beam(tx, ty, tlev, tl, u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, 18.0), fw,
+                         house_color(w, u.house));
+        }
+    }
+    // T3.4 [RE: DrainWeapon Fire FUN_006fdf5d -> FUN_0070fd70 creates AnimClass
+    // (FUN_00421ea0) from Rules.DrainAnimationType (DISKRAY), SetOwnerObject
+    // FUN_00424b50; cleared by FUN_0070fe50]: loop DISKRAY on the Disc.
+    void disc_drain_anim_tick(const ra2engine::World& w) {
+        if (drain_anim_.empty()) return;
+        const auto& us = w.units();
+        std::set<int> draining;
+        for (std::size_t i = 0; i < us.size(); ++i) {
+            const ra2engine::Unit& u = us[i];
+            if (u.cargo_of >= 0 || !u.alive || u.die_time >= 0.0) continue;
+            if (u.drain_target < 0) continue;   // DrainTarget set: DISKRAY while it lasts (0053)
+            if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+            double ox = 0, lift = 0;
+            muzzle_point(w, u, ox, lift);
+            fx_.ensure_attach(static_cast<int>(i), drain_anim_, std::max(lift, 20.0));
+            draining.insert(static_cast<int>(i));
+        }
+        for (int prev : drain_anim_units_) {
+            if (!draining.count(prev)) fx_.detach(prev);
+        }
+        drain_anim_units_ = std::move(draining);
+    }
+    std::string drain_anim_;
+    std::set<int> drain_anim_units_;
     SDL_Color house_color(const ra2engine::World& w, int house) const {
         if (!unit_pal_) return SDL_Color{255, 0, 255, 255};
         const ra2assets::Rgba c = w.house_palette(*unit_pal_, house)[24];
@@ -1354,6 +1463,21 @@ private:
     // sound/explosion, observed once per LOGIC tick (Presentation::logic_tick)
     // so an effect is born on the tick its event happened, whatever the
     // render rate (was per render frame inside unit_audio).
+    // AssaultBolt [rulesmd: Report=TeslaTroopRechargeCoil, IsElectricBolt, IsAlternateColor]: the sound and
+    // the bolt from the trooper to the coil it is charging.
+    void recharge_coil_fx(const ra2engine::World& w, const ra2engine::Unit& u) {
+        const std::string wid = pres_clean(rules_ini_->get(pres_type_id(u), "Secondary"));
+        if (wid.empty()) return;
+        const FxWeapon& wp = fx_.weapon_fx(wid);
+        snd_.play_at(pick_report(wp.report), u.fx, u.fy, "tesla recharge");
+        if (!(u.house == g_local_house || w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) || !wp.bolt) return;
+        double ox = 0, lift = 0, tx = 0, ty = 0, tl = 0;
+        int tlev = 0;
+        muzzle_point(w, u, ox, lift);
+        if (target_point(w, -1, u.w5.charging, tx, ty, tlev, tl))
+            fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, 15.0), tx, ty, tlev, tl, wp,
+                         house_color(w, u.house), ox);
+    }
     void unit_fx_tick(const ra2engine::World& w) {
         const auto& units = w.units();
         prev_.resize(units.size(), {0.0, -1.0});
@@ -1363,7 +1487,9 @@ private:
             const UnitVoices& v = voices_of(u);
             infantry_death_fx(w, u, prev_[i].second < 0.0, alive_prev_[i] != 0);   // W3-B
             alive_prev_[i] = u.alive ? 1 : 0;
-            if (u.fire_flash > prev_[i].first && u.cargo_of < 0) {
+            if (u.fire_flash > prev_[i].first && u.cargo_of < 0 && u.w5.p.assault && u.w5.charging >= 0) {
+                recharge_coil_fx(w, u);   // a Tesla Trooper feeding a coil fires AssaultBolt, not its Primary
+            } else if (u.fire_flash > prev_[i].first && u.cargo_of < 0) {
                 // W7-03-06 / W7-12-30: the FIRED weapon's Report (IFV modes,
                 // deployed GI Para / GGI MissileLauncher, elite weapons).
                 const std::string wid = fired_weapon(w, u);
@@ -1688,8 +1814,11 @@ private:
             p.ready = ready;
         }
     }
-    // W2-GA-14: start the factory door when a unit appears at a factory, and
-    // the superweapon building's charge anims on READY / FIRE edges.
+    // W2-GA-14: superweapon building anims (sw_building_anim_phase). Charging
+    // holds SuperAnim; the last ChargedAnimTime minutes play SuperAnimTwo once
+    // then hold SuperAnimThree; firing plays SuperAnimFour once and returns
+    // to the charge hold. Looping Four while charging was the Weather
+    // Control's green fire crescents for the whole recharge.
     void building_anim_events(const ra2engine::World& w, const BuildingAssets& ba) {
         if (!ba.ok) return;
         const auto& bs = w.buildings();
@@ -1698,21 +1827,39 @@ private:
             const ra2engine::BuildingTypeDef& d = ba.roster[static_cast<std::size_t>(b.type)];
             return pres_upper(d.image.empty() ? d.id : d.image);
         };
+        auto rules_id = [&](const ra2engine::Building& b) -> std::string {
+            if (b.type < 0 || b.type >= static_cast<int>(ba.roster.size())) return std::string();
+            return ba.roster[static_cast<std::size_t>(b.type)].id;
+        };
         const int n = w.house_count();
         if (static_cast<int>(sw_anim_prev_.size()) < n) sw_anim_prev_.resize(static_cast<std::size_t>(n), 0);
         for (int h = 0; h < n; ++h) {
             const ra2engine::Superweapon* sw = w.sw_state(h);
-            const int st = !sw || sw->type == ra2engine::SuperweaponType::None ? 0 : (sw->ready ? 2 : 1);
+            const bool have = sw && sw->type != ra2engine::SuperweaponType::None;
+            const bool ready = have && sw->ready;
+            const int st = !have ? 0 : (ready ? 2 : 1);
             int& prev = sw_anim_prev_[static_cast<std::size_t>(h)];
-            if (st != prev && st != 0) {
-                for (const ra2engine::Building& b : bs) {
-                    if (!b.alive || b.house != h) continue;
-                    const std::string img = image_of(b);
-                    if (img.empty() || !fx_.building(img).slot[kBsSuper].t) continue;
-                    BldEventState& e = g_bld_events[bld_event_key(b)];
-                    if (st == 2) { e.super_phase = 0; e.super_start = g_pres_tick; }                    // ready: open
-                    else if (prev == 2) { e.super_phase = 2; e.super_start = g_pres_tick; }             // fired: close
-                    else if (e.super_phase < 0) { e.super_phase = 2; e.super_start = -1; }          // charging
+            const double remain = have && sw->recharge_secs > sw->timer ? sw->recharge_secs - sw->timer : 0.0;
+            for (const ra2engine::Building& b : bs) {
+                if (!b.alive || b.house != h) continue;
+                const std::string img = image_of(b);
+                if (img.empty() || !fx_.building(img).slot[kBsSuper].t) continue;
+                BldEventState& e = g_bld_events[bld_event_key(b)];
+                double charged = 0.0;
+                if (rules_ini_) {
+                    const std::string v = rules_ini_->get(rules_id(b), "ChargedAnimTime", "");
+                    if (!v.empty()) charged = std::atof(v.c_str()) * 60.0;
+                }
+                bool done = false;
+                if ((e.super_phase == 1 || e.super_phase == 3) && e.super_start >= 0) {
+                    const FxAnimType* t = fx_.building(img).slot[kBsSuper + e.super_phase].t;
+                    done = !t || oneshot_frame(*t, e.super_start, g_pres_tick) < 0;
+                }
+                const int next = ra2engine::sw_building_anim_phase(
+                    ra2engine::SwAnimInput{e.super_phase, have, ready, prev == 2, remain, charged, done});
+                if (next != e.super_phase) {
+                    e.super_phase = next;
+                    e.super_start = g_pres_tick;
                 }
             }
             prev = st;

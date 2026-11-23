@@ -38,6 +38,12 @@ public:
     // Online: the CnCNet V3 tunnel (8-byte LE [from][to] header); peers are
     // V3 ids. tick() keeps our id registered and measures the tunnel RTT.
     bool open_tunnel(const Addr& tunnel, std::uint32_t my_v3);
+    // Rallypoint: the same over a CnCNet V2 tunnel (4-byte BE [from][to]
+    // header, 16-bit ids), e.g. the Rallypoint agent on 127.0.0.1.
+    // `token` (16 bytes from `[Tunnel] Token=`) proves this process to the agent
+    // before any tunnel traffic; null skips the proof (plain CnCNet tunnels).
+    bool open_tunnel(const Addr& tunnel, std::uint32_t my_id, ra2::net::TunnelMode mode,
+                     const std::uint8_t* token = nullptr);
     // Tests: an endpoint of an in-process LoopbackHub, with the test's clock.
     void open_loopback(ra2::net::LoopbackHub& hub, const Addr& self, std::function<std::uint32_t()> clock_ms);
 
@@ -57,14 +63,20 @@ public:
     void tick(std::uint64_t now);
 
 private:
+    void send_tunnel_auth();
+
     std::unique_ptr<ra2::net::UdpDatagramIO> udp_;
     std::unique_ptr<ra2::net::NetManager> net_;
     bool tunnel_mode_ = false;
+    ra2::net::TunnelMode wire_mode_ = ra2::net::TunnelMode::V3;
     Addr tunnel_;
     std::uint32_t me_ = 0;
-    std::uint64_t last_keep_ = 0, ping_sent_ = 0;
+    std::uint64_t last_keep_ = 0, ping_sent_ = 0, last_auth_ = 0;
     std::uint32_t ping_nonce_ = 0;
     int rtt_ = -1;
+    bool need_auth_ = false;
+    bool authed_ = true;
+    std::uint8_t token_[ra2::net::kTunnelAuthTokenSize]{};
 };
 
 // The lobby's reliable messaging over MpNet's 0x1236 global channel: DATA_ACK

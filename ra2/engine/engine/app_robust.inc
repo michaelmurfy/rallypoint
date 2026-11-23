@@ -17,13 +17,18 @@ bool g_session_no_audio = false;
 // Scene::logical_width()) and the Platform it drives.
 int g_ui_w = 1280, g_ui_h = 720;
 ra2engine::Platform* g_platform = nullptr;
-// The game canvas for the panel: H = 720 on desktop; on Android (touch) the
-// height that makes one canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi
-// phone -> ~548, clamped 520..720 -- tablets keep 720; it was 0.85 dp / 484
-// px, which showed only 42% of the desktop's map area), so the sidebar's
-// 60x48 cameos stay ~45x36 dp. W = H * aspect, at least 16:9 (narrower panels
-// letterbox, as before) and at most ~21:9: a 20:9 phone gets the extra width
-// as more map. 1280x720 under --play (hidden 1280x720 window).
+// The game canvas for the panel. On Android (touch) the height makes one
+// canvas pixel ~0.75 dp (W4-AM-02: a 6" 1080p 420 dpi phone -> ~548, clamped
+// 520..720 -- tablets keep 720; it was 0.85 dp / 484 px, which showed only
+// 42% of the desktop's map area), so the sidebar's 60x48 cameos stay ~45x36
+// dp. On desktop the canvas follows the window's pixels (desktop_canvas:
+// 720 floor, 1440 cap, HiDPI windows divided by a whole number):
+// --width/--height, RA2.INI [Video] ScreenWidth/ScreenHeight and the Options
+// resolution all size that window, so 1920x1080 is a 1080-line tactical view,
+// not a magnified 720. W = H * aspect, at least 16:9 (narrower
+// panels letterbox) and at most ~21:9. Menus stay 1280x720 (Scene's own
+// logical size). --play `set canvas` wins; otherwise a hidden 1280x720
+// harness window stays 1280x720.
 void game_logical_size(int& out_w, int& out_h) {
     out_w = 1280;
     out_h = 720;
@@ -44,10 +49,19 @@ void game_logical_size(int& out_w, int& out_h) {
         lh = static_cast<int>(std::lround(h / (0.75 * px_per_dp)));
         lh = std::max(520, std::min(720, lh)) & ~1;
     }
+#else
+    // RA2_LOGICAL_HEIGHT (the launcher's Settings > Display > UI scale: 720,
+    // 900 or 1080) fixes the canvas height; otherwise the canvas is the
+    // window's pixels over a whole number (desktop_canvas: crisp on HiDPI).
+    const char* env = std::getenv("RA2_LOGICAL_HEIGHT");
+    const int fixed = env ? std::atoi(env) : 0;
+    if (fixed < 480 || fixed > 2160) {
+        ra2engine::desktop_canvas(w, h, out_w, out_h);
+        return;
+    }
+    lh = fixed & ~1;
 #endif
-    const int lw = static_cast<int>(std::lround(static_cast<double>(lh) * w / h)) & ~1;
-    out_h = lh;
-    out_w = std::max(lh * 16 / 9, std::min(lh * 239 / 100, lw));
+    ra2engine::logical_size_for_height(lh, w, h, out_w, out_h);
 }
 bool g_interactive_session = false;   // run_menu: fatal errors also get a message box
 #ifndef RA2_VERSION
@@ -78,7 +92,12 @@ void dev_autoshot(ra2engine::Platform& plat, const std::string& tag) {
     const std::string dir = autoshot_dir();
     if (dir.empty()) return;
     g_autoshot_done.insert(tag);
-    capture_png(static_cast<SDL_Renderer*>(plat.renderer()), dir + tag + ".png", plat.width(), plat.height());
+    // The frame's real size (the canvas texture, or the HiDPI window), not the
+    // logical one: reading a 2x window into a 1x buffer overran it.
+    SDL_Renderer* ren = static_cast<SDL_Renderer*>(plat.renderer());
+    int w = plat.width(), h = plat.height();
+    SDL_GetRendererOutputSize(ren, &w, &h);
+    capture_png(ren, dir + tag + ".png", w, h);
     SDL_Log("[autoshot] %s%s.png", dir.c_str(), tag.c_str());
 }
 
@@ -233,6 +252,9 @@ double window_px_per_dp() {
     const double phys_per_win = static_cast<double>(ow) / lw;
     return (ddpi / 160.0) / phys_per_win;
 }
+
+// The edge-scroll band in canvas pixels for the current window scale.
+int scroll_edge_band() { return ra2engine::edge_scroll_band(g_platform ? g_platform->present_fit() : 1.0); }
 
 // A first scene that immediately hands over to `n` (typically a
 // DeferredScene, so even the first game of a run gets the loading screen).

@@ -301,7 +301,8 @@
         // Spawned aircraft / missiles (Spawns=, V3/DMisl types) + the paradrop
         // plane and its infantry.
         const ra2engine::SwParams sp = world_.sw_params();
-        std::vector<std::string> ids = {"PDPLANE", sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
+        std::vector<std::string> ids = {"PDPLANE", "SPYP",  // SpyPlaneSpecial aircraft
+                                        sp.amer_para_inf, sp.ally_para_inf, sp.sov_para_inf,
                                         rules_.section_string("General", "DMislType", "DMISL"),
                                         rules_.section_string("General", "V3RocketType", "V3ROCKET"),
                                         "HORNET", "ASW",   // any side's spawns (captured / cheat units)

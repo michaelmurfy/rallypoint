@@ -19,9 +19,11 @@ std::vector<uint8_t> slurp_ml(const std::string& p) {
                                  std::istreambuf_iterator<char>());
 }
 std::string install_dir() {
+    // Rallypoint: '/' works on Linux and Windows; a trailing backslash made
+    // `dir + "multimd.mix"` miss the file on a case-sensitive Linux install.
     const char* d = std::getenv("RA2_INSTALL_DIR");
     std::string s = d ? d : "D:\\Red Alert 2";
-    if (!s.empty() && s.back() != '\\' && s.back() != '/') s.push_back('\\');
+    if (!s.empty() && s.back() != '\\' && s.back() != '/') s.push_back('/');
     return s;
 }
 } // namespace

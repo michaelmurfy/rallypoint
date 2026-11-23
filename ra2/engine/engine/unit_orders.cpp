@@ -62,6 +62,7 @@ void World::order_stop(int idx) {
     u.tg.opportunity = false;
     u.tg.amove_x = u.tg.amove_y = -1;
     u.tg.home_x = u.tg.home_y = -1;
+    u.tg.archive_self = false;   // 0054 [RE: MegaMission event 0x4C7448 SetArchive(0)]
     // W7-01-32 / W7-02-08 / W7-04-17 [RE: Enter_Idle_Mode 0x51CB2A / 0x737BB6]:
     // a DefaultToGuardArea type (dogs, Terror Drone) idles in Area_Guard.
     if (u.w7.t.default_to_guard_area && !u.is_aircraft) {
@@ -184,7 +185,10 @@ void World::group_scatter(int issuer, const std::vector<int>& ids) {
         // 0x51CEB3..0x51CF18]: a human infantry in its Deploy / Deployed
         // sequence ignores it, and a moving unit does not scatter.
         const Unit& u = units_[static_cast<std::size_t>(i)];
-        if (w7_rules_.armed && ((u.deployed && !u.is_vehicle && human_commanded(u.house)) || u.moving())) continue;
+        // T3.3: deployed IsSimpleDeployer vehicles also skip scatter.
+        const bool deployed_post = u.deployed && (u.deploy_fire || u.abil.deployer) &&
+                                   (!u.is_vehicle || (u.deploy_fire && !u.is_infantry));
+        if (w7_rules_.armed && ((deployed_post && human_commanded(u.house)) || u.moving())) continue;
         order_scatter(i);
     }
 }

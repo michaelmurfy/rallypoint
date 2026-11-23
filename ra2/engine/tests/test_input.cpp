@@ -392,7 +392,7 @@ TEST_CASE("Input: pan clamps the camera to the map's screen bounds") {
     const int view_w = 1280, view_h = 720;
     int mnx, mny, mxx, mxy;
     REQUIRE(ra2engine::terrain_screen_bounds(map, mnx, mny, mxx, mxy));
-    const int margin_x = view_w / 2, margin_y = view_h / 2;
+    const int margin_x = 0, margin_y = 0;
 
     Camera cam_pos;
     Input in_pos(world, cam_pos, view_w, view_h);

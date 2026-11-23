@@ -10,6 +10,7 @@
 #include "target_w6.hpp"  // W6 fix #2 (missions): UnitTypeTgt (pure)
 #include "locomotion.hpp" // W7: LocoType (pure)
 #include "unit_w7.hpp"    // wave-7 fix (units): UnitTypeW7 (pure)
+#include "gattling.hpp"   // Rallypoint: IsGattling stages
 
 namespace ra2engine {
 
@@ -84,6 +85,7 @@ struct UnitCombat {
     bool turret = false;       // has an independently-slewing turret
     double speed_cps = 0.0;    // per-unit speed in cells/sec; 0 = World move_cps
     bool is_vehicle = false;   // gates all vehicle-specific locomotion
+    int weight_milli = 1000;
 
     // --- CB-1 Transports/Cargo [RE: transport-cargo.md §1] ---
     // Resolved once from Rules by main.cpp like every existing stat; ALL
@@ -142,6 +144,7 @@ struct UnitCombat {
     // firewall (a hand-built UnitCombat in an existing gate never sets them,
     // and add_combat_unit merely copies them into Unit::vet).
     int cost = 0;                     // Cost= (experience value / owner cost)
+    int soylent = 0;                  // Soylent= (Grinder refund override; 0 = Cost path)
     bool trainable = true;            // Trainable= (default YES, V14)
     bool dont_score = false;          // DontScore=
     bool self_healing = false;        // SelfHealing= (V11)
@@ -190,6 +193,10 @@ struct UnitCombat {
     UnitTypeW6 w6;                    // wave-6 #4 type data (unit_w6.hpp)
     UnitTypeTgt tg;                   // W6 fix #2: rules id + targeting type data (target_w6.hpp)
     UnitTypeW7 w7;                    // wave-7 fix (units): unit_w7.hpp (save v35)
+    // Rallypoint: IsGattling (YTNK / GTGCAN). Inert unless enabled.
+    GattlingRules gatt;
+    std::vector<WeaponSlot> gatt_weapons;        // Weapon1..N
+    std::vector<WeaponSlot> gatt_weapons_elite;  // EliteWeapon1..N
 };
 
 }  // namespace ra2engine

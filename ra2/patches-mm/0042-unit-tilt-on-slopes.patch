@@ -1,0 +1,265 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 700b9f3..e04bbaf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -179,6 +179,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_audio_mixer.cpp engine/audio_m
+ # Compiled into both this test binary and ra2engine from one source of truth
+ # (same pattern as combat.cpp above).
+ target_sources(ra2assets_tests PRIVATE tests/test_voxel_raster.cpp engine/voxel_raster.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_slope_tilt.cpp engine/slope_tilt.cpp)
+ # facing_cache.cpp is the pure C++17 load-time voxel facing cache (no SDL): it
+ # rasterizes each of kVehicleFacings quantized yaws once at load (build_facing_set)
+ # so the draw path can blit cached sprites (docs/re/voxel-render.md §2). Compiled
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index d01f901..8599281 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -100,6 +100,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/world.cpp
+     ${RA2_ROOT}/engine/world_loco.cpp   # W7 locomotion (step_units)
+     ${RA2_ROOT}/engine/locomotion.cpp   # W7 locomotion (tracks / speeds, pure)
++    ${RA2_ROOT}/engine/slope_tilt.cpp   # T1.2 presentation tilt on TMP slopes
+     ${RA2_ROOT}/engine/world_econ.cpp   # L2 per-house economy
+     ${RA2_ROOT}/engine/world_veterancy.cpp
+     ${RA2_ROOT}/engine/pathfind.cpp
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 1f8dec9..d1c8ef5 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -76,6 +76,7 @@ static char* ra2_cli_pref_path() {
+ #include "capture.hpp"      // kNeutralHouse (Engineer/Spy Capture phase)
+ #include "combat.hpp"       // armor_index
+ #include "facing_cache.hpp"
++#include "slope_tilt.hpp"
+ #include "factory.hpp"      // primary_factory (unit exit handoff)
+ #include "roster2.hpp"      // P6 walls / naval yard / airfield [RE: roster2.md]
+ #include "flight.hpp"       // altitude_to_screen_dy (CB-2 raised-sprite draw)
+@@ -3839,6 +3840,36 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+         return vxl_frame_sprite(va, part, u.house, fi, hf);
+     };
+     const std::string fkey = hf ? ":f" + std::to_string(hf) : std::string();
++    // T1.2: Drive-track slope tilt [RE: FUN_0055A7D0 / FUN_007559B0]. Presentation
++    // only — rockets keep their own pitch below.
++    double slope_pitch = 0.0;
++    if (!u.an.t.missile && !u.is_aircraft && va.vsrc) {
++        if (const ra2engine::World* cw = ra2engine::color_world()) {
++            const int cx = static_cast<int>(std::floor(pfx));
++            const int cy = static_cast<int>(std::floor(pfy));
++            slope_pitch = ra2engine::slope_tilt_pitch(cw->ramp_at(cx, cy), u.body_facing);
++        }
++    }
++    auto pitched_part = [&](int part, int fi, double pitch) -> const ra2engine::VoxelSprite& {
++        static std::map<std::string, ra2engine::VoxelSprite> cache;
++        if (!va.vsrc || std::fabs(pitch) < 1e-4) return part_sprite(part, fi);
++        const int pq = static_cast<int>(std::lround(pitch * 180.0 / 3.14159265358979 / 5.0));
++        const std::string key = "vxlst:" + img + ":" + std::to_string(part) + ":" +
++                                std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
++                                std::to_string(fi) + ":" + std::to_string(hf) + ":" + std::to_string(pq);
++        std::lock_guard<std::mutex> lk(g_vxl_mu);
++        auto it = cache.find(key);
++        if (it != cache.end()) return it->second;
++        const VehicleAssets::VoxelSrc& s = *va.vsrc;
++        const ra2assets::VxlModel& m = part == 0 ? s.hull : part == 1 ? s.tur : s.barl;
++        const ra2assets::HvaModel& h = part == 0 ? s.hull_h : part == 1 ? s.tur_h : s.barl_h;
++        return cache
++            .emplace(key, ra2engine::rasterize_model(
++                              m, h, ra2engine::index_to_yaw(fi, ra2engine::kVehicleFacings), s.vpl,
++                              ra2engine::house_draw_palette(s.pal, u.house), hf,
++                              pq * 5.0 * 3.14159265358979 / 180.0))
++            .first->second;
++    };
+     // W4: a RocketLocomotion rocket draws its hull at its pitch (the tilt on
+     // the launcher, the climb, the arc, the dive) [FUN_00661D00 +0x50].
+     if (u.an.t.missile && va.vsrc && std::fabs(u.an.rocket.pitch) > 1e-3) {
+@@ -3875,10 +3906,15 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+             spr = &it->second;
+         }
+         ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, dlv, cam, W, H, extra_dy);
+-    } else
+-    ra2engine::draw_voxel_sprite(
+-        ren, tc, "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(bi) + fkey,
+-        part_sprite(0, bi), pfx, pfy, dlv, cam, W, H, extra_dy);
++    } else {
++        const std::string hkey = "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
++                                 std::to_string(bi) + fkey +
++                                 (std::fabs(slope_pitch) > 1e-4
++                                      ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
++                                      : "");
++        ra2engine::draw_voxel_sprite(ren, tc, hkey, pitched_part(0, bi, slope_pitch), pfx, pfy, dlv, cam, W, H,
++                                     extra_dy);
++    }
+     if (va.has_turret) {
+         const int ti = ra2engine::facing_to_index(u.turret_facing, ra2engine::kVehicleFacings);
+         // W3-B TurretOffset: forward along the BODY facing (FLH axes, §6).
+@@ -3892,22 +3928,39 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+         const int tn = pres_turret_index(u, va);   // W7-03-05/07
+         const ra2engine::VoxelSprite* alt = tn > 0 ? vxl_alt_turret(va, tn, u.house, ti, hf) : nullptr;
+         auto draw_turret = [&]() {
+-            if (alt)
++            if (alt && std::fabs(slope_pitch) < 1e-4)
+                 ra2engine::draw_voxel_sprite(ren, tc,
+                                              "vxl:" + img + ":t" + std::to_string(tn) + ":" +
+                                                  std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                                  std::to_string(ti) + fkey,
+                                              *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
+-            else
++            else if (!alt)
+                 ra2engine::draw_voxel_sprite(
+-                    ren, tc, "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
+-                    part_sprite(1, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
++                    ren, tc,
++                    "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
++                        std::to_string(ti) + fkey +
++                        (std::fabs(slope_pitch) > 1e-4
++                             ? ":sp" + std::to_string(static_cast<int>(
++                                           std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
++                             : ""),
++                    pitched_part(1, ti, slope_pitch), tfx, tfy, dlv, cam, W, H, extra_dy);
++            else
++                ra2engine::draw_voxel_sprite(ren, tc,
++                                             "vxl:" + img + ":t" + std::to_string(tn) + ":" +
++                                                 std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
++                                                 std::to_string(ti) + fkey,
++                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
+         };
+         auto draw_barrel = [&]() {
+-            if (va.has_barrel)
+-                ra2engine::draw_voxel_sprite(
+-                    ren, tc, "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
+-                    part_sprite(2, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
++            if (!va.has_barrel) return;
++            const std::string bkey =
++                "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
++                std::to_string(ti) + fkey +
++                (std::fabs(slope_pitch) > 1e-4
++                     ? ":sp" + std::to_string(static_cast<int>(std::lround(slope_pitch * 180.0 / 3.14159265358979 / 5.0)))
++                     : "");
++            ra2engine::draw_voxel_sprite(ren, tc, bkey, pitched_part(2, ti, slope_pitch), tfx, tfy, dlv, cam, W,
++                                         H, extra_dy);
+         };
+         // W7-12-41 [RE: 0x73A3A0 @0x73ACBB-0x73ADD4 -- q = ((turret facing
+         // >> 13) + 1 >> 1) & 3; q 0 (N) or 3 (W) draws the barrel BEFORE the
+diff --git a/engine/slope_tilt.cpp b/engine/slope_tilt.cpp
+new file mode 100644
+index 0000000..f69e5ab
+--- /dev/null
++++ b/engine/slope_tilt.cpp
+@@ -0,0 +1,61 @@
++#include "slope_tilt.hpp"
++#include "voxel_raster.hpp"
++#include <cmath>
++
++namespace ra2engine {
++namespace {
++
++constexpr double kPi = 3.14159265358979323846;
++// FUN_00754A20: atan(LevelHeight / 256), LevelHeight = 104 leptons/level.
++constexpr double kRampPitch = 0.38588266939807375;  // atan(104/256)
++// Steeper set (FUN_00754A50 / register ebx in FUN_00754CB0): ~atan(2*LH/cell).
++constexpr double kRampPitchSteep = 0.6857295104989298;  // atan(208/256)
++
++// Tilt-axis yaw (rad) per SlopeIndex for the FUN_007559B0 table at 0xB45188.
++// Values are the first arg to FUN_005AE6F0 in FUN_00754CB0 (0x4096cac1 = 270°,
++// 0x40490e56 = 180°, 0x3fc90e56 = 90°, 0, then 225°/135°/45°/315° repeats).
++constexpr double kSlopeYaw[17] = {
++    0.0,
++    4.712250232696533,   // 1: 270°
++    3.1414999961853027,  // 2: 180°
++    1.5707499980926514,  // 3:  90°
++    0.0,                 // 4:   0°
++    3.926875114440918,   // 5: 225°
++    2.3561251163482666,  // 6: 135°
++    0.7853749990463257,  // 7:  45°
++    5.49762487411499,    // 8: 315°
++    3.926875114440918,   // 9
++    2.3561251163482666,  // 10
++    0.7853749990463257,  // 11
++    5.49762487411499,    // 12
++    3.926875114440918,   // 13
++    2.3561251163482666,  // 14
++    0.7853749990463257,  // 15
++    5.49762487411499,    // 16
++};
++
++// Which pitch register FUN_00754CB0 pushed: ebx (steep) vs ebp (single).
++constexpr bool kSlopeSteep[17] = {
++    false,
++    true,  true,  true,  true,   // 1-4 ebx
++    false, false, false, false,  // 5-8 ebp
++    false, false, false, false,  // 9-12 ebp
++    true,  true,  true,  true,   // 13-16 ebx
++};
++
++}  // namespace
++
++double slope_tilt_pitch(int slope_index, double body_facing_u16) {
++    if (slope_index <= 0 || slope_index > 16) return 0.0;
++    const double p = kSlopeSteep[slope_index] ? kRampPitchSteep : kRampPitch;
++    const double axis = kSlopeYaw[slope_index];
++    // Model-space nose pitch before yaw: full tip when the hull faces along
++    // the tilt axis (FUN_0055A7D0 applies M_slope then body RotateZ; the
++    // nose component is p * cos(body - axis)).
++    constexpr int kFacings = 32;  // kVehicleFacings [RE: voxel-render.md §2]
++    const int bi = facing_to_index(body_facing_u16, kFacings);
++    const double body = index_to_yaw(bi, kFacings);
++    return p * std::cos(body - axis);
++}
++
++}  // namespace ra2engine
+diff --git a/engine/slope_tilt.hpp b/engine/slope_tilt.hpp
+new file mode 100644
+index 0000000..f08ee1e
+--- /dev/null
++++ b/engine/slope_tilt.hpp
+@@ -0,0 +1,20 @@
++#pragma once
++// Presentation-only vehicle tilt on TMP ramps (gamemd parity backlog T1.2).
++//
++// [RE: DriveLocomotionClass Draw_Matrix FUN_004B0410 -> FUN_0055A7D0 reads
++// CellClass SlopeIndex (+0x11C, TMP hdr +0x2A), copies the slope Matrix3D via
++// FUN_007559B0 (table 0xB45188, 48 bytes x SlopeIndex), then RotateZ by body
++// facing. Table built in FUN_00754CB0: index 0 = identity (FUN_005AE860);
++// 1..16 = FUN_005AE6F0(yaw, pitch) = Z(yaw)*X(pitch)*Z(-yaw). Pitch magnitude
++// FUN_00754A20 atan(LevelHeight/256) with Unsorted::LevelHeight 104.]
++
++#include <cstdint>
++
++namespace ra2engine {
++
++// Nose-up pitch (radians) for a Drive/Ship voxel hull on a cell with the given
++// TMP SlopeIndex and body facing (16-bit facing space). 0 on flat / unknown.
++// Does not touch simulation state.
++double slope_tilt_pitch(int slope_index, double body_facing_u16);
++
++}  // namespace ra2engine
+diff --git a/tests/test_slope_tilt.cpp b/tests/test_slope_tilt.cpp
+new file mode 100644
+index 0000000..713f5bc
+--- /dev/null
++++ b/tests/test_slope_tilt.cpp
+@@ -0,0 +1,25 @@
++#include "doctest.h"
++#include "slope_tilt.hpp"
++#include <cmath>
++
++TEST_CASE("slope_tilt: flat SlopeIndex is zero pitch") {
++    CHECK(ra2engine::slope_tilt_pitch(0, 0) == 0.0);
++    CHECK(ra2engine::slope_tilt_pitch(-1, 0x4000) == 0.0);
++    CHECK(ra2engine::slope_tilt_pitch(17, 0) == 0.0);
++}
++
++TEST_CASE("slope_tilt: single-height corner tips along its axis") {
++    // SlopeIndex 7: yaw 45°, ebp/single pitch atan(104/256). Facing NE
++    // (0x2000 → index 4, yaw = pi/4) aligns with the axis.
++    const double along = ra2engine::slope_tilt_pitch(7, 0x2000);
++    CHECK(along == doctest::Approx(0.38588266939807375).epsilon(1e-6));
++    // Facing SE (0x6000 → index 12, yaw = -pi/4): cos(pi/2) = 0.
++    const double across = ra2engine::slope_tilt_pitch(7, 0x6000);
++    CHECK(across == doctest::Approx(0.0).epsilon(1e-4));
++}
++
++TEST_CASE("slope_tilt: steep cardinal uses larger pitch magnitude") {
++    // Index 4 (ebx/steep): yaw 0°. Facing East 0x4000 → full steep pitch.
++    const double p = ra2engine::slope_tilt_pitch(4, 0x4000);
++    CHECK(p == doctest::Approx(0.6857295104989298).epsilon(1e-5));
++}

@@ -58,7 +58,10 @@ bool selection_can_move(const World& w, const Selection& sel) {
         const Unit& u = w.units()[i];
         if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !w.controllable(u.house)) continue;
         any = true;
-        if (!(u.deployed && !u.is_vehicle && (u.deploy_fire || u.abil.deployer))) return true;
+        // T3.3: deployed IsSimpleDeployer vehicles also refuse a ground move.
+        if (!(u.deployed && (u.deploy_fire || u.abil.deployer) &&
+              (!u.is_vehicle || (u.deploy_fire && !u.is_infantry))))
+            return true;
     }
     return !any;
 }
@@ -316,9 +319,29 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
         if (harv && B.house == world_.order_issuer() && is_refinery_type(B.type)) return Action::Dock;
         // G16 (agent G) [RE: world-depth.md §A2]: selected Occupier infantry on
         // a building they may garrison (CanBeOccupiedBy) -> the enter cursor.
-        for (int si : sel_.ids())
-            if (si < static_cast<int>(us.size()) && world_.controllable(us[si].house) && world_.can_occupy(si, b))
-                return Action::Enter;
+        // T2.4 [RE: InfantryClass::What_Action FUN_0051E010 @0x51E643 /
+        // UnitClass @0x73F645: Grinding=+0x16AD -> ACTION_ENTER 0x0B; Mission_Enter
+        // FUN_00519449 + FUN_004598A0 for InfantryAbsorb=+0x16AF]: Grinder /
+        // Bio Reactor enter for own (incl. MC) units.
+        {
+            bool want_enter = false, blocked = false;
+            for (int si : sel_.ids()) {
+                if (si >= static_cast<int>(us.size())) break;
+                if (!world_.controllable(us[si].house) || !us[si].alive || us[si].die_time >= 0.0) continue;
+                if (world_.can_occupy(si, b) || world_.can_grind(si, b) || world_.can_absorb(si, b)) {
+                    want_enter = true;
+                    break;
+                }
+                // Full Bio Reactor -> NoEnter (same cursor family as a full transport).
+                if (!us[si].is_vehicle && !us[si].is_aircraft && B.house == us[si].house &&
+                    B.type >= 0 && B.type < static_cast<int>(world_.btypes().size()) &&
+                    world_.btypes()[static_cast<std::size_t>(B.type)].infantry_absorb &&
+                    !world_.can_absorb(si, b))
+                    blocked = true;
+            }
+            if (want_enter) return Action::Enter;
+            if (blocked) return Action::NoMove;
+        }
         // W7-01-14: only a non-allied Spyable building takes a spy.
         const int spy = first_selected_role(world_, sel_, true);
         if (spy >= 0 && world_.spy_can_infiltrate(spy, b)) return Action::Infiltrate;
@@ -336,7 +359,18 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
         // W7-08-01 / W7-04-06: damaged own vehicles over an own UnitRepair
         // building -> the enter (dock) cursor.
         if (world_.depot_wants(world_.order_issuer(), sel_.ids(), b)) return Action::Enter;
-        if (B.house == world_.order_issuer()) return shift ? Action::None : Action::SelectBuilding;
+        if (B.house == world_.order_issuer()) {
+            // T4.3 [RE: BuildingClass::What_Action @0x44731C: UnitAbsorb=+0x16AE
+            // | InfantryAbsorb=+0x16AF with occupants -> ACTION_DEPLOY 4;
+            // Mission_Unload FUN_0044D880 -> UnloadOccupants FUN_00457DD0]:
+            // Deploy on the selected Bio Reactor (or occupied hut) ejects.
+            if (selected_building_valid() && b == selected_building_ && !B.occupants.empty() &&
+                B.type >= 0 && B.type < static_cast<int>(world_.btypes().size())) {
+                const auto& bt = world_.btypes()[static_cast<std::size_t>(B.type)];
+                if (bt.infantry_absorb || bt.can_be_occupied) return Action::Deploy;
+            }
+            return shift ? Action::None : Action::SelectBuilding;
+        }
         if (world_.is_enemy(world_.order_issuer(), B.house)) return Action::Attack;
     }
     // W7-01-05 [RE: InfantryClass::What_Action 0x51F510]: a human's deployed
@@ -757,7 +791,7 @@ void Input::set_viewport(int view_w, int view_h) {
     view_h_ = view_h;
     int mnx, mny, mxx, mxy;   // the same rule as the constructor
     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
-        const int margin_x = view_w_ / 2, margin_y = view_h_ / 2;
+        const int margin_x = 0, margin_y = 0;
         min_cam_x_ = -margin_x - mxx;
         max_cam_x_ = view_w_ + margin_x - mnx;
         min_cam_y_ = -margin_y - mxy;

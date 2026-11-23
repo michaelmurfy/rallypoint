@@ -1,0 +1,276 @@
+diff --git a/engine/grinder_bio.hpp b/engine/grinder_bio.hpp
+--- a/engine/grinder_bio.hpp
++++ b/engine/grinder_bio.hpp
+@@ -1,9 +1,10 @@
+ #pragma once
+-// Yuri Grinder (Grinding=) and Bio Reactor (InfantryAbsorb=) — ModEnc / rulesmd.
+- // YAGRND: Grinding=yes. YAPOWR: InfantryAbsorb=yes, Passengers=5, ExtraPower=100,
+- // Power=150 (YABRCK is the barracks). Pure helpers; World hooks live in
+- // world_grinder_bio.cpp. Grind refund is sell_refund (Soylent absolute, else
+- // Cost * RefundPercent for humans).
++// Yuri Grinder (Grinding=) and Bio Reactor (InfantryAbsorb=) — ModEnc / rulesmd /
++// gamemd BuildingType (+0x16AD Grinding, +0x16AF InfantryAbsorb, +0xEE8 ExtraPower).
++// YAGRND: Grinding=yes. YAPOWR: InfantryAbsorb=yes, Passengers=5, ExtraPower=100,
++// Power=150 (YABRCK is the barracks). Pure helpers; World hooks live in
++// world_grinder_bio.cpp. Grind refund is sell_refund (Soylent absolute, else
++// Cost * RefundPercent for humans).
+ #include "building.hpp"
+ #include "repair_sell.hpp"
+ 
+diff --git a/engine/input_original.cpp b/engine/input_original.cpp
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -319,9 +319,29 @@
+         if (harv && B.house == world_.order_issuer() && is_refinery_type(B.type)) return Action::Dock;
+         // G16 (agent G) [RE: world-depth.md §A2]: selected Occupier infantry on
+         // a building they may garrison (CanBeOccupiedBy) -> the enter cursor.
+-        for (int si : sel_.ids())
+-            if (si < static_cast<int>(us.size()) && world_.controllable(us[si].house) && world_.can_occupy(si, b))
+-                return Action::Enter;
++        // T2.4 [RE: InfantryClass::What_Action FUN_0051E010 @0x51E643 /
++        // UnitClass @0x73F645: Grinding=+0x16AD -> ACTION_ENTER 0x0B; Mission_Enter
++        // FUN_00519449 + FUN_004598A0 for InfantryAbsorb=+0x16AF]: Grinder /
++        // Bio Reactor enter for own (incl. MC) units.
++        {
++            bool want_enter = false, blocked = false;
++            for (int si : sel_.ids()) {
++                if (si >= static_cast<int>(us.size())) break;
++                if (!world_.controllable(us[si].house) || !us[si].alive || us[si].die_time >= 0.0) continue;
++                if (world_.can_occupy(si, b) || world_.can_grind(si, b) || world_.can_absorb(si, b)) {
++                    want_enter = true;
++                    break;
++                }
++                // Full Bio Reactor -> NoEnter (same cursor family as a full transport).
++                if (!us[si].is_vehicle && !us[si].is_aircraft && B.house == us[si].house &&
++                    B.type >= 0 && B.type < static_cast<int>(world_.btypes().size()) &&
++                    world_.btypes()[static_cast<std::size_t>(B.type)].infantry_absorb &&
++                    !world_.can_absorb(si, b))
++                    blocked = true;
++            }
++            if (want_enter) return Action::Enter;
++            if (blocked) return Action::NoMove;
++        }
+         // W7-01-14: only a non-allied Spyable building takes a spy.
+         const int spy = first_selected_role(world_, sel_, true);
+         if (spy >= 0 && world_.spy_can_infiltrate(spy, b)) return Action::Infiltrate;
+@@ -339,7 +359,18 @@
+         // W7-08-01 / W7-04-06: damaged own vehicles over an own UnitRepair
+         // building -> the enter (dock) cursor.
+         if (world_.depot_wants(world_.order_issuer(), sel_.ids(), b)) return Action::Enter;
+-        if (B.house == world_.order_issuer()) return shift ? Action::None : Action::SelectBuilding;
++        if (B.house == world_.order_issuer()) {
++            // T4.3 [RE: BuildingClass::What_Action @0x44731C: UnitAbsorb=+0x16AE
++            // | InfantryAbsorb=+0x16AF with occupants -> ACTION_DEPLOY 4;
++            // Mission_Unload FUN_0044D880 -> UnloadOccupants FUN_00457DD0]:
++            // Deploy on the selected Bio Reactor (or occupied hut) ejects.
++            if (selected_building_valid() && b == selected_building_ && !B.occupants.empty() &&
++                B.type >= 0 && B.type < static_cast<int>(world_.btypes().size())) {
++                const auto& bt = world_.btypes()[static_cast<std::size_t>(B.type)];
++                if (bt.infantry_absorb || bt.can_be_occupied) return Action::Deploy;
++            }
++            return shift ? Action::None : Action::SelectBuilding;
++        }
+         if (world_.is_enemy(world_.order_issuer(), B.house)) return Action::Attack;
+     }
+     // W7-01-05 [RE: InfantryClass::What_Action 0x51F510]: a human's deployed
+diff --git a/engine/world_depth.cpp b/engine/world_depth.cpp
+--- a/engine/world_depth.cpp
++++ b/engine/world_depth.cpp
+@@ -125,16 +125,34 @@
+ }
+ 
+ int World::group_occupy_count(int issuer, const std::vector<int>& ids, int bi) const {
++    // Occupy + Grinder + Bio Reactor enters [RE: InfantryClass::What_Action
++    // FUN_0051E010 @0x51E643 Grinding=+0x16AD -> ACTION_ENTER 0x0B / NoEnter;
++    // UnitClass @0x73F645 / @0x7401AD; Mission_Enter FUN_00519449 uses
++    // FUN_004598A0 for InfantryAbsorb=+0x16AF | UnitAbsorb=+0x16AE].
+     if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return 0;
+-    int n = 0;
++    if (buildings_[static_cast<std::size_t>(bi)].type < 0 ||
++        buildings_[static_cast<std::size_t>(bi)].type >= static_cast<int>(btypes().size()))
++        return 0;
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b.type)];
++    int n = 0, occupy_n = 0, absorb_n = 0;
+     for (int i : ids) {
+         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
+         const Unit& u = units_[static_cast<std::size_t>(i)];
+         if (u.house != issuer || u.cargo_of >= 0) continue;
++        if (can_grind(i, bi)) {
++            ++n;
++            continue;
++        }
++        if (can_absorb(i, bi)) {
++            if (static_cast<int>(b.occupants.size()) + absorb_n >= bt.passengers) continue;
++            ++absorb_n;
++            ++n;
++            continue;
++        }
+         if (!can_occupy(i, bi)) continue;
+-        // Room check against the orders already given this click.
+-        const Building& b = buildings_[bi];
+-        if (static_cast<int>(b.occupants.size()) + n >= btypes()[b.type].max_occupants) break;
++        if (static_cast<int>(b.occupants.size()) + occupy_n >= bt.max_occupants) continue;
++        ++occupy_n;
+         ++n;
+     }
+     return n;
+@@ -142,16 +160,36 @@
+ 
+ int World::group_occupy(int issuer, const std::vector<int>& ids, int bi) {
+     if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return 0;
+-    int n = 0;
++    if (buildings_[static_cast<std::size_t>(bi)].type < 0 ||
++        buildings_[static_cast<std::size_t>(bi)].type >= static_cast<int>(btypes().size()))
++        return 0;
++    const Building& b0 = buildings_[static_cast<std::size_t>(bi)];
++    const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b0.type)];
++    int n = 0, occupy_n = 0, absorb_n = 0;
+     for (int i : ids) {
+         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
+         const Unit& u = units_[static_cast<std::size_t>(i)];
+         if (u.house != issuer || u.cargo_of >= 0) continue;
++        if (can_grind(i, bi)) {
++            order_grind(i, bi);
++            ++n;
++            continue;
++        }
++        if (can_absorb(i, bi)) {
++            if (static_cast<int>(buildings_[static_cast<std::size_t>(bi)].occupants.size()) + absorb_n >=
++                bt.passengers)
++                continue;
++            order_absorb(i, bi);
++            ++absorb_n;
++            ++n;
++            continue;
++        }
+         if (!can_occupy(i, bi)) continue;
+-        // Room check against the orders already given this click.
+-        const Building& b = buildings_[bi];
+-        if (static_cast<int>(b.occupants.size()) + n >= btypes()[b.type].max_occupants) break;
++        if (static_cast<int>(buildings_[static_cast<std::size_t>(bi)].occupants.size()) + occupy_n >=
++            bt.max_occupants)
++            continue;
+         order_occupy(i, bi);
++        ++occupy_n;
+         ++n;
+     }
+     return n;
+@@ -258,7 +296,9 @@
+             ability_erase_unit(ui);
+         }
+         garrison_events_.push_back({GarrisonEvent::Unloaded, bi, house});
+-        sync_garrison_owner(bi);
++        if (b.type >= 0 && b.type < static_cast<int>(btypes().size()) &&
++            btypes()[static_cast<std::size_t>(b.type)].can_be_occupied)
++            sync_garrison_owner(bi);
+         return;
+     }
+     const bool inside = exit.x < 0;
+@@ -306,7 +346,13 @@
+         put(ui, got, got_layer);
+     }
+     garrison_events_.push_back({GarrisonEvent::Unloaded, bi, house});
+-    sync_garrison_owner(bi);
++    // CanBeOccupied huts sync owner; InfantryAbsorb (YAPOWR) keeps its house
++    // [RE: BuildingClass::Mission_Unload FUN_0044D880 @0x44D8B1 reads
++    // InfantryAbsorb=+0x16AF then UnloadOccupants FUN_00457DD0 — never
++    // FUN_004581F0's neutral flip].
++    if (b.type >= 0 && b.type < static_cast<int>(btypes().size()) &&
++        btypes()[static_cast<std::size_t>(b.type)].can_be_occupied)
++        sync_garrison_owner(bi);
+ }
+ 
+ Cellxy World::nearest_exit_from_host(const Unit& u, int hx, int hy, int hlayer, int* layer) const {
+diff --git a/engine/world_grinder_bio.cpp b/engine/world_grinder_bio.cpp
+--- a/engine/world_grinder_bio.cpp
++++ b/engine/world_grinder_bio.cpp
+@@ -1,8 +1,20 @@
+ // Yuri Grinder / Bio Reactor enter fates (skirmish CaptureManager victims).
+- // Grinding: destroy the unit, pay Soylent to the building's house, free the
+- // MC slot without restoring the original house (unit is dead). InfantryAbsorb
+- // (YAPOWR): limbo into occupants, free the MC slot but keep the controller's
+- // house so ExtraPower still counts (YR: release capacity while they sit inside).
++//
++// RE (Steam YR gamemd.exe):
++//   BuildingType LoadFromINI @0x460971 / @0x4609A9: Grinding=+0x16AD,
++//   UnitAbsorb=+0x16AE, InfantryAbsorb=+0x16AF; ExtraPower=+0xEE8 @0x4610B3.
++//   InfantryClass::What_Action FUN_0051E010 @0x51E643 (and UnitClass @0x73F645 /
++//   @0x7401AD): Grinding -> ACTION_ENTER 0x0B (else NoEnter).
++//   Mission_Enter FUN_00519449 @0x51989F grinds; @0x51A2E5 / FUN_004598A0
++//   gates InfantryAbsorb|UnitAbsorb boarding.
++//   BuildingClass::Mission_Unload FUN_0044D880 @0x44D8B1 ejects absorb
++//   occupants via UnloadOccupants FUN_00457DD0; What_Action @0x44731C shows
++//   ACTION_DEPLOY when those buildings have occupants.
++//
++// Grinding: destroy the unit, pay Soylent to the building's house, free the
++// MC slot without restoring the original house (unit is dead). InfantryAbsorb
++// (YAPOWR): limbo into occupants, free the MC slot but keep the controller's
++// house so ExtraPower still counts (YR: release capacity while they sit inside).
+ #include "world.hpp"
+ 
+ #include "grinder_bio.hpp"
+diff --git a/tests/test_grinder_bio.cpp b/tests/test_grinder_bio.cpp
+--- a/tests/test_grinder_bio.cpp
++++ b/tests/test_grinder_bio.cpp
+@@ -149,3 +149,60 @@
+     const auto pt = power_totals(w.buildings(), w.btypes(), 0);
+     CHECK(pt.output == 250);   // 150 + 100
+ }
++
++TEST_CASE("group_occupy: orders grind and absorb enters (Mission_Enter)") {
++    GB_WORLD(w, x0, y0);
++    BuildingTypeDef grind;
++    grind.id = "YAGRND";
++    grind.fw = 2;
++    grind.fh = 2;
++    grind.grinding = true;
++    BuildingTypeDef reactor;
++    reactor.id = "YAPOWR";
++    reactor.fw = 2;
++    reactor.fh = 2;
++    reactor.infantry_absorb = true;
++    reactor.extra_power = 100;
++    reactor.passengers = 5;
++    reactor.power = 150;
++    w.set_building_types({grind, reactor});
++    const int gi = w.add_building(0, x0 + 4, y0, 2, 2, 0, 900, 0, 0.0, true);
++    const int ri = w.add_building(1, x0 + 8, y0, 2, 2, 0, 700, 0, 0.0, true);
++    w.add_combat_unit(x0, y0, 0, mk_gi());
++    w.add_combat_unit(x0 + 2, y0, 0, mk_gi());
++    CHECK(w.group_occupy_count(0, {0}, gi) == 1);
++    CHECK(w.group_occupy(0, {0}, gi) == 1);
++    CHECK(w.units()[0].occupy_target == gi);
++    CHECK(w.group_occupy_count(0, {1}, ri) == 1);
++    CHECK(w.group_occupy(0, {1}, ri) == 1);
++    CHECK(w.units()[1].occupy_target == ri);
++}
++
++TEST_CASE("bio reactor: Deploy unload_occupants ejects and keeps house") {
++    GB_WORLD(w, x0, y0);
++    BuildingTypeDef reactor;
++    reactor.id = "YAPOWR";
++    reactor.fw = 2;
++    reactor.fh = 2;
++    reactor.infantry_absorb = true;
++    reactor.extra_power = 100;
++    reactor.passengers = 5;
++    reactor.power = 150;
++    w.set_building_types({reactor});
++    const int bi = w.add_building(0, x0 + 4, y0, 2, 2, 0, 700, 0, 0.0, true);
++    w.add_combat_unit(x0, y0, 0, mk_gi());
++    w.add_combat_unit(x0 + 2, y0, 0, mk_gi());
++    REQUIRE(w.absorb_now(0, bi));
++    REQUIRE(w.absorb_now(1, bi));
++    CHECK(w.buildings()[bi].occupants.size() == 2);
++    CHECK(w.buildings()[bi].house == 0);
++    w.unload_occupants(bi);
++    CHECK(w.buildings()[bi].occupants.empty());
++    CHECK(w.buildings()[bi].house == 0);   // must not flip to neutral
++    CHECK(w.units()[0].garrison_of < 0);
++    CHECK(w.units()[0].cargo_of < 0);
++    CHECK(w.units()[0].alive);
++    CHECK(w.units()[1].alive);
++    const auto pt = power_totals(w.buildings(), w.btypes(), 0);
++    CHECK(pt.output == 150);   // ExtraPower gone with occupants
++}

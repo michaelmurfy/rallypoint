@@ -100,6 +100,7 @@ set(RA2_ENGINE_SOURCES
     ${RA2_ROOT}/engine/world.cpp
     ${RA2_ROOT}/engine/world_loco.cpp   # W7 locomotion (step_units)
     ${RA2_ROOT}/engine/locomotion.cpp   # W7 locomotion (tracks / speeds, pure)
+    ${RA2_ROOT}/engine/slope_tilt.cpp   # T1.2 presentation tilt on TMP slopes
     ${RA2_ROOT}/engine/world_econ.cpp   # L2 per-house economy
     ${RA2_ROOT}/engine/world_veterancy.cpp
     ${RA2_ROOT}/engine/pathfind.cpp
@@ -120,6 +121,7 @@ set(RA2_ENGINE_SOURCES
     ${RA2_ROOT}/engine/sidebar.cpp
     ${RA2_ROOT}/engine/ore.cpp
     ${RA2_ROOT}/engine/harvest.cpp
+    ${RA2_ROOT}/engine/slave_miner.cpp
     ${RA2_ROOT}/engine/factory.cpp
     ${RA2_ROOT}/engine/cargo.cpp
     ${RA2_ROOT}/engine/flight.cpp
@@ -156,6 +158,8 @@ set(RA2_ENGINE_SOURCES
     ${RA2_ROOT}/engine/roster2.cpp
     ${RA2_ROOT}/engine/abilities.cpp
     ${RA2_ROOT}/engine/world_abilities.cpp
+    ${RA2_ROOT}/engine/world_mind_control.cpp
+    ${RA2_ROOT}/engine/world_grinder_bio.cpp
     ${RA2_ROOT}/engine/world_w5.cpp
     ${RA2_ROOT}/engine/world_w6.cpp
     ${RA2_ROOT}/engine/world_w7.cpp
@@ -193,6 +197,23 @@ file(WRITE "${RA2_GENERATED_DIR}/ra2_notices.inc.tmp"
 configure_file("${RA2_GENERATED_DIR}/ra2_notices.inc.tmp" "${RA2_GENERATED_DIR}/ra2_notices.inc" COPYONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${RA2_ROOT}/THIRD_PARTY_NOTICES.md" "${RA2_ROOT}/LICENSE")
+
+# Rallypoint: the FastMath lookup tables are computed here, from their
+# mathematical definitions with exact integer arithmetic (identical on every
+# machine), instead of being copied from the original executable. Runs on the
+# build host, so cross builds (MinGW, universal macOS) work too.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+file(MAKE_DIRECTORY "${RA2_GENERATED_DIR}/gen")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -I "${RA2_ROOT}/tools/gen_math_tables.py"
+                        "${RA2_GENERATED_DIR}/gen/orig_math_tables.inc"
+                RESULT_VARIABLE _ra2_gen_rc)
+if(NOT _ra2_gen_rc EQUAL 0)
+    message(FATAL_ERROR "tools/gen_math_tables.py failed (${_ra2_gen_rc})")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${RA2_ROOT}/tools/gen_math_tables.py")
+set_source_files_properties(${RA2_ROOT}/engine/orig_math.cpp PROPERTIES
+                            INCLUDE_DIRECTORIES "${RA2_GENERATED_DIR}"
+                            OBJECT_DEPENDS "${RA2_GENERATED_DIR}/gen/orig_math_tables.inc")
 
 # engine/net: original-format network layer (UDP + 0xAA04/0x1236 channels,
 # EventClass codec, lockstep scheduler). SDL-free; part of the engine (so the

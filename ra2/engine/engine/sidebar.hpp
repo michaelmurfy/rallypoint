@@ -82,6 +82,11 @@ struct SidebarLayout {
     int side2_rows = 0;      // N: side2 tiles / visible cameo rows
     int power_pips = 0;      // capacity = (50*N + 3) / 3
     std::vector<CameoCell> cameos;   // 2-column grid, row-major
+    // Superweapon cameos occupy the first sw_rows of the cameo strip (the
+    // side2 sockets). Production cameos start below them. 0 keeps the
+    // production grid where it has always been.
+    int sw_slots = 0;
+    int sw_rows = 0;
 
     // view_w/view_h = window size; `types` = roster indices to show, already
     // filtered (cameo != "" AND tech_level > 0) and ordered by tech_level
@@ -90,14 +95,28 @@ struct SidebarLayout {
     // laid out (G-12 strip scrolling).
     // G-12: top_row scrolls the strip (StripClass TopRowIndex): cells start at
     // types[2*top_row]; the caller clamps it with max_top_row().
+    // sw_slots reserves cameo sockets for superweapons (full rows).
     static SidebarLayout compute(int view_w, int view_h,
-                                 const std::vector<int>& types, int top_row = 0);
+                                 const std::vector<int>& types, int top_row = 0,
+                                 int sw_slots = 0);
     // Largest useful top_row for count cameos (0 when they all fit).
     int max_top_row(int count) const {
+        const int vis = side2_rows - sw_rows;
+        if (vis <= 0) return 0;
         const int rows = (count + 1) / 2;
-        return rows > side2_rows ? rows - side2_rows : 0;
+        return rows > vis ? rows - vis : 0;
     }
     int top_row = 0;
+
+    // k-th superweapon cameo (grant order), in the side2 wells. Column pitch
+    // is the socket pitch (63), not the 60px cameo width. Never the radar.
+    SbRect sw_slot(int k) const {
+        if (k < 0) k = 0;
+        const int col = k % 2;
+        const int row = k / 2;
+        return {bar.x + kCameoX + col * kCameoColPitch,
+                strip_top + 1 + row * kCameoRowPitch, kCameoW, kCameoH};
+    }
 
     int cameo_at(int px, int py) const;   // index into cameos, or -1
     int tab_at(int px, int py) const;     // 0..3, or -1

@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <string>
+
 namespace ra2engine {
 struct InputEvent {
     // P7: Key (a key the UI consumes; `key` = one of the kKey* codes below, or 0
@@ -12,7 +14,10 @@ struct InputEvent {
     // AppLowMemory (drop caches), RenderReset (GL context lost: textures gone).
     enum Kind { None, Quit, PointerDown, PointerUp, PointerMove, Key, Text, Pan,
                 AppBackground, AppForeground, AppLowMemory, RenderReset,
-                Resize /* R-162: the window / panel changed size */ } kind = None;
+                Resize /* R-162: the window / panel changed size */,
+                FocusGained /* desktop: the OS may re-show the system cursor */,
+                Wheel /* mouse wheel / trackpad scroll: dy whole notches, + = away from the user;
+                         x, y the pointer (logical) */ } kind = None;
     int x = 0, y = 0;                       // pointer position (window pixels)
     enum Button { Left, Right } button = Left;  // valid on PointerDown/PointerUp
     bool shift = false;                     // Shift held at event time
@@ -56,6 +61,11 @@ public:
     // hidden = true creates an invisible window with the software renderer (the
     // --play harness: deterministic pixels, no visible desktop needed).
     static Platform create(const char* title, int w, int h, bool hidden = false);
+    // Rallypoint launcher (--title / --width / --height / --fullscreen /
+    // --windowed, RA2_WINDOW_TITLE): applied by every later visible create().
+    // w/h are the window size (0 = keep), fullscreen -1 = keep, 0 / 1.
+    static void set_launch_window(const std::string& title, int w, int h, int fullscreen);
+    static bool launch_window_sized();
     Platform(Platform&&) noexcept; Platform& operator=(Platform&&) noexcept;
     ~Platform() override;
     bool poll(InputEvent& ev) override;
@@ -73,6 +83,10 @@ public:
     void set_logical_size(int w, int h);
     // Physical output size in pixels (the window / phone panel).
     void output_size(int& w, int& h) const;
+    // Window pixels per logical canvas pixel in the last frame (1 when the
+    // window is the canvas, 2 on a Retina window at the 2x canvas, 1.5 for
+    // 1280x720 menus on 1080p). The tactical zoom limit reads it.
+    double present_fit() const;
     // W4-AM-07: a finger resting toward a hold (the scene draws a ring).
     bool touch_hold(int& x, int& y, float& progress) const;
 private:

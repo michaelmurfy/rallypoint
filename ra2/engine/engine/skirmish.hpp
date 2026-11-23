@@ -72,6 +72,17 @@ struct SkirmishConfig {
     // / Meat Grinder / Naval War, 9 Team Game); its rules override decides
     // AlliesAllowed / AllyChangeAllowed. 0 = not a multiplayer lobby.
     int                       mp_mode = 0;
+    // Rallypoint --launch AlliesAllowed=: -1 leave to mp_mode; 0/1 override.
+    int                       allies_allowed = -1;
+    // Rallypoint --launch AutoRepair=: -1 leave [IQ] RepairSell; 1 = RepairSell=0
+    // (CnCNet "Auto Repair"); 0 = leave rules (same as absent for the engine).
+    int                       auto_repair = -1;
+    // Rallypoint --launch CrateMinimum=: -1 leave [CrateRules]; else override
+    // the floor (CnCNet Crates density: Increased=8, Extreme=40).
+    int                       crate_minimum = -1;
+    // [RP-AI-BOOST] Rallypoint --launch AIBoost= / RA2_AI_BOOST: 0 = stock
+    // (default); 1..3 smarter computer opponents. -1 = resolve from env only.
+    int                       ai_boost = -1;
 
     // P10 Campaign [RE: campaign.md §3]: a NON-EMPTY campaign_map turns the
     // GameScene into that campaign mission (map from Maps01/MAPS02, houses +

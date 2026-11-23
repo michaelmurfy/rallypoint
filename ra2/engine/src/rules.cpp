@@ -293,6 +293,86 @@ std::string Rules::free_unit(const std::string& id) const {
     return ini_->get(id, "FreeUnit", "");
 }
 
+std::string Rules::enslaves(const std::string& id) const {
+    std::string v = ini_->get(id, "Enslaves", "");
+    for (char& c : v) c = (char)std::toupper((unsigned char)c);
+    return v;
+}
+
+int Rules::slaves_number(const std::string& id) const {
+    return ini_->get_int(id, "SlavesNumber", 0);
+}
+
+int Rules::slave_regen_rate(const std::string& id) const {
+    return ini_->get_int(id, "SlaveRegenRate", 0);
+}
+
+int Rules::slave_reload_rate(const std::string& id) const {
+    return ini_->get_int(id, "SlaveReloadRate", 0);
+}
+
+bool Rules::slaved(const std::string& id) const {
+    return is_truthy(ini_->get(id, "Slaved", ""));
+}
+
+bool Rules::resource_gatherer(const std::string& id) const {
+    return is_truthy(ini_->get(id, "ResourceGatherer", ""));
+}
+
+bool Rules::resource_destination(const std::string& id) const {
+    return is_truthy(ini_->get(id, "ResourceDestination", ""));
+}
+
+int Rules::slave_miner_slave_scan() const {
+    return ini_->get_int("General", "SlaveMinerSlaveScan", 14);
+}
+
+int Rules::slave_miner_short_scan() const {
+    return ini_->get_int("General", "SlaveMinerShortScan", 8);
+}
+
+int Rules::slave_miner_long_scan() const {
+    return ini_->get_int("General", "SlaveMinerLongScan", 48);
+}
+
+int Rules::slave_miner_scan_correction() const {
+    return ini_->get_int("General", "SlaveMinerScanCorrection", 3);
+}
+
+int Rules::slave_miner_kick_frame_delay() const {
+    return ini_->get_int("General", "SlaveMinerKickFrameDelay", 150);
+}
+
+int Rules::ai_slave_miner_number(int difficulty_index) const {
+    // [RE: FUN_0066D530 -> Rules+0x133c; AI compare FUN_004FEACA @0x4FEAD0
+    // Items[house+0x184]]. CSV hard,medium,easy; stock 4,3,2.
+    const std::string raw = ini_->get("General", "AISlaveMinerNumber", "4,3,2");
+    int vals[3] = {4, 3, 2};
+    int n = 0, cur = 0;
+    bool neg = false, any = false;
+    auto flush = [&] {
+        if (!any || n >= 3) return;
+        vals[n++] = neg ? -cur : cur;
+        cur = 0;
+        neg = false;
+        any = false;
+    };
+    for (char ch : raw) {
+        if (ch == ',' || ch == ';') {
+            flush();
+        } else if (ch == '-' && !any) {
+            neg = true;
+        } else if (ch >= '0' && ch <= '9') {
+            any = true;
+            cur = cur * 10 + (ch - '0');
+        }
+    }
+    flush();
+    if (difficulty_index < 0) difficulty_index = 0;
+    if (difficulty_index > 2) difficulty_index = 2;
+    return vals[difficulty_index] < 0 ? 0 : vals[difficulty_index];
+}
+
 std::string Rules::locomotor(const std::string& id) const {
     // The real [ZEP] value "{92612C46-...} ;Jumpjet" arrives comment-free:
     // Ini::parse cuts at ';' like the game's INIClass::Load.

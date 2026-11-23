@@ -139,6 +139,10 @@ std::string Art::cameo(const std::string& image) const {
     return ini_->get(image, "Cameo", "");
 }
 
+std::string Art::alt_cameo(const std::string& image) const {
+    return ini_->get(image, "AltCameo", "");
+}
+
 int Art::damage_levels(const std::string& image) const {
     const int v = std::atoi(ini_->get(image, "DamageLevels", "1").c_str());
     return v > 0 ? v : 1;

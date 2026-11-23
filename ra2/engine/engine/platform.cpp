@@ -1,6 +1,7 @@
 #include "platform.hpp"
 #include <algorithm>
 #include "touch_gestures.hpp"
+#include "logical_canvas.hpp"
 
 #include <SDL.h>
 #include <cstdio>
@@ -15,6 +16,33 @@ struct Platform::Impl {
     int w = 0;
     int h = 0;
     TouchGestures touch;   // G-70 gesture layer (fed by SDL_FINGER*)
+    // HiDPI present (logical_canvas.hpp present_mode): an exact whole scale
+    // goes through SDL's integer scale; a fractional one draws the frame into
+    // `canvas`, enlarges it into `pre` with nearest sampling and filters that
+    // down to the window. `hidden` (--play) always keeps the integer scale.
+    bool hidden = false;
+    int int_scale = -1;   // SDL_RenderSetIntegerScale state (-1 = not set yet)
+    bool bound = false;   // `canvas` is the render target of this frame
+    double fit = 1.0;     // window pixels per canvas pixel, last frame
+    SDL_Texture* canvas = nullptr;
+    SDL_Texture* pre = nullptr;
+    int canvas_w = 0, canvas_h = 0, pre_w = 0, pre_h = 0;
+    float wheel = 0.0f;   // fractional trackpad scroll not yet sent as a notch
+    void drop_targets() {
+        if (canvas) SDL_DestroyTexture(canvas);
+        if (pre) SDL_DestroyTexture(pre);
+        canvas = pre = nullptr;
+        canvas_w = canvas_h = pre_w = pre_h = 0;
+    }
+    static SDL_Texture* target(SDL_Renderer* r, SDL_Texture*& t, int& tw, int& th, int w, int h) {
+        if (t && tw == w && th == h) return t;
+        if (t) SDL_DestroyTexture(t);
+        t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w, h);
+        tw = t ? w : 0;
+        th = t ? h : 0;
+        if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+        return t;
+    }
     // W9-04-04: a phone returning from the background can deliver a mouse
     // event (no real mouse: the window corner) -- it switched the game to
     // mouse mode and edge-scrolled the map into the black. Mouse events are
@@ -29,6 +57,15 @@ struct Platform::Impl {
         if (!last_touch) return false;
         if (foreground_at && SDL_GetTicks() - foreground_at < 1000) return true;
         return motion_no_buttons && x == 0 && y == 0;
+    }
+    // Fullscreen with the focus: keep the pointer in the window, so edge
+    // scrolling does not leave onto a second monitor (cnc-ddraw locks the
+    // cursor too). Windowed play and a lost focus release it.
+    void update_grab() const {
+#ifndef __ANDROID__
+        const Uint32 f = SDL_GetWindowFlags(window);
+        SDL_SetWindowMouseGrab(window, ((f & SDL_WINDOW_FULLSCREEN_DESKTOP) && (f & SDL_WINDOW_INPUT_FOCUS)) ? SDL_TRUE : SDL_FALSE);
+#endif
     }
     // W9-04-06: the tap / drag slop is Android's touch slop, 8 dp, in the
     // window (logical) pixels the fingers are reported in -- 12 px was ~4.6
@@ -46,26 +83,69 @@ struct Platform::Impl {
     }
 };
 
+namespace {
+std::string g_launch_title;
+int g_launch_w = 0, g_launch_h = 0, g_launch_fs = -1;
+}  // namespace
+
+void Platform::set_launch_window(const std::string& title, int w, int h, int fullscreen) {
+    g_launch_title = title;
+    g_launch_w = w > 0 && h > 0 ? w : 0;
+    g_launch_h = w > 0 && h > 0 ? h : 0;
+    g_launch_fs = fullscreen;
+}
+bool Platform::launch_window_sized() { return g_launch_w > 0 || g_launch_fs >= 0; }
+
 Platform Platform::create(const char* title, int w, int h, bool hidden) {
+    if (!hidden && !g_launch_title.empty()) title = g_launch_title.c_str();
     // G-71: SDL must not synthesise mouse events from touches (every tap would
     // arrive twice = a double-click); fingers go through TouchGestures. The
     // SDL_TOUCH_MOUSEID filter in poll() backs this up.
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    // Crisp upscaled UI / shell art: bilinear logical-size scaling blurs 1px
+    // Westwood bitmap fonts and SHP pixels on Retina and other HiDPI windows.
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+    // Windows: per-monitor DPI aware, so a 150% display gets a real pixel
+    // window instead of a 100% one the compositor stretches (blurry text).
+    // Window sizes stay in pixels (no SDL_HINT_WINDOWS_DPI_SCALING). Other
+    // systems ignore the hint.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         throw std::runtime_error(SDL_GetError());
     }
 
     Uint32 flags = hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN;
+#ifndef __ANDROID__
+    // macOS Retina and Wayland scaled outputs: a drawable in real pixels (the
+    // window size stays in points there). X11 and Windows are pixels anyway.
+    flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
 #ifdef __ANDROID__
     // W2-AR-06: SDLActivity only goes immersive (status + navigation bars
     // hidden, the whole panel) for a FULLSCREEN window; a plain SHOWN window
     // got 1794x1017 of a 1920x1080 phone with both bars visible.
     flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 #endif
+    if (!hidden && g_launch_fs == 1) flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    if (!hidden && g_launch_w > 0) flags |= SDL_WINDOW_RESIZABLE;
+    int win_w = !hidden && g_launch_w > 0 ? g_launch_w : w, win_h = !hidden && g_launch_h > 0 ? g_launch_h : h;
+#ifdef _WIN32
+    // A per-monitor-DPI-aware window is real pixels: without a size from the
+    // launcher, a 150% display would get a window 2/3 the size it had when
+    // Windows stretched it. (macOS / Wayland windows are in points already.)
+    if (!hidden && g_launch_w <= 0) {
+        float ddpi = 0.0f;
+        SDL_Rect db{0, 0, 0, 0};
+        if (SDL_GetDisplayDPI(0, &ddpi, nullptr, nullptr) == 0 && ddpi > 0.0f) {
+            SDL_GetDisplayBounds(0, &db);
+            scaled_window_size(w, h, ddpi, db.w, db.h, win_w, win_h);
+        }
+    }
+#endif
     SDL_Window* window = SDL_CreateWindow(
         title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        w, h,
+        win_w, win_h,
         flags);
     if (!window) {
         std::string err = SDL_GetError();
@@ -104,6 +184,7 @@ Platform Platform::create(const char* title, int w, int h, bool hidden) {
 
     Platform p;
     p.p_ = new Impl{window, renderer, w, h, TouchGestures{}};
+    p.p_->hidden = hidden;
     p.p_->update_slop();
     return p;
 }
@@ -143,6 +224,7 @@ bool Platform::set_window_size(int w, int h) {
 void Platform::set_fullscreen(bool on) {
     if (!p_) return;
     SDL_SetWindowFullscreen(p_->window, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    p_->update_grab();
 }
 
 void Platform::set_logical_size(int w, int h) {
@@ -154,8 +236,13 @@ void Platform::set_logical_size(int w, int h) {
 }
 void Platform::output_size(int& w, int& h) const {
     w = h = 0;
-    if (p_) SDL_GetRendererOutputSize(p_->renderer, &w, &h);
+    if (!p_) return;
+    // The window's drawable in pixels (Retina / Wayland: points x scale), also
+    // while the canvas texture is the render target.
+    SDL_GetWindowSizeInPixels(p_->window, &w, &h);
+    if (w <= 0 || h <= 0) SDL_GetRendererOutputSize(p_->renderer, &w, &h);
 }
+double Platform::present_fit() const { return p_ ? p_->fit : 1.0; }
 
 Platform::Platform(Platform&& other) noexcept : p_(other.p_) {
     other.p_ = nullptr;
@@ -294,19 +381,42 @@ bool Platform::poll(InputEvent& ev) {
             break;
         case SDL_RENDER_DEVICE_RESET:
         case SDL_RENDER_TARGETS_RESET:
+            p_->drop_targets();   // recreated by the next begin_frame
             ev.kind = InputEvent::RenderReset;
             break;
         case SDL_WINDOWEVENT:
             // R-162: foldables, split screen, a resized desktop window.
-            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            // A window dragged to a monitor with another scale keeps its size in
+            // points but not its pixels: the canvas is re-fitted for it too.
+            if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED) {
                 p_->update_slop();
                 ev.kind = InputEvent::Resize;
-                ev.x = e.window.data1;
-                ev.y = e.window.data2;
+                SDL_GetWindowSize(p_->window, &ev.x, &ev.y);
+            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                p_->update_grab();
+                ev.kind = InputEvent::FocusGained;
+            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                SDL_SetWindowMouseGrab(p_->window, SDL_FALSE);
+                ev.kind = InputEvent::None;
             } else {
                 ev.kind = InputEvent::None;
             }
             break;
+        case SDL_MOUSEWHEEL: {
+            // Trackpads send fractions of a notch: add them up, one event per
+            // whole notch (a flick still gives several).
+            float dy = e.wheel.preciseY;
+            if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
+            p_->wheel += dy;
+            const int notches = static_cast<int>(p_->wheel);
+            p_->wheel -= static_cast<float>(notches);
+            if (notches == 0) { ev.kind = InputEvent::None; break; }
+            ev.kind = InputEvent::Wheel;
+            ev.dy = notches;
+            ev.x = clamp_pointer(e.wheel.mouseX, p_->w);
+            ev.y = clamp_pointer(e.wheel.mouseY, p_->h);
+            break;
+        }
         case SDL_TEXTINPUT:
             ev.kind = InputEvent::Text;
             std::snprintf(ev.text, sizeof ev.text, "%s", e.text.text);
@@ -316,8 +426,8 @@ bool Platform::poll(InputEvent& ev) {
             if (p_->drop_mouse(e.button.x, e.button.y, false)) break;   // W9-04-04
             p_->last_touch = false;
             ev.kind = InputEvent::PointerDown;
-            ev.x = e.button.x;
-            ev.y = e.button.y;
+            ev.x = clamp_pointer(e.button.x, p_->w);
+            ev.y = clamp_pointer(e.button.y, p_->h);
             ev.button = (e.button.button == SDL_BUTTON_RIGHT) ? InputEvent::Right
                                                               : InputEvent::Left;
             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
@@ -329,8 +439,8 @@ bool Platform::poll(InputEvent& ev) {
             if (e.button.which == SDL_TOUCH_MOUSEID) break;
             if (p_->drop_mouse(e.button.x, e.button.y, false)) break;   // W9-04-04
             ev.kind = InputEvent::PointerUp;
-            ev.x = e.button.x;
-            ev.y = e.button.y;
+            ev.x = clamp_pointer(e.button.x, p_->w);
+            ev.y = clamp_pointer(e.button.y, p_->h);
             ev.button = (e.button.button == SDL_BUTTON_RIGHT) ? InputEvent::Right
                                                               : InputEvent::Left;
             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
@@ -343,8 +453,8 @@ bool Platform::poll(InputEvent& ev) {
             if (p_->drop_mouse(e.motion.x, e.motion.y, e.motion.state == 0)) break;   // W9-04-04
             p_->last_touch = false;
             ev.kind = InputEvent::PointerMove;
-            ev.x = e.motion.x;
-            ev.y = e.motion.y;
+            ev.x = clamp_pointer(e.motion.x, p_->w);
+            ev.y = clamp_pointer(e.motion.y, p_->h);
             ev.t_ms = e.motion.timestamp;
             ev.shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
             ev.ctrl = (SDL_GetModState() & KMOD_CTRL) != 0;
@@ -381,13 +491,50 @@ bool Platform::poll(InputEvent& ev) {
 }
 
 void Platform::begin_frame() {
+    SDL_Renderer* r = p_->renderer;
+    if (p_->bound) SDL_SetRenderTarget(r, nullptr);   // a frame that never presented
+    p_->bound = false;
+    int ow = 0, oh = 0;
+    SDL_GetRendererOutputSize(r, &ow, &oh);
+    const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
+    p_->fit = m.fit;
+    const int want_int = (p_->hidden || m.exact) ? 1 : 0;
+    if (want_int != p_->int_scale) {
+        SDL_RenderSetIntegerScale(r, want_int ? SDL_TRUE : SDL_FALSE);
+        p_->int_scale = want_int;
+    }
+    if (!want_int && Impl::target(r, p_->canvas, p_->canvas_w, p_->canvas_h, p_->w, p_->h) &&
+        SDL_SetRenderTarget(r, p_->canvas) == 0)
+        p_->bound = true;
     // G-88: black, like the original (unmapped / shrouded area is black).
-    SDL_SetRenderDrawColor(p_->renderer, 0, 0, 0, 255);
-    SDL_RenderClear(p_->renderer);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    SDL_RenderClear(r);
 }
 
 void Platform::present() {
-    SDL_RenderPresent(p_->renderer);
+    SDL_Renderer* r = p_->renderer;
+    if (p_->bound) {
+        p_->bound = false;
+        SDL_Texture* src = p_->canvas;
+        int ow = 0, oh = 0;
+        SDL_SetRenderTarget(r, nullptr);
+        SDL_GetRendererOutputSize(r, &ow, &oh);
+        const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
+        if (m.prescale > 1 &&
+            Impl::target(r, p_->pre, p_->pre_w, p_->pre_h, p_->w * m.prescale, p_->h * m.prescale) &&
+            SDL_SetRenderTarget(r, p_->pre) == 0) {
+            SDL_SetTextureScaleMode(p_->canvas, SDL_ScaleModeNearest);
+            SDL_RenderCopy(r, p_->canvas, nullptr, nullptr);
+            SDL_SetRenderTarget(r, nullptr);
+            src = p_->pre;
+        }
+        SDL_SetTextureScaleMode(src, SDL_ScaleModeLinear);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+        SDL_RenderClear(r);
+        const SDL_Rect dst{0, 0, p_->w, p_->h};   // logical: SDL letterboxes it
+        SDL_RenderCopy(r, src, nullptr, &dst);
+    }
+    SDL_RenderPresent(r);
 }
 
 void* Platform::renderer() const {

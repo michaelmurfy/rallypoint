@@ -133,10 +133,12 @@ target_sources(ra2assets_tests PRIVATE tests/test_group_move.cpp engine/group_mo
 # engine/world.cpp (already a source above) against hand-built grids/units --
 # no MapFile needed, so the head-on/boxed-in/funnel cases are deterministic.
 target_sources(ra2assets_tests PRIVATE tests/test_movement.cpp)
+target_sources(ra2assets_tests PRIVATE tests/test_scratch_move.cpp)
 # test_vehicle.cpp exercises the vehicle locomotion additions (ROT turn-in-
 # place, per-unit speed, turret slew, aim-gated fire) in engine/world.cpp and
 # engine/combat.cpp (both already sources above -- no new source needed).
 target_sources(ra2assets_tests PRIVATE tests/test_vehicle.cpp)
+target_sources(ra2assets_tests PRIVATE tests/test_gamemd_0055.cpp)
 # combat.cpp is pure C++17 (no SDL): armor_index/damage_vs/step_combat, the
 # targeting/ROF/damage/death/pursuit-request core (docs/re/combat.md).
 # Compiled into both this test binary and ra2engine from one source of truth
@@ -179,6 +181,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_audio_mixer.cpp engine/audio_m
 # Compiled into both this test binary and ra2engine from one source of truth
 # (same pattern as combat.cpp above).
 target_sources(ra2assets_tests PRIVATE tests/test_voxel_raster.cpp engine/voxel_raster.cpp)
+target_sources(ra2assets_tests PRIVATE tests/test_slope_tilt.cpp engine/slope_tilt.cpp)
 # facing_cache.cpp is the pure C++17 load-time voxel facing cache (no SDL): it
 # rasterizes each of kVehicleFacings quantized yaws once at load (build_facing_set)
 # so the draw path can blit cached sprites (docs/re/voxel-render.md §2). Compiled
@@ -205,6 +208,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_ore.cpp engine/ore.cpp)
 # Compiled into both this test binary and ra2engine from one source of truth
 # (same pattern as ore.cpp/combat.cpp above).
 target_sources(ra2assets_tests PRIVATE tests/test_harvest.cpp engine/harvest.cpp)
+# Rallypoint: Yuri Slave Miner (Enslaves=) spawn / gather / deliver.
+target_sources(ra2assets_tests PRIVATE tests/test_slave_miner.cpp engine/slave_miner.cpp)
 # factory.cpp is pure C++17 (no SDL): factory exit-cell (8-ring walk to the
 # first free door cell + ExitCoord), primary-factory selection, and set-primary
 # (docs/re/production.md §1). Compiled into both this test binary and ra2engine
@@ -228,6 +233,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_flight.cpp engine/flight.cpp)
 # Compiled into both this test binary and ra2engine from one source of truth
 # (same pattern as factory.cpp above).
 target_sources(ra2assets_tests PRIVATE tests/test_ai_base.cpp engine/ai_base.cpp)
+# [RP-AI-BOOST] header-only smarter-AI multipliers (TeamDelays / CreditReserve / ...).
+target_sources(ra2assets_tests PRIVATE tests/test_ai_boost.cpp)
 # aimd_parse.cpp is pure C++17 (no SDL): the AI-2 aimd.ini parser --
 # TaskForce/ScriptType/TeamType tables via the existing ra2assets::Ini
 # ordered-section walk (docs/re/ai-team.md §1). Compiled into both this test
@@ -294,7 +301,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_roster2.cpp engine/roster2.cpp
 # the radiation field (engine/abilities.cpp, World-free) and the World-side
 # ability pass + orders (engine/world_abilities.cpp, a World member TU split out
 # of world.cpp), exercised by test_abilities.cpp.
-target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp
+target_sources(ra2assets_tests PRIVATE tests/test_abilities.cpp tests/test_abilities_world.cpp engine/abilities.cpp engine/world_abilities.cpp engine/world_mind_control.cpp engine/world_grinder_bio.cpp engine/world_w5.cpp engine/world_w6.cpp engine/world_w7.cpp tests/test_w6_missions.cpp tests/test_w7_combat.cpp engine/abil_w5_rules.cpp tests/test_abil_w5.cpp engine/world_mcv.cpp tests/test_mcv_deploy.cpp tests/test_mind_control.cpp tests/test_grinder_bio.cpp
                  engine/world_sw.cpp engine/world_an.cpp engine/ai_unit.cpp tests/test_ai_w7.cpp)
 target_sources(ra2assets_tests PRIVATE tests/test_w7r2.cpp)   # w7r2: wave-7 mission-script restore fixes
 target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer: deck / ground layers
@@ -303,6 +310,17 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
 # houses/default_skirmish_config). engine/world.cpp is already on test_world's
 # line above, so only the new module + its test are added here.
 target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
+# Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
+target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
+target_sources(ra2assets_tests PRIVATE tests/test_yuri_roster.cpp)
+# Rallypoint: HouseType country bonuses (Cost*/Veteran*/Owner filters).
+target_sources(ra2assets_tests PRIVATE tests/test_country_bonuses.cpp)
+# Rallypoint: IsGattling RateUp/RateDown stages (gattling.hpp).
+target_sources(ra2assets_tests PRIVATE tests/test_gattling.cpp)
+# Rallypoint: Magnetron / Magnetic Beam (IsLocomotor lift / hold / drop).
+target_sources(ra2assets_tests PRIVATE tests/test_magnetron.cpp)
+# Rallypoint: Floating Disc drain (DrainWeapon) — pure helpers.
+target_sources(ra2assets_tests PRIVATE tests/test_disc_drain.cpp)
 # Skirmish page (dialog 0x102): the pure lobby model + RA2.INI persistence +
 # LobbyState -> SkirmishConfig converter (docs/gap/07-skirmish-page.md).
 target_sources(ra2assets_tests PRIVATE tests/test_skirmish_lobby.cpp engine/skirmish_lobby.cpp)
@@ -323,6 +341,7 @@ target_sources(ra2assets_tests PRIVATE engine/rectfont.cpp)
 # OptionsClass defaults/clamps/save list, slider/trackbar math, the recovered
 # edge-scroll table) [RE: docs/re/options.md]. SDL-free; main.cpp owns the UI.
 target_sources(ra2assets_tests PRIVATE tests/test_settings.cpp engine/settings.cpp)
+target_sources(ra2assets_tests PRIVATE tests/test_logical_canvas.cpp)
 # G0 --play harness: the pure script parser / assertion evaluator / play_hash.
 target_sources(ra2assets_tests PRIVATE tests/test_play_script.cpp engine/play_script.cpp)
 # P7 Save/Load [RE: docs/re/saveload.md]: the archive core, field visitors,
@@ -362,8 +381,6 @@ target_include_directories(ra2extract PRIVATE third_party)
 target_link_libraries(ra2extract PRIVATE ra2assets)
 # W3-FIX-A: the art-resolution census (developer tool, not built by default).
 add_executable(art_census EXCLUDE_FROM_ALL tools/art_census.cpp)
-# simdiff harness, L0 rung (docs/re/simdiff-harness.md): GameRandom draw stream.
-add_executable(simdiff_l0 EXCLUDE_FROM_ALL tools/simdiff/l0_clone.cpp engine/crate.cpp)
 target_link_libraries(art_census PRIVATE ra2assets)
 
 option(RA2_BUILD_ENGINE "Build the SDL2 engine/app (needs SDL2)" ON)
@@ -381,11 +398,16 @@ if (RA2_BUILD_ENGINE)
   # --ai-soak) under SDL's dummy video/audio drivers -- the cross-platform
   # determinism gate (tools/xplat_gate.ps1, docs/DEVELOPMENT.md "Networking L0").
   option(RA2_ANDROID_CLI "Android: build the CLI gate executable (static SDL)" OFF)
-  if (ANDROID AND RA2_ANDROID_CLI)
+  # Rallypoint: Linux and macOS link SDL statically, so the engine is one
+  # executable with no rpath to get right (SDL still dlopens X11 / Wayland /
+  # ALSA / PulseAudio at run time). Windows keeps SDL2.dll beside the exe.
+  if ((ANDROID AND RA2_ANDROID_CLI) OR (NOT WIN32 AND NOT ANDROID))
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
     set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(RA2_SDL_LIB SDL2::SDL2-static)
   else()
     set(SDL_SHARED ON CACHE BOOL "" FORCE)
+    set(RA2_SDL_LIB SDL2::SDL2)
   endif()
   # W2-AR-30: SDL's internal SDL_assert()s are compiled OUT of optimised
   # builds (level 1 = SDL_assert_release only); a Debug build keeps them
@@ -423,11 +445,7 @@ if (RA2_BUILD_ENGINE)
   target_include_directories(ra2engine_obj SYSTEM PRIVATE third_party)
   target_compile_options(ra2engine_obj PRIVATE -Wall -Wextra)
   # Usage requirements (include dirs, defines) of ra2assets + SDL2 for the objects.
-  if (ANDROID AND RA2_ANDROID_CLI)
-    target_link_libraries(ra2engine_obj PRIVATE ra2assets SDL2::SDL2-static)
-  else()
-    target_link_libraries(ra2engine_obj PRIVATE ra2assets SDL2::SDL2)
-  endif()
+  target_link_libraries(ra2engine_obj PRIVATE ra2assets ${RA2_SDL_LIB})
   add_executable(ra2engine $<TARGET_OBJECTS:ra2engine_obj>)
   # NOTE: link order deviates from the brief's literal listing (SDL2 then
   # SDL2main) to (SDL2main then SDL2). Under MinGW/GNU ld, static archives
@@ -446,7 +464,7 @@ if (RA2_BUILD_ENGINE)
     target_compile_definitions(ra2engine_obj PRIVATE RA2_ANDROID_CLI=1)
     target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2-static log android)
   else()
-    target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2main SDL2::SDL2)
+    target_link_libraries(ra2engine PRIVATE ra2assets SDL2::SDL2main ${RA2_SDL_LIB})
   endif()
   if (WIN32)
     # W2-AR-22: registry install-path lookup + the BROWSE folder picker
@@ -481,7 +499,7 @@ if (RA2_BUILD_ENGINE)
   endif()
   # SDL_SHARED=ON builds SDL2.dll; copy it next to ra2engine.exe post-build
   # so the exe can find it at runtime (Windows has no rpath).
-  if (NOT (ANDROID AND RA2_ANDROID_CLI))
+  if (WIN32)
     add_custom_command(TARGET ra2engine POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:ra2engine>)

@@ -48,13 +48,13 @@ struct ShellPainter {
             if (t && key_magenta) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
         }
         if (!t) return false;
-        SDL_RenderCopy(ren, t, nullptr, &d);
+        render_copy_smooth(ren, t, &d);
         return true;
     }
     bool fnt() const { return art.font && art.fnt_ok; }
     double text_w(const std::string& s, double logical_px) const {
         if (!fnt()) return 0.0;
-        const double sc = std::max(1.0, std::round(xf.s * logical_px / 16.0));
+        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
         return fnt_text_width(*art.font, s) * sc / xf.s;   // in LOGICAL px
     }
     // align: 0 = left, 1 = centre, 2 = right; vertically centred in the rect.
@@ -62,9 +62,8 @@ struct ShellPainter {
               const ra2assets::Palette* pal, const char* keypfx, double logical_px) const {
         if (!fnt() || !pal || s.empty()) return;
         const ra2assets::Font& f = *art.font;
-        // 12metfnt cell = 16 px; snap to an integer glyph scale (fractional
-        // nearest-neighbour scaling visibly mangles the 1-px bevel strokes).
-        const double sc = std::max(1.0, std::round(xf.s * logical_px / 16.0));
+        // 12metfnt cell = 16 px; scaled by the exact factor, drawn linear.
+        const double sc = std::max(1.0, xf.s * logical_px / 16.0);
         const SDL_Rect box = dev(lx, ly, lw, lh);
         const double tw = fnt_text_width(f, s) * sc;
         const double th = f.height() * sc;

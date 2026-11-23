@@ -1619,7 +1619,7 @@ private:
             const double sc = std::min(double(pr.w - 2) / pw, double(pr.h - 2) / ph);
             const int w = std::max(1, int(pw * sc)), h = std::max(1, int(ph * sc));
             const SDL_Rect d = p.dev(pr.x + (pr.w - w) / 2, pr.y + (pr.h - h) / 2, w, h);
-            SDL_RenderCopy(p.ren, t, nullptr, &d);
+            render_copy_smooth(p.ren, t, &d);
             preview_w_ = w;
         }
         if (choosing_) {

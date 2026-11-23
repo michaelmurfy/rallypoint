@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "building.hpp"  // Building, foundation_cells, kill_building (Task 4)
+#include "disc_drain.hpp"  // Rallypoint: Floating Disc DrainWeapon
 #include "pathfind.hpp"  // Cellxy
 #include "weapon_unit.hpp"  // Gap fix C: per-target weapon slot
 
@@ -179,9 +180,9 @@ void try_fire(const World& world, std::vector<Unit>& units, std::vector<Building
         u.ability_fired_unit = victim_idx;
         return;
     }
-    // Campaign mind control: the Controller shot captures (CampaignRuntime::
-    // poll_mind_control), it never damages. Only campaign-armed units carry
-    // the flag -> every gate / skirmish path below is unchanged.
+    // Mind control: the Controller shot captures (World::step_mind_control or
+    // CampaignRuntime::poll_mind_control), it never damages. w_mind_control is
+    // armed each frame on MindControl=yes controllers.
     // W7-10-04 [RE: BulletClass::Detonate 0x4690A0 @0x4692C0 -> Capture]: the
     // capture rides THIS shot (its ROF, facing and range already applied);
     // the runtime consumes Unit::w7.mc_shot. W7-08-13: only the Controller
@@ -345,7 +346,8 @@ bool w7_greatest_threat(const World& world, std::vector<Unit>& units, std::vecto
                 if (j == i || !valid_target(units, world, u, j) ||
                     (!u.detect_disguise && world.disguise_fools(u.house, units[j])) ||   // W7-01-02
                     !units[j].seen_by_house(u.house) || !world.legal_threat_unit(u.house, units[j]) ||
-                    (u.w_mind_control && units[j].tg.t.immune_psionics))
+                    (u.w_mind_control && (units[j].tg.t.immune_psionics ||
+                                          units[j].w7.mc_controller >= 0)))
                     continue;
                 const Unit& v = units[static_cast<std::size_t>(j)];
                 const int ws = unit_weapon_for_unit(u, v);
@@ -1188,6 +1190,25 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
         u.fire_flash -= dt;
         if (u.fire_flash < 0.0) u.fire_flash = 0.0;
 
+        // Rallypoint: IsGattling RateUp while engaging, RateDown when idle;
+        // load the stage WeaponX into w_* before SelectWeapon / fire.
+        if (u.gatt.enabled) {
+            bool eng = false, air = false;
+            if (u.target >= 0 && u.target < n) {
+                const Unit& tv = units[u.target];
+                if (tv.alive && tv.die_time < 0.0 && tv.cargo_of < 0) {
+                    eng = true;
+                    air = unit_airborne(tv);
+                }
+            } else if (u.target_building >= 0 &&
+                       u.target_building < static_cast<int>(buildings.size()) &&
+                       buildings[u.target_building].alive &&
+                       buildings[u.target_building].state != Building::State::Dead) {
+                eng = true;
+            }
+            gattling_update_unit(u, eng, air, vet_rules_of(world));
+        }
+
         // --- Buildings & Construction Task 4: explicit attack-building path.
         // target_building is ONLY ever set by World::order_attack_building
         // (never by auto-acquire -- units NEVER auto-acquire buildings, and
@@ -1266,6 +1287,33 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
                         u.an.t.min_range * kLeptonsPerCell;
                 if (b_in_range && b_too_close) continue;
                 if (b_in_range) {
+                    // Rallypoint: DrainWeapon (Floating Disc) — no damage.
+                    // [RE: TechnoClass::Fire @0x6FDF5D: DrainWeapon on a
+                    // Drainable techno -> DrainStart FUN_0070FD70 (only when the
+                    // building on the Disc's own cell IS the target), then
+                    // SetTarget(NULL) (vtable +0x3C8)]: the shot starts the drain
+                    // and drops the target; the drain lives on in drain_target.
+                    if (u.w_drain_weapon) {
+                        const auto& types = world.btypes();
+                        const bool drainable =
+                            b->type >= 0 && b->type < static_cast<int>(types.size()) &&
+                            types[static_cast<std::size_t>(b->type)].drainable;
+                        const bool over = disc_drain::above_foundation(u.cell_x, u.cell_y, b->cx, b->cy,
+                                                                       b->fw, b->fh);
+                        if (!disc_drain::can_target(drainable, true) || !over) {
+                            u.target_building = -1;
+                            u.attack_order = false;
+                            continue;
+                        }
+                        if (u.rearm_frames <= 0) {
+                            u.rearm_frames = unit_rearm_frames(u, rof_rng);
+                            u.fire_flash = kFireFlashSecs;
+                            disc_drain::start(u.drain_target, b->drained_by, u.target_building, i);
+                            u.target_building = -1;
+                            u.attack_order = false;
+                        }
+                        continue;
+                    }
                     if (u.rearm_frames <= 0) {
                         // Aim gate, mirroring the unit path exactly
                         // (combat.cpp ~L276-278): a vehicle holds fire until
@@ -1669,12 +1717,13 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
                         // order_attack on a known unit is never blocked, §6).
                         // W6-02-07/08: the Evaluate_Object rejects (LegalTarget,
                         // IsInPlayfield, campaign Insignificant) -- World::legal_threat_unit.
-                        // W6-02-12: a mind-control shooter never picks an
-                        // ImmuneToPsionics unit (map overrides merged).
+                        // W6-02-12 / W7-08-11: a mind-control shooter never picks an
+                        // ImmuneToPsionics or already-controlled unit.
                         if (j == i || !valid_target(units, world, u, j)
                             || (!u.detect_disguise && world.disguise_fools(u.house, units[j]))   // W7-01-02 [RE: 0x6F71D0]
                             || !units[j].seen_by_house(u.house) || !world.legal_threat_unit(u.house, units[j])
-                            || (u.w_mind_control && units[j].tg.t.immune_psionics))
+                            || (u.w_mind_control && (units[j].tg.t.immune_psionics ||
+                                                     units[j].w7.mc_controller >= 0)))
                             continue;
                         const Unit& v = units[j];
                         const double d = dist_leptons(u.fx, u.fy, v.fx, v.fy);

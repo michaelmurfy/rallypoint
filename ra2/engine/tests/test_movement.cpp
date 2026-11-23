@@ -5,6 +5,7 @@
 
 #include "occupancy.hpp"
 #include "pathfind.hpp"
+#include "present_motion.hpp"
 #include "world.hpp"
 
 using ra2engine::Cellxy;
@@ -187,6 +188,45 @@ TEST_CASE("step_units: 3-unit rotational contention resolves without overlap") {
     }
 }
 
+// A paved stair: the unit's level used to stay at the cell it spawned on, so
+// the sprite never left the terrace. After the walk it stands on the lower flat.
+TEST_CASE("step_units: walking down a ramp takes the cell's level") {
+    const int w = 1, h = 4;
+    auto p = open_grid(w, h);
+    std::vector<std::int8_t> level = {2, 1, 0, 0};
+    std::vector<std::uint8_t> slope = {0, 1, 1, 0};
+    ra2engine::PathTerrain terr;
+    terr.level = &level;
+    terr.slope = &slope;
+    Occupancy occ(w, h);
+    Unit u;
+    u.cell_x = 0;
+    u.cell_y = 0;
+    u.fx = 0;
+    u.fy = 0;
+    u.level = 2;
+    u.path = ra2engine::find_path_t(p, w, h, {0, 0}, {0, 3}, nullptr, &terr);
+    REQUIRE(u.path.size() == 4);
+    u.path_idx = 1;
+    occ.set(0, 0, 0);
+    ra2engine::MoveSpeedCtx sc;
+    sc.level = &level;
+    std::vector<Unit> units{u};
+    const double dt = 1.0 / 60.0;
+    bool saw_mid = false;
+    for (int f = 0; f < 60 * 8 && units[0].moving(); ++f) {
+        step_units(units, p, p, w, h, occ, dt, 4.0, kNoAnims, nullptr, &sc);
+        if (units[0].cell_y == 1) {
+            CHECK(units[0].level == 1);
+            saw_mid = true;
+        }
+    }
+    CHECK(saw_mid);
+    CHECK_FALSE(units[0].moving());
+    CHECK(units[0].cell_y == 3);
+    CHECK(units[0].level == 0);
+}
+
 // W4-MC-01 [RE: gamemd MovementZone name table @0x81AA98]: every Amphibious*
 // zone and SpeedType=Amphibious resolve to the amphibious (land+water) domain.
 TEST_CASE("W4-MC-01: Amphibious* MovementZones and SpeedType=Amphibious are amphibious") {
@@ -201,4 +241,50 @@ TEST_CASE("W4-MC-01: Amphibious* MovementZones and SpeedType=Amphibious are amph
     CHECK_FALSE(is_amphibious_zone("Water", "Float"));
     CHECK_FALSE(is_amphibious_zone("WaterBeach", "Float"));
     CHECK_FALSE(is_amphibious_zone("", "Hover"));                      // hover alone is not enough
+}
+
+// Display blend between 15 Hz logic ticks. Does not write the unit.
+TEST_CASE("present motion: the drawn pose lerps, and a long step snaps") {
+    using ra2engine::PresentMotion;
+    using ra2engine::present_alpha;
+    CHECK(present_alpha(0.0, 1.0 / 15.0) == doctest::Approx(0.0));
+    CHECK(present_alpha(1.0 / 60.0, 1.0 / 15.0) == doctest::Approx(0.25));
+    CHECK(present_alpha(1.0, 1.0 / 15.0) == doctest::Approx(1.0));
+
+    Unit u;
+    u.fx = 1.0;
+    u.fy = 2.0;
+    u.sub_x = 0.0;
+    u.sub_y = 0.0;
+    std::vector<Unit> us{u};
+    PresentMotion m;
+    m.capture(us);   // previous pose
+    us[0].fx = 1.4;
+    us[0].sub_x = 128.0;
+    const double sim_fx = us[0].fx;
+
+    double fx, fy, sx, sy;
+    m.alpha = 0.0;
+    m.blend(us[0], 0, fx, fy, sx, sy);
+    CHECK(fx == doctest::Approx(1.0));
+    CHECK(fy == doctest::Approx(2.0));
+    CHECK(sx == doctest::Approx(0.0));
+
+    m.alpha = 0.5;
+    m.blend(us[0], 0, fx, fy, sx, sy);
+    CHECK(fx == doctest::Approx(1.2));
+    CHECK(fy == doctest::Approx(2.0));
+    CHECK(sx == doctest::Approx(64.0));
+    CHECK(us[0].fx == doctest::Approx(sim_fx));   // the sim pose is untouched
+
+    m.alpha = 1.0;
+    m.blend(us[0], 0, fx, fy, sx, sy);
+    CHECK(fx == doctest::Approx(1.4));
+    CHECK(sx == doctest::Approx(128.0));
+
+    us[0].fx = 5.0;   // three cells away: a teleport, not a walk
+    m.alpha = 0.5;
+    m.blend(us[0], 0, fx, fy, sx, sy);
+    CHECK(fx == doctest::Approx(5.0));
+    CHECK(sx == doctest::Approx(128.0));
 }

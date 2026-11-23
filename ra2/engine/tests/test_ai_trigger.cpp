@@ -135,11 +135,10 @@ TEST_CASE("ai_trigger: the enable-filter matrix") {
     TriggerView v = firing_view();
     AITriggerType t = d.triggers[0];
     CHECK(trigger_filters_pass(t, v));
-    // #1 base-defense split: offensive scope -> base-defense triggers
-    // rejected [RE-FALLBACK: no defensive-need input; all stock are
-    // IsForBaseDefense=0].
+    // #1 UseMinDefenseRule off (default): IsForBaseDefense alone does not
+    // reject — the split needs view.use_min_defense_rule.
     t.base_defense = true;
-    CHECK_FALSE(trigger_filters_pass(t, v));
+    CHECK(trigger_filters_pass(t, v));
     t.base_defense = false;
     // #3 [AITriggerTypesEnable] per-trigger flag [RE: ai-trigger.md §5].
     t.is_enabled = false;
@@ -354,4 +353,58 @@ TEST_CASE("ai_trigger: weight dynamics - additive +20/-50 track-record rule, cla
     const int before = st.adjustments;
     adjust_weight(st, d, 5, true);
     CHECK(st.adjustments == before);
+}
+
+TEST_CASE("ai_trigger: UseMinDefenseRule prefers IsBaseDefense Team1 under the minimum") {
+    // [RE: FUN_0041e740 / Rules UseMinDefenseRule + MinimumAIDefensiveTeams]:
+    // under the minimum only a Team1 IsBaseDefense trigger is eligible; at or
+    // above it those are rejected so offense fires. Stock aimd marks the
+    // base-guard TeamTypes IsBaseDefense=yes with IsForBaseDefense=0.
+    AimdData d = one_trigger_aimd();
+    d.teams[0].max = -1;
+    d.teams[0].is_base_defense = false;           // TRG0 Team1 = offense
+    TeamType guard = d.teams[0];
+    guard.id = "TT_GUARD";
+    guard.is_base_defense = true;
+    d.teams.push_back(guard);
+    AITriggerType g = d.triggers[0];
+    g.id = "TRG_GUARD";
+    g.team1 = 1;                                  // guard TeamType
+    g.team2 = -1;
+    g.condition_type = kCondNone;                 // always true
+    d.triggers.push_back(g);
+    TriggerView v = firing_view();
+    v.use_min_defense_rule = true;
+    v.min_defense_teams = 1;
+    v.defense_teams = 0;
+    std::vector<TeamInstance> live;
+    std::uint32_t rng = 1u;
+    // Under the minimum: only the guard trigger is eligible (offense rejected).
+    for (std::uint32_t seed = 1; seed <= 50; ++seed) {
+        rng = seed;
+        const TriggerDecision td =
+            select_trigger(d, {50.0, 50.0}, live, v, rng);
+        CHECK(td.trigger == 1);
+        CHECK(td.teamtype1 == 1);
+    }
+    CHECK(trigger_filters_pass(d.triggers[0], v, /*team1_bd=*/false) == false);
+    CHECK(trigger_filters_pass(d.triggers[1], v, /*team1_bd=*/true));
+    // At the minimum: guard rejected, offense admitted.
+    v.defense_teams = 1;
+    CHECK(trigger_filters_pass(d.triggers[0], v, false));
+    CHECK(trigger_filters_pass(d.triggers[1], v, true) == false);
+    for (std::uint32_t seed = 1; seed <= 50; ++seed) {
+        rng = seed;
+        const TriggerDecision td =
+            select_trigger(d, {50.0, 50.0}, live, v, rng);
+        CHECK(td.trigger == 0);
+        CHECK(td.teamtype1 == 0);
+    }
+    // IsForBaseDefense=1 counts as BD even when Team1 is not marked.
+    AITriggerType marked = d.triggers[0];
+    marked.base_defense = true;
+    v.defense_teams = 0;
+    CHECK(trigger_filters_pass(marked, v, /*team1_bd=*/false));
+    v.defense_teams = 1;
+    CHECK_FALSE(trigger_filters_pass(marked, v, false));
 }

@@ -1,0 +1,200 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0522eb1..fe0f124 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -303,6 +303,8 @@ target_sources(ra2assets_tests PRIVATE tests/test_w8_layers.cpp)   # w8fix-layer
+ # houses/default_skirmish_config). engine/world.cpp is already on test_world's
+ # line above, so only the new module + its test are added here.
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish.cpp engine/skirmish.cpp)
++# Rallypoint: the third side (Yuri) -- yuri_side.hpp + the Yuri mechanics.
++target_sources(ra2assets_tests PRIVATE tests/test_yuri.cpp)
+ # Skirmish page (dialog 0x102): the pure lobby model + RA2.INI persistence +
+ # LobbyState -> SkirmishConfig converter (docs/gap/07-skirmish-page.md).
+ target_sources(ra2assets_tests PRIVATE tests/test_skirmish_lobby.cpp engine/skirmish_lobby.cpp)
+diff --git a/engine/yuri_side.hpp b/engine/yuri_side.hpp
+new file mode 100644
+index 0000000..126fc81
+--- /dev/null
++++ b/engine/yuri_side.hpp
+@@ -0,0 +1,112 @@
++#pragma once
++// Rallypoint: the third side (Yuri). Yuri's Revenge rulesmd names three sides
++// in [Sides] (GDI = the Allied countries, Nod = the Soviet ones, ThirdSide =
++// YuriCountry) and each country says which one it is with Side= ([Americans]
++// Side=GDI, [YuriCountry] Side=ThirdSide). The per-side [General]/[AI] keys
++// follow the same three names: AlliedCrew / SovietCrew / ThirdCrew,
++// AlliedBaseDefenses / SovietBaseDefenses / ThirdBaseDefenses, and the
++// AIBasePlanningSide= values 0 / 1 / 2 (public modding docs, modenc). Pure: no
++// Rules, no assets, so the tests use it directly.
++
++#include <cctype>
++#include <string>
++#include <vector>
++
++#include "world.hpp"
++
++namespace ra2engine {
++namespace yuri {
++
++inline std::string upper(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    return s;
++}
++
++// A country's rules Side= value -> the on-screen side. Unknown -> Neutral.
++inline World::Side side_of_rules_side(const std::string& v) {
++    const std::string s = upper(v);
++    if (s == "GDI") return World::Side::Allied;
++    if (s == "NOD") return World::Side::Soviet;
++    if (s == "THIRDSIDE") return World::Side::Yuri;
++    return World::Side::Neutral;
++}
++
++// The [Sides] key that lists a side's countries.
++inline const char* sides_key(World::Side s) {
++    return s == World::Side::Soviet ? "Nod" : s == World::Side::Yuri ? "ThirdSide" : "GDI";
++}
++
++// The rules prefix of the per-side keys ("<prefix>Crew", "<prefix>BaseDefenses",
++// "<prefix>BaseDefenseCounts", "<prefix>SurvivorDivisor").
++inline const char* key_prefix(World::Side s) {
++    return s == World::Side::Soviet ? "Soviet" : s == World::Side::Yuri ? "Third" : "Allied";
++}
++
++// AIBasePlanningSide= ("0 for Good, 1 for Evil"; YR's Yuri structures say 2).
++inline int planning_side(World::Side s) {
++    return s == World::Side::Soviet ? 1 : s == World::Side::Yuri ? 2 : 0;
++}
++
++// aimd [AITriggerTypes] side field: 0 any, 1 Allied, 2 Soviet, 3 Yuri.
++inline int trigger_side(World::Side s) {
++    return s == World::Side::Soviet ? 2 : s == World::Side::Yuri ? 3 : 1;
++}
++
++// The side's stock country (a slot whose country is blank or of another side).
++inline const char* default_country(World::Side s) {
++    return s == World::Side::Soviet ? "Russians" : s == World::Side::Yuri ? "YuriCountry" : "Americans";
++}
++
++// Survivor / divisor index used by World (0 Allied, 1 Soviet, 2 Yuri).
++inline int side_index(World::Side s) {
++    return s == World::Side::Soviet ? 1 : s == World::Side::Yuri ? 2 : 0;
++}
++
++inline const char* side_name(World::Side s) {
++    return s == World::Side::Soviet ? "Soviet" : s == World::Side::Yuri ? "Yuri" : s == World::Side::Allied ? "Allied"
++                                                                                                           : "Neutral";
++}
++
++// Comma list (an Owner= / Prerequisite= value; a ';' comment cut) -> upper-
++// cased tokens without blanks.
++inline std::vector<std::string> tokens(std::string v) {
++    const std::size_t sc = v.find(';');
++    if (sc != std::string::npos) v.erase(sc);
++    std::vector<std::string> out;
++    std::string cur;
++    for (char c : v + ",") {
++        if (c != ',') {
++            if (!std::isspace(static_cast<unsigned char>(c))) cur.push_back(c);
++            continue;
++        }
++        if (!cur.empty()) out.push_back(upper(cur));
++        cur.clear();
++    }
++    return out;
++}
++
++// Is a rules type part of the third side's own set? YR's Owner= lists name
++// every country for most buildings (side membership comes from the
++// prerequisites), so "Owner has YuriCountry" alone is not enough. A type is
++// Yuri's when its Owner= names YuriCountry and
++//   * Owner= names nobody else (YACNST, PCV, INIT, LTNK, ...), or
++//   * AIBasePlanningSide=2 (YAPOWR, NAPSIS, NACLON, NATBNK, ...), or
++//   * one of its prerequisites is such a Yuri building (YURI: YABRCK,NAPSIS).
++// `yuri_buildings` holds the upper-cased ids found by the first two rules.
++inline bool is_yuri_type(const std::string& owner, const std::string& planning_side_value,
++                         const std::string& prerequisite, const std::vector<std::string>& yuri_buildings) {
++    const std::vector<std::string> own = tokens(owner);
++    bool yuri = false;
++    for (const std::string& o : own) yuri |= o == "YURICOUNTRY";
++    if (!yuri) return false;
++    if (own.size() == 1) return true;
++    const std::vector<std::string> ps = tokens(planning_side_value);
++    if (!ps.empty() && ps[0] == "2") return true;
++    for (const std::string& p : tokens(prerequisite))
++        for (const std::string& b : yuri_buildings)
++            if (p == b) return true;
++    return false;
++}
++
++}  // namespace yuri
++}  // namespace ra2engine
+diff --git a/tests/test_yuri.cpp b/tests/test_yuri.cpp
+new file mode 100644
+index 0000000..d6bafd7
+--- /dev/null
++++ b/tests/test_yuri.cpp
+@@ -0,0 +1,63 @@
++// Rallypoint: the third side (Yuri). Synthetic values only (no game data).
++#include "doctest.h"
++#include "yuri_side.hpp"
++
++using ra2engine::World;
++namespace y = ra2engine::yuri;
++
++TEST_CASE("yuri: rules Side= maps to the three sides") {
++    CHECK(y::side_of_rules_side("GDI") == World::Side::Allied);
++    CHECK(y::side_of_rules_side("Nod") == World::Side::Soviet);
++    CHECK(y::side_of_rules_side("ThirdSide") == World::Side::Yuri);
++    CHECK(y::side_of_rules_side("thirdside") == World::Side::Yuri);
++    CHECK(y::side_of_rules_side("") == World::Side::Neutral);
++    CHECK(y::side_of_rules_side("Civilian") == World::Side::Neutral);
++}
++
++TEST_CASE("yuri: per-side keys, planning side, trigger side, default country") {
++    CHECK(std::string(y::key_prefix(World::Side::Yuri)) == "Third");
++    CHECK(std::string(y::key_prefix(World::Side::Soviet)) == "Soviet");
++    CHECK(std::string(y::key_prefix(World::Side::Allied)) == "Allied");
++    CHECK(y::planning_side(World::Side::Allied) == 0);
++    CHECK(y::planning_side(World::Side::Soviet) == 1);
++    CHECK(y::planning_side(World::Side::Yuri) == 2);
++    CHECK(y::trigger_side(World::Side::Allied) == 1);
++    CHECK(y::trigger_side(World::Side::Soviet) == 2);
++    CHECK(y::trigger_side(World::Side::Yuri) == 3);
++    CHECK(std::string(y::default_country(World::Side::Yuri)) == "YuriCountry");
++    CHECK(std::string(y::sides_key(World::Side::Yuri)) == "ThirdSide");
++    CHECK(y::side_index(World::Side::Yuri) == static_cast<int>(World::Side::Yuri));
++}
++
++TEST_CASE("yuri: which types belong to the third side") {
++    const std::string all = "British,French,Germans,Americans,Alliance,Russians,Confederation,Africans,Arabs,YuriCountry";
++    const std::vector<std::string> none;
++    // Owner names only YuriCountry: Yuri's (a conyard, an MCV, a unit).
++    CHECK(y::is_yuri_type("YuriCountry", "", "", none));
++    CHECK(y::is_yuri_type(" yuricountry ; comment", "", "", none));
++    // Everyone may own it, but the AI plans it for side 2.
++    CHECK(y::is_yuri_type(all, "2", "", none));
++    CHECK_FALSE(y::is_yuri_type(all, "1", "", none));
++    CHECK_FALSE(y::is_yuri_type(all, "", "", none));   // a shared Allied building
++    // Shared owner list, but built from a Yuri structure.
++    const std::vector<std::string> yb = {"XBRCK", "XRAD"};
++    CHECK(y::is_yuri_type(all, "", "XBRCK,XRAD", yb));
++    CHECK_FALSE(y::is_yuri_type(all, "", "XPILE", yb));
++    // Not owned by YuriCountry at all.
++    CHECK_FALSE(y::is_yuri_type("Russians", "2", "XBRCK", yb));
++}
++
++TEST_CASE("yuri: tokens trims, upper-cases and cuts the comment") {
++    const std::vector<std::string> t = y::tokens(" a, bB ,,c ;d,e");
++    REQUIRE(t.size() == 3);
++    CHECK(t[0] == "A");
++    CHECK(t[1] == "BB");
++    CHECK(t[2] == "C");
++}
++
++TEST_CASE("yuri: launcher Country=9 is YuriCountry (index after the nine RA2 countries)") {
++    // ra2launch::SIDES writes Country=0..9; 9 must be YuriCountry so Side=ThirdSide.
++    CHECK(std::string(y::default_country(World::Side::Yuri)) == "YuriCountry");
++    CHECK(y::side_of_rules_side("ThirdSide") == World::Side::Yuri);
++    CHECK(y::planning_side(World::Side::Yuri) == 2);
++}

@@ -329,8 +329,8 @@ BuildDecision next_build(AiBaseState& state, const BaseView& view,
         // FUN_004fe200 step 4]: before a drainer that would push
         // drain > output - PowerSurplus(50), INSERT a Power node ahead of
         // it. PowerSurplus (the reserve), this gate, and
-        // PowerEmergency=0.75 (a SELL trigger — recorded in kAiPowerEmergency,
-        // NOT consumed by AI-1) are THREE DISTINCT rules [RE: §2].
+        // PowerEmergency=0.75 (a SELL trigger — consumed in World::step_ai_houses,
+        // not in next_build) are THREE DISTINCT rules [RE: §2].
         const BuildingTypeDef& t = roster[n.type];
         if (t.power < 0 && cat.power >= 0 && n.type != cat.power &&
             view.power_drain + (-t.power) >

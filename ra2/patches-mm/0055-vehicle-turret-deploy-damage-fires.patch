@@ -1,0 +1,456 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e04bbaf..0c6dbe2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -137,6 +137,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_movement.cpp)
+ # place, per-unit speed, turret slew, aim-gated fire) in engine/world.cpp and
+ # engine/combat.cpp (both already sources above -- no new source needed).
+ target_sources(ra2assets_tests PRIVATE tests/test_vehicle.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_gamemd_0055.cpp)
+ # combat.cpp is pure C++17 (no SDL): armor_index/damage_vs/step_combat, the
+ # targeting/ROF/damage/death/pursuit-request core (docs/re/combat.md).
+ # Compiled into both this test binary and ra2engine from one source of truth
+diff --git a/engine/building.cpp b/engine/building.cpp
+index 607ba25..94be112 100644
+--- a/engine/building.cpp
++++ b/engine/building.cpp
+@@ -125,6 +125,29 @@ int building_anim_active_frame(int stage, int start, int count, bool damaged, in
+     return f;
+ }
+ 
++bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red) {
++    return max_hp > 0 && hp <= (can_be_occupied ? red : yellow) * max_hp;
++}
++
++namespace {
++unsigned fire_hash(unsigned x) {   // integer mix, same on every compiler
++    x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
++    return x;
++}
++}  // namespace
++
++int building_damage_fire_type(unsigned seed, int fire, int types) {
++    if (types <= 0) return -1;
++    return static_cast<int>((fire_hash(seed) % static_cast<unsigned>(types) + static_cast<unsigned>(fire)) %
++                            static_cast<unsigned>(types));
++}
++
++int building_damage_fire_start(unsigned seed, int fire, int end) {
++    if (end <= 0) return 0;
++    return static_cast<int>(fire_hash(seed ^ (0x9E3779B9u * static_cast<unsigned>(fire + 1))) %
++                            static_cast<unsigned>(end));
++}
++
+ int buildup_frame(const Building& b, int buildup_shp_frame_count) {
+     int image_frames = buildup_shp_frame_count / 2;   // [RE-GATE: building-render.md §5]
+     if (image_frames < 1) return 0;
+diff --git a/engine/building.hpp b/engine/building.hpp
+index 48204be..d12d094 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -324,6 +324,19 @@ int building_frame(const Building& b, int shp_frame_count, double condition_yell
+ // ConditionYellow]. `stage` is 0..count-1 (presentation advances it). Pure.
+ int building_anim_active_frame(int stage, int start, int count, bool damaged, int image_frames);
+ 
++// Building damage fires [RE: damage-state update FUN_0043fb4a @0x43FC39..
++// 0x43FCBE; create FUN_0043c0d0]. They spring up once health <= ConditionYellow
++// (Rules+0x1700), or ConditionRed (+0x1708) for CanBeOccupied (type +0x157B),
++// and go away above it.
++bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red);
++// FUN_0043c0d0 picks DamageFireTypes[Random(0, n-1)] for the first offset and
++// steps through the list for each next one; each fire starts on frame
++// Random(0, End-1) (AnimType +0x2C0 -> AnimClass stage +0xAC). The original
++// draws from the scenario RNG; ours hashes `seed` (the building) so the picture
++// never touches the simulation. Pure.
++int building_damage_fire_type(unsigned seed, int fire, int types);
++int building_damage_fire_start(unsigned seed, int fire, int end);
++
+ // Frame selection for the BUILDUP SHP during State::Buildup
+ // [RE-GATE APPLIED: building-render.md §5]: image frames = first half; the
+ // anim plays ONCE, one frame per fixed PERIOD, period = buildup_total /
+diff --git a/engine/inf_anim.cpp b/engine/inf_anim.cpp
+index 8c8d9d8..5c39b48 100644
+--- a/engine/inf_anim.cpp
++++ b/engine/inf_anim.cpp
+@@ -17,7 +17,9 @@ const char* inf_seq_name(int seq) {
+ }
+ 
+ const InfDoControl& inf_do_control(int seq) {
+-    // Dumped from gamemd.exe 0x7E9F7C (42 x {Interrupt, IsMobile, RandomStart, Rate}).
++    // Dumped from gamemd.exe 0x7E9F7C (42 x {Interrupt, IsMobile, RandomStart, Rate}). Re-checked
++    // byte for byte against the Steam YR binary, where it sits at 0x7EAF7C
++    // (read by PlayAnim @0x51D1BD / @0x51D928).
+     static const InfDoControl kTable[kSqCount] = {
+         {1, 0, 0, 0}, {1, 0, 0, 0}, {1, 0, 0, 6}, {1, 1, 1, 3}, {1, 0, 0, 1}, {0, 1, 0, 1}, {1, 1, 1, 1},
+         {0, 0, 0, 1}, {1, 0, 0, 1}, {1, 0, 0, 3}, {1, 0, 0, 3}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1},
+@@ -245,8 +247,12 @@ int inf_anim_tick(InfAnimState& s, const InfTable& t, int& facing, const InfTick
+     } else {
+         // ---- fear [RE: FUN_0051fde0], only while armed (the live game) ----
+         if (s.armed) {
++            // [RE: fear AI FUN_005200b0 -- the Steam binary's address; older
++            // notes said FUN_0051fde0] Down / Up are only asked for while
++            // fear > 0 on entry (@0x5200BB jle skips both), after the decrement.
++            const bool afraid = s.fear > 0;
+             if (s.fear > 0 && !t.fearless) --s.fear;
+-            if (!is_deploy_busy(s.seq) && s.seq != kSqCheer) {
++            if (afraid && !is_deploy_busy(s.seq) && s.seq != kSqCheer) {
+                 if (!s.prone) {
+                     if (s.fear > 49 && !(c.human && (c.has_destination || c.moving)) && !t.fraidycat)
+                         play(s, t, kSqDown, c.in_water, false);
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 636cd57..686fa1a 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -677,6 +677,7 @@ struct BuildingAssets {
+     // damaged building frame) [RE: task-7 review "ConditionYellow"], read via
+     // rules.general_double in load_building_assets; 0.5 is only the fallback.
+     double condition_yellow = 0.5;
++    double condition_red = 0.25;   // [General] ConditionRed (CanBeOccupied damage fires)
+     // Repair & Sell phase [RE: repair-sell.md §A1/§B3]: the four [General]
+     // scalars + the three survivor divisors, resolved ONCE here and handed to
+     // World::set_repair_sell_rules. The struct's own defaults ARE this
+@@ -2745,6 +2746,7 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+     // rulesmd [General] ConditionYellow=50 (percent HP threshold for the
+     // damaged-vs-healthy building frame) [RE: task-7 review "ConditionYellow"].
+     ba.condition_yellow = rules.general_double("ConditionYellow", 50.0) / 100.0;
++    ba.condition_red = rules.general_double("ConditionRed", 25.0) / 100.0;
+ 
+     // rulesmd [General] repair/sell scalars [RE: repair-sell.md §A1/§B3,
+     // CONFIRMED]. general_double reads [General] then [AudioVisual] and uses
+@@ -3560,11 +3562,14 @@ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engi
+     // G-85: ActiveAnim/Bib/damage-fire overlays (live game only; g_fx null in gates).
+     const bool overlay = g_fx && !buildup && b.state == ra2engine::Building::State::Idle;
+     const bool bdamaged = b.max_hp > 0 && b.hp <= condition_yellow * b.max_hp;
++    const bool bfires = overlay && ra2engine::building_damage_fires_on(
++                                       b.hp, b.max_hp, g_fx->building_rules(def.id).occupiable,
++                                       condition_yellow, ba.condition_red);
+     const bool bpowered = pres_building_powered(world, b);
+     const ra2assets::Palette opal = overlay ? ra2engine::house_draw_palette(ba.unit_pal, b.house) : ba.unit_pal;
+     const std::string& oimg = def.image.empty() ? def.id : def.image;
+     if (overlay)
+-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bpowered, opal,
++        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bfires, bpowered, opal,
+                               ra2engine::house_draw_key(b.house), W, H, 0);
+     // G-85: the shadow half (frame + Frames/2) first, darkened 50 % [RE:
+     // presentation.md §7, FUN_00705290 + the Darken blitter dst = dst >> 1].
+@@ -3602,7 +3607,7 @@ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engi
+         ra2engine::blit_object(ren, tex, &dst);   // W5-PRES ObjTint (none in the gates)
+     }
+     if (overlay)
+-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bpowered, opal,
++        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bfires, bpowered, opal,
+                               ra2engine::house_draw_key(b.house), W, H, 1);
+     // W4-FIX-POS: RA2_POS_DBG=1 outlines the foundation (magenta) and marks
+     // the draw point (green x) -- the visual check for the anchor.
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+index 0060f51..32004a7 100644
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -327,7 +327,7 @@ int pres_building_rubble_frame(const std::string& id, int count) {
+ // fires (over it). `pal` is the building's house-remapped palette; `ckey` its
+ // colour key.
+ void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const std::string& image,
+-                           int fcx, int fcy, bool damaged, bool powered, const ra2assets::Palette& pal,
++                           int fcx, int fcy, bool damaged, bool fires_on, bool powered, const ra2assets::Palette& pal,
+                            int ckey, int W, int H, int pass) {
+     if (!g_fx) return;
+     const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
+@@ -412,21 +412,30 @@ void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const
+                 draw_t(lt, PresFx::loop_frame(*lt, now), lps.x, lps.y);
+         }
+     }
+-    if (damaged && !a.fire_offsets.empty()) {
++    if (fires_on && !a.fire_offsets.empty()) {
+         // [RE: W4-FIX-POS, RE-P6 resolved -- FUN_0043c050, called from the
+         // damage-state update FUN_0043faa0] one DamageFireTypes anim per
+         // DamageFireOffset (type +0x15D8, up to 8 points, list ends at the
+         // first unset one) while below ConditionYellow, created at the
+         // building's DRAW POINT (vtbl+0xAC, the origin-cell top vertex) +
+         // the offset converted pixel->lepton (FUN_006d15e0), flags 0x600.
+-        // [RE-FALLBACK: the type pick -- the original starts at a random
+-        // DamageFireTypes index and cycles; the clone cycles from 0.]
++        // FUN_0043c0d0: the type list starts at a random DamageFireTypes index
++        // and steps on per fire; each fire starts on a random frame below End
++        // (building_damage_fire_type / _start: hashed from the building, never
++        // the sim RNG). CanBeOccupied waits for ConditionRed (fires_on).
+         static std::vector<std::string> fires = g_fx->damage_fires();
+         if (fires.empty()) return;
++        unsigned seed = 2166136261u;   // FNV-1a: the same on every standard library
++        if (g_overlay_bld) seed = static_cast<unsigned>(bld_event_key(*g_overlay_bld));
++        else for (char c : image) seed = (seed ^ static_cast<unsigned char>(c)) * 16777619u;
+         for (std::size_t i = 0; i < a.fire_offsets.size(); ++i) {
+-            const FxAnimType* t = g_fx->type(fires[i % fires.size()]);
++            const int fi = static_cast<int>(i);
++            const FxAnimType* t =
++                g_fx->type(fires[static_cast<std::size_t>(ra2engine::building_damage_fire_type(
++                    seed, fi, static_cast<int>(fires.size())))]);
+             if (!t) continue;
+-            const int fr = PresFx::loop_frame(*t, now + static_cast<long>(i) * 7);
++            const int r = ra2engine::building_damage_fire_start(seed, fi, t->end);
++            const int fr = PresFx::loop_frame(*t, now + static_cast<long>(std::max(0, r - t->start)) * t->delay);
+             g_fx->blit(ren, tc, *t->shp, "fx:" + t->name, fr, fcx + a.fire_offsets[i].first,
+                        fcy + a.fire_offsets[i].second + t->ydraw, PresFx::alpha_for(*t, fr), W, H);
+         }
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+index e26befd..f3ab0a7 100644
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -638,10 +638,11 @@ public:
+         const std::string bib = aget(image, "BibShape");
+         if (!bib.empty()) a.bib = theater_shp(bib);
+         for (int i = 0; i < 8; ++i) {
++            // [RE: FUN_0043c0d0 @0x43C124] the list ends at the first unset offset.
+             const std::string v = aget(image, "DamageFireOffset" + std::to_string(i));
+-            if (v.empty()) continue;
++            if (v.empty()) break;
+             const std::size_t k = v.find(',');
+-            if (k == std::string::npos) continue;
++            if (k == std::string::npos) break;
+             a.fire_offsets.push_back({std::atoi(v.c_str()), std::atoi(v.c_str() + k + 1)});
+         }
+         std::cerr << "[fx] building " << image << " anims=" << n << " bib=" << (a.bib ? 1 : 0)
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 115a49b..9597258 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -883,7 +883,7 @@ template <class Ar> void fields(Ar& ar, UnitTgt& v) {
+ template <class Ar> void fields(Ar& ar, UnitTypeW7& v) {
+     io(ar, v.agent); io(ar, v.infiltrate); io(ar, v.engineer); io(ar, v.perma_disguise);
+     io(ar, v.detect_disguise); io(ar, v.selectable_combatant); io(ar, v.move_to_shroud);
+-    io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
++    io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.turret_spins); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
+     io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mind_control);
+     io(ar, v.mc_capacity); io(ar, v.mc_infinite);
+     io(ar, v.build_time_mult);
+@@ -1196,6 +1196,7 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
+     io(ar, v.is_vehicle);
+     io(ar, v.body_facing);
+     io(ar, v.turret_facing);
++    io(ar, v.turret_idle_frames);   // v61: turret home delay (FUN_00736990)
+     io(ar, v.rot_u16_per_sec);
+     io(ar, v.speed_cps);
+     io(ar, v.weight_milli);   // Rallypoint: Magnetron Weight=
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index c993156..23293b6 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 60;   // 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 61;   // 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/unit_w7.hpp b/engine/unit_w7.hpp
+index 7291efa..04f1913 100644
+--- a/engine/unit_w7.hpp
++++ b/engine/unit_w7.hpp
+@@ -36,6 +36,9 @@ struct UnitTypeW7 {
+     // W7-03-02 [RE: 0x735A60 @0x735A9C, type +0xCA1]: Turret= -- a turretless
+     // vehicle turns its hull to the target before it fires.
+     bool has_turret = true;
++    // Rallypoint [RE: FUN_00736990 @0x736A95, TechnoType +0xD21 loaded from
++    // "TurretSpins" @0x713360]: the turret spins on its own (Floating Disc).
++    bool turret_spins = false;
+     // W7-03-04 [RE: 0x740150, WeaponType +0x13C]: the primary / elite
+     // primary weapon's DisguiseFakeBlinkTime= (MirageGun 15, MirageGunE 5).
+     int fake_blink = 0;
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 582a6b9..1e9d457 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -203,6 +203,7 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
+     w.move_to_shroud = rules.section_flag(type_id, "MoveToShroud", true);
+     w.default_to_guard_area = rules.section_flag(type_id, "DefaultToGuardArea", false);
+     w.has_turret = rules.section_flag(type_id, "Turret", false);
++    w.turret_spins = w.has_turret && rules.section_flag(type_id, "TurretSpins", false);
+     if (tw.slot[0].valid)
+         w.fake_blink = om::ftol(rules.section_double(tw.slot[0].id, "DisguiseFakeBlinkTime", 0.0));
+     w.fake_blink_elite = tw.elite[0].valid
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 30a6759..13554fe 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -106,9 +106,14 @@ bool vehicle_aimed(const Unit& u, double target_facing) {
+     return std::abs(d) <= kAimToleranceU16;
+ }
+ 
+-void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt) {
++void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt,
++                  int home_delay_frames) {
+     for (auto& u : units) {
+         if (!u.is_vehicle || !u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
++        // [RE: Fire @0x6FF743 stamps LastFireFrame]: a shot leaves fire_flash at
++        // exactly the flash length (combat decays it after this pass).
++        if (u.fire_flash >= 0.4) u.turret_idle_frames = 0;
++        else if (u.turret_idle_frames < (1 << 20)) ++u.turret_idle_frames;
+         double want = u.body_facing;
+         if (u.target >= 0 && u.target < static_cast<int>(units.size())) {
+             const Unit& t = units[u.target];
+@@ -157,6 +162,28 @@ void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildin
+             u.turret_facing = u.body_facing;
+             continue;
+         }
++        // Rallypoint [RE: UnitClass turret AI FUN_00736990]. With a target the
++        // turret aims unless the weapon is OmniFire (WeaponType +0x12B @0x7369F4:
++        // it then holds). TurretSpins (+0xD21 @0x736A95) always asks for
++        // ((cur >> 7) + 1 >> 1 & 0xFF) + 8 steps of 256, so it keeps turning at
++        // ROT. Without a target (@0x736B21) the turret holds until
++        // Frame - LastFireFrame >= GuardAreaTargetingDelay + 5, then faces the
++        // Destination while one is set, else the hull's current facing.
++        // Aircraft and turretless OmniFire units keep the plain slew.
++        const bool has_target = u.target >= 0 || u.target_building >= 0 || u.attack_cell_x >= 0;
++        if (u.w7.t.has_turret && !u.is_aircraft) {
++            if (u.w7.t.turret_spins) {
++                const int cur = static_cast<int>(u.turret_facing) & 0xFFFF;
++                want = static_cast<double>(((((((cur >> 7) + 1) >> 1) & 0xFF) + 8) << 8) & 0xFFFF);
++            } else if (has_target) {
++                if (u.omni_fire || u.w6.omni_fire) want = u.turret_facing;
++            } else if (u.turret_idle_frames + 1 < home_delay_frames) {
++                want = u.turret_facing;
++            } else if (u.moving()) {
++                const Cellxy& d = u.path.back();
++                want = facing_u16_from_delta(static_cast<double>(d.x) - u.fx, static_cast<double>(d.y) - u.fy);
++            }
++        }
+         u.turret_facing = turn_toward(u.turret_facing, want, u.rot_u16_per_sec * dt);
+     }
+ }
+@@ -6209,7 +6236,7 @@ void World::step(double dt) {
+     // Slew vehicle turrets AFTER movement and BEFORE combat so the aim gate
+     // (vehicle_aimed) in step_combat sees this frame's post-slew turret
+     // facing (docs/re/voxel-render.md §5). No-op for infantry.
+-    step_turrets(units_, buildings_, dt);
++    step_turrets(units_, buildings_, dt, w7_rules_.guard_area_targeting_delay + 5);
+ 
+     // Buildings & Construction Task 4: advance buildup/death timers, then
+     // restore passability for any building that DIED this frame (state ==
+diff --git a/engine/world.hpp b/engine/world.hpp
+index ad03f93..8420c7a 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -185,6 +185,11 @@ struct Unit {
+     int weight_milli = 1000;
+     double body_facing = 32768.0;
+     double turret_facing = 32768.0;
++    // Rallypoint [RE: UnitClass turret AI FUN_00736990 @0x736B21]: frames
++    // since this unit last fired (TechnoClass +0x120 LastFireFrame, stamped by
++    // Fire @0x6FF743). An idle turret goes home only after
++    // GuardAreaTargetingDelay + 5 frames. Starts "long ago" (save v59).
++    int turret_idle_frames = 1 << 20;
+     double rot_u16_per_sec = 0.0;  // ROT * kRotU16PerRotPerSec
+     double speed_cps = 0.0;        // per-unit speed; 0 = use World move_cps
+ 
+@@ -679,7 +684,11 @@ void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passa
+ // predating this fix, and any test that doesn't attack a building) this new
+ // branch is unreachable, so behavior is byte-identical to the old 2-arg
+ // signature.
+-void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt);
++// Rallypoint [RE: FUN_00736990]: `home_delay_frames` (World passes
++// GuardAreaTargetingDelay + 5) is how long an idle turret holds after the last
++// shot; 0 = go home at once. Idle and moving, it faces the destination.
++void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt,
++                  int home_delay_frames = 0);
+ 
+ // Picks a passable (Clear/grass, `tile == 0` -- confirmed in Task 9 /
+ // task-9-report.md: "tile index 0 is Clear") cell close to the centroid of
+diff --git a/tests/test_gamemd_0055.cpp b/tests/test_gamemd_0055.cpp
+new file mode 100644
+index 0000000..4082a18
+--- /dev/null
++++ b/tests/test_gamemd_0055.cpp
+@@ -0,0 +1,92 @@
++// Patch 0055: turret AI (FUN_00736990), building damage fires (FUN_0043c0d0 / FUN_0043fb4a),
++// fear gate (FUN_005200b0). Integer / fixed-order maths only, so every toolchain agrees.
++#include "doctest.h"
++#include "building.hpp"
++#include "inf_anim.hpp"
++#include "world.hpp"
++#include <set>
++#include <vector>
++
++using namespace ra2engine;
++
++namespace {
++Unit tank() {
++    Unit u;
++    u.is_vehicle = true;
++    u.alive = true;
++    u.fx = u.fy = 5.0;
++    u.rot_u16_per_sec = 5 * kRotU16PerRotPerSec;
++    return u;
++}
++std::vector<Building> none;
++}  // namespace
++
++TEST_CASE("0055 damage fires: Yellow, or Red for CanBeOccupied") {
++    CHECK_FALSE(building_damage_fires_on(51, 100, false, 0.5, 0.25));
++    CHECK(building_damage_fires_on(50, 100, false, 0.5, 0.25));
++    CHECK_FALSE(building_damage_fires_on(40, 100, true, 0.5, 0.25));   // garrisonable: waits for Red
++    CHECK(building_damage_fires_on(25, 100, true, 0.5, 0.25));
++    CHECK_FALSE(building_damage_fires_on(1, 0, false, 0.5, 0.25));
++}
++
++TEST_CASE("0055 damage fires: type and start frame are deterministic and in range") {
++    std::set<int> types;
++    for (unsigned seed = 1; seed < 200; ++seed) {
++        const int t0 = building_damage_fire_type(seed, 0, 3);
++        CHECK(t0 == building_damage_fire_type(seed, 0, 3));
++        CHECK(building_damage_fire_type(seed, 1, 3) == (t0 + 1) % 3);   // steps through the list
++        types.insert(t0);
++        const int s = building_damage_fire_start(seed, 2, 20);
++        CHECK(s >= 0);
++        CHECK(s < 20);
++    }
++    CHECK(types.size() == 3);   // the first pick is random, not always index 0
++    CHECK(building_damage_fire_type(7, 0, 0) == -1);
++    CHECK(building_damage_fire_start(7, 0, 0) == 0);
++}
++
++TEST_CASE("0055 turret: idle turret holds until GuardAreaTargetingDelay + 5, then returns") {
++    std::vector<Unit> us = {tank()};
++    us[0].body_facing = 0.0;
++    us[0].turret_facing = 20000.0;
++    us[0].turret_idle_frames = 0;   // just fired
++    for (int i = 0; i < 20; ++i) step_turrets(us, none, 1.0 / 15.0, 41);
++    CHECK(us[0].turret_facing == doctest::Approx(20000.0));
++    for (int i = 0; i < 40; ++i) step_turrets(us, none, 1.0 / 15.0, 41);
++    CHECK(us[0].turret_facing == doctest::Approx(0.0));
++}
++
++TEST_CASE("0055 turret: TurretSpins keeps turning; OmniFire turret does not chase") {
++    std::vector<Unit> us = {tank(), tank()};
++    us[0].w7.t.turret_spins = true;
++    const double before = us[0].turret_facing;
++    step_turrets(us, none, 1.0 / 15.0, 41);
++    CHECK(us[0].turret_facing != doctest::Approx(before));
++    us[1].omni_fire = true;
++    us[1].target_building = 0;
++    Building b;
++    b.alive = true; b.cx = 20; b.cy = 5; b.fw = b.fh = 1;
++    std::vector<Building> bs = {b};
++    const double f1 = us[1].turret_facing;
++    for (int i = 0; i < 30; ++i) step_turrets(us, bs, 1.0 / 15.0, 41);
++    CHECK(us[1].turret_facing == doctest::Approx(f1));
++}
++
++TEST_CASE("0055 fear AI: Down only while afraid on entry (FUN_005200b0 @0x5200BB)") {
++    InfTable t;
++    t.e[kSqReady] = {0, 1, 0, -1, true};
++    t.e[kSqDown] = {1, 2, 0, -1, true};
++    t.e[kSqProne] = {3, 1, 0, -1, true};
++    t.e[kSqUp] = {4, 2, 0, -1, true};
++    t.fraidycat = false;
++    InfAnimState s;
++    s.armed = true;
++    InfTickCtx c;
++    int facing = 0;
++    s.fear = 0;
++    inf_anim_tick(s, t, facing, c);
++    CHECK_FALSE(s.prone);
++    s.fear = 60;   // 60 -> 59 this tick, still > 49: goes prone
++    inf_anim_tick(s, t, facing, c);
++    CHECK(s.prone);
++}

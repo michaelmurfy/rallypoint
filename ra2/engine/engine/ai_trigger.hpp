@@ -104,6 +104,13 @@ struct TriggerView {
     double iron_charge = -1.0;
     double chrono_charge = -1.0;
     double minor_ready = 0.7;
+    // [RE: FUN_0041e740 + Rules UseMinDefenseRule / MinimumAIDefensiveTeams
+    // (Rules+0x17f3 / +0x1394)]: live IsBaseDefense TeamType count for this
+    // house (house+0x566c) and the per-difficulty minimum. use_min_defense_rule
+    // false (tests / synthetic configs) keeps the pre-hunt filter (no split).
+    int defense_teams = 0;
+    int min_defense_teams = 1;
+    bool use_min_defense_rule = false;
 };
 
 // select_trigger's answer: which trigger fired and which TeamType(s) to
@@ -164,22 +171,27 @@ bool compare_count(int lhs, const TriggerComparator& c);
 bool trigger_condition_true(const AITriggerType& t, const TriggerView& view);
 
 // Enable-filter matrix [RE-GATE APPLIED: ai-trigger.md §5 — ConditionMet's
-// CONFIRMED filter set, applied BEFORE the condition]: (1) base-defense
-// split — base_defense triggers rejected (offensive scope; [RE-FALLBACK]:
-// the recovered split consults the house's defensive-team need, an input
-// this engine does not track; ALL stock triggers are IsForBaseDefense=0);
-// (2) IsGlobal — passes vacuously (aimd-loaded triggers are never Global in
-// the original); (3) is_enabled from [AITriggerTypesEnable]; (4)
-// IsForSkirmish must be 1 (skirmish-only engine); (5) per-difficulty enable
-// INVERTED — house difficulty index 0 (=HARDEST) -> enabled[2] (Hard), 1 ->
-// enabled[1], 2 -> enabled[0] (Easy); (6) OwnerHouse — "<all>"/Any pass,
-// country name match, "<none>"/"" reject; (7) SideIndex — 0=any, else must
-// equal view.side (1=Allied/2=Soviet/3=Yuri); (8) TechLevel — require
-// view.tech_level >= t.tech_level.
-bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view);
+// CONFIRMED filter set, applied BEFORE the condition]: (1) UseMinDefenseRule
+// split [RE: FUN_0041e740]: when view.use_min_defense_rule, Team1's
+// IsBaseDefense (or the trigger's IsForBaseDefense) must match the house's
+// defensive-team need (defense_teams < min_defense_teams -> only BD Team1;
+// else -> only non-BD Team1). Stock aimd marks the base-guard TeamTypes
+// IsBaseDefense=yes with IsForBaseDefense=0 on the trigger line; (2) IsGlobal
+// — passes vacuously (aimd-loaded triggers are never Global in the original);
+// (3) is_enabled from [AITriggerTypesEnable]; (4) IsForSkirmish must be 1
+// (skirmish-only engine); (5) per-difficulty enable INVERTED — house
+// difficulty index 0 (=HARDEST) -> enabled[2] (Hard), 1 -> enabled[1], 2 ->
+// enabled[0] (Easy); (6) OwnerHouse — "<all>"/Any pass, country name match,
+// "<none>"/"" reject; (7) SideIndex — 0=any, else must equal view.side
+// (1=Allied/2=Soviet/3=Yuri); (8) TechLevel — require view.tech_level >=
+// t.tech_level. `team1_is_base_defense` is AimdData::teams[t.team1].is_base_defense
+// (caller supplies it so this stays Aimd-free).
+bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view,
+                          bool team1_is_base_defense = false);
 
 // ELIGIBLE = condition TRUE && filters pass [spec §3].
-bool trigger_eligible(const AITriggerType& t, const TriggerView& view);
+bool trigger_eligible(const AITriggerType& t, const TriggerView& view,
+                      bool team1_is_base_defense = false);
 
 // Weighted-random selection [RE-GATE APPLIED: ai-trigger.md §3 — CONFIRMED
 // draw shape: gather eligible triggers with w = round(Weight_Current) (int);
@@ -217,7 +229,9 @@ TriggerDecision select_trigger(const AimdData& aimd,
 // start == min == max never moves (most stock). Records the witness fields
 // (adjustments/last_adjusted/last_success/last_old_weight/last_new_weight).
 // Out-of-range `trigger` is a no-op (never a crash).
+// [RP-AI-BOOST] success_nudge: added on success only (L3 keeps attacking after
+// a win without changing the stock track-record rule).
 void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
-                   bool success);
+                   bool success, double success_nudge = 0.0);
 
 }  // namespace ra2engine

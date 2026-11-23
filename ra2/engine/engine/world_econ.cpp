@@ -217,6 +217,21 @@ void World::step_player_econ(int house, double dt) {
 // Exit handoff: each READY unit queue launches from its category's primary
 // factory [RE: production.md §1.3, KickOutUnit FUN_00443BC0]; a HARV/CMIN
 // becomes a working miner [RE: economy.md §1].
+// Cloning Vats (rulesmd Cloning=yes, YAClon/NACLON): every infantry unit the house's
+// barracks trains is copied for free at the vats, which stand idle and owned.
+void World::clone_infantry(int house, const UnitCombat& c) {
+    for (std::size_t i = 0; i < buildings_.size(); ++i) {
+        const Building& b = buildings_[i];
+        if (!b.alive || b.house != house || b.state != Building::State::Idle || b.selling) continue;
+        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
+        const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(b.type)];
+        if (!t.w5.cloning) continue;
+        const BuildingTypeDef def = t;   // launch_unit may grow the unit list, not the roster
+        launch_unit(static_cast<int>(i), def, c);
+        return;
+    }
+}
+
 void World::econ_launch_ready_units(int house) {
     HouseEcon& e = econ_[static_cast<std::size_t>(house)];
     const PlayerEconRules& r = econ_rules_[static_cast<std::size_t>(house)];
@@ -236,7 +251,11 @@ void World::econ_launch_ready_units(int house) {
         const BuildingTypeDef fdef = btypes()[static_cast<std::size_t>(ft)];
         const int uidx = launch_unit(fi, fdef, ud.combat);
         if (uidx >= 0) {
+            if (cat == QueueCat::Infantry) clone_infantry(house, ud.combat);   // Cloning Vats
             if (ud.harvester) make_harvester(uidx, ud.chrono_miner, ud.storage > 0 ? ud.storage : 20);
+            if (!ud.enslaves.empty() && ud.slaves_number > 0)
+                make_slave_master(uidx, ud.slaves_number, ud.slave_regen_rate,
+                                  ud.slave_reload_rate, ud.slave_storage);
             // The launched unit's art sequences (an image with none keeps the
             // table's entry -- default_anim() when never registered).
             if (at_or<char>(r.unit_has_anim, uslot, 0))
@@ -322,7 +341,20 @@ ProdResult World::econ_produce(int house, QueueCat cat, int type) {
         if (!econ_can_build(house, cat, type)) return ProdResult::Refused;
         if (ps.slot.type == -1) {
             e.queues.set_credits(e.credits);
-            e.queues.start_unit(cat, type, r.units, r.build_speed);
+            // Rallypoint: country Cost*/BuildTime* already baked into r.units[i].cost
+            // when make_econ_rules scaled them; still apply BuildTime= global via
+            // the type's own BuildTimeMultiplier path (w7) and house BuildTime*.
+            if (const country::Bonuses* bon = house_country_bonuses(house)) {
+                const UnitTypeDef& u = r.units[static_cast<std::size_t>(type)];
+                const country::Kind ck = u.aircraft ? country::Kind::Aircraft
+                    : (u.is_vehicle ? country::Kind::Unit : country::Kind::Infantry);
+                const double btm =
+                    country::build_time_mul(*bon, ck) * u.combat.w7.build_time_mult;
+                start(e.queues.state(cat), u.cost, u.cost, r.build_speed, btm);
+                e.queues.state(cat).slot.type = type;
+            } else {
+                e.queues.start_unit(cat, type, r.units, r.build_speed);
+            }
             return ProdResult::Started;
         }
         // Busy: queue one more [RE: FactoryClass::Set FUN_004C9B90 refuses when
@@ -356,7 +388,19 @@ ProdResult World::econ_produce(int house, QueueCat cat, int type) {
         e.held &= static_cast<std::uint8_t>(~(1u << ci));
     }
     e.queues.set_credits(e.credits);
-    ra2engine::start(ps, type, btypes(), r.build_speed);
+    // Rallypoint: country Cost*/BuildTime* multipliers (HouseType FUN_00511850).
+    if (const country::Bonuses* bon = house_country_bonuses(house)) {
+        const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(type)];
+        const bool is_def = cat == QueueCat::Defense;
+        const country::Kind ck =
+            is_def ? country::Kind::Defense : country::Kind::Building;
+        const int sc = country::scale_cost(t.cost, *bon, ck);
+        const int sch = t.charge > 0 ? country::scale_cost(t.charge, *bon, ck) : sc;
+        ra2engine::start(ps, sc, sch, r.build_speed, country::build_time_mul(*bon, ck));
+        ps.slot.type = type;
+    } else {
+        ra2engine::start(ps, type, btypes(), r.build_speed);
+    }
     // A wall builds WallBuildSpeedCoefficient (rulesmd 3.0) times slower
     // [RE: roster2.md TL;DR 5; TechnoClass::Time_To_Build FUN_006F3D00 wall
     // branch] (G-30).

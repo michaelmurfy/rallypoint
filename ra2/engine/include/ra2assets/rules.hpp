@@ -193,6 +193,25 @@ public:
     // [id] FreeUnit=, or "" if absent.
     std::string free_unit(const std::string& id) const;
 
+    // Yuri Slave Miner (rulesmd / gamemd SlaveManager). Enslaves= on Building or Vehicle;
+    // spawn the Enslaves= infantry; VehicleTypes may list the same keys for AI.
+    std::string enslaves(const std::string& id) const;       // Enslaves=
+    int slaves_number(const std::string& id) const;          // SlavesNumber=
+    int slave_regen_rate(const std::string& id) const;       // SlaveRegenRate= frames
+    int slave_reload_rate(const std::string& id) const;      // SlaveReloadRate= frames
+    bool slaved(const std::string& id) const;                // Slaved=
+    bool resource_gatherer(const std::string& id) const;     // ResourceGatherer=
+    bool resource_destination(const std::string& id) const;  // ResourceDestination=
+    int slave_miner_slave_scan() const;  // [General] SlaveMinerSlaveScan= (default 14)
+    // [General] Slave Miner AI / scoot (Yuri's Revenge). Loaded as cells;
+    // gamemd FUN_0066D530 stores leptons (cells<<8) via Get_Int FUN_00474620.
+    int slave_miner_short_scan() const;       // SlaveMinerShortScan= (default 8)
+    int slave_miner_long_scan() const;        // SlaveMinerLongScan= (default 48)
+    int slave_miner_scan_correction() const;  // SlaveMinerScanCorrection= (default 3)
+    int slave_miner_kick_frame_delay() const; // SlaveMinerKickFrameDelay= (default 150)
+    // AISlaveMinerNumber=h,m,e (default 4,3,2). index 0=hard .. 2=easy.
+    int ai_slave_miner_number(int difficulty_index) const;
+
     // [id] Locomotor= (the CLSID string), or "" if absent [RE: aircraft.md §1].
     std::string locomotor(const std::string& id) const;
 

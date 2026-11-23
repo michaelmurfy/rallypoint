@@ -197,7 +197,7 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
 // (the sprite is already final RGBA). Off-screen rects are culled. Returns
 // false (nothing drawn) on an empty sprite or a fully off-screen rect.
 bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string& key,
-                       const VoxelSprite& s, double fx, double fy, int level,
+                       const VoxelSprite& s, double fx, double fy, double level,
                        const Camera& cam, int view_w, int view_h, int extra_dy = 0);
 
 // CB-2 Aircraft [RE-GATE APPLIED: aircraft.md §3 -- the original's FUN_00755680 plots
@@ -205,7 +205,7 @@ bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string& 
 // z-test; CB-2 approximates it with a dark translucent filled diamond at the
 // ground cell, sized to the hull sprite width]. Drawn at altitude 0 (extra_dy
 // omitted), so it stays anchored under the raised sprite.
-void draw_ground_shadow(void* sdl_renderer, double fx, double fy, int level,
+void draw_ground_shadow(void* sdl_renderer, double fx, double fy, double level,
                         int width_px, const Camera& cam, int view_w, int view_h);
 
 // House palette remap for unit sprites. Unit palettes (unittem.pal) reserve
@@ -254,6 +254,7 @@ ra2assets::Palette pal_for_hsv(const ra2assets::Palette& unit_pal, int h, int s,
 // houses are unconfigured, i.e. every gate); house_draw_key = the colour id
 // for texture-cache keys.
 void set_color_world(const World* w);
+const World* color_world();
 
 // W5-PRES (R-104/R-120): a per-object draw tint the object blits apply
 // (draw_unit, draw_voxel_sprite, and main.cpp's building / turret blits via

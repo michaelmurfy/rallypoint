@@ -23,7 +23,7 @@ struct SkirmishLoadArt {
         static const std::pair<const char*, const char*> k[] = {
             {"Americans", "ustates"}, {"British", "ukingdom"}, {"French", "france"}, {"Germans", "germany"},
             {"Alliance", "korea"},    {"Koreans", "korea"},    {"Russians", "russia"}, {"Confederation", "cuba"},
-            {"Africans", "libya"},    {"Arabs", "iraq"}};
+            {"Africans", "libya"},    {"Arabs", "iraq"},       {"YuriCountry", "yuri"}};
         for (const auto& e : k)
             if (country == e.first) return e.second;
         return soviet ? "russia" : "ustates";   // Random: the side's first country until resolved
@@ -39,7 +39,8 @@ struct SkirmishLoadArt {
         static const std::pair<const char*, const char*> kPal[] = {
             {"ustates", "mplsu.pal"}, {"ukingdom", "mplsuk.pal"}, {"russia", "mplsr.pal"}, {"libya", "mplsl.pal"},
             {"korea", "mplsk.pal"},   {"iraq", "mplsi.pal"},      {"germany", "mplsg.pal"}, {"france", "mplsf.pal"},
-            {"cuba", "mplsc.pal"}};
+            {"cuba", "mplsc.pal"},
+            {"yuri", "mplsobs.pal"}};   // loadmd.mix has no mplsy*.pal: the observer palette
         std::string pal_name = "mpls.pal";
         for (const auto& e : kPal)
             if (art_name == std::string("ls800") + e.first + ".shp") pal_name = e.second;

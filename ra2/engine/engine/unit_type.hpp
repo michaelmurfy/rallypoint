@@ -26,6 +26,13 @@ struct UnitTypeDef {
     bool aircraft = false;                  // [AircraftTypes]  -> Airfield / Aircraft queue
     bool harvester = false;                 // rules Harvester=yes -> launched as a miner
     int storage = 0;                        // rules Storage= (bales) for a harvester
+    // Rallypoint: VehicleTypes Enslaves= (SMIN). Same keys as BuildingTypeDef;
+    // gamemd TechnoClass init creates SlaveManager for either AbstractType.
+    std::string enslaves;                   // Enslaves= infantry type ("" = none)
+    int slaves_number = 0;                  // SlavesNumber=
+    int slave_regen_rate = 0;               // SlaveRegenRate= frames
+    int slave_reload_rate = 0;              // SlaveReloadRate= frames
+    int slave_storage = 0;                  // Storage= of the Enslaves infantry
     UnitTypeW5 w5;                          // wave-5: RequiresStolen*Tech gate
 };
 

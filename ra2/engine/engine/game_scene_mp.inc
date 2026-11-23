@@ -54,6 +54,9 @@
             allies = mp_ini_flag(o.get("MultiplayerDialogSettings", "AlliesAllowed"), allies);
             change = mp_ini_flag(o.get("MultiplayerDialogSettings", "AllyChangeAllowed"), change);
         }
+        // Rallypoint --launch AlliesAllowed= overrides the mode INI (crates/SWs
+        // already come from MpOptions; this is the diplomacy half).
+        if (cfg_.allies_allowed >= 0) allies = cfg_.allies_allowed != 0;
         world_.set_diplomacy_rules(allies, change);
         // W9-05-05: a defeated human of a network match observes with the map
         // revealed (sim-side, armed identically on every peer before frame 0).

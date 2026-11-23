@@ -86,6 +86,19 @@ TEST_CASE("building_frame: healthy/damaged at ConditionYellow") {
     CHECK(building_frame(b, 2, 0.5) == 0);              // 1 image frame only
 }
 
+TEST_CASE("building_anim_active_frame: AnimActive stage + SimpleDamage") {
+    // [RE: Shape_Number FUN_0043ef90] ConYard AnimActive=0,26,3; damaged = stage+1.
+    CHECK(building_anim_active_frame(0, 0, 26, false, 52) == 0);
+    CHECK(building_anim_active_frame(5, 0, 26, false, 52) == 5);
+    CHECK(building_anim_active_frame(5, 0, 26, true, 52) == 6);
+    CHECK(building_anim_active_frame(25, 0, 26, false, 52) == 25);
+    CHECK(building_anim_active_frame(25, 0, 26, true, 52) == 26);
+    // Static AnimActive=0,1,0 matches building_frame 0/1.
+    CHECK(building_anim_active_frame(0, 0, 1, false, 2) == 0);
+    CHECK(building_anim_active_frame(0, 0, 1, true, 2) == 1);
+    CHECK(building_anim_active_frame(3, 0, 1, false, 2) == 0);   // stage wraps
+}
+
 TEST_CASE("buildup_frame + step_buildings: plays once then Idle") {
     Building b = mk(0, 0, 2, 2);
     b.state = Building::State::Buildup;

@@ -55,29 +55,22 @@ bool rp_flag(const Rules& rules, const std::string& id, const char* key) {
     return !v.empty() && (v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == 'T' || v[0] == '1');
 }
 
-// [RE: roster.md §1 "Side is from Owner="; RE-FALLBACK RE-E8: the
-// HouseTypeClass Owner bitmask + RequiredHouses/ForbiddenHouses binary checks
-// were not hunted -- the semantics below are the documented rules meaning]
-// May `country` build rules type `id`? Owner= must list the country (an
-// absent Owner= list allows everyone); RequiredHouses=, when present, must
-// list it; ForbiddenHouses= must not.
+// [RE: roster.md §1 "Side is from Owner="; same Owner / RequiredHouses /
+// ForbiddenHouses rules as country::country_allows (start pools, AI catalogs).
 bool rp_country_allows(const Rules& rules, const std::string& id, const std::string& country) {
-    const std::vector<std::string> owner = rp_list(rules, id, "Owner");
-    if (!owner.empty() && !rp_has(owner, country)) return false;
-    const std::vector<std::string> req = rp_list(rules, id, "RequiredHouses");
-    if (!req.empty() && !rp_has(req, country)) return false;
-    return !rp_has(rp_list(rules, id, "ForbiddenHouses"), country);
+    return ra2engine::country::country_allows(rules, id, country);
 }
 
 // W2-AN-19: the classic RA2 [SuperWeaponTypes] (rules.ini from ra2.mix/local.mix):
 // MultiSpecial, IronCurtainSpecial, LightningStormSpecial, ChronoSphereSpecial,
-// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. The engine reads
-// YR rulesmd.ini, whose YR-only SW keys (NARADR SpyPlaneSpecial, GATECH/NATECH
-// ForceShieldSpecial, Yuri's specials) must not leak into a classic game.
+// ChronoWarpSpecial, ParaDropSpecial, AmericanParaDropSpecial. YR also grants
+// SpyPlaneSpecial from NARADR (Type=SpyPlane; Launch FUN_006CD66F). Other YR-only
+// keys (ForceShield, PsychicDominator, …) stay filtered out until wired.
 bool rp_classic_sw_type(const std::string& type_upper) {
     return type_upper == "MULTIMISSILE" || type_upper == "IRONCURTAIN" ||
            type_upper == "LIGHTNINGSTORM" || type_upper == "CHRONOSPHERE" ||
-           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP";
+           type_upper == "CHRONOWARP" || type_upper == "PARADROP" || type_upper == "AMERPARADROP" ||
+           type_upper == "SPYPLANE";
 }
 
 // The classic SW section a building grants ("" when its SuperWeapon= is
@@ -104,11 +97,11 @@ bool rp_is_lobby_sw_building(const Rules& rules, const std::string& id) {
 // default (Americans / Russians). The lobby's side button changes only the
 // side, so a stale "Americans" on a Soviet slot must not leak through.
 std::string rp_player_country(const Rules& rules, const ra2engine::SkirmishSlot& s) {
-    const bool soviet = s.side == ra2engine::World::Side::Soviet;
-    const std::string want = soviet ? "NOD" : "GDI";
-    if (!s.country.empty() && rp_upper(rules.section_string(s.country, "Side", "")) == want)
+    // Rallypoint: ThirdSide (Yuri) like the other two.
+    if (!s.country.empty() &&
+        ra2engine::yuri::side_of_rules_side(rules.section_string(s.country, "Side", "")) == s.side)
         return s.country;
-    return soviet ? "Russians" : "Americans";
+    return ra2engine::yuri::default_country(s.side);
 }
 
 // One unit queue category per rules type [RE: roster2.md TL;DR 7;
@@ -172,6 +165,14 @@ UnitRoster load_player_unit_roster(const std::string& dir, const ra2assets::MixF
             d.storage = rules.storage(d.id);
             d.chrono_miner = rp_upper(d.id) == "CMIN";   // [RE: economy.md §3] Teleporter miner
         }
+        // Rallypoint: VehicleTypes Enslaves= (undeployed SMIN).
+        d.enslaves = rules.enslaves(d.id);
+        if (!d.enslaves.empty()) {
+            d.slaves_number = rules.slaves_number(d.id);
+            d.slave_regen_rate = rules.slave_regen_rate(d.id);
+            d.slave_reload_rate = rules.slave_reload_rate(d.id);
+            d.slave_storage = rules.storage(d.enslaves);
+        }
         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
     }
     std::cerr << "[realplay-roster] country=" << country << " tech<=" << lobby_tech
@@ -213,6 +214,7 @@ ra2engine::SuperweaponType rp_sw_type_of(const std::string& type_upper) {
     if (type_upper == "CHRONOSPHERE") return T::ChronoSphere;
     if (type_upper == "PARADROP") return T::ParaDrop;
     if (type_upper == "AMERPARADROP") return T::AmerParaDrop;
+    if (type_upper == "SPYPLANE") return T::SpyPlane;  // [SpyPlaneSpecial] NARADR
     return T::None;
 }
 

@@ -1,0 +1,35 @@
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -1451,6 +1451,21 @@
+     // sound/explosion, observed once per LOGIC tick (Presentation::logic_tick)
+     // so an effect is born on the tick its event happened, whatever the
+     // render rate (was per render frame inside unit_audio).
++    // AssaultBolt [rulesmd: Report=TeslaTroopRechargeCoil, IsElectricBolt, IsAlternateColor]: the sound and
++    // the bolt from the trooper to the coil it is charging.
++    void recharge_coil_fx(const ra2engine::World& w, const ra2engine::Unit& u) {
++        const std::string wid = pres_clean(rules_ini_->get(pres_type_id(u), "Secondary"));
++        if (wid.empty()) return;
++        const FxWeapon& wp = fx_.weapon_fx(wid);
++        snd_.play_at(pick_report(wp.report), u.fx, u.fy, "tesla recharge");
++        if (!(u.house == g_local_house || w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) || !wp.bolt) return;
++        double ox = 0, lift = 0, tx = 0, ty = 0, tl = 0;
++        int tlev = 0;
++        muzzle_point(w, u, ox, lift);
++        if (target_point(w, -1, u.w5.charging, tx, ty, tlev, tl))
++            fx_.add_beam(u.fx, u.fy, pres_unit_fx_level(w, u), std::max(lift, 15.0), tx, ty, tlev, tl, wp,
++                         house_color(w, u.house), ox);
++    }
+     void unit_fx_tick(const ra2engine::World& w) {
+         const auto& units = w.units();
+         prev_.resize(units.size(), {0.0, -1.0});
+@@ -1460,7 +1475,9 @@
+             const UnitVoices& v = voices_of(u);
+             infantry_death_fx(w, u, prev_[i].second < 0.0, alive_prev_[i] != 0);   // W3-B
+             alive_prev_[i] = u.alive ? 1 : 0;
+-            if (u.fire_flash > prev_[i].first && u.cargo_of < 0) {
++            if (u.fire_flash > prev_[i].first && u.cargo_of < 0 && u.w5.p.assault && u.w5.charging >= 0) {
++                recharge_coil_fx(w, u);   // a Tesla Trooper feeding a coil fires AssaultBolt, not its Primary
++            } else if (u.fire_flash > prev_[i].first && u.cargo_of < 0) {
+                 // W7-03-06 / W7-12-30: the FIRED weapon's Report (IFV modes,
+                 // deployed GI Para / GGI MissileLauncher, elite weapons).
+                 const std::string wid = fired_weapon(w, u);

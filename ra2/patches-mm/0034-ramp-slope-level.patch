@@ -1,0 +1,423 @@
+diff --git a/engine/iso_renderer.cpp b/engine/iso_renderer.cpp
+index b018c49..0a223cc 100644
+--- a/engine/iso_renderer.cpp
++++ b/engine/iso_renderer.cpp
+@@ -131,6 +131,7 @@ const ra2assets::TmpFile* Theater::tmp_for_tile(uint32_t global_index) {
+ 
+ static const World* g_color_world = nullptr;
+ void set_color_world(const World* w) { g_color_world = w; }
++const World* color_world() { return g_color_world; }
+ 
+ namespace {
+ const ObjTint* g_obj_tint = nullptr;
+@@ -505,8 +506,9 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
+     present_ground(unit, ufx, ufy);
+     const int tile_screen_x =
+         static_cast<int>(std::lround((ufx - ufy) * hw)) + cam.x;
++    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
+     const int tile_screen_y =
+-        static_cast<int>(std::lround((ufx + ufy) * hh - unit.level * kLevelPx)) +
++        static_cast<int>(std::lround((ufx + ufy) * hh - draw_lv * kLevelPx)) +
+         cam.y;
+ 
+     const ra2assets::ShpFile::Frame f = shp.frame_info(unit.frame);
+@@ -569,7 +571,7 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
+ }
+ 
+ bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string& key,
+-                       const VoxelSprite& s, double fx, double fy, int level,
++                       const VoxelSprite& s, double fx, double fy, double level,
+                        const Camera& cam, int view_w, int view_h, int extra_dy) {
+     if (s.w <= 0 || s.h <= 0) return false;
+     SDL_Renderer* renderer = static_cast<SDL_Renderer*>(sdl_renderer);
+@@ -606,7 +608,7 @@ bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string&
+ // continuous iso position (fx, fy, level). The tile's ground reference is the
+ // center of its bounding rect (tile_w/2, tile_h/2 below the projected
+ // top-left), matching draw_unit's anchor.
+-static void tile_center_screen(double fx, double fy, int level, const Camera& cam,
++static void tile_center_screen(double fx, double fy, double level, const Camera& cam,
+                                int& out_x, int& out_y) {
+     const double hw = kTileW / 2.0;
+     const double hh = kTileH / 2.0;
+@@ -615,7 +617,7 @@ static void tile_center_screen(double fx, double fy, int level, const Camera& ca
+             kTileH / 2;
+ }
+ 
+-void draw_ground_shadow(void* sdl_renderer, double fx, double fy, int level,
++void draw_ground_shadow(void* sdl_renderer, double fx, double fy, double level,
+                         int width_px, const Camera& cam, int view_w, int view_h) {
+     SDL_Renderer* renderer = static_cast<SDL_Renderer*>(sdl_renderer);
+     int cx, cy;
+@@ -639,7 +641,8 @@ void draw_selection(void* sdl_renderer, const Unit& unit, const Camera& cam, int
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
++    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
+ 
+     // Diamond size: default one-cell footprint (60x30, 2:1), or scaled to
+     // `width_px` for wide voxel sprites (keeping the 2:1 iso ratio).
+@@ -738,7 +741,8 @@ void draw_hp_bar(void* sdl_renderer, const Unit& unit, const Camera& cam, int vi
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
++    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
+     const int bar_cy = cy - kHpBarUp - kHpBarGap;
+ 
+     SDL_Rect bg{cx - bar_w / 2, bar_cy - kHpBarH / 2, bar_w, kHpBarH};
+@@ -772,7 +776,8 @@ void draw_cargo_pips(void* sdl_renderer, const Unit& unit, int pips_filled, int
+     int cx, cy;
+     double gfx, gfy;
+     present_ground(unit, gfx, gfy);   // W5-B sub-cell, plus the between-tick blend
+-    tile_center_screen(gfx, gfy, unit.level, cam, cx, cy);
++    const double draw_lv = g_color_world ? g_color_world->draw_level(unit) : unit.level;
++    tile_center_screen(gfx, gfy, draw_lv, cam, cx, cy);
+     // One row directly UNDER the HP bar (same anchor math as draw_hp_bar).
+     const int row_y = cy - kHpBarUp - kHpBarGap + kHpBarH + 2;
+     const int pip_w = 4, pip_h = 3, gap = 2;
+diff --git a/engine/iso_renderer.hpp b/engine/iso_renderer.hpp
+index 4d4d794..494d04f 100644
+--- a/engine/iso_renderer.hpp
++++ b/engine/iso_renderer.hpp
+@@ -197,7 +197,7 @@ bool draw_unit(void* sdl_renderer, TextureCache& tc, const Unit& unit,
+ // (the sprite is already final RGBA). Off-screen rects are culled. Returns
+ // false (nothing drawn) on an empty sprite or a fully off-screen rect.
+ bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string& key,
+-                       const VoxelSprite& s, double fx, double fy, int level,
++                       const VoxelSprite& s, double fx, double fy, double level,
+                        const Camera& cam, int view_w, int view_h, int extra_dy = 0);
+ 
+ // CB-2 Aircraft [RE-GATE APPLIED: aircraft.md §3 -- the original's FUN_00755680 plots
+@@ -205,7 +205,7 @@ bool draw_voxel_sprite(void* sdl_renderer, TextureCache& tc, const std::string&
+ // z-test; CB-2 approximates it with a dark translucent filled diamond at the
+ // ground cell, sized to the hull sprite width]. Drawn at altitude 0 (extra_dy
+ // omitted), so it stays anchored under the raised sprite.
+-void draw_ground_shadow(void* sdl_renderer, double fx, double fy, int level,
++void draw_ground_shadow(void* sdl_renderer, double fx, double fy, double level,
+                         int width_px, const Camera& cam, int view_w, int view_h);
+ 
+ // House palette remap for unit sprites. Unit palettes (unittem.pal) reserve
+@@ -254,6 +254,7 @@ ra2assets::Palette pal_for_hsv(const ra2assets::Palette& unit_pal, int h, int s,
+ // houses are unconfigured, i.e. every gate); house_draw_key = the colour id
+ // for texture-cache keys.
+ void set_color_world(const World* w);
++const World* color_world();
+ 
+ // W5-PRES (R-104/R-120): a per-object draw tint the object blits apply
+ // (draw_unit, draw_voxel_sprite, and main.cpp's building / turret blits via
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 02b06f6..a59e0c8 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3786,6 +3786,10 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                                   pres_jumpjet_wobble_px(g_draw_unit_idx, u)   // W5-PRES wobble
+         : (u.an.sinking && u.die_time >= 0.0) ? -static_cast<int>(u.die_time * 24.0)   // W2-AN-25
+         : 0;
++    // Ground height along a ramp. `u` may be the deck-lifted copy; draw_level
++    // keeps that lift and blends the two cells of the step.
++    const double dlv = ra2engine::color_world() ? ra2engine::color_world()->draw_level(u)
++                                               : static_cast<double>(u.level);
+     if (u.an.t.no_shadow || g_sink_drop_px > 0) {   // W7-12-11: no shadow while sinking
+         // W4: NoShadow=yes (V3ROCKET / DMISL) -- no ground shadow at all.
+     } else if (extra_dy > 0 && g_map_dressing && vxl_shadow(va, bi)) {
+@@ -3793,13 +3797,13 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+         // FUN_00755680]: an airborne voxel casts its own silhouette straight
+         // down on the ground, same size at any height (live game).
+         ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *vxl_shadow(va, bi), pfx,
+-                                     pfy, u.level, cam, W, H, 0);
++                                     pfy, dlv, cam, W, H, 0);
+     } else if (extra_dy > 0)
+-        ra2engine::draw_ground_shadow(ren, pfx, pfy, u.level,
++        ra2engine::draw_ground_shadow(ren, pfx, pfy, dlv,
+                                       vxl_set(va, 0, u.house).sprites[bi].w, cam, W, H);
+     else if (const ra2engine::VoxelSprite* sh = vxl_shadow(va, bi))
+         ra2engine::draw_voxel_sprite(ren, tc, "vxlsh:" + img + ":" + std::to_string(bi), *sh, pfx, pfy,
+-                                     u.level, cam, W, H, 0);   // W2-GA-12 ground shadow
++                                     dlv, cam, W, H, 0);   // W2-GA-12 ground shadow
+ 
+     // W3-B: a multi-frame HVA (Night Hawk / Spy Plane rotors, Kirov
+     // propellers) shows frame WalkedFramesSoFar % frames [RE: voxel draw
+@@ -3825,7 +3829,7 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                           s.vpl, ra2engine::house_draw_palette(s.pal, u.house), 0,
+                                           pq * 5.0 * 3.14159265358979 / 180.0)).first;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, u.level, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, it->second, pfx, pfy, dlv, cam, W, H, extra_dy);
+         return;
+     }
+     // W7-06-12 / W7-04-27: out of spawns -> the xxxxWO hull [RE-FALLBACK: the
+@@ -3845,11 +3849,11 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                                ra2engine::house_draw_palette(va.vsrc->pal, u.house), 0)).first;
+             spr = &it->second;
+         }
+-        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, u.level, cam, W, H, extra_dy);
++        ra2engine::draw_voxel_sprite(ren, tc, key, *spr, pfx, pfy, dlv, cam, W, H, extra_dy);
+     } else
+     ra2engine::draw_voxel_sprite(
+         ren, tc, "vxl:" + img + ":h:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(bi) + fkey,
+-        part_sprite(0, bi), pfx, pfy, u.level, cam, W, H, extra_dy);
++        part_sprite(0, bi), pfx, pfy, dlv, cam, W, H, extra_dy);
+     if (va.has_turret) {
+         const int ti = ra2engine::facing_to_index(u.turret_facing, ra2engine::kVehicleFacings);
+         // W3-B TurretOffset: forward along the BODY facing (FLH axes, §6).
+@@ -3868,17 +3872,17 @@ void draw_vehicle_unit(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2
+                                              "vxl:" + img + ":t" + std::to_string(tn) + ":" +
+                                                  std::to_string(ra2engine::house_draw_key(u.house)) + ":" +
+                                                  std::to_string(ti) + fkey,
+-                                             *alt, tfx, tfy, u.level, cam, W, H, extra_dy);
++                                             *alt, tfx, tfy, dlv, cam, W, H, extra_dy);
+             else
+                 ra2engine::draw_voxel_sprite(
+                     ren, tc, "vxl:" + img + ":t:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
+-                    part_sprite(1, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
++                    part_sprite(1, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
+         };
+         auto draw_barrel = [&]() {
+             if (va.has_barrel)
+                 ra2engine::draw_voxel_sprite(
+                     ren, tc, "vxl:" + img + ":b:" + std::to_string(ra2engine::house_draw_key(u.house)) + ":" + std::to_string(ti) + fkey,
+-                    part_sprite(2, ti), tfx, tfy, u.level, cam, W, H, extra_dy);
++                    part_sprite(2, ti), tfx, tfy, dlv, cam, W, H, extra_dy);
+         };
+         // W7-12-41 [RE: 0x73A3A0 @0x73ACBB-0x73ADD4 -- q = ((turret facing
+         // >> 13) + 1 >> 1) & 3; q 0 (N) or 3 (W) draws the barrel BEFORE the
+@@ -4096,7 +4100,7 @@ void draw_p5_chevrons(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2e
+         // W7-12-20 [RE: 0x709E10 offsets from the same draw point as the
+         // health bar]: lifted by the flight altitude and a bridge deck.
+         const int up = (u.is_aircraft && u.altitude > 0.0) ? ra2engine::altitude_to_screen_dy(u.altitude) : 0;
+-        const int lv = u.level + pres_unit_lift_levels(world, u);
++        const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);
+         const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+         const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
+         // W7-12-21: +(5,2) for InfantryClass only (the drone is a Unit).
+@@ -4634,7 +4638,7 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+                 double ufx, ufy;
+                 ra2engine::present_ground(u, ufx, ufy);   // W5-B sub-cell, between-tick blend
+                 const int sx = static_cast<int>(std::lround((ufx - ufy) * 30.0)) + cam.x + 30;
+-                const int lv = u.level + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
++                const double lv = world.draw_level(u) + pres_unit_lift_levels(world, u);   // W5-PRES R-100 deck
+                 const int sy = static_cast<int>(std::lround((ufx + ufy) * 15.0 - lv * 15)) + cam.y + 15 - up;
+                 draw_unit_pips(ren, tc, u, sx, sy, g_pip_yellow, g_pip_red, usel(u));
+                 // W7-12-04/05/16/17/18/22 [RE: DrawHealthBar 0x6F5A00 tail]: the
+diff --git a/engine/pathfind.cpp b/engine/pathfind.cpp
+index 0052672..089a316 100644
+--- a/engine/pathfind.cpp
++++ b/engine/pathfind.cpp
+@@ -477,14 +477,14 @@ int path_step_layer(const PathTerrain& t, int width, int sx, int sy, int sl, int
+         const int hd = lv[(size_t)d];
+         if (hd == hs) return 0;
+         // One level up or down only over a slope: the LOWER cell must be a
+-        // ramp [FUN_004D9B70: |diff| == 1 -> SlopeIndex (+0x11C) of the lower].
++        // ramp [RE: FUN_004D9C60: |diff| == 1 -> SlopeIndex (+0x11C) of the lower].
+         if (sl != 1 && (hd - hs == 1 || hs - hd == 1)) {
+             const long long lower = hd > hs ? s : d;
+             if (t.slope && (size_t)lower < t.slope->size() && (*t.slope)[(size_t)lower] != 0) return 0;
+         }
+     }
+     // A deck (Level + 4) entered at the same height: from the high ground at
+-    // its ends or from the next deck cell [FUN_004D9B70 |diff| == 4 cases].
++    // its ends or from the next deck cell [RE: FUN_004D9C60 |diff| == 4 cases].
+     if (dk != 0 && lv[(size_t)d] + 4 == hs) return 1;
+     return -1;
+ }
+diff --git a/engine/pathfind.hpp b/engine/pathfind.hpp
+index 8a774e0..8434d18 100644
+--- a/engine/pathfind.hpp
++++ b/engine/pathfind.hpp
+@@ -35,7 +35,7 @@ std::vector<Cellxy> find_path(const std::vector<uint8_t>& passable, int width, i
+                               Cellxy start, Cellxy goal,
+                               const std::vector<uint8_t>* leak = nullptr);
+ 
+-// R-210 (bridges and cliffs) [RE: FootClass height gate FUN_004D9B70, reached
++// R-210 (bridges and cliffs) [RE: FootClass height gate FUN_004D9C60, reached
+ // from InfantryClass / UnitClass IsCellOccupied (vtable +0x1AC -> +0x1B0) for
+ // every A* neighbour in FUN_00429A10 and for every step a locomotor takes;
+ // CellClass::IsClearToMove FUN_004833B0 (Level +0x11B, bridge flag 0x100,
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 631d7d8..2cbdd2d 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -754,6 +754,38 @@ int World::cell_level(int x, int y) const {
+     return mc ? mc->level : 0;
+ }
+ 
++double World::draw_level(const Unit& u) const {
++    if (u.is_aircraft) return static_cast<double>(u.level);
++    auto at = [&](int x, int y) -> int {
++        if (x < 0 || y < 0 || x >= grid_w_ || y >= grid_h_) return 0;
++        if (terrain_armed()) {
++            const std::size_t i = static_cast<std::size_t>(y) * grid_w_ + x;
++            if (i < level_grid_.size()) return level_grid_[i];
++        }
++        return map_ ? cell_level(x, y) : 0;
++    };
++    const int l0 = at(u.cell_x, u.cell_y);
++    double vis = l0;
++    if (u.moving()) {
++        std::size_t pi = u.path_idx;
++        while (pi < u.path.size() && u.path[pi].x == u.cell_x && u.path[pi].y == u.cell_y) ++pi;
++        if (pi < u.path.size()) {
++            const int l1 = at(u.path[pi].x, u.path[pi].y);
++            if (l0 != l1) {
++                const double seg = om::hypot(u.path[pi].x - u.cell_x, u.path[pi].y - u.cell_y);
++                const double rem = om::hypot(u.path[pi].x - u.fx, u.path[pi].y - u.fy);
++                double f = seg > 1e-9 ? 1.0 - rem / seg : 1.0;
++                if (f < 0.0) f = 0.0;
++                if (f > 1.0) f = 1.0;
++                vis = l0 + (l1 - l0) * f;
++            }
++        }
++    }
++    // A deck copy adds BridgeHeight onto u.level before drawing. The blend
++    // above is the ground; put that same lift back on.
++    return vis + (u.level - l0);
++}
++
+ void World::enable_subcells() {
+     if (occ_.subcells()) return;
+     occ_.enable_subcells();
+diff --git a/engine/world.hpp b/engine/world.hpp
+index ae45192..3ac511b 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -900,6 +900,13 @@ public:
+     // W5-B: terrain height level of a cell (0 off-map) -- the Z of 3-D
+     // distances (level * 104 leptons, Unsorted::LevelHeight).
+     int cell_level(int x, int y) const;
++    // Ground height the sprite is drawn at. While a ground unit walks between
++    // two cells the height is the blend of those cells, so a paved ramp (the
++    // lower cell of each one-level step is the TMP slope) is followed instead
++    // of the unit staying painted at the level it spawned on. A deck lift
++    // already added to `u.level` is kept. Aircraft keep `u.level` (altitude
++    // is a separate offset).
++    double draw_level(const Unit& u) const;
+     // W5-B R-061: up to three infantry per cell (sub-cell spots). Called by
+     // the real game (GameScene, w5_arm_combat); off = one unit per cell.
+     void enable_subcells();
+diff --git a/engine/world_loco.cpp b/engine/world_loco.cpp
+index 47521e8..31db6bb 100644
+--- a/engine/world_loco.cpp
++++ b/engine/world_loco.cpp
+@@ -929,6 +929,26 @@ void step_hover(StepEnv& e, Unit& u, int self) {
+     u.frame = seq_frame(seq.walk, u.facing, phase);
+ }
+ 
++// The height grid the step is using (the pathfinder's, else the speed
++// grid). Empty when this step has no terrain: unit.level is left alone.
++const std::vector<std::int8_t>* ground_levels(const StepEnv& e) {
++    if (e.terrain && e.terrain->land.level &&
++        e.terrain->land.level->size() == static_cast<std::size_t>(e.w) * e.h)
++        return e.terrain->land.level;
++    if (e.sc.level && e.sc.level->size() == static_cast<std::size_t>(e.w) * e.h) return e.sc.level;
++    return nullptr;
++}
++
++// A ground unit's level is the cell it occupies. It used to stay at the
++// spawn cell, so a tank ordered down a ramp kept the terrace's height
++// [RE: CellClass Level +0x11B; the height gate is FUN_004D9C60].
++void adopt_ground_level(const StepEnv& e, Unit& u) {
++    const std::vector<std::int8_t>* lv = ground_levels(e);
++    if (!lv || u.is_aircraft) return;
++    if (u.cell_x < 0 || u.cell_y < 0 || u.cell_x >= e.w || u.cell_y >= e.h) return;
++    u.level = (*lv)[static_cast<std::size_t>(u.cell_y) * e.w + u.cell_x];
++}
++
+ }  // namespace
+ 
+ void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passable,
+@@ -1022,6 +1042,7 @@ void step_units(std::vector<Unit>& units, const std::vector<std::uint8_t>& passa
+             }
+             step_walk(e, u, self, static_cast<double>(s) / 256.0);
+         }
++        adopt_ground_level(e, u);
+     }
+ }
+ 
+diff --git a/tests/test_bridge_cliff.cpp b/tests/test_bridge_cliff.cpp
+index 66733a8..4f4486d 100644
+--- a/tests/test_bridge_cliff.cpp
++++ b/tests/test_bridge_cliff.cpp
+@@ -1,5 +1,5 @@
+ // R-210 bridges and cliffs: the height-aware search [RE: FootClass height gate
+-// FUN_004D9B70 -- a neighbour is entered at the same height, or one level up /
++// FUN_004D9C60 -- a neighbour is entered at the same height, or one level up /
+ // down when the LOWER cell is a slope; a high-bridge deck stands at Level + 4;
+ // CellClass::IsClearToMove FUN_004833B0] and the allied gate opening
+ // (IsCellOccupied -> Move::ClosedGate). Pure pathfind.hpp tests, no assets.
+@@ -208,3 +208,23 @@ TEST_CASE("R-210 a null terrain is the historical search") {
+         CHECK(a[k].y == c[k].y);
+     }
+ }
++
++TEST_CASE("R-210 paved ramp: a one-cell-wide stair down to flat ground is walkable") {
++    // NewHghts-style paved slope, one cell wide, descending +y:
++    //   flat L2, slope L1, slope L0, flat L0.
++    // Each one-level step has the slope on the LOWER cell (gamemd 0x4D9C60).
++    // The last step is flat-to-flat at the same height.
++    Terrain g(1, 4);
++    g.level = {2, 1, 0, 0};
++    g.slope = {0, 1, 1, 0};
++    const PathTerrain t = g.t(0, false);
++    const auto p = find_path_t(g.pass, g.w, g.h, {0, 0}, {0, 3}, nullptr, &t);
++    REQUIRE(p.size() == 4);
++    CHECK(p.back().y == 3);
++    CHECK(max_step(g, p) == 1);
++    // The cliff beside it, with no slope on the lower cell, stays closed.
++    g.slope[1] = 0;
++    PathTerrain cliff = g.t(0, false);
++    cliff.version = 1;
++    CHECK(find_path_t(g.pass, g.w, g.h, {0, 0}, {0, 3}, nullptr, &cliff).empty());
++}
+diff --git a/tests/test_movement.cpp b/tests/test_movement.cpp
+index 39df7d7..1fab249 100644
+--- a/tests/test_movement.cpp
++++ b/tests/test_movement.cpp
+@@ -188,6 +188,45 @@ TEST_CASE("step_units: 3-unit rotational contention resolves without overlap") {
+     }
+ }
+ 
++// A paved stair: the unit's level used to stay at the cell it spawned on, so
++// the sprite never left the terrace. After the walk it stands on the lower flat.
++TEST_CASE("step_units: walking down a ramp takes the cell's level") {
++    const int w = 1, h = 4;
++    auto p = open_grid(w, h);
++    std::vector<std::int8_t> level = {2, 1, 0, 0};
++    std::vector<std::uint8_t> slope = {0, 1, 1, 0};
++    ra2engine::PathTerrain terr;
++    terr.level = &level;
++    terr.slope = &slope;
++    Occupancy occ(w, h);
++    Unit u;
++    u.cell_x = 0;
++    u.cell_y = 0;
++    u.fx = 0;
++    u.fy = 0;
++    u.level = 2;
++    u.path = ra2engine::find_path_t(p, w, h, {0, 0}, {0, 3}, nullptr, &terr);
++    REQUIRE(u.path.size() == 4);
++    u.path_idx = 1;
++    occ.set(0, 0, 0);
++    ra2engine::MoveSpeedCtx sc;
++    sc.level = &level;
++    std::vector<Unit> units{u};
++    const double dt = 1.0 / 60.0;
++    bool saw_mid = false;
++    for (int f = 0; f < 60 * 8 && units[0].moving(); ++f) {
++        step_units(units, p, p, w, h, occ, dt, 4.0, kNoAnims, nullptr, &sc);
++        if (units[0].cell_y == 1) {
++            CHECK(units[0].level == 1);
++            saw_mid = true;
++        }
++    }
++    CHECK(saw_mid);
++    CHECK_FALSE(units[0].moving());
++    CHECK(units[0].cell_y == 3);
++    CHECK(units[0].level == 0);
++}
++
+ // W4-MC-01 [RE: gamemd MovementZone name table @0x81AA98]: every Amphibious*
+ // zone and SpeedType=Amphibious resolve to the amphibious (land+water) domain.
+ TEST_CASE("W4-MC-01: Amphibious* MovementZones and SpeedType=Amphibious are amphibious") {

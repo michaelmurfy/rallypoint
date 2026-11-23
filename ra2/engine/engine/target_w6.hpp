@@ -79,6 +79,11 @@ struct UnitTgt {
     // W7-07-06 [RE: Mission_Area_Guard FUN_004D41A0 +0x5DC]: the area-guard
     // home cell (-1 = unset: the unit's cell on the next scan).
     int home_x = -1, home_y = -1;
+    // Rallypoint 0057 [RE: FUN_00708080 @0x70871F sets a recruit's
+    // ArchiveTarget (+0x218) to the victim; @0x708351 / 0x7085BB test
+    // victim+0x218 == victim]: this unit's ArchiveTarget is the unit itself
+    // (it answered its own call for help). Cleared by a move or Stop.
+    bool archive_self = false;
     // W7-07-12: attack-move destination (-1 = none).
     int amove_x = -1, amove_y = -1;
     // W7-07-09 [RE: +0x650]: frame before which no new call for help.

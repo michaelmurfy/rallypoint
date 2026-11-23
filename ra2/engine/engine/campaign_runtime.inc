@@ -355,6 +355,7 @@ public:
         wire_economy(w_, ba_, rules);
         w_.refresh_building_types(ba_.roster);   // G16: btypes() must see mission types
         w_.set_repair_sell_rules(ba_.repair_sell);
+        w_.set_campaign_mind_control(true);   // W7-08-14: campaign owns poll_mind_control
         place_objects(objs);
         sync_tracks();       // W6 fix #2: the placed buildings' Insignificant/LegalTarget flags
         apply_playfield();   // W6-02-08: IsInPlayfield of every placed object (Unlimbo)
@@ -1015,7 +1016,7 @@ private:
         const ra2engine::AiCatalog full = make_ai_config(ba_, rules, cfg.difficulty, 0.0, side, own).catalog;
         cfg.team.inf_factory_types = factory_types_for(ba_, id_of(full.barracks));
         cfg.team.veh_factory_types = factory_types_for(ba_, id_of(full.war_factory));
-        cfg.team.trigger_side = side == ra2engine::World::Side::Soviet ? 2 : 1;
+        cfg.team.trigger_side = ra2engine::yuri::trigger_side(side);
         cfg.team.trigger_tech_level = map_.get_int(house_names_[(std::size_t)h], "TechLevel", 10);
         cfg.team.house_name = country;
         fill_ai_building_maps(cfg.team, ba_, rules, rules_ini_);

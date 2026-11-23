@@ -83,8 +83,8 @@ Input::Input(World& world, Camera& camera, int view_w, int view_h)
     : world_(world), cam_(camera), view_w_(view_w), view_h_(view_h) {
     int mnx, mny, mxx, mxy;
     if (terrain_screen_bounds(world_.map(), mnx, mny, mxx, mxy)) {
-        const int margin_x = view_w_ / 2;
-        const int margin_y = view_h_ / 2;
+        const int margin_x = 0;
+        const int margin_y = 0;
         min_cam_x_ = -margin_x - mxx;
         max_cam_x_ = view_w_ + margin_x - mnx;
         min_cam_y_ = -margin_y - mxy;
@@ -284,7 +284,9 @@ int Input::building_art_at(int px, int py) const {
 }
 
 int Input::pick_building(int px, int py, bool touch) const {
-    if (touch) {   // W6-01-01 [engine deviation]: a finger picks by the drawn art
+    // W6-01-01: when the renderer wires art_hit_ (live game), pick the drawn
+    // building sprite first -- the original's object list, not only touch.
+    if (touch || art_hit_) {
         const int b = building_art_at(px, py);
         if (b >= 0) return b;
     }
@@ -978,7 +980,28 @@ void Input::handle(const InputEvent& ev) {
                         (ev.t_ms - last_click_t_) <= kDblMs &&
                         std::abs(ev.x - last_click_x_) <= kDblSlop &&
                         std::abs(ev.y - last_click_y_) <= kDblSlop;
-                    if (is_double) {
+                    // G-10: Legacy path matches Original -- an own building
+                    // click selects it (pips / rally) instead of only factories.
+                    const int ui = unit_under(ev.x, ev.y);
+                    const bool hostile = ui >= 0 && !world_.controllable(world_.units()[ui].house);
+                    if (!is_double && !down_shift_ && ui < 0 && !hostile) {
+                        const int b = pick_building(ev.x, ev.y, ev_touch_);
+                        if (b >= 0 && world_.buildings()[b].house == world_.order_issuer() &&
+                            world_.buildings()[b].alive &&
+                            world_.buildings()[b].state != Building::State::Dead) {
+                            selected_building_ = b;
+                            sel_.clear();
+                            last_click_t_ = 0;
+                        } else if (is_double) {
+                            commit_double(ev.x, ev.y);
+                            last_click_t_ = 0;
+                        } else {
+                            commit_click(ev.x, ev.y, down_shift_);
+                            last_click_t_ = ev.t_ms;
+                            last_click_x_ = ev.x;
+                            last_click_y_ = ev.y;
+                        }
+                    } else if (is_double) {
                         commit_double(ev.x, ev.y);
                         last_click_t_ = 0;  // consume, so a triple-click isn't a 2nd double
                     } else {

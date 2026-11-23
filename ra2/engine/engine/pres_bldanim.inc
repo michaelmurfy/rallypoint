@@ -36,14 +36,20 @@ bool g_pres_low_power = false;  // house 0 drain > output (Presentation::power_e
 enum : int {
     kBsActive = 3, kBsActive4 = 6, kBsPreProduction = 7, kBsProduction = 8, kBsTurret = 9,
     kBsSpecial = 10, kBsSpecial2 = 11, kBsSpecial3 = 12, kBsSpecial4 = 13, kBsSuper = 14, kBsSuper4 = 17,
-    kBsIdle = 18,
+    kBsIdle = 18, kBsLowPower = 19,
 };
+// Same predicate as defense fire (house_low_power + per-building power down).
+inline bool pres_building_powered(const ra2engine::World* world, const ra2engine::Building& b) {
+    if (b.power_off) return false;
+    if (world) return !world->house_low_power(b.house);
+    return !(b.house == g_local_house && g_pres_low_power);
+}
 struct BldSlotRun { long start = -1; bool on = false; };
 struct BldEventState {
     long door_start = -1;          // tick a unit left the factory
     bool door_roof = false;        // ... an aircraft (roof pair)
     long super_start = -1;         // tick of the last SW state change
-    int super_phase = -1;          // -1 none, 0 opening (ready), 2 closing (fired)
+    int super_phase = -1;          // -1 none; else sw_building_anim_phase (0..3)
     BldSlotRun run[PresFx::kBldSlots];
     bool init = false;
     bool init_done = false;        // grand-opening slots started (logging)
@@ -52,6 +58,9 @@ struct BldEventState {
     bool unloading = false;        // a harvester was dumping here last tick
     int gate_stage = 0;            // 0 closed .. GateStages open
     long gate_near = -100000;      // last tick a friendly unit stood at the gate
+    // Art AnimActive stage on the building's own SHP [RE: Building+0xf8].
+    int anim_active_stage = 0;
+    int anim_active_timer = 0;
 };
 std::map<long long, BldEventState> g_bld_events;
 inline long long bld_event_key(const ra2engine::Building& b) {
@@ -153,6 +162,13 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
         }
     for (std::size_t bi = 0; bi < bs.size(); ++bi) {
         const ra2engine::Building& b = bs[bi];
+        if (std::getenv("RA2_TRACE_BLD") && now <= 4) {
+            const std::string d = id_of(b);
+            if (d == "NACNST" || d == "GACNST" || d == "GADEPT")
+                std::cerr << "[bldst] t=" << now << " " << d << " state=" << (int)b.state
+                          << " alive=" << b.alive << " hp=" << b.hp << "/" << b.max_hp
+                          << " buildup=" << b.buildup_time << "/" << b.buildup_total << std::endl;
+        }
         if (!b.alive || b.state != ra2engine::Building::State::Idle) continue;
         const std::string id = id_of(b), img = image_of(b);
         if (id.empty()) continue;
@@ -162,9 +178,31 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
         if (!st.init) {   // grand opening [FUN_004476d0: Idle, then Active..ActiveFour]
             st.init = true;
             start(st, a, kBsIdle, now);
-            if (!r.refinery)
+            // SuperWeapon= buildings (NAMISL, GACSPH, …) use SuperAnim..Four for
+            // door open/close; looping Active* at the opening fights that.
+            if (!r.refinery && !a.slot[kBsSuper].t)
                 for (int s = kBsActive; s <= kBsActive4; ++s) start(st, a, s, now);
             st.init_done = true;
+        }
+        // AnimActive on the main SHP [RE: UpdateAnimations FUN_004509c0 advances
+        // Building+0xf8 every Rate ticks; Shape_Number reads it].
+        if (a.anim_active_count > 1) {
+            if (++st.anim_active_timer >= a.anim_active_rate) {
+                st.anim_active_timer = 0;
+                st.anim_active_stage = (st.anim_active_stage + 1) % a.anim_active_count;
+            }
+        }
+        if (std::getenv("RA2_TRACE_BLD") && a.anim_active_count > 1) {
+            const int imgs = std::max(1, (b.type >= 0 && b.type < static_cast<int>(ba.art.size()))
+                                             ? ba.art[(std::size_t)b.type].shp.count() / 2 : 1);
+            const bool dmg = b.max_hp > 0 && b.hp <= ba.condition_yellow * b.max_hp;
+            int fr = a.anim_active_start + st.anim_active_stage + (dmg ? 1 : 0);
+            if (fr >= imgs) fr = imgs - 1;
+            std::cerr << "[bldtr] t=" << now << " " << id << " at " << b.cx << "," << b.cy
+                      << " hp=" << b.hp << "/" << b.max_hp
+                      << " stage=" << st.anim_active_stage << " cnt=" << a.anim_active_count
+                      << " rate=" << a.anim_active_rate << " imgs=" << imgs << " frame=" << fr
+                      << std::endl;
         }
         // Finished finite runs, chained at their exact end tick (frame-rate
         // independent) [RE: FUN_00451b30].
@@ -181,10 +219,19 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
             } else if (s == kBsSpecial3 && r.unit_repair) {
                 st.depot = 0;
                 start(st, a, kBsIdle, end);
-            } else if (s == kBsProduction) {
-                // [RE-FALLBACK: the Idle restart point after a Production run
-                // was not traced; it resumes when the run ends.]
+            } else if (s == kBsSpecial && a.delayed_fire) {
+                // Tesla / Prism: SpecialAnim finished -- re-arm Active + Idle
+                // [RE: UpdateAnimations restarts Active after the fire slot clears].
+                if (!r.refinery && !a.slot[kBsSuper].t)
+                    for (int s2 = kBsActive; s2 <= kBsActive4; ++s2) start(st, a, s2, end);
                 start(st, a, kBsIdle, end);
+            } else if (s == kBsProduction) {
+                // [RE: FUN_0043cc86 kills Idle before Production; Idle resumes
+                // when the one-shot ProductionAnim ends.]
+                start(st, a, kBsIdle, end);
+            } else if (s >= kBsActive && s <= kBsActive4) {
+                // Finite Active* ended: keep Idle looping if it was stopped.
+                if (!st.run[kBsIdle].on) start(st, a, kBsIdle, end);
             }
         }
         // Refinery storage level [RE: FUN_004509c0 Refinery=yes].
@@ -241,20 +288,25 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
         }
     }
     // Tesla Coil / Prism Tower: SpecialAnim on each shot (IsAnimDelayedFire).
+    // [RE: FUN_0044c565 -- Special start KillAnim(Active) + KillAnim(Idle)].
     for (const ra2engine::World::FireEvent& e : fire) {
         if (e.building < 0 || e.building >= static_cast<int>(bs.size())) continue;
         const ra2engine::Building& b = bs[static_cast<std::size_t>(e.building)];
         const std::string img = image_of(b);
         if (img.empty()) continue;
         const PresFx::BldAnims& a = fx.building(img);
-        if (a.delayed_fire) start(g_bld_events[bld_event_key(b)], a, kBsSpecial, now);
+        if (!a.delayed_fire) continue;
+        BldEventState& st = g_bld_events[bld_event_key(b)];
+        for (int s = kBsActive; s <= kBsActive4; ++s) stop(st, s);
+        stop(st, kBsIdle);
+        start(st, a, kBsSpecial, now);
     }
 }
 
-// W3-B: the main-image frame for CanBeOccupied / Gate=yes types
-// [RE: Shape_Number FUN_0043ef10]: occupiable = (occupants ? 2 : 0) +
-// (ratio <= ConditionYellow ? 1 : 0) (garrisonable types use the yellow
-// threshold); a gate shows its open stage (+ GateStages+1 when damaged).
+// W3-B: the main-image frame for CanBeOccupied / Gate=yes / AnimActive types
+// [RE: Shape_Number FUN_0043ef90]: occupiable = (occupants ? 2 : 0) +
+// (ratio <= ConditionYellow ? 1 : 0); a gate shows its open stage
+// (+ GateStages+1 when damaged); otherwise AnimActive stage with SimpleDamage.
 int pres_building_main_frame(const ra2engine::Building& b, const std::string& id, const std::string& image,
                              int frame, int count, double yellow) {
     if (!g_fx || id.empty()) return frame;
@@ -265,12 +317,19 @@ int pres_building_main_frame(const ra2engine::Building& b, const std::string& id
         const int f = (b.occupants.empty() ? 0 : 2) + (damaged ? 1 : 0);
         return std::min(f, images - 1);
     }
+    const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
     if (r.gate) {
-        const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
         auto it = g_bld_events.find(bld_event_key(b));
         const int stage = it == g_bld_events.end() ? 0 : it->second.gate_stage;
         const int f = stage + (damaged ? a.gate_stages + 1 : 0);
         return std::clamp(f, 0, images - 1);
+    }
+    // AnimActive (ConYard 0,26,3; Service Depot 0,7,2; …).
+    if (a.anim_active_count > 1 || a.anim_active_start != 0) {
+        auto it = g_bld_events.find(bld_event_key(b));
+        const int stage = it == g_bld_events.end() ? 0 : it->second.anim_active_stage;
+        return ra2engine::building_anim_active_frame(stage, a.anim_active_start, a.anim_active_count, damaged,
+                                                     images);
     }
     return frame;
 }
@@ -287,7 +346,7 @@ int pres_building_rubble_frame(const std::string& id, int count) {
 // fires (over it). `pal` is the building's house-remapped palette; `ckey` its
 // colour key.
 void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const std::string& image,
-                           int fcx, int fcy, bool damaged, bool powered, const ra2assets::Palette& pal,
+                           int fcx, int fcy, bool damaged, bool fires_on, bool powered, const ra2assets::Palette& pal,
                            int ckey, int W, int H, int pass) {
     if (!g_fx) return;
     const PresFx::BldAnims& a = g_fx->building(pres_upper(image));
@@ -331,14 +390,26 @@ void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const
     // W2-GA-14: factory door (one shot per exiting unit) and SW charge states.
     if (ev && ev->door_start >= 0)
         if (const FxAnimType* d = slot_t(door)) draw_t(d, oneshot_frame(*d, ev->door_start, now), door.x, door.y);
-    if (ev && ev->super_phase >= 0) {
-        const int open = ev->super_phase;          // 0 (ready) or 2 (fired)
-        const PresFx::BldAnims::Slot& s1 = a.slot[kBsSuper + open];
-        const PresFx::BldAnims::Slot& s2 = a.slot[kBsSuper + open + 1];
-        const FxAnimType* t1 = slot_t(s1);
-        const int fr = t1 ? oneshot_frame(*t1, ev->super_start, now) : -1;
-        if (t1 && fr >= 0) draw_t(t1, fr, s1.x, s1.y);
-        else if (const FxAnimType* t2 = slot_t(s2)) draw_t(t2, PresFx::loop_frame(*t2, now), s2.x, s2.y);
+    // SuperAnim..Four (sw_building_anim_phase): 0/2 loop, 1/3 play once and
+    // then hold the phase that follows, so the draw matches the tick.
+    if (ev && ev->super_phase >= 0 && ev->super_phase <= 3) {
+        const int phase = ev->super_phase;
+        const bool shot = phase == 1 || phase == 3;
+        int slot = kBsSuper + phase;
+        const PresFx::BldAnims::Slot* sl = &a.slot[slot];
+        const FxAnimType* t = slot_t(*sl);
+        int fr = -1;
+        if (shot && t) fr = oneshot_frame(*t, ev->super_start, now);
+        if (fr < 0 && (shot || !t)) {
+            slot = phase == 1 ? kBsSuper + 2 : kBsSuper;
+            sl = &a.slot[slot];
+            t = slot_t(*sl);
+        }
+        if (t && fr < 0) {
+            const long age = ev->super_start < 0 ? now : now - ev->super_start;
+            fr = PresFx::loop_frame(*t, age);
+        }
+        if (t && fr >= 0) draw_t(t, fr, sl->x, sl->y);
     }
     if (ev) {
         for (int s = 0; s < PresFx::kBldSlots; ++s) {
@@ -347,27 +418,43 @@ void pres_building_overlay(SDL_Renderer* ren, ra2engine::TextureCache& tc, const
             const FxAnimType* t = slot_t(sl);
             if (!t) continue;
             // <Slot>PoweredLight: the anim goes away without power; <Slot>Powered
-            // (default yes): it holds still.
+            // (default yes): it holds still (except Active.., where start often
+            // still looks charged -- Tesla Coil, Prism Tower).
             if (!powered && sl.powered_light) continue;
+            if (!powered && s >= kBsActive && s <= kBsActive4 && sl.powered) continue;
             const int fr = (sl.powered && !powered) ? t->start : bld_run_frame(*t, ev->run[s].start, now);
             draw_t(t, fr, sl.x, sl.y);
         }
+        if (!powered) {
+            const PresFx::BldAnims::Slot& lps = a.slot[kBsLowPower];
+            if (const FxAnimType* lt = slot_t(lps))
+                draw_t(lt, PresFx::loop_frame(*lt, now), lps.x, lps.y);
+        }
     }
-    if (damaged && !a.fire_offsets.empty()) {
+    if (fires_on && !a.fire_offsets.empty()) {
         // [RE: W4-FIX-POS, RE-P6 resolved -- FUN_0043c050, called from the
         // damage-state update FUN_0043faa0] one DamageFireTypes anim per
         // DamageFireOffset (type +0x15D8, up to 8 points, list ends at the
         // first unset one) while below ConditionYellow, created at the
         // building's DRAW POINT (vtbl+0xAC, the origin-cell top vertex) +
         // the offset converted pixel->lepton (FUN_006d15e0), flags 0x600.
-        // [RE-FALLBACK: the type pick -- the original starts at a random
-        // DamageFireTypes index and cycles; the clone cycles from 0.]
+        // FUN_0043c0d0: the type list starts at a random DamageFireTypes index
+        // and steps on per fire; each fire starts on a random frame below End
+        // (building_damage_fire_type / _start: hashed from the building, never
+        // the sim RNG). CanBeOccupied waits for ConditionRed (fires_on).
         static std::vector<std::string> fires = g_fx->damage_fires();
         if (fires.empty()) return;
+        unsigned seed = 2166136261u;   // FNV-1a: the same on every standard library
+        if (g_overlay_bld) seed = static_cast<unsigned>(bld_event_key(*g_overlay_bld));
+        else for (char c : image) seed = (seed ^ static_cast<unsigned char>(c)) * 16777619u;
         for (std::size_t i = 0; i < a.fire_offsets.size(); ++i) {
-            const FxAnimType* t = g_fx->type(fires[i % fires.size()]);
+            const int fi = static_cast<int>(i);
+            const FxAnimType* t =
+                g_fx->type(fires[static_cast<std::size_t>(ra2engine::building_damage_fire_type(
+                    seed, fi, static_cast<int>(fires.size())))]);
             if (!t) continue;
-            const int fr = PresFx::loop_frame(*t, now + static_cast<long>(i) * 7);
+            const int r = ra2engine::building_damage_fire_start(seed, fi, t->end);
+            const int fr = PresFx::loop_frame(*t, now + static_cast<long>(std::max(0, r - t->start)) * t->delay);
             g_fx->blit(ren, tc, *t->shp, "fx:" + t->name, fr, fcx + a.fire_offsets[i].first,
                        fcy + a.fire_offsets[i].second + t->ydraw, PresFx::alpha_for(*t, fr), W, H);
         }

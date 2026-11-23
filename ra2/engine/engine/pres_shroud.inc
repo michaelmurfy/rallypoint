@@ -104,27 +104,52 @@ void draw_shroud_pass(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2a
     for (int pass = 0; pass < passes; ++pass) {   // 0 shroud, 1 fog (the original's order)
         const bool fog = pass == 1;
         const ra2assets::ShpFile* shp = fog ? g_fog_shp : g_shroud_shp;
-        ra2engine::for_each_visible_cell(map, cam, W, H, 2, [&](const ra2assets::MapCell& c, int sx, int sy) {
-            if (fog && !explored(c.x, c.y)) return;   // fully shrouded already
-            const int fr = fog ? pres_shroud::frame_for(c.x, c.y, visible)
-                               : pres_shroud::frame_for(c.x, c.y, explored);
-            if (fr == 0) return;
-            SDL_Texture* tex = nullptr;
-            SDL_Rect dst{sx, sy, 60, 30};
-            if (!fog && fr == 15) {
-                // Fully covered: a solid diamond grown by 1 px so the outermost map
-                // cells' light tile seams never peek past the SHP diamond edge.
-                tex = pres_shroud::diamond_tex(tc, false);
-                dst = SDL_Rect{sx - 1, sy - 1, 62, 32};
-            } else if (shp && shp->count() > fr) {
-                SDL_Rect r;
-                tex = pres_shroud::frame_tex(tc, *shp, fog ? "fogshp" : "shroudshp", fr, r);
-                dst = SDL_Rect{sx + r.x, sy + r.y, r.w, r.h};
-            } else if (fr == 15) {
-                tex = pres_shroud::diamond_tex(tc, fog);
+        // Draw shroud/fog over the map's terrain diamond AND a one-cell border
+        // of virtual cells around it, so the map edge gets the same partial-tile
+        // smoothing as interior shroud edges instead of a jagged cell staircase.
+        // Out-of-map cells are never explored (see World::explored_at), so they
+        // read as fully shrouded and act as the "void" side of the edge.
+        const auto& _cells = map.cells();
+        if (!_cells.empty()) {
+            int min_cx = _cells[0].x, max_cx = _cells[0].x;
+            int min_cy = _cells[0].y, max_cy = _cells[0].y;
+            for (const auto& cc : _cells) {
+                min_cx = std::min(min_cx, cc.x); max_cx = std::max(max_cx, cc.x);
+                min_cy = std::min(min_cy, cc.y); max_cy = std::max(max_cy, cc.y);
             }
-            if (tex) SDL_RenderCopy(ren, tex, nullptr, &dst);
-        });
+            // One-cell border around the terrain diamond.
+            min_cx -= 1; max_cx += 1; min_cy -= 1; max_cy += 1;
+            for (int d = min_cx + min_cy; d <= max_cx + max_cy; ++d) {
+                int x0 = std::max(min_cx, d - max_cy);
+                int x1 = std::min(max_cx, d - min_cy);
+                for (int cx = x0; cx <= x1; ++cx) {
+                    int cy = d - cx;
+                    int level = 0;
+                    if (const ra2assets::MapCell* mc = map.at(cx, cy)) level = mc->level;
+                    const ra2engine::ScreenPt _p = ra2engine::cell_to_screen(cx, cy, level, 60, 30, 15);
+                    int sx = _p.x + cam.x;
+                    int sy = _p.y + cam.y;
+                    if (sx + 60 + 2 <= 0 || sy + 30 + 2 <= 0 || sx - 2 >= W || sy - 2 >= H) continue;
+                    if (fog && !explored(cx, cy)) continue;   // fully shrouded already
+                    const int fr = fog ? pres_shroud::frame_for(cx, cy, visible)
+                                       : pres_shroud::frame_for(cx, cy, explored);
+                    if (fr == 0) continue;
+                    SDL_Texture* tex = nullptr;
+                    SDL_Rect dst{sx, sy, 60, 30};
+                    if (!fog && fr == 15) {
+                        tex = pres_shroud::diamond_tex(tc, false);
+                        dst = SDL_Rect{sx - 1, sy - 1, 62, 32};
+                    } else if (shp && shp->count() > fr) {
+                        SDL_Rect r;
+                        tex = pres_shroud::frame_tex(tc, *shp, fog ? "fogshp" : "shroudshp", fr, r);
+                        dst = SDL_Rect{sx + r.x, sy + r.y, r.w, r.h};
+                    } else if (fr == 15) {
+                        tex = pres_shroud::diamond_tex(tc, fog);
+                    }
+                    if (tex) SDL_RenderCopy(ren, tex, nullptr, &dst);
+                }
+            }
+        }
     }
 }
 

@@ -134,6 +134,7 @@ struct UnitVet {
     bool credited = false;        // kill credit already resolved
     // --- type data (copied from UnitCombat at spawn) ---
     int cost = 0;
+    int soylent = 0;              // Soylent= (Grinder); 0 = sell_refund uses Cost
     bool trainable = true;        // Trainable (default yes, V14)
     bool dont_score = false;      // DontScore
     bool self_healing = false;    // SelfHealing= (type flag, V11)

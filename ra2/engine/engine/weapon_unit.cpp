@@ -1,5 +1,6 @@
 #include "weapon_unit.hpp"
 #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+#include "gattling.hpp"
 
 #include "capture.hpp"  // veteran_firepower (legacy rank bake)
 
@@ -87,6 +88,11 @@ int unit_weapon_for_building(const Unit& u, int armor_ix, bool target_bombed, bo
     if (u.deploy_fire && u.deployed) want = u.deploy_fire_slot == 1 && u.w2.valid ? 1 : 0;
     else if (u.deploy_fire && u.is_infantry) want = slot_can_target(primary_view(u), false, armor_ix) ? 0 : -1;   // W7-01-06
     else if (!u.w2.valid) want = slot_can_target(primary_view(u), false, armor_ix) ? 0 : -1;
+    // Rallypoint: Floating Disc Secondary=DiskDrain (DrainWeapon=yes) is the
+    // building drain; prefer it over the laser when the secondary can engage.
+    else if (secondary_view(u).drain_weapon &&
+             slot_can_target(secondary_view(u), false, armor_ix))
+        want = 1;
     else want = choose_weapon(primary_view(u), secondary_view(u), false, armor_ix);
     // W2-AN-14: LandTargeting=1 / UnderwaterOnly cannot hit a structure on
     // land. W7-06-02: one standing on the water (a Naval Yard) is a naval
@@ -145,6 +151,7 @@ void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr) {
         u.w_proj = (vet && unit_is_elite(u) && u.p_proj_elite_set) ? u.p_proj_elite : u.p_proj;
         u.w_aa = u.p_aa;
         u.w_ag = u.p_ag;
+        u.w_drain_weapon = false;   // Rallypoint: primary is never DiskDrain
     } else {
         const WeaponSlot& s = secondary_view(u);
         u.w_damage = dmg(s.damage);
@@ -167,8 +174,52 @@ void activate_weapon_slot(Unit& u, int slot, const VeterancyRules* vr) {
         u.w_proj = s.proj;
         u.w_aa = s.aa;
         u.w_ag = s.ag;
+        u.w_drain_weapon = s.drain_weapon;   // Rallypoint: Floating Disc
     }
     u.w_active = slot;
+}
+
+void gattling_update_unit(Unit& u, bool engaging, bool air, const VeterancyRules* vr) {
+    if (!u.gatt.enabled || u.gatt.weapon_stages <= 0) return;
+    u.gatt_timer = gattling_tick(u.gatt_timer, engaging, u.gatt);
+    const bool elite = vr && u.vet.recv && is_elite(u.vet.veterancy);
+    const int stage = gattling_stage(u.gatt_timer, u.gatt, elite);
+    const int ix = gattling_weapon_index(stage, air);
+    const WeaponSlot& w = gattling_pick(u.gatt_weapons, u.gatt_weapons_elite, ix, elite);
+    if (!w.valid) return;
+    const bool vet = vr && u.vet.recv;
+    auto has = [&](Ability a) {
+        return has_ability(u.vet.veterancy, u.vet.vet_abilities, u.vet.elite_abilities, a);
+    };
+    const double hfp = u.tg.w7_rof ? u.tg.house_fp : 1.0, hrof = u.tg.w7_rof ? u.tg.house_rof : 1.0;
+    if (vet) {
+        u.w_damage =
+            fire_damage(w.damage, u.vet.firepower_mult, has(Ability::Firepower), vr->combat, hfp);
+        u.w_rof = rof_frames(w.rof, has(Ability::Rof), vr->rof, hrof);
+    } else {
+        u.w_damage = u.veteran_rank > 0 ? veteran_firepower(w.damage, u.veteran_rank) : w.damage;
+        u.w_rof = w.rof;
+    }
+    if (u.tg.w7_rof) u.tg.rof_raw = w.rof;
+    u.w6.burst = w.burst;
+    u.w6.omni_fire = w.omni_fire;
+    u.w6.sonic = w.sonic;
+    u.w6.wall_flags = w.wall_flags;
+    u.shrapnel_count = w.shrapnel_count;
+    u.shrapnel_damage = w.shrapnel_damage;
+    u.shrapnel_range = w.shrapnel_range;
+    u.shrapnel_verses = w.shrapnel_verses;
+    u.w_range = w.range;
+    u.w_verses = w.verses;
+    u.w_cell_spread = w.cell_spread;
+    u.w_percent_at_max = w.percent_at_max;
+    u.w_affects_allies = w.affects_allies;
+    u.w_inf_death = w.inf_death;
+    u.w_prone_damage = w.prone_damage;
+    u.w_proj = w.proj;
+    u.w_aa = u.p_aa = w.aa;
+    u.w_ag = u.p_ag = w.ag;
+    u.w_active = 0;
 }
 
 }  // namespace ra2engine

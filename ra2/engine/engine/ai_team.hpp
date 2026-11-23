@@ -291,7 +291,12 @@ int recruit_idle(TeamInstance& team, const AimdData& aimd,
 int select_autocreate_team(const AimdData& aimd, const std::string& house_name,
                            const std::vector<TeamInstance>& live, double credits,
                            const AiTeamRules& rules, std::uint32_t& rng,
-                           const std::vector<char>* team_buildable = nullptr);
+                           const std::vector<char>* team_buildable = nullptr,
+                           // [RP-AI-BOOST] L3: prefer anti-tank (vehicle-heavy) /
+                           // anti-infantry TaskForces when enemy counts are known.
+                           int enemy_vehicles = -1, int enemy_infantry = -1,
+                           int ai_boost = 0,
+                           const std::vector<UnitTypeDef>* unit_roster = nullptr);
 
 // Production intent [RE: ai-team.md §6]: the unit-roster type the house should
 // start producing NEXT — the shortfall type of the FIRST (oldest) Recruiting

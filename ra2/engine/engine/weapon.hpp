@@ -46,6 +46,9 @@ struct WeaponSlot {
     // W7-01-01 [rules [VirtualScanner] NeverUse=yes]: a weapon that only widens
     // the scan; it is never chosen to fire (save v35).
     bool never_use = false;
+    // Rallypoint: [DiskDrain] DrainWeapon=yes — drains a Drainable building
+    // instead of dealing damage (Floating Disc secondary).
+    bool drain_weapon = false;
 };
 
 // GetFireError's warhead gate [RE: combat.md §2, FUN_006fb5d0]: a weapon whose

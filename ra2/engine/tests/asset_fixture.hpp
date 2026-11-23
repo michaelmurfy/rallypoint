@@ -32,12 +32,20 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <strings.h>  // strcasecmp
+#endif
 
 namespace ra2fixture {
 
@@ -68,10 +76,48 @@ inline const std::string& install_base() {
     return base;
 }
 
+// Rallypoint (Linux): join with '/', and find the real spelling of `name` in
+// the install folder (Steam keeps mixed case). Windows paths are case-blind,
+// so the scan still finds the file when the case differs.
+inline std::string install_file(const std::string& name) {
+    std::string dir = install_base();
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir.push_back('/');
+    const std::string exact = dir + name;
+    {
+        std::ifstream f(exact, std::ios::binary);
+        if (f) return exact;
+    }
+#if defined(_WIN32)
+    WIN32_FIND_DATAA fd;
+    const HANDLE h = FindFirstFileA((dir + "*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return exact;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (_stricmp(fd.cFileName, name.c_str()) == 0) {
+            FindClose(h);
+            return dir + fd.cFileName;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR* d = opendir(install_base().c_str());
+    if (!d) return exact;
+    while (dirent* e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        if (strcasecmp(e->d_name, name.c_str()) == 0) {
+            closedir(d);
+            return dir + e->d_name;
+        }
+    }
+    closedir(d);
+#endif
+    return exact;
+}
+
 // Raw bytes of the top-level ra2md.mix, slurped ONCE. Empty if not present
 // (i.e. no install) -- callers gate on assets_available() before use.
 inline const std::vector<uint8_t>& ra2md_bytes() {
-    static const std::vector<uint8_t> bytes = slurp(install_base() + "\\ra2md.mix");
+    static const std::vector<uint8_t> bytes = slurp(install_file("ra2md.mix"));
     return bytes;
 }
 
@@ -105,9 +151,7 @@ inline const std::vector<uint8_t>& mix_bytes_by_name(const std::string& filename
     static std::unordered_map<std::string, std::vector<uint8_t>> cache;
     auto it = cache.find(filename);
     if (it != cache.end()) return it->second;
-    std::string dir = install_base();
-    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '\\';
-    auto res = cache.emplace(filename, slurp(dir + filename));
+    auto res = cache.emplace(filename, slurp(install_file(filename)));
     return res.first->second;
 }
 
@@ -134,6 +178,7 @@ inline const ra2assets::MixFile& ra2_mix() { return mix_by_name("ra2.mix"); }
 // expansion mixes, cachemd.mix, conqmd.mix). Empty vector if not found in any.
 // Not cached (callers that repeat a file get a cached accessor below).
 inline std::vector<uint8_t> resolve_nested_bytes(const std::string& name) {
+    if (ra2md_bytes().empty()) return {};   // Rallypoint: no install -> absent, not a throw
     const ra2assets::MixFile& top = top_mix();
     if (const ra2assets::MixEntry* e = top.find(ra2assets::mix_id(name)))
         return top.read(*e);
@@ -207,9 +252,7 @@ struct Mapsmd03 { bool ok = false; ra2assets::MapFile map; };
 inline const Mapsmd03& mapsmd03() {
     static const Mapsmd03 m = [] {
         Mapsmd03 r;
-        std::string dir = install_base();
-        if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '\\';
-        auto b = slurp(dir + "mapsmd03.mix");
+        auto b = slurp(install_file("mapsmd03.mix"));
         if (b.empty()) return r;
         ra2assets::MixFile mix = ra2assets::MixFile::open(std::move(b));
         const ra2assets::MixEntry* e = mix.find(0x133a0cb2u);

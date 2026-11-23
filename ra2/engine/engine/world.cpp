@@ -1,4 +1,5 @@
 #include "world.hpp"
+#include "ai_boost.hpp"    // [RP-AI-BOOST]
 #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
 #include "weapon_unit.hpp"  // Gap fix C
 
@@ -14,11 +15,13 @@
 #include "factory.hpp"        // exit_cell/primary_factory/set_primary (Production phase)
 #include "group_move.hpp"     // assign_formation
 #include "harvest.hpp"        // step_harvest/HarvestMove/HarvestEvent/OreValues (Economy phase)
+#include "slave_miner.hpp"    // Rallypoint: Yuri Enslaves= gather AI
 #include "iso_project.hpp"   // cell_to_screen (terrain_screen_bounds)
 #include "iso_renderer.hpp"  // terrain_screen_bounds / pal_for_house declarations
 #include "pathfind.hpp"
 #include "ra2assets/pal.hpp"  // Palette/Rgba (pal_for_house)
 #include "capture.hpp"        // grants_startup_from_neutral, kNeutralHouse (Capture phase)
+#include "disc_drain.hpp"     // Rallypoint: Floating Disc DrainWeapon
 #include "roster2.hpp"        // naval_exit_cell (gap owner A: real-play Naval Yard)
 
 namespace ra2engine {
@@ -103,9 +106,14 @@ bool vehicle_aimed(const Unit& u, double target_facing) {
     return std::abs(d) <= kAimToleranceU16;
 }
 
-void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt) {
+void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildings, double dt,
+                  int home_delay_frames) {
     for (auto& u : units) {
         if (!u.is_vehicle || !u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) continue;
+        // [RE: Fire @0x6FF743 stamps LastFireFrame]: a shot leaves fire_flash at
+        // exactly the flash length (combat decays it after this pass).
+        if (u.fire_flash >= 0.4) u.turret_idle_frames = 0;
+        else if (u.turret_idle_frames < (1 << 20)) ++u.turret_idle_frames;
         double want = u.body_facing;
         if (u.target >= 0 && u.target < static_cast<int>(units.size())) {
             const Unit& t = units[u.target];
@@ -153,6 +161,28 @@ void step_turrets(std::vector<Unit>& units, const std::vector<Building>& buildin
                 u.body_facing = turn_toward(u.body_facing, want, u.rot_u16_per_sec * dt);
             u.turret_facing = u.body_facing;
             continue;
+        }
+        // Rallypoint [RE: UnitClass turret AI FUN_00736990]. With a target the
+        // turret aims unless the weapon is OmniFire (WeaponType +0x12B @0x7369F4:
+        // it then holds). TurretSpins (+0xD21 @0x736A95) always asks for
+        // ((cur >> 7) + 1 >> 1 & 0xFF) + 8 steps of 256, so it keeps turning at
+        // ROT. Without a target (@0x736B21) the turret holds until
+        // Frame - LastFireFrame >= GuardAreaTargetingDelay + 5, then faces the
+        // Destination while one is set, else the hull's current facing.
+        // Aircraft and turretless OmniFire units keep the plain slew.
+        const bool has_target = u.target >= 0 || u.target_building >= 0 || u.attack_cell_x >= 0;
+        if (u.w7.t.has_turret && !u.is_aircraft) {
+            if (u.w7.t.turret_spins) {
+                const int cur = static_cast<int>(u.turret_facing) & 0xFFFF;
+                want = static_cast<double>(((((((cur >> 7) + 1) >> 1) & 0xFF) + 8) << 8) & 0xFFFF);
+            } else if (has_target) {
+                if (u.omni_fire || u.w6.omni_fire) want = u.turret_facing;
+            } else if (u.turret_idle_frames + 1 < home_delay_frames) {
+                want = u.turret_facing;
+            } else if (u.moving()) {
+                const Cellxy& d = u.path.back();
+                want = facing_u16_from_delta(static_cast<double>(d.x) - u.fx, static_cast<double>(d.y) - u.fy);
+            }
         }
         u.turret_facing = turn_toward(u.turret_facing, want, u.rot_u16_per_sec * dt);
     }
@@ -733,6 +763,18 @@ bool World::alliance_toggle_allowed(int a, int b) const {
     return true;
 }
 
+void World::set_house_country_bonuses(int h, country::Bonuses b) {
+    if (h < 0) return;
+    if ((int)house_country_bonuses_.size() <= h)
+        house_country_bonuses_.resize((std::size_t)h + 1);
+    house_country_bonuses_[(std::size_t)h] = std::move(b);
+}
+
+const country::Bonuses* World::house_country_bonuses(int h) const {
+    if (h < 0 || h >= (int)house_country_bonuses_.size()) return nullptr;
+    return &house_country_bonuses_[(std::size_t)h];
+}
+
 void World::set_house(int h, HouseRec rec) {
     if (h < 0) return;
     ensure_houses_default();
@@ -750,6 +792,38 @@ int World::cell_level(int x, int y) const {
     if (x < 0 || y < 0 || x >= grid_w_ || y >= grid_h_) return 0;
     const ra2assets::MapCell* mc = map_->at(x, y);
     return mc ? mc->level : 0;
+}
+
+double World::draw_level(const Unit& u) const {
+    if (u.is_aircraft) return static_cast<double>(u.level);
+    auto at = [&](int x, int y) -> int {
+        if (x < 0 || y < 0 || x >= grid_w_ || y >= grid_h_) return 0;
+        if (terrain_armed()) {
+            const std::size_t i = static_cast<std::size_t>(y) * grid_w_ + x;
+            if (i < level_grid_.size()) return level_grid_[i];
+        }
+        return map_ ? cell_level(x, y) : 0;
+    };
+    const int l0 = at(u.cell_x, u.cell_y);
+    double vis = l0;
+    if (u.moving()) {
+        std::size_t pi = u.path_idx;
+        while (pi < u.path.size() && u.path[pi].x == u.cell_x && u.path[pi].y == u.cell_y) ++pi;
+        if (pi < u.path.size()) {
+            const int l1 = at(u.path[pi].x, u.path[pi].y);
+            if (l0 != l1) {
+                const double seg = om::hypot(u.path[pi].x - u.cell_x, u.path[pi].y - u.cell_y);
+                const double rem = om::hypot(u.path[pi].x - u.fx, u.path[pi].y - u.fy);
+                double f = seg > 1e-9 ? 1.0 - rem / seg : 1.0;
+                if (f < 0.0) f = 0.0;
+                if (f > 1.0) f = 1.0;
+                vis = l0 + (l1 - l0) * f;
+            }
+        }
+    }
+    // A deck copy adds BridgeHeight onto u.level before drawing. The blend
+    // above is the ground; put that same lift back on.
+    return vis + (u.level - l0);
 }
 
 void World::enable_subcells() {
@@ -1154,6 +1228,7 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
     // the unit on the World-wide move_cps. Infantry leave all of these at
     // their defaults (is_vehicle=false, rot=0, speed_cps=0).
     u.is_vehicle = c.is_vehicle;
+    u.weight_milli = c.weight_milli > 0 ? c.weight_milli : 1000;
     u.speed_cps = c.speed_cps;
     u.rot_u16_per_sec = c.rot * kRotU16PerRotPerSec;
     // CB-1 [RE: transport-cargo.md §1]: cargo stats, inert unless the caller
@@ -1198,6 +1273,10 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
     u.p_proj = c.proj;
     u.p_proj_elite = c.elite_proj;
     u.p_proj_elite_set = c.has_elite_proj;
+    u.gatt = c.gatt;   // Rallypoint: IsGattling
+    u.gatt_weapons = c.gatt_weapons;
+    u.gatt_weapons_elite = c.gatt_weapons_elite;
+    u.gatt_timer = 0;
     u.deploy_fire = c.deploy_fire;
     u.deploy_fire_slot = c.deploy_fire_slot;
     u.crusher = c.crusher;
@@ -1227,6 +1306,7 @@ Unit& World::add_combat_unit(int cell_x, int cell_y, int house, const UnitCombat
     // past this point unless vet_any_). Only a vet-enabled World arms the
     // combat hook, applies a requested rank and refreshes the stats.
     u.vet.cost = c.cost;
+    u.vet.soylent = c.soylent;
     u.vet.trainable = c.trainable;
     u.vet.dont_score = c.dont_score;
     u.vet.self_healing = c.self_healing;
@@ -1490,6 +1570,7 @@ void World::order_unit_move(int idx, int gx, int gy) {
     u.tg.overridden = false;
     u.tg.opportunity = false;
     u.tg.home_x = u.tg.home_y = -1;
+    u.tg.archive_self = false;   // 0054: a move order replaces the ArchiveTarget
     u.tg.amove_x = u.tg.amove_y = -1;
     // P4 [RE: abilities.md §C1/§C2/§A]: a FROZEN unit (warping in, being
     // erased, deployed) takes no move; a Teleporter's move is a TELEPORT.
@@ -1500,7 +1581,12 @@ void World::order_unit_move(int idx, int gx, int gy) {
     // Desolator) owned by a human refuses the move (the destination is
     // cleared, it stays put); a computer-owned one undeploys first (the
     // Undeploy sequence and sound) and then walks.
-    if (u.deployed && !u.is_vehicle && (u.deploy_fire || u.abil.deployer)) {
+    // T3.3 [RE: IsSimpleDeployer FUN_00739AC0]: a deployed Siege Chopper
+    // (vehicle + deploy_fire) is immobile the same way.
+    const bool deployed_post =
+        u.deployed && (u.deploy_fire || u.abil.deployer) &&
+        (!u.is_vehicle || (u.deploy_fire && !u.is_infantry));
+    if (deployed_post) {
         if (!house_is_computer(u.house)) return;
         (void)order_deploy(idx);   // toggles back: emits Deploy(0)
     }
@@ -1885,6 +1971,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
         if (wx.x < 0) return -1;                    // boxed in: HOLD
         UnitCombat cv = c;
         cv.veteran_rank = produced_veteran_kind(f.house, factory_def.factory_kind) ? 1 : 0;
+        if (const country::Bonuses* bon = house_country_bonuses(f.house))
+            country::apply_to_combat(cv, *bon);
         const bool has_rally = f.has_rally;
         const int rx = f.rally_x, ry = f.rally_y;
         add_combat_unit(wx.x, wx.y, f.house, cv);
@@ -1908,6 +1996,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
         const double py = (f.cy * 256.0 + f.fh * 128.0 + (pad >= 0 ? an_.dock_offsets[pad].second : 0)) / 256.0 - 0.5;
         UnitCombat cv = c;   // W7-01-15: no spied-factory veterancy for aircraft
         const int house = f.house;
+        if (const country::Bonuses* bon = house_country_bonuses(house))
+            country::apply_to_combat(cv, *bon);
         add_combat_unit(static_cast<int>(om::lround(px)), static_cast<int>(om::lround(py)), house, cv);
         const int ui = static_cast<int>(units_.size()) - 1;
         occ_.release_all_of(ui, -1, -1);   // parked on the pad: no ground cell
@@ -1941,6 +2031,8 @@ int World::launch_unit(int factory_idx, const BuildingTypeDef& factory_def, cons
     // in every existing demo -> cv.veteran_rank stays 0 -> byte-identical.
     UnitCombat cv = c;
     cv.veteran_rank = produced_veteran_kind(house, factory_def.factory_kind) ? 1 : 0;
+    if (const country::Bonuses* bon = house_country_bonuses(house))
+        country::apply_to_combat(cv, *bon);
     add_combat_unit(ex.x, ex.y, house, cv);
     const int ui = static_cast<int>(units_.size()) - 1;
     // W2-AN-07: a jumpjet (Kirov, Rocketeer, Night Hawk) lifts off as it
@@ -3503,6 +3595,66 @@ void World::step_tech_structures(double dt) {
     //    disguise stays on for everybody else.
 }
 
+void World::step_disc_drain() {
+    // Rallypoint: Floating Disc drain [RE: DrainStart FUN_0070FD70 / DrainEnd
+    // FUN_0070FE50; the drain is a Disc DrainTarget <-> building DrainingMe pair
+    // that outlives the shot (combat.cpp starts it)]. Money: [CombatDamage]
+    // DrainMoneyFrameDelay/Amount on the global frame. Power: a drained building
+    // with Power > 0 zeroes its owner's output [RE: HouseClass power total
+    // @0x508D1E: IsBeingDrained FUN_0070FEC0 && output > 0 -> +0x53A4 = 0],
+    // which here is the spy blackout path.
+    const std::uint64_t F = vet_frame_;
+    const int nb = static_cast<int>(buildings_.size());
+    const int nu = static_cast<int>(units_.size());
+    auto standing = [&](int bi) {
+        return bi >= 0 && bi < nb && buildings_[static_cast<std::size_t>(bi)].alive &&
+               buildings_[static_cast<std::size_t>(bi)].state != Building::State::Dead;
+    };
+    // 1) The Disc side: DrainEnd when the Disc is gone, the building is gone,
+    //    the owners became allies [RE: TechnoClass::AI @0x6FA1C5..0x6FA21E,
+    //    FUN_004F9A90 every frame] or the live check [UnitClass::AI 0x7361A9,
+    //    Frame % 16 == 2] finds another building (or none) under the Disc.
+    for (int i = 0; i < nu; ++i) {
+        Unit& u = units_[static_cast<std::size_t>(i)];
+        if (u.drain_target < 0) continue;
+        const int bi = u.drain_target;
+        int scratch = -1;
+        int& slot = standing(bi) ? buildings_[static_cast<std::size_t>(bi)].drained_by : scratch;
+        if (!u.alive || u.die_time >= 0.0 || !standing(bi)) { disc_drain::end(u.drain_target, slot); continue; }
+        const Building& b = buildings_[static_cast<std::size_t>(bi)];
+        if (are_allied(b.house, u.house) ||
+            (disc_drain::live_check_due(F) &&
+             !disc_drain::above_foundation(u.cell_x, u.cell_y, b.cx, b.cy, b.fw, b.fh)))
+            disc_drain::end(u.drain_target, slot);
+    }
+    // 2) The building side: effects while DrainingMe names a live Disc.
+    for (int bi = 0; bi < nb; ++bi) {
+        Building& b = buildings_[static_cast<std::size_t>(bi)];
+        if (b.drained_by < 0) continue;
+        const int d = b.drained_by;
+        if (!standing(bi) || d >= nu || units_[static_cast<std::size_t>(d)].drain_target != bi) {
+            b.drained_by = -1;
+            continue;
+        }
+        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
+        const BuildingTypeDef& td = btypes()[static_cast<std::size_t>(b.type)];
+        const disc_drain::Effect effect =
+            disc_drain::classify(td.drainable, td.resource_destination, td.power);
+        if (disc_drain::causes_blackout(effect) && b.house >= 0 && b.house < house_count())
+            blackout_frames_[static_cast<std::size_t>(b.house)] =
+                std::max(blackout_frames_[static_cast<std::size_t>(b.house)], 2);
+        if (!disc_drain::causes_money(effect) || !disc_drain::money_due(F, disc_drain::kDefaultMoneyDelay))
+            continue;
+        const int victim = b.house, thief = units_[static_cast<std::size_t>(d)].house;
+        if (victim < 0 || victim >= house_count() || thief < 0 || thief >= house_count()) continue;
+        const int transfer = disc_drain::money_transfer(static_cast<int>(credits(victim)),
+                                                        disc_drain::kDefaultMoneyAmount);
+        if (transfer <= 0) continue;
+        set_wallet(victim, credits(victim) - static_cast<double>(transfer));
+        set_wallet(thief, credits(thief) + static_cast<double>(transfer));
+    }
+}
+
 void World::enable_shroud(bool on) {
     shroud_any_ = on;
     for (int h = 0; h < house_count(); ++h) {
@@ -3893,32 +4045,51 @@ void World::step_ai_houses(double dt) {
         // 1) Income (the economy phase accumulates per-house unload income).
         ai_econ(rec).credits += take_income(h);
         ai_pick_enemy_house(h, rec);   // W2-SK-08
-        // W2-SK-10 base defence [RE-FALLBACK: the IsBaseDefense teams and
-        // [AI] ComputerBaseDefenseResponse were not decoded]: every ~7 s, idle
-        // un-teamed combat units engage enemies inside 12 cells of the base.
+        // W2-SK-10 base defence interim: every ~7 s, idle un-teamed combat
+        // units engage enemies inside 12 cells of the base — ONLY while the
+        // house has no live IsBaseDefense team. Once UseMinDefenseRule has
+        // raised a guard team, call_for_help (FUN_00708080, ComputerBaseDefenseResponse)
+        // owns the response and this path must not steal recruits.
         if ((repair_frame_ + (std::uint64_t)h) % 105u == 0u) {
-            const BaseView bv = make_ai_base_view(h, rec);
-            std::vector<int> intruders;
-            for (int i = 0; i < (int)units_.size(); ++i) {
-                const Unit& e = units_[(std::size_t)i];
-                if (!e.alive || e.die_time >= 0.0 || e.cargo_of >= 0 || e.is_aircraft || !is_enemy(h, e.house)) continue;
-                const int dx = e.cell_x - bv.center_x, dy = e.cell_y - bv.center_y;
-                if (dx * dx + dy * dy <= 144) intruders.push_back(i);
-            }
-            if (!intruders.empty())
-                for (const IdleUnitView& iv : ai_idle_units(h, rec)) {
-                    const Unit& u = units_[(std::size_t)iv.unit];
-                    if (u.w_damage <= 0 || u.deploys_into >= 0 || unit_is_engineer(u) || unit_is_spy(u))   // W7-01-33
-                        continue;
-                    int best = -1;
-                    long long bd = 0;
-                    for (int e : intruders) {
-                        const long long dx = units_[(std::size_t)e].cell_x - u.cell_x,
-                                        dy = units_[(std::size_t)e].cell_y - u.cell_y;
-                        if (best < 0 || dx * dx + dy * dy < bd) { best = e; bd = dx * dx + dy * dy; }
-                    }
-                    if (best >= 0) ai_order_attack(iv.unit, best);
+            bool has_bd = false;
+            for (const TeamInstance& ti : rec.team_state.teams) {
+                if (ti.teamtype >= 0 && ti.teamtype < (int)rec.cfg.team.aimd.teams.size() &&
+                    rec.cfg.team.aimd.teams[(std::size_t)ti.teamtype].is_base_defense &&
+                    !ti.members.empty()) {
+                    has_bd = true;
+                    break;
                 }
+            }
+            if (!has_bd) {
+                const BaseView bv = make_ai_base_view(h, rec);
+                std::vector<int> intruders;
+                for (int i = 0; i < (int)units_.size(); ++i) {
+                    const Unit& e = units_[(std::size_t)i];
+                    if (!e.alive || e.die_time >= 0.0 || e.cargo_of >= 0 || e.is_aircraft ||
+                        !is_enemy(h, e.house))
+                        continue;
+                    const int dx = e.cell_x - bv.center_x, dy = e.cell_y - bv.center_y;
+                    if (dx * dx + dy * dy <= 144) intruders.push_back(i);
+                }
+                if (!intruders.empty())
+                    for (const IdleUnitView& iv : ai_idle_units(h, rec)) {
+                        const Unit& u = units_[(std::size_t)iv.unit];
+                        if (u.w_damage <= 0 || u.deploys_into >= 0 || unit_is_engineer(u) ||
+                            unit_is_spy(u))
+                            continue;
+                        int best = -1;
+                        long long bd = 0;
+                        for (int e : intruders) {
+                            const long long dx = units_[(std::size_t)e].cell_x - u.cell_x,
+                                            dy = units_[(std::size_t)e].cell_y - u.cell_y;
+                            if (best < 0 || dx * dx + dy * dy < bd) {
+                                best = e;
+                                bd = dx * dx + dy * dy;
+                            }
+                        }
+                        if (best >= 0) ai_order_attack(iv.unit, best);
+                    }
+            }
         }
 
         // 1b) [G-65] AI repair [RE: FUN_00450620, BuildingClass AI -- gated by
@@ -4050,9 +4221,10 @@ void World::step_ai_houses(double dt) {
         // 6b) [G-65] AI sell [RE: FUN_00450620 -- money < [AI] CreditReserve,
         //     health ratio < ConditionRed (Rules+0x1708) and rand(0,50) <
         //     house+0x1d4 (the house TechLevel, ai-trigger.md; 10 in skirmish)
-        //     -> Sell. Evaluated on the house AI tick; the conyard is never
-        //     sold (the ConYard-loss path would end the house).]
-        if (ai_econ(rec).credits < cfg.ai.credit_reserve) {
+        //     -> Sell. IQ >= [IQ] RepairSell when W7 is armed. The conyard is
+        //     never sold (the ConYard-loss path would end the house).]
+        if (ai_econ(rec).credits < cfg.ai.credit_reserve &&
+            (!w7_rules_.armed || house_iq(h) >= w7_rules_.iq_repair_sell)) {
             for (int bi = 0; bi < (int)buildings_.size(); ++bi) {
                 const Building& b = buildings_[bi];
                 if (!b.alive || b.house != h || b.state != Building::State::Idle || b.selling ||
@@ -4063,6 +4235,30 @@ void World::step_ai_houses(double dt) {
                 if ((int)(ai_rand(rec.state.rng) % 51u) >= cfg.team.trigger_tech_level) continue;
                 begin_sell(bi, h);
                 break;
+            }
+        }
+        // 6b2) PowerEmergency sell [RE: Rules+0x10B0 / kAiPowerEmergency]: when
+        //     output < drain * PowerEmergency, sell the standing own building
+        //     with the largest power drain (most negative Power=), never the
+        //     ConYard / a refinery / a power plant. IQ-gated like repair/sell.
+        {
+            const BaseView bv_pe = make_ai_base_view(h, rec);
+            if (power_emergency_sell(bv_pe, cfg.ai) &&
+                (!w7_rules_.armed || house_iq(h) >= w7_rules_.iq_repair_sell)) {
+                int best = -1, best_drain = 0;
+                for (int bi = 0; bi < (int)buildings_.size(); ++bi) {
+                    const Building& b = buildings_[(std::size_t)bi];
+                    if (!b.alive || b.house != h || b.state != Building::State::Idle || b.selling)
+                        continue;
+                    if (b.type < 0 || b.type >= (int)cfg.roster.size()) continue;
+                    const BuildingTypeDef& t = cfg.roster[(std::size_t)b.type];
+                    if (t.conyard || t.power > 0) continue;   // keep power plants
+                    if (b.type == cfg.catalog.refinery || t.resource_destination) continue;
+                    if (t.power >= 0) continue;   // only power consumers
+                    const int drain = -t.power;
+                    if (best < 0 || drain > best_drain) { best = bi; best_drain = drain; }
+                }
+                if (best >= 0) begin_sell(best, h);
             }
         }
         // 6c') W6-03-08 raise money [RE: FUN_004fd320 -> FUN_004fd7c0 urgency,
@@ -5267,6 +5463,7 @@ bool World::ai_launch_unit_ready(int house, HouseAiRec& rec, QueueCat cat) {
     const BuildingTypeDef& fdef = rec.cfg.roster[buildings_[fi].type];
     const int uidx = launch_unit(fi, fdef, tc.unit_roster[uslot].combat);
     if (uidx < 0) return false;  // exit blocked -> HOLD ready (retry next frame)
+    if (cat == QueueCat::Infantry) clone_infantry(house, tc.unit_roster[uslot].combat);   // Cloning Vats
     // W7-01-03: the AI spy's invented enemy-colour look is gone -- every spy
     // starts with its side's PermaDisguise (add_combat_unit).
     if (!tc.unit_roster[uslot].combat.deploys_into.empty()) {   // W2-SK-07: unfold it
@@ -5279,6 +5476,12 @@ bool World::ai_launch_unit_ready(int house, HouseAiRec& rec, QueueCat cat) {
         make_harvester(uidx, d.chrono_miner, d.storage > 0 ? d.storage : 20);
         ai_econ(rec).queues.placed(cat);
         return true;
+    }
+    // Rallypoint: undeployed SMIN (VehicleTypes Enslaves=) — SlaveManager on the unit.
+    if (!tc.unit_roster[uslot].enslaves.empty() && tc.unit_roster[uslot].slaves_number > 0) {
+        const UnitTypeDef& d = tc.unit_roster[uslot];
+        make_slave_master(uidx, d.slaves_number, d.slave_regen_rate, d.slave_reload_rate,
+                          d.slave_storage);
     }
     // Claim into the FIRST (oldest) team owing this type -- deterministic; an
     // unclaimed unit stays idle and recruitable [RE: ai-team.md §2].
@@ -5375,33 +5578,21 @@ void World::step_ai_teams(double dt) {
                     if (m.unit < 0 || m.unit >= (int)unit_ok.size() || !unit_ok[m.unit])
                         team_ok[ti] = 0;
             }
+            // Live IsBaseDefense team count (house+0x566c) for UseMinDefenseRule.
+            int defense_teams = 0;
+            for (const TeamInstance& ti : st.teams) {
+                if (ti.teamtype >= 0 && ti.teamtype < (int)tc.aimd.teams.size() &&
+                    tc.aimd.teams[(std::size_t)ti.teamtype].is_base_defense)
+                    ++defense_teams;
+            }
+            const bool need_defense =
+                tc.use_min_defense_rule && defense_teams < tc.min_defense_teams;
             st.spawn_clock += check_period;
             const double spawn_period = tc.rules.autocreate_time_min * 900.0;  // min->frames (Net L0)
-            if (st.spawn_clock >= spawn_period) {
-                st.spawn_clock = 0.0;
-                // CONTRACT F: select_autocreate_team takes a trailing seeded rng
-                // (the house's AiTeamState::rng — deterministic, never wall-clock).
-                const int pick = select_autocreate_team(tc.aimd, tc.house_name,
-                                                        st.teams, ai_econ(rec).credits,
-                                                        tc.rules, st.rng, &team_ok);
-                if (pick >= 0) {
-                    TeamInstance t;
-                    t.teamtype = pick;
-                    st.teams.push_back(t);
-                    ++st.teams_created;
-                }
-            }
-            // AI-3 trigger-eval step [RE-GATE APPLIED: ai-trigger.md §5 —
-            // CONFIRMED: trigger eval lives INSIDE this team-management
-            // pass; no separate AITrigger clock exists]. A SECOND creation
-            // path BESIDE autocreate: both feed st.teams and reuse the whole
-            // AI-2 recruit/produce/gather/execute machinery (lifecycle
-            // transitions UNCHANGED) [spec §4]. BOTH sources respect
-            // TotalAITeamCap. NO team->trigger link is stored — attribution
-            // at disband is a Team1-identity scan [RE-GATE APPLIED:
-            // ai-trigger.md §6]. FIREWALL: triggers_enabled defaults false,
-            // so no existing gate ever reaches this block; the draw consumes
-            // trigger_state.rng (a separate stream), never st.rng.
+            // AI-3 trigger-eval [RE: ai-trigger.md §5]: under UseMinDefenseRule
+            // with too few IsBaseDefense teams, triggers run BEFORE autocreate
+            // and autocreate is held off — ConditionMet only admits BD Team1
+            // then, and autocreate never picks IsBaseDefense TeamTypes.
             if (tc.triggers_enabled && !tc.aimd.triggers.empty() &&
                 (int)st.teams.size() < tc.rules.total_team_cap) {
                 TriggerView tv;
@@ -5437,6 +5628,38 @@ void World::step_ai_teams(double dt) {
                     ++rec.trigger_state.triggers_fired;
                     rec.trigger_state.last_fired = d.trigger;
                 }
+            }
+            // Autocreate SPAWN (offense-only: select_autocreate_team skips
+            // IsBaseDefense). Held while UseMinDefenseRule still needs a guard.
+            if (!need_defense && st.spawn_clock >= spawn_period) {
+                st.spawn_clock = 0.0;
+                // [RP-AI-BOOST] L3: count live enemy vehicles/infantry for mix bias.
+                int enemy_veh = -1, enemy_inf = -1;
+                if (rec.cfg.ai_boost >= 3) {
+                    enemy_veh = 0;
+                    enemy_inf = 0;
+                    for (const Unit& u : units_) {
+                        if (!u.alive || u.die_time >= 0.0 || u.house == h) continue;
+                        if (allied_with(h, u.house)) continue;
+                        if (u.is_harvester) continue;
+                        if (u.is_infantry) ++enemy_inf;
+                        else ++enemy_veh;
+                    }
+                }
+                const int pick = select_autocreate_team(
+                    tc.aimd, tc.house_name, st.teams, ai_econ(rec).credits, tc.rules,
+                    st.rng, &team_ok, enemy_veh, enemy_inf, rec.cfg.ai_boost,
+                    &tc.unit_roster);
+                if (pick >= 0) {
+                    TeamInstance t;
+                    t.teamtype = pick;
+                    st.teams.push_back(t);
+                    ++st.teams_created;
+                }
+            } else if (need_defense && st.spawn_clock >= spawn_period) {
+                // Keep one spawn period of credit so offense autocreates on
+                // the next check after the minimum is met.
+                st.spawn_clock = spawn_period;
             }
         }
 
@@ -5568,6 +5791,29 @@ void World::step_ai_teams(double dt) {
             if (miners < refineries * tc.harvesters_per_refinery)
                 for (int t = 0; t < (int)tc.unit_roster.size(); ++t)
                     if (tc.unit_roster[t].harvester &&
+                        ai_econ(rec).credits >= tc.unit_roster[t].cost * rec.cfg.mods.cost_mul +
+                                           tc.rules.credit_reserve &&
+                        prerequisites_met(tc.unit_roster[t].prerequisite, buildings_,
+                                          rec.cfg.roster, h, rec.cfg.groups)) {
+                        want = t;
+                        break;
+                    }
+        }
+        // Rallypoint: AISlaveMinerNumber [RE: FUN_004FEACA]. Count ResourceGatherer
+        // slave miners (deployed YAREFN + undeployed SMIN) and queue SMIN.
+        if (pass == 1 && tc.ai_slave_miner_number > 0 &&
+            !(want >= 0 && !tc.unit_roster[want].combat.deploys_into.empty())) {
+            int miners = 0;
+            for (const Building& b : buildings_) {
+                if (!b.alive || b.house != h || b.state != Building::State::Idle) continue;
+                if (b.type < 0 || b.type >= (int)types_.size()) continue;
+                if (!types_[(size_t)b.type].enslaves.empty()) ++miners;
+            }
+            for (const Unit& u : units_)
+                if (u.alive && u.die_time < 0.0 && u.house == h && u.is_slave_master) ++miners;
+            if (miners < tc.ai_slave_miner_number)
+                for (int t = 0; t < (int)tc.unit_roster.size(); ++t)
+                    if (!tc.unit_roster[t].enslaves.empty() && tc.unit_roster[t].is_vehicle &&
                         ai_econ(rec).credits >= tc.unit_roster[t].cost * rec.cfg.mods.cost_mul +
                                            tc.rules.credit_reserve &&
                         prerequisites_met(tc.unit_roster[t].prerequisite, buildings_,
@@ -5723,10 +5969,13 @@ void World::step_ai_teams(double dt) {
                 // (completed_success, the team+0x84 flag), NOT survivors
                 // [RE: §4]. Adjustment happens ONLY here, at disband.
                 if (tc.triggers_enabled) {
+                    // [RP-AI-BOOST] L3: nudge successful trigger weights upward.
+                    const double nudge =
+                        ai_boost_success_weight_nudge(rec.cfg.ai_boost);
                     for (int j = 0; j < (int)tc.aimd.triggers.size(); ++j)
                         if (tc.aimd.triggers[j].team1 == t.teamtype)
                             adjust_weight(rec.trigger_state, tc.aimd, j,
-                                          t.completed_success);
+                                          t.completed_success, nudge);
                 }
                 // Release survivors: stand each live member DOWN (stop any
                 // in-flight move) so the freed unit is IMMEDIATELY idle &
@@ -5828,6 +6077,16 @@ void World::ai_fill_trigger_view(int house, const HouseAiRec& rec,
         if (t == SuperweaponType::IronCurtain) v.iron_charge = sw_charge_fraction(house, t);
         if (t == SuperweaponType::ChronoSphere) v.chrono_charge = sw_charge_fraction(house, t);
     }
+    // [RE: FUN_0041e740 house+0x566c vs MinimumAIDefensiveTeams]: live
+    // IsBaseDefense TeamType count + the skirmish house's UseMinDefenseRule.
+    v.defense_teams = 0;
+    for (const TeamInstance& ti : rec.team_state.teams) {
+        if (ti.teamtype >= 0 && ti.teamtype < (int)tc.aimd.teams.size() &&
+            tc.aimd.teams[(std::size_t)ti.teamtype].is_base_defense)
+            ++v.defense_teams;
+    }
+    v.min_defense_teams = tc.min_defense_teams;
+    v.use_min_defense_rule = tc.use_min_defense_rule;
 }
 
 void World::step(double dt) {
@@ -5985,7 +6244,7 @@ void World::step(double dt) {
     // Slew vehicle turrets AFTER movement and BEFORE combat so the aim gate
     // (vehicle_aimed) in step_combat sees this frame's post-slew turret
     // facing (docs/re/voxel-render.md §5). No-op for infantry.
-    step_turrets(units_, buildings_, dt);
+    step_turrets(units_, buildings_, dt, w7_rules_.guard_area_targeting_delay + 5);
 
     // Buildings & Construction Task 4: advance buildup/death timers, then
     // restore passability for any building that DIED this frame (state ==
@@ -6013,6 +6272,11 @@ void World::step(double dt) {
     // order [spec §Global Constraints].
     step_repair_sell(dt);
 
+    // W7-08-14 skirmish/MP mind control: arm flags and consume the previous
+    // frame's Controller shots before combat stamps new ones (campaign owns
+    // its own poll and sets campaign_mind_control_).
+    step_mind_control();
+
     // Projectile phase (P2) [RE: projectile.md §6/§7]: advance every projectile
     // in flight one logic frame per accumulated 1/15 s, detonating through the
     // EXISTING damage layer. A pure INSERTION before step_combat (a shell
@@ -6036,6 +6300,8 @@ void World::step(double dt) {
         if (u.fire_flash == 0.4 && u.alive && u.die_time < 0.0)
             fire_events_.push_back({i, -1, u.target, u.target_building, u.w_active, ""});
     }
+    // Rallypoint: Floating Disc drain (money / house blackout) while hovering.
+    step_disc_drain();
     // Gap fix C (G-40) [RE: docs/re/defenses.md]: base defenses acquire, aim
     // and fire. Only types resolved with a weapon (BuildingTypeDef::armed).
     step_building_combat(dt);
@@ -6204,6 +6470,76 @@ void World::step(double dt) {
         for (const HarvestMove& m : h_moves) order_unit_move(m.unit, m.gx, m.gy);
         for (const HarvestEvent& e : h_events)
             harvest_events_.push_back({static_cast<int>(e.kind), e.unit});
+
+        // Rallypoint: Yuri Slave Miner (Enslaves=) — spawn + gather + deliver.
+        std::vector<SlaveSpawn> s_spawns;
+        std::vector<SlaveMove> s_moves;
+        const std::vector<double> before_slave = house_credits_;
+        std::vector<SlaveScoot> s_scoots;
+        std::vector<std::uint8_t> ai_mask(house_credits_.size(), 0);
+        for (std::size_t h = 0; h < ai_mask.size(); ++h)
+            if (ai_enabled(static_cast<int>(h))) ai_mask[h] = 1;
+        SlaveMinerScootRules scoot_rules;
+        scoot_rules.short_scan = slave_short_scan_;
+        scoot_rules.long_scan = slave_long_scan_;
+        scoot_rules.correction = slave_scan_correction_;
+        scoot_rules.kick_delay = slave_kick_delay_;
+        step_slave_miners(units_, buildings_, types_, ore_, passable_, grid_w_, grid_h_, occ_, dt,
+                          OreValues{ore_value_ore_, ore_value_gems_}, house_credits_.data(),
+                          static_cast<int>(house_credits_.size()), slave_scan_, &scoot_rules,
+                          ai_mask.data(), s_spawns, s_moves, s_scoots);
+        for (std::size_t h = 0; h < house_credits_.size() && h < before_slave.size(); ++h)
+            harvest_income_[h] += house_credits_[h] - before_slave[h];
+        for (const SlaveSpawn& s : s_spawns) {
+            if (!walkable(s.gx, s.gy) || unit_at_cell(s.gx, s.gy) >= 0) continue;
+            UnitCombat c = slave_proto_;
+            if (!slave_proto_ok_) {
+                c.strength = 125;
+                c.is_infantry = true;
+                c.image = "SLAV";
+            }
+            Unit& u = add_combat_unit(s.gx, s.gy, s.house, c);
+            make_slave(u, s.master, s.storage_bales, s.master_is_unit);
+        }
+        for (const SlaveMove& m : s_moves) order_unit_move(m.unit, m.gx, m.gy);
+        // AI scoot: move undeployed SMIN; slide deployed YAREFN foundation toward
+        // ore (SlaveManager follows the master; deploy transplant is FUN_006AF580).
+        for (const SlaveScoot& sc : s_scoots) {
+            if (sc.master_is_unit) {
+                if (sc.master < 0 || sc.master >= (int)units_.size()) continue;
+                order_unit_move(sc.master, sc.gx, sc.gy);
+                continue;
+            }
+            if (sc.master < 0 || sc.master >= (int)buildings_.size()) continue;
+            Building& b = buildings_[(size_t)sc.master];
+            if (!b.alive || b.state != Building::State::Idle) continue;
+            const int ncx = sc.gx - b.fw / 2;
+            const int ncy = sc.gy - b.fh / 2;
+            if (ncx == b.cx && ncy == b.cy) continue;
+            bool ok = true;
+            for (int dy = 0; dy < b.fh && ok; ++dy)
+                for (int dx = 0; dx < b.fw && ok; ++dx) {
+                    const int x = ncx + dx, y = ncy + dy;
+                    if (x < 0 || y < 0 || x >= grid_w_ || y >= grid_h_) {
+                        ok = false;
+                        break;
+                    }
+                    const bool in_old = x >= b.cx && x < b.cx + b.fw && y >= b.cy && y < b.cy + b.fh;
+                    if (in_old) continue;
+                    if (!passable_[(size_t)y * (size_t)grid_w_ + (size_t)x] ||
+                        unit_at_cell(x, y) >= 0)
+                        ok = false;
+                }
+            if (!ok) continue;
+            for (int dy = 0; dy < b.fh; ++dy)
+                for (int dx = 0; dx < b.fw; ++dx)
+                    passable_[(size_t)(b.cy + dy) * (size_t)grid_w_ + (size_t)(b.cx + dx)] = 1;
+            b.cx = ncx;
+            b.cy = ncy;
+            for (int dy = 0; dy < b.fh; ++dy)
+                for (int dx = 0; dx < b.fw; ++dx)
+                    passable_[(size_t)(b.cy + dy) * (size_t)grid_w_ + (size_t)(b.cx + dx)] = 0;
+        }
     }
 
     // Hold at weapon range: a unit under an EXPLICIT attack order that has

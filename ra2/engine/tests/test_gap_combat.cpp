@@ -75,6 +75,11 @@ TEST_CASE("gapC weapon: real rulesmd slots (SREF Weapon1, APOC/HTK secondary AA,
     UnitCombat m;
     fill_unit_combat_extras(r, "MTNK", resolve_type_weapons(r, "MTNK"), m);
     CHECK(m.crusher);
+    // T3.3: SCHP IsSimpleDeployer=yes Deployer=no still arms DeployFireWeapon.
+    UnitCombat schp;
+    fill_unit_combat_extras(r, "SCHP", resolve_type_weapons(r, "SCHP"), schp);
+    CHECK(schp.deploy_fire);
+    CHECK(schp.deploy_fire_slot == 1);
 }
 
 TEST_CASE("gapC weapon: a Flak Track engages an airborne Kirov with its AA secondary") {

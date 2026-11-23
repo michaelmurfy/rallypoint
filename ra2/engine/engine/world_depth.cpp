@@ -125,16 +125,34 @@ void World::order_occupy(int ui, int bi) {
 }
 
 int World::group_occupy_count(int issuer, const std::vector<int>& ids, int bi) const {
+    // Occupy + Grinder + Bio Reactor enters [RE: InfantryClass::What_Action
+    // FUN_0051E010 @0x51E643 Grinding=+0x16AD -> ACTION_ENTER 0x0B / NoEnter;
+    // UnitClass @0x73F645 / @0x7401AD; Mission_Enter FUN_00519449 uses
+    // FUN_004598A0 for InfantryAbsorb=+0x16AF | UnitAbsorb=+0x16AE].
     if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return 0;
-    int n = 0;
+    if (buildings_[static_cast<std::size_t>(bi)].type < 0 ||
+        buildings_[static_cast<std::size_t>(bi)].type >= static_cast<int>(btypes().size()))
+        return 0;
+    const Building& b = buildings_[static_cast<std::size_t>(bi)];
+    const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b.type)];
+    int n = 0, occupy_n = 0, absorb_n = 0;
     for (int i : ids) {
         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
         const Unit& u = units_[static_cast<std::size_t>(i)];
         if (u.house != issuer || u.cargo_of >= 0) continue;
+        if (can_grind(i, bi)) {
+            ++n;
+            continue;
+        }
+        if (can_absorb(i, bi)) {
+            if (static_cast<int>(b.occupants.size()) + absorb_n >= bt.passengers) continue;
+            ++absorb_n;
+            ++n;
+            continue;
+        }
         if (!can_occupy(i, bi)) continue;
-        // Room check against the orders already given this click.
-        const Building& b = buildings_[bi];
-        if (static_cast<int>(b.occupants.size()) + n >= btypes()[b.type].max_occupants) break;
+        if (static_cast<int>(b.occupants.size()) + occupy_n >= bt.max_occupants) continue;
+        ++occupy_n;
         ++n;
     }
     return n;
@@ -142,16 +160,36 @@ int World::group_occupy_count(int issuer, const std::vector<int>& ids, int bi) c
 
 int World::group_occupy(int issuer, const std::vector<int>& ids, int bi) {
     if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return 0;
-    int n = 0;
+    if (buildings_[static_cast<std::size_t>(bi)].type < 0 ||
+        buildings_[static_cast<std::size_t>(bi)].type >= static_cast<int>(btypes().size()))
+        return 0;
+    const Building& b0 = buildings_[static_cast<std::size_t>(bi)];
+    const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b0.type)];
+    int n = 0, occupy_n = 0, absorb_n = 0;
     for (int i : ids) {
         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
         const Unit& u = units_[static_cast<std::size_t>(i)];
         if (u.house != issuer || u.cargo_of >= 0) continue;
+        if (can_grind(i, bi)) {
+            order_grind(i, bi);
+            ++n;
+            continue;
+        }
+        if (can_absorb(i, bi)) {
+            if (static_cast<int>(buildings_[static_cast<std::size_t>(bi)].occupants.size()) + absorb_n >=
+                bt.passengers)
+                continue;
+            order_absorb(i, bi);
+            ++absorb_n;
+            ++n;
+            continue;
+        }
         if (!can_occupy(i, bi)) continue;
-        // Room check against the orders already given this click.
-        const Building& b = buildings_[bi];
-        if (static_cast<int>(b.occupants.size()) + n >= btypes()[b.type].max_occupants) break;
+        if (static_cast<int>(buildings_[static_cast<std::size_t>(bi)].occupants.size()) + occupy_n >=
+            bt.max_occupants)
+            continue;
         order_occupy(i, bi);
+        ++occupy_n;
         ++n;
     }
     return n;
@@ -258,7 +296,9 @@ void World::unload_occupants(int bi, bool place_inside) {
             ability_erase_unit(ui);
         }
         garrison_events_.push_back({GarrisonEvent::Unloaded, bi, house});
-        sync_garrison_owner(bi);
+        if (b.type >= 0 && b.type < static_cast<int>(btypes().size()) &&
+            btypes()[static_cast<std::size_t>(b.type)].can_be_occupied)
+            sync_garrison_owner(bi);
         return;
     }
     const bool inside = exit.x < 0;
@@ -306,7 +346,13 @@ void World::unload_occupants(int bi, bool place_inside) {
         put(ui, got, got_layer);
     }
     garrison_events_.push_back({GarrisonEvent::Unloaded, bi, house});
-    sync_garrison_owner(bi);
+    // CanBeOccupied huts sync owner; InfantryAbsorb (YAPOWR) keeps its house
+    // [RE: BuildingClass::Mission_Unload FUN_0044D880 @0x44D8B1 reads
+    // InfantryAbsorb=+0x16AF then UnloadOccupants FUN_00457DD0 — never
+    // FUN_004581F0's neutral flip].
+    if (b.type >= 0 && b.type < static_cast<int>(btypes().size()) &&
+        btypes()[static_cast<std::size_t>(b.type)].can_be_occupied)
+        sync_garrison_owner(bi);
 }
 
 Cellxy World::nearest_exit_from_host(const Unit& u, int hx, int hy, int hlayer, int* layer) const {
@@ -951,26 +997,37 @@ void World::step_depth(double dt) {
         w6_overlay_wall_hit(x, y, u.w6.wall_flags, u.w_damage);
     }
     if (!garrison_any_) return;
-    // Occupy arrivals (the step_capture analogue).
+    // Occupy / Grinder / Bio Reactor arrivals.
     for (int i = 0; i < static_cast<int>(units_.size()); ++i) {
         Unit& u = units_[i];
         if (u.occupy_target < 0) continue;
         const int bi = u.occupy_target;
-        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !can_occupy(i, bi)) {
+        if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0) {
+            u.occupy_target = -1;
+            continue;
+        }
+        const bool grind = can_grind(i, bi);
+        const bool absorb = can_absorb(i, bi);
+        const bool occupy = can_occupy(i, bi);
+        if (!grind && !absorb && !occupy) {
             u.occupy_target = -1;
             continue;
         }
         if (cheb_to_foundation(buildings_[bi], u.cell_x, u.cell_y) <= 1) {
-            occupy_now(i, bi);
+            if (grind) grind_now(i, bi);
+            else if (absorb) absorb_now(i, bi);
+            else occupy_now(i, bi);
         } else if (!u.moving()) {
-            order_occupy(i, bi);   // re-path adjacent
+            if (grind) order_grind(i, bi);
+            else if (absorb) order_absorb(i, bi);
+            else order_occupy(i, bi);
         }
     }
     for (int bi = 0; bi < static_cast<int>(buildings_.size()); ++bi) {
         Building& b = buildings_[bi];
-        if (b.type < 0 || b.type >= static_cast<int>(btypes().size()) ||
-            !btypes()[b.type].can_be_occupied)
-            continue;
+        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
+        const BuildingTypeDef& bt = btypes()[b.type];
+        if (!bt.can_be_occupied && !bt.infantry_absorb) continue;
         // Dead occupants leave the list (they cannot be hurt inside, but a
         // trigger/ability may still erase them).
         b.occupants.erase(std::remove_if(b.occupants.begin(), b.occupants.end(),
@@ -991,7 +1048,9 @@ void World::step_depth(double dt) {
             unload_occupants(bi);
             continue;
         }
-        if (b.alive && b.state != Building::State::Dead) sync_garrison_owner(bi);
+        // InfantryAbsorb (YAPOWR) keeps its house; only CanBeOccupied civ huts sync.
+        if (bt.can_be_occupied && b.alive && b.state != Building::State::Dead)
+            sync_garrison_owner(bi);
     }
     step_garrison_combat(dt);
 }

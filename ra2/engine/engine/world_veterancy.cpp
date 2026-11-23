@@ -358,12 +358,13 @@ void World::collect_crate(int slot, int unit_idx) {
             any_mcv |= units_[i].alive && units_[i].die_time < 0.0 && units_[i].house == h && is_mcv(i);
         const double cash = ai_enabled(h) ? econ_[(std::size_t)h].credits : house_credits_[h] + player_wallet(h);
         if (!any_bld && !any_mcv && cash > 1500.0) {
-            const bool soviet = house_side(h) == Side::Soviet;
+            // Rallypoint: the ConYard prefix of the side (GA / NA / YA).
+            const char* pre = house_side(h) == Side::Soviet ? "NA" : house_side(h) == Side::Yuri ? "YA" : "GA";
             for (int k = 0; k < static_cast<int>(undeploy_units_.size()) && forced_mcv < 0; ++k) {
                 const int bt = k < static_cast<int>(undeploy_types_.size()) ? undeploy_types_[k] : -1;
                 if (bt < 0 || bt >= static_cast<int>(btypes().size())) continue;
                 const std::string& id = btypes()[bt].id;
-                if ((id.rfind("NA", 0) == 0) == soviet) forced_mcv = k;
+                if (id.rfind(pre, 0) == 0 && btypes()[bt].conyard) forced_mcv = k;
             }
             if (forced_mcv >= 0) p = static_cast<int>(Powerup::Unit);
         }

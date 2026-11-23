@@ -9,7 +9,8 @@ void set_sidebar_style(int style) { g_sidebar_style = style == 1 ? 1 : 0; }
 int sidebar_style() { return g_sidebar_style; }
 
 SidebarLayout SidebarLayout::compute(int view_w, int view_h,
-                                     const std::vector<int>& types, int top_row) {
+                                     const std::vector<int>& types, int top_row,
+                                     int sw_slots) {
     SidebarLayout lay;
     const bool sov = g_sidebar_style == 1;   // W2-UI-08 constant set
     const int side3_h = sov ? 18 : kSide3H;
@@ -57,13 +58,19 @@ SidebarLayout SidebarLayout::compute(int view_w, int view_h,
     // 2 columns row-major — these land the 60x48 cameos INSIDE the socket
     // recesses baked into side2.shp [RE: §11a]. Cells beyond the visible
     // 2*N are not laid out (no strip scrolling with this roster).
+    // Superweapon cameos take whole rows at the top of the strip so a
+    // single one does not share a row with a building. sw_rows is set
+    // before max_top_row, which counts only the production rows.
+    lay.sw_slots = std::max(0, sw_slots);
+    lay.sw_rows = std::min(lay.side2_rows, (lay.sw_slots + 1) / 2);
     // G-12: the strip starts at row top_row (clamped to the scrollable range).
     lay.top_row = std::max(0, std::min(top_row, lay.max_top_row(static_cast<int>(types.size()))));
     const std::size_t first = static_cast<std::size_t>(2 * lay.top_row);
-    const std::size_t max_cells = static_cast<std::size_t>(2 * lay.side2_rows);
+    const int prod_rows = lay.side2_rows - lay.sw_rows;
+    const std::size_t max_cells = static_cast<std::size_t>(2 * std::max(0, prod_rows));
     for (std::size_t i = 0; first + i < types.size() && i < max_cells; ++i) {
         const int col = static_cast<int>(i % 2);
-        const int row = static_cast<int>(i / 2);
+        const int row = lay.sw_rows + static_cast<int>(i / 2);
         CameoCell cell;
         cell.type = types[first + i];
         cell.rect = {x0 + kCameoX + col * kCameoColPitch,

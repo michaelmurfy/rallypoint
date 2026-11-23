@@ -35,7 +35,7 @@ std::vector<Cellxy> find_path(const std::vector<uint8_t>& passable, int width, i
                               Cellxy start, Cellxy goal,
                               const std::vector<uint8_t>* leak = nullptr);
 
-// R-210 (bridges and cliffs) [RE: FootClass height gate FUN_004D9B70, reached
+// R-210 (bridges and cliffs) [RE: FootClass height gate FUN_004D9C60, reached
 // from InfantryClass / UnitClass IsCellOccupied (vtable +0x1AC -> +0x1B0) for
 // every A* neighbour in FUN_00429A10 and for every step a locomotor takes;
 // CellClass::IsClearToMove FUN_004833B0 (Level +0x11B, bridge flag 0x100,
@@ -90,6 +90,15 @@ std::vector<Cellxy> find_path_nearest_t(const std::vector<uint8_t>& passable, in
                                         const std::vector<uint8_t>* leak, const PathTerrain* terrain,
                                         const std::vector<std::uint16_t>* cost = nullptr);
 
+// Rallypoint 0057 [RE: MapClass zone ids FUN_0056D230 (cell -> zone block
+// MapClass+0x68 -> per-MovementZone id MapClass+0x18[mz]), compared by
+// FUN_0056D100]: 1 for every cell in the same zone as one of `seeds`, i.e.
+// reachable under find_path_t's neighbour rules (corner rule, `leak`, height
+// gate, decks, open gates). Seeds that cannot be entered are ignored. Empty
+// on a malformed grid.
+std::vector<uint8_t> reach_mask(const std::vector<uint8_t>& passable, int width, int height,
+                                const std::vector<Cellxy>& seeds, const std::vector<uint8_t>* leak,
+                                const PathTerrain* terrain);
 // W2-SK-16: find_path with an expansion budget (> 0): empty when the goal is
 // not reached within `max_expand` closed nodes (same path otherwise).
 std::vector<Cellxy> find_path_bounded(const std::vector<uint8_t>& passable, int width, int height,

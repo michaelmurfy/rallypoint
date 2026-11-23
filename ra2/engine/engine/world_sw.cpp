@@ -252,8 +252,14 @@ bool World::fire_superweapon_at(int house, SuperweaponType type, int cx, int cy,
             an_paradrop(house, type, cx, cy);
             an_event(SwEvent::Activated, house, type, cx, cy);
             break;
+        case SuperweaponType::SpyPlane:
+            // [RE: SuperClass::Launch FUN_006CC390 case 8 @0x6CD66F]:
+            // FUN_0041CAA0(SPYP) + FUN_0065EAB0(..., Mission SpyplaneApproach).
+            an_spyplane(house, cx, cy);
+            an_event(SwEvent::Activated, house, type, cx, cy);
+            break;
         default:
-            return false;   // YR-only types: never granted in a classic game
+            return false;   // other YR-only types (ForceShield, …) still unwired
     }
     rec->sw.on_fired();   // full recharge (§1)
     an_.any = true;

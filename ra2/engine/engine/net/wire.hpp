@@ -72,4 +72,12 @@ constexpr size_t kTunnelPingReplySize = 12;
 std::vector<uint8_t> make_tunnel_ping(uint32_t cookie);
 bool is_tunnel_ping_reply(const uint8_t* data, size_t len, uint32_t cookie);
 
+// Rallypoint agent token proof (not a CnCNet v2 header: sender = receiver = 0xFFFF).
+// Datagram = kTunnelAuthPrefix (8) + 16-byte token; the agent answers with the prefix alone.
+constexpr uint8_t kTunnelAuthPrefix[8] = {0xFF, 0xFF, 0xFF, 0xFF, 'R', 'P', 'A', 'U'};
+constexpr size_t kTunnelAuthTokenSize = 16;
+constexpr size_t kTunnelAuthSize = sizeof(kTunnelAuthPrefix) + kTunnelAuthTokenSize;
+std::vector<uint8_t> make_tunnel_auth(const uint8_t token[kTunnelAuthTokenSize]);
+bool is_tunnel_auth_reply(const uint8_t* data, size_t len);
+
 }  // namespace ra2::net

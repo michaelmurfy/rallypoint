@@ -773,7 +773,7 @@ void SkirmishSetupScene::render(ra2engine::Platform& plat, ra2engine::TextureCac
             const int h = std::max(1, static_cast<int>(sz.second * sc));
             const SDL_Rect d = xf.dev(pr.x + (pr.w - w) / 2, pr.y + (pr.h - h) / 2, w, h);
             SDL_SetTextureColorMod(t, 255, 255, 255);
-            SDL_RenderCopy(ren, t, nullptr, &d);
+            render_copy_smooth(ren, t, &d);
         }
     }
     if (mode_ == MODE_SETUP) {

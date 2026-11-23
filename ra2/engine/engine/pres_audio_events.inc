@@ -223,6 +223,12 @@ public:
             const UnitVoices& v = voices_of(u);
             if (e.x) snd_.play_at(v.deploy_snd, u.fx, u.fy, "deploy");
             else snd_.play_at(v.undeploy_snd, u.fx, u.fy, "undeploy");
+            // T3.3 [RE: FUN_00739AC0 / FUN_00739CD0 DeployingAnim at type+0x6bc]:
+            // SCHPDEPL (and StartSound=SeigeChopperDeploy) on deploy and undeploy.
+            if (rules_ini_ && u.deploy_fire && !u.is_infantry) {
+                const std::string anim = pres_clean(rules_ini_->get(pres_type_id(u), "DeployingAnim"));
+                if (!anim.empty()) fx_.spawn(anim, u.fx, u.fy, u.level, 0.0);
+            }
         }
         const auto& bs = w.buildings();
         for (const auto& e : gar) {

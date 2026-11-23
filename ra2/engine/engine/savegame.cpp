@@ -359,7 +359,8 @@ bool SaveAccess::valid_world(const World& w, std::string* why) {
             return bad(at + "unit reference");
         if (!bld_ix(u.target_building) || !bld_ix(u.dock_refinery) || !bld_ix(u.capture_target) ||
             !bld_ix(u.infiltrate_target) || !bld_ix(u.garrison_of) || !bld_ix(u.occupy_target) ||
-            !bld_ix(u.temporal_target_building) || !bld_ix(u.ability_fired_building))
+            !bld_ix(u.temporal_target_building) || !bld_ix(u.ability_fired_building) ||
+            !bld_ix(u.drain_target))
             return bad(at + "building reference");
         if (u.bomb_house < -1 || u.bomb_house >= kMaxHouses) return bad(at + "bomb house");
         // W8-06-01 audit: the lists and air/naval links later code indexes

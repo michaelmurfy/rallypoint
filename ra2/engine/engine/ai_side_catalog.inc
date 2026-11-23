@@ -53,7 +53,7 @@ inline bool list_has(const std::vector<std::string>& l, const std::string& tok) 
 // 0 = Allied ("GDI"/Good), 1 = Soviet ("Nod"/Evil) -- AIBasePlanningSide's
 // encoding (rulesmd: "0 for Good, 1 for Evil").
 inline int planning_side(ra2engine::World::Side s) {
-    return s == ra2engine::World::Side::Soviet ? 1 : 0;
+    return ra2engine::yuri::planning_side(s);   // Rallypoint: Yuri = 2
 }
 
 // The lobby slot's country when it belongs to the slot's side per rulesmd
@@ -62,13 +62,16 @@ inline int planning_side(ra2engine::World::Side s) {
 // e.g. side Allied + "Russians") the side's default country.
 inline std::string house_country(ra2engine::World::Side side, const std::string& slot_country,
                                  const Rules* rules = nullptr) {
-    const bool soviet = side == ra2engine::World::Side::Soviet;
-    const std::string def = soviet ? "Russians" : "Americans";
+    const std::string def = ra2engine::yuri::default_country(side);
     if (slot_country.empty()) return def;
     if (rules) {
         const std::vector<std::string> members =
-            csv_tokens(rules->section_string("Sides", soviet ? "Nod" : "GDI", ""));
+            csv_tokens(rules->section_string("Sides", ra2engine::yuri::sides_key(side), ""));
         if (!members.empty() && !list_has(members, slot_country)) return def;
+        // Rallypoint: YR's [Sides] is commented out; the country's own Side= decides.
+        const ra2engine::World::Side cs =
+            ra2engine::yuri::side_of_rules_side(rules->section_string(slot_country, "Side", ""));
+        if (members.empty() && cs != ra2engine::World::Side::Neutral && cs != side) return def;
     }
     return slot_country;
 }
@@ -100,8 +103,7 @@ int pick_from_list(const Rules& rules, const char* section, const char* key,
 // "<Side>BaseDefenseCounts=25,22,6 ;h,m,e" indexed by house+0x184 (hardest
 // first) [ai-base.md §2; G-63]. -1 when absent.
 inline int defense_count(const Rules& rules, ra2engine::World::Side side, int class_index) {
-    const char* key = side == ra2engine::World::Side::Soviet ? "SovietBaseDefenseCounts"
-                                                             : "AlliedBaseDefenseCounts";
+    const std::string key = std::string(ra2engine::yuri::key_prefix(side)) + "BaseDefenseCounts";
     const std::vector<std::string> v = csv_tokens(rules.section_string("General", key, ""));
     if (class_index < 0 || class_index >= (int)v.size()) return -1;
     return std::atoi(v[(std::size_t)class_index].c_str());

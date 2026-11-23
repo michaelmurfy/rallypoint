@@ -58,15 +58,14 @@ inline std::vector<std::string> gf_tokens(const std::string& v) {
 }
 
 inline std::string gf_default_country(ra2engine::World::Side side) {
-    return side == ra2engine::World::Side::Soviet ? "Russians" : "Americans";
+    return ra2engine::yuri::default_country(side);   // Rallypoint: Yuri -> YuriCountry
 }
 
+// Owner= / RequiredHouses= / ForbiddenHouses= (HouseType ownership). Required
+// for country uniques (TNKD/SNIPE/AMRADR/BEAG/DESO/GTGCAN) whose Owner= lists
+// the whole side but RequiredHouses= names one country.
 inline bool gf_owner_has(const Rules& rules, const std::string& id, const std::string& country) {
-    std::string c = country;
-    for (char& ch : c) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    for (const std::string& t : gf_tokens(rules.section_string(id, "Owner", "")))
-        if (t == c) return true;
-    return false;
+    return ra2engine::country::country_allows(rules, id, country);
 }
 
 // The [General] BaseUnit entry this country may own (FUN_00505130 over the
@@ -231,8 +230,11 @@ inline int gf_spawn_start_force(ra2engine::World& world, const ra2assets::Ini& i
         const bool veh = std::find(p.vehicles.begin(), p.vehicles.end(), id) != p.vehicles.end();
         int x = sx, y = sy;
         if (!gf_free_cell_near(world, sx, sy, 4, rng, x, y)) break;
-        world.add_combat_unit(x, y, house,
-                              veh ? gf_vehicle_combat(rules, id) : gf_infantry_combat(rules, id));
+        ra2engine::UnitCombat c =
+            veh ? gf_vehicle_combat(rules, id) : gf_infantry_combat(rules, id);
+        // Rallypoint: VeteranInfantry/Units/Aircraft + Cost/Speed/Armor muls.
+        ra2engine::country::apply_to_combat(c, ra2engine::country::parse(rules, country));
+        world.add_combat_unit(x, y, house, c);
         if (spawned_ids) spawned_ids->push_back(id);
         spent += std::max(1, rules.cost(id));
     }
@@ -393,21 +395,21 @@ Scene* gf_make_restart_scene(bool no_audio, const ra2engine::SkirmishConfig& cfg
 
 // gF G-17 [RE: multihouse.md §1, CONFIRMED [Countries] + per-country Side=]:
 // the lobby picks a COUNTRY; the side follows from its rules Side= (GDI ->
-// Allied, Nod -> Soviet). The playable list is the [Countries] order minus
-// YuriCountry (Yuri's side is a non-goal) and the passive/civilian houses.
+// Allied, Nod -> Soviet, ThirdSide -> Yuri). The playable list is the
+// [Countries] order minus the passive/civilian houses. Rallypoint: YuriCountry
+// is appended as index 9, so 0-8 keep their meaning in launch files.
 inline const std::vector<std::string>& gf_lobby_countries() {
     static const std::vector<std::string> k = {"Americans", "Alliance", "French", "Germans",
                                                "British", "Africans", "Arabs", "Confederation",
-                                               "Russians"};
+                                               "Russians", "YuriCountry"};
     return k;
 }
 inline ra2engine::World::Side gf_side_of_country(const Rules& rules, const std::string& c) {
-    std::string side = rules.section_string(c, "Side", "");
-    for (char& ch : side) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    if (side == "NOD") return ra2engine::World::Side::Soviet;
-    if (side == "GDI") return ra2engine::World::Side::Allied;
+    const ra2engine::World::Side s = ra2engine::yuri::side_of_rules_side(rules.section_string(c, "Side", ""));
+    if (s != ra2engine::World::Side::Neutral) return s;
     const auto& k = gf_lobby_countries();   // rules without Side=: the documented split
     const auto it = std::find(k.begin(), k.end(), c);
+    if (it != k.end() && it - k.begin() == 9) return ra2engine::World::Side::Yuri;
     return (it != k.end() && it - k.begin() >= 5) ? ra2engine::World::Side::Soviet
                                                  : ra2engine::World::Side::Allied;
 }

@@ -356,6 +356,10 @@ ra2engine::SkirmishConfig base_config(const MpSessionConfig& s) {
     cfg.mcv_redeploys = o.mcv_repacks ? 1 : 0;
     cfg.build_off_ally = o.build_off_ally;   // W9-05-09 (was never passed on)
     cfg.mp_mode = s.lobby.mode > 0 ? s.lobby.mode : 1;   // W9-05-03 (1 = Battle)
+    cfg.allies_allowed = o.allies_allowed;   // Rallypoint --launch AlliesAllowed=
+    cfg.auto_repair = o.auto_repair;
+    cfg.crate_minimum = o.crate_minimum;
+    cfg.ai_boost = o.ai_boost;               // [RP-AI-BOOST] AIBoost=
     return cfg;
 }
 

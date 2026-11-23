@@ -116,6 +116,8 @@ TEST_CASE("art: real artmd.ini pins (GISequence == ConSequence for our entries)"
 TEST_CASE("art: building accessors (synthetic)") {
     ra2assets::Ini ini = ra2assets::Ini::parse(
         "[GAPOWR]\nFoundation=2x2\nBuildup=GAPOWRMK\nCameo=POWRICON\nNewTheater=yes\n"
+        "[YAREFN]\nCameo=SMINICON\nAltCameo=SMINUICO\n"
+        "[YAROCK]\nFoundation=1x1\n"
         "[BAD]\nFoundation=huge\n");
     ra2assets::Art a = ra2assets::Art::load(ini);
     int fw = -1, fh = -1;
@@ -128,6 +130,9 @@ TEST_CASE("art: building accessors (synthetic)") {
     CHECK(a.buildup("GAPOWR") == "GAPOWRMK");
     CHECK(a.buildup("MISSING") == "");
     CHECK(a.cameo("GAPOWR") == "POWRICON");
+    CHECK(a.alt_cameo("YAREFN") == "SMINUICO");
+    CHECK(a.cameo("YAROCK") == "");
+    CHECK(a.alt_cameo("YAROCK") == "");
     CHECK(a.new_theater("GAPOWR"));
     CHECK_FALSE(a.new_theater("MISSING"));
 }

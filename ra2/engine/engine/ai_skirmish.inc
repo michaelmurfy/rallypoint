@@ -19,7 +19,8 @@
 // NARADR, ...), so a house builds only what its base allows; each house's
 // share is filtered by Owner/RequiredHouses/ForbiddenHouses (ai_side_catalog).
 UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixFile& ra2,
-                                   const UnitAssets& ua, const Rules& rules, const Art& art) {
+                                   const UnitAssets& ua, const Rules& rules, const Art& art,
+                                   const Ini* rules_ini = nullptr) {
     load_progress("AI ROSTER");   // W2-AR-02 loading-screen checkpoint
     static const UnitRosterEnt kAiUnits[] = {
         // Soviet
@@ -33,6 +34,9 @@ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixF
         {"SNIPE", false, "GAPILE"},{"TANY", false, "GAPILE"}, {"CLEG", false, "GAPILE"},
         {"GHOST", false, "GAPILE"},{"MTNK", true, "GAWEAP"},  {"FV", true, "GAWEAP"},
         {"SREF", true, "GAWEAP"},  {"MGTK", true, "GAWEAP"},  {"TNKD", true, "GAWEAP"},
+        // T2.2: Yuri dogs (RequiredHouses=YuriCountry). Not yuri::is_yuri_type
+        // (Owner lists every side); filtered per house by owned_by.
+        {"YADOG", false, "YABRCK"}, {"YDOG", false, "YABRCK"},
         // W2-AN-16: the navies and jumpjets the stock aimd TaskForces name
         // (ships start only once a Naval Yard stands: Prerequisite=NAYARD/GAYARD)
         {"SUB", true, "NAYARD"},   {"DRED", true, "NAYARD"},  {"HYD", true, "NAYARD"},
@@ -60,13 +64,44 @@ UnitRoster load_ai_skirmish_roster(const std::string& dir, const ra2assets::MixF
         // owns a Robot Control Center by other means, as in the original).
         {"ROBO", true, "GAWEAP"}, {"BFRT", true, "GAWEAP"}, {"SCHP", true, "NAWEAP"},
     };
-    UnitRoster ur = load_unit_roster_table(dir, ra2, ua, rules, art, kAiUnits,
-                                           sizeof(kAiUnits) / sizeof(kAiUnits[0]), /*full_parse=*/true);
+    std::vector<UnitRosterEnt> ents(std::begin(kAiUnits), std::end(kAiUnits));
+    // Rallypoint: the third side's units (yuri::is_yuri_type), appended so
+    // every curated index is unchanged. Only with the rules INI (real play).
+    std::vector<std::string> yuri_ids;   // owns the strings ents points at
+    if (rules_ini) {
+        const std::vector<std::string> yb = yuri_building_ids(rules, *rules_ini);
+        std::vector<std::string> ybu;
+        for (const std::string& b : yb) ybu.push_back(ra2engine::yuri::upper(b));
+        std::vector<char> veh;
+        for (const char* list : {"InfantryTypes", "VehicleTypes"})
+            for (const std::string& id : ra2engine::ini_list_values(*rules_ini, list)) {
+                if (id.empty() || !rules_ini->has(id) || rules.tech_level(id) <= 0) continue;
+                bool have = std::find(yuri_ids.begin(), yuri_ids.end(), id) != yuri_ids.end();
+                for (const UnitRosterEnt& e : ents) have |= id == e.id;
+                if (have || !ra2engine::yuri::is_yuri_type(rules.section_string(id, "Owner", ""),
+                                                           rules.section_string(id, "AIBasePlanningSide", ""),
+                                                           rules.section_string(id, "Prerequisite", ""), ybu))
+                    continue;
+                yuri_ids.push_back(id);
+                veh.push_back(std::string(list) == "VehicleTypes" ? 1 : 0);
+            }
+        for (std::size_t i = 0; i < yuri_ids.size(); ++i)
+            ents.push_back(UnitRosterEnt{yuri_ids[i].c_str(), veh[i] != 0, ""});
+    }
+    UnitRoster ur = load_unit_roster_table(dir, ra2, ua, rules, art, ents.data(), ents.size(),
+                                           /*full_parse=*/true);
     for (ra2engine::UnitTypeDef& d : ur.defs) {   // same resolution as rp_load_roster
         d.harvester = rules.harvester(d.id);
         if (d.harvester) {
             d.storage = rules.storage(d.id);
             d.chrono_miner = d.id == "CMIN";
+        }
+        d.enslaves = rules.enslaves(d.id);
+        if (!d.enslaves.empty()) {
+            d.slaves_number = rules.slaves_number(d.id);
+            d.slave_regen_rate = rules.slave_regen_rate(d.id);
+            d.slave_reload_rate = rules.slave_reload_rate(d.id);
+            d.slave_storage = rules.storage(d.enslaves);
         }
         rp_arm_stolen_tech(rules, d);   // wave-5 (R-042)
     }
@@ -121,8 +156,19 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
         make_ai_config(ba, rules, s.diff, start_cash, s.side, country);
     // This house's share of the AI roster (country/side ownership).
     UnitRoster mine;
-    for (const ra2engine::UnitTypeDef& d : ur_ai.defs)
-        if (aiside::owned_by(rules, d.id, s.side, country)) mine.defs.push_back(d);
+    const ra2engine::country::Bonuses bon = ra2engine::country::parse(rules, country);
+    for (const ra2engine::UnitTypeDef& d : ur_ai.defs) {
+        if (!aiside::owned_by(rules, d.id, s.side, country)) continue;
+        ra2engine::UnitTypeDef copy = d;
+        const ra2engine::country::Kind ck = copy.aircraft ? ra2engine::country::Kind::Aircraft
+            : (copy.is_vehicle ? ra2engine::country::Kind::Unit
+                               : ra2engine::country::Kind::Infantry);
+        // Cost= already in acfg.mods.cost_mul; apply only the category Mult.
+        ra2engine::country::Bonuses cat = bon;
+        cat.cost = 1.0;
+        copy.cost = ra2engine::country::scale_cost(copy.cost, cat, ck);
+        mine.defs.push_back(std::move(copy));
+    }
     acfg.team = make_ai_team_config(ba, mine, rules, aimd, s.diff, anchor_x, anchor_y,
                                     /*enable_triggers=*/true, map);
     // Side-correct factories / trigger side / country [G-64].
@@ -141,7 +187,7 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
     acfg.catalog.naval_yard_adjacency =
         static_cast<int>(rules.general_double("AINavalYardAdjacency", 20.0));
     acfg.team.nav_factory_types = factory_types_for(ba, id_of(acfg.catalog.naval_yard));
-    acfg.team.trigger_side = s.side == ra2engine::World::Side::Soviet ? 2 : 1;  // [ai-trigger.md §5]
+    acfg.team.trigger_side = ra2engine::yuri::trigger_side(s.side);  // [ai-trigger.md §5]; Yuri = 3
     acfg.team.house_name = country;
     fill_ai_building_maps(acfg.team, ba, rules, rules_ini);
     // W7-04-18 [RE: TechnoTypeClass ToProtect=, read by ReceiveDamage
@@ -160,6 +206,10 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
             aiside::csv_tokens(rules.section_string("General", "HarvestersPerRefinery", ""));
         const int c = ra2engine::difficulty_class_index(s.diff);
         acfg.team.harvesters_per_refinery = c < (int)v.size() ? std::atoi(v[(std::size_t)c].c_str()) : 1;
+    }
+    {   // Rallypoint: AISlaveMinerNumber=4,3,2 [RE: FUN_004FEACA / Rules+0x133c]
+        const int c = ra2engine::difficulty_class_index(s.diff);
+        acfg.team.ai_slave_miner_number = rules.ai_slave_miner_number(c);
     }
     {   // W6-03-06 [RE: FUN_005052d0 Rules+0x1378 / FUN_004fe200 Rules+0xdd8] at
         // house+0x184: AIExtraRefineries=2,1,0 and AIPickWallDefensePercent=50,25,10.
@@ -188,7 +238,22 @@ ra2engine::AiHouseConfig make_ai_slot_config(const ra2engine::SkirmishSlot& s, d
         const int c = ra2engine::difficulty_class_index(s.diff);
         acfg.virtual_purifiers = c < (int)v.size() ? std::max(0, std::atoi(v[(std::size_t)c].c_str())) : 0;
     }
-    std::cerr << "[ai] slot side=" << (s.side == ra2engine::World::Side::Soviet ? "Soviet" : "Allied")
+    {   // [RE: FUN_0041e740; loader FUN_0066feb0 -> Rules+0x1390 / +0x17f3]:
+        // UseMinDefenseRule=yes and MinimumAIDefensiveTeams=1,1,1 ;h,m,e.
+        // Until the house has that many live IsBaseDefense teams, ConditionMet
+        // only admits Team1-IsBaseDefense triggers (stock base-guard lines);
+        // autocreate (offense-only) is held off so the first team slot is a
+        // guard. Without this the 11 stock guard triggers lost the weight draw
+        // to ~150 offense lines and call_for_help had no IsBaseDefense members.
+        acfg.team.use_min_defense_rule =
+            rules.section_flag("General", "UseMinDefenseRule", true);
+        const std::vector<std::string> v =
+            aiside::csv_tokens(rules.section_string("General", "MinimumAIDefensiveTeams", "1,1,1"));
+        const int c = ra2engine::difficulty_class_index(s.diff);
+        acfg.team.min_defense_teams =
+            c < (int)v.size() ? std::max(0, std::atoi(v[(std::size_t)c].c_str())) : 1;
+    }
+    std::cerr << "[ai] slot side=" << ra2engine::yuri::side_name(s.side)
               << " country=" << country << " diff=" << (int)s.diff
               << " roster=" << acfg.team.unit_roster.size()
               << " teams=" << acfg.team.aimd.teams.size()
@@ -208,6 +273,8 @@ void arm_skirmish_ai(ra2engine::World& world, const ra2engine::SkirmishConfig& c
                      const UnitAssets& ua) {
     load_progress("AI TEAMS");   // W2-AR-02 loading-screen checkpoint
     if (!ba.ok) return;
+    // [RP-AI-BOOST] resolve once for the session (launch key or RA2_AI_BOOST).
+    const int ai_boost = ra2engine::resolve_ai_boost(cfg.ai_boost);
     // Waypoint-ring anchor: the first non-AI combatant's base (the human),
     // else the grid centre.
     int ax = world.grid_w() / 2, ay = world.grid_h() / 2;
@@ -231,6 +298,14 @@ void arm_skirmish_ai(ra2engine::World& world, const ra2engine::SkirmishConfig& c
             s, cfg.starting_cash, ba, rules, rules_ini, ur_ai, aimd, ax, ay, map);
         // [SK-27] Lobby Superweapons off: the AI plans no SuperWeapon= building.
         if (!cfg.superweapons) acfg.catalog.superweapons.clear();
+        // [RP-AI-BOOST] computer houses only: scale TeamDelays / BuildDelay /
+        // CreditReserve / harvester replace; keep level for runtime nudges.
+        acfg.ai_boost = ai_boost;
+        ra2engine::apply_ai_boost(acfg);
+        if (ai_boost > 0)
+            std::cerr << "[ai] boost=" << ai_boost << " house=" << i
+                      << " team_delay=" << acfg.team.rules.team_delay_frames
+                      << " credit_reserve=" << acfg.ai.credit_reserve << "\n";
         // Register the AI infantry anims so launched infantry animate.
         for (const ra2engine::UnitTypeDef& d : acfg.team.unit_roster)
             if (!d.is_vehicle)

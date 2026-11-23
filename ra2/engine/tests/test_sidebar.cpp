@@ -141,3 +141,45 @@ TEST_CASE("sidebar layout: G-12 strip scrolling by top_row") {
     auto few = SidebarLayout::compute(1280, 720, {1, 2, 3}, 3);
     CHECK(few.top_row == 0);
 }
+
+TEST_CASE("sidebar: superweapon slots use the cameo sockets, not the radar") {
+    const int x0 = 1280 - 168;
+    auto none = SidebarLayout::compute(1280, 720, {1, 2, 3});
+    CHECK(none.sw_slots == 0);
+    CHECK(none.sw_rows == 0);
+    CHECK(none.cameos[0].rect.y == 228);   // production stays on the first row
+
+    auto one = SidebarLayout::compute(1280, 720, {1, 2, 3}, 0, 1);
+    CHECK(one.sw_slots == 1);
+    CHECK(one.sw_rows == 1);
+    const SbRect s0 = one.sw_slot(0);
+    CHECK(s0.x == x0 + 22);
+    CHECK(s0.y == 228);
+    CHECK(s0.w == 60);
+    CHECK(s0.h == 48);
+    CHECK(s0.y >= one.radar.y + one.radar.h);   // below the radar, not on it
+    REQUIRE(one.cameos.size() == 3);
+    CHECK(one.cameos[0].rect.y == 228 + 50);    // buildings start on the next row
+    CHECK(one.cameos[0].rect.x == x0 + 22);
+
+    auto two = SidebarLayout::compute(1280, 720, {1}, 0, 2);
+    CHECK(two.sw_rows == 1);
+    CHECK(two.sw_slot(1).x == x0 + 22 + 63);    // socket pitch, not the 60px width
+    CHECK(two.sw_slot(1).y == 228);
+    REQUIRE(two.cameos.size() == 1);
+    CHECK(two.cameos[0].rect.y == 228 + 50);
+
+    auto three = SidebarLayout::compute(1280, 720, {7, 8}, 0, 3);
+    CHECK(three.sw_rows == 2);
+    CHECK(three.sw_slot(2).y == 228 + 50);
+    CHECK(three.cameos[0].rect.y == 228 + 100);
+}
+
+TEST_CASE("sidebar layout: a taller canvas stays right-anchored and adds cameo rows") {
+    auto lay = SidebarLayout::compute(1920, 1080, {1, 2, 3});
+    CHECK(lay.bar.x == 1920 - 168);
+    CHECK(lay.bar.y == 0);
+    CHECK(lay.bar.w == 168);
+    CHECK(lay.bar.h == 1080);
+    CHECK(lay.side2_rows == (1080 - 234 - 26) / 50);
+}

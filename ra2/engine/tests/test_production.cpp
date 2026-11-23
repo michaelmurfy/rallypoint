@@ -451,3 +451,17 @@ TEST_CASE("prerequisites_met: killing the TECH building flips an advanced unit b
     kill_building(bs[1]);                                     // Battle Lab destroyed
     CHECK_FALSE(prerequisites_met(sref, bs, bt, 0, groups));  // TECH unmet again
 }
+
+TEST_CASE("BuildLimit= stops a second building of the type for the same house") {
+    auto t = roster();
+    t[1].build_limit = 1;
+    std::vector<Building> bs = {live(0)};
+    ProductionState ps;
+    CHECK(can_start(ps, 1, t, bs, 0, kGroups, true));
+    bs.push_back(live(1));
+    CHECK(build_limit_reached(t, bs, 0, 1));
+    CHECK_FALSE(can_start(ps, 1, t, bs, 0, kGroups, true));
+    CHECK_FALSE(build_limit_reached(t, bs, 1, 1));   // another house is not held to it
+    bs.back().alive = false;                         // destroyed: the limit frees up
+    CHECK(can_start(ps, 1, t, bs, 0, kGroups, true));
+}

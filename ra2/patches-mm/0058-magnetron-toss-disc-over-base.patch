@@ -1,0 +1,654 @@
+diff --git a/engine/ability_types.hpp b/engine/ability_types.hpp
+index 0e53503..be81a66 100644
+--- a/engine/ability_types.hpp
++++ b/engine/ability_types.hpp
+@@ -88,6 +88,19 @@ inline WeaponSpec default_ivan_warhead() {
+     return w;
+ }
+ 
++// [Crush] ([CombatDamage] CrushWarhead=) on this install: Verses 100% x11,
++// CellSpread=.5, InfDeath=2. The Magnetron drop detonates it at the landing
++// point [RE: UnitClass falling-landing 0x746209..0x7462DA].
++inline WeaponSpec default_crush_warhead() {
++    WeaponSpec w;
++    w.valid = true;
++    w.verses = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
++    w.cell_spread = 0.5;
++    w.percent_at_max = 1.0;
++    w.inf_death = 2;
++    return w;
++}
++
+ // The recovered global knobs. Defaults ARE this install's real rulesmd values
+ // ([Radiation] / [General] / [CombatDamage]) so a World that never calls
+ // set_ability_rules already behaves like the original [RE: abilities.md].
+@@ -110,6 +123,7 @@ struct AbilityRules {
+     int mag_climb = 5;
+     int mag_falling_damage_milli = 1000;
+     bool mag_current_strength_damage = true;
++    WeaponSpec crush_warhead = default_crush_warhead();   // CrushWarhead=Crush
+ };
+ 
+ }  // namespace ra2engine
+diff --git a/engine/building.hpp b/engine/building.hpp
+index d12d094..3bbee80 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -179,6 +179,9 @@ struct Building {
+     bool slave_needs_regen = false;
+     // Rallypoint: AI scoot KickFrameDelay accumulator (save v58).
+     int  slave_guard_frames = 0;
++    // Rallypoint [RE: TechnoClass+0x1D0 DrainingMe]: the Disc draining this
++    // building, -1 none. One slot: the latest DrainStart wins (save v63).
++    int  drained_by = -1;
+     // fv7c [RE: FUN_00450620 AI repair gate `HasBeenCaptured || +0x6CB`]:
+     // AIRepairable (+0x6CB) -- [Structures] field 16 (reader FUN_0044F810),
+     // true for an AI-placed building (FUN_00440500) and a non-human MCV deploy
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index d5d840c..f2589f4 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1287,24 +1287,30 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
+                         u.an.t.min_range * kLeptonsPerCell;
+                 if (b_in_range && b_too_close) continue;
+                 if (b_in_range) {
+-                    // Rallypoint: DrainWeapon (Floating Disc) — no damage; must
+-                    // hover on the foundation or the target is dropped (modenc).
++                    // Rallypoint: DrainWeapon (Floating Disc) — no damage.
++                    // [RE: TechnoClass::Fire @0x6FDF5D: DrainWeapon on a
++                    // Drainable techno -> DrainStart FUN_0070FD70 (only when the
++                    // building on the Disc's own cell IS the target), then
++                    // SetTarget(NULL) (vtable +0x3C8)]: the shot starts the drain
++                    // and drops the target; the drain lives on in drain_target.
+                     if (u.w_drain_weapon) {
+                         const auto& types = world.btypes();
+                         const bool drainable =
+                             b->type >= 0 && b->type < static_cast<int>(types.size()) &&
+                             types[static_cast<std::size_t>(b->type)].drainable;
+-                        if (!disc_drain::can_target(drainable, true) ||
+-                            !disc_drain::above_foundation(u.cell_x, u.cell_y, b->cx, b->cy, b->fw,
+-                                                          b->fh)) {
++                        const bool over = disc_drain::above_foundation(u.cell_x, u.cell_y, b->cx, b->cy,
++                                                                       b->fw, b->fh);
++                        if (!disc_drain::can_target(drainable, true) || !over) {
+                             u.target_building = -1;
+                             u.attack_order = false;
+-                            u.drain_frames = 0;
+                             continue;
+                         }
+                         if (u.rearm_frames <= 0) {
+                             u.rearm_frames = unit_rearm_frames(u, rof_rng);
+                             u.fire_flash = kFireFlashSecs;
++                            disc_drain::start(u.drain_target, b->drained_by, u.target_building, i);
++                            u.target_building = -1;
++                            u.attack_order = false;
+                         }
+                         continue;
+                     }
+diff --git a/engine/disc_drain.hpp b/engine/disc_drain.hpp
+index 457257c..db53e4a 100644
+--- a/engine/disc_drain.hpp
++++ b/engine/disc_drain.hpp
+@@ -27,8 +27,9 @@ inline bool can_target(bool drainable, bool is_building) {
+     return is_building && drainable;
+ }
+ 
+-// Firer cell must sit on the target foundation (modenc: horizontal plane
+-// within any foundation cell). Uses whole cells; jumpjet hover matches.
++// The Disc's cell is one of the target's foundation cells [RE: DrainStart
++// FUN_0070FD70 / UnitClass::AI 0x7361D5: Disc cell -> GetBuilding (FUN_0047C520)
++// must be the drainee].
+ inline bool above_foundation(int firer_cx, int firer_cy, int bx, int by, int fw, int fh) {
+     if (fw < 1) fw = 1;
+     if (fh < 1) fh = 1;
+@@ -62,22 +63,33 @@ inline int money_transfer(int victim_credits, int amount) {
+     return std::min(victim_credits, amount);
+ }
+ 
+-// Advance a sustained money drain: `frames_held` counts frames on this
+-// target since the last payout (or since acquire). When it reaches `delay`,
+-// return the transfer and reset the counter; otherwise return 0 and keep
+-// counting. `delay` <= 0 is treated as 1 (always pay).
+-struct MoneyTick {
+-    int transfer = 0;
+-    int frames_held = 0;
+-};
+-inline MoneyTick money_tick(int frames_held, int delay, int amount, int victim_credits) {
+-    MoneyTick t;
+-    const int d = delay < 1 ? 1 : delay;
+-    t.frames_held = frames_held + 1;
+-    if (t.frames_held < d) return t;
+-    t.frames_held = 0;
+-    t.transfer = money_transfer(victim_credits, amount);
+-    return t;
++// [RE: TechnoClass::AI @0x6FA14B..0x6FA1C0, run by the DRAINED building]:
++// ResourceDestination=yes and Frame % DrainMoneyFrameDelay == 0 (the global
++// frame, not time on target) -> move min(DrainMoneyAmount, owner's money) from
++// the owner (FUN_004F9790) to the Disc's house (FUN_004F9950). One payout per
++// building per tick, however many Discs hover. `delay` <= 0 is treated as 1.
++inline bool money_due(std::uint64_t frame, int delay) {
++    const std::uint64_t d = delay < 1 ? 1u : static_cast<std::uint64_t>(delay);
++    return frame % d == 0;
++}
++
++// [RE: UnitClass::AI @0x7361A9..0x7361E4]: a draining unit checks
++// `Frame % 16 == 2` that the building on its own cell is still DrainTarget,
++// else DrainEnd. Between checks the drain keeps running off the foundation.
++inline bool live_check_due(std::uint64_t frame) { return frame % 16 == 2; }
++
++// [RE: DrainStart FUN_0070FD70]: drainee DrainingMe = Disc, Disc DrainTarget
++// = drainee (the latest Disc takes the building's single slot).
++inline void start(int& drain_target, int& drained_by, int building, int disc) {
++    drain_target = building;
++    drained_by = disc;
++}
++
++// [RE: DrainEnd FUN_0070FE50]: clears the drainee's DrainingMe whoever holds
++// it (a second Disc that took the slot loses it too), then DrainTarget.
++inline void end(int& drain_target, int& drained_by) {
++    drained_by = -1;
++    drain_target = -1;
+ }
+ 
+ }  // namespace disc_drain
+diff --git a/engine/main.cpp b/engine/main.cpp
+index d5340cd..bd0f011 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -1445,16 +1445,19 @@ ra2engine::AbilityRules resolve_ability_rules(const Rules& rules, const Ini& ini
+     r.mag_current_strength_damage = ability_flag(ini, "CombatDamage", "CurrentStrengthDamage", true);
+     r.mag_cruise_height = (int)rules.section_double("JumpjetControls", "CruiseHeight", 500.0);
+     r.mag_climb = (int)rules.section_double("JumpjetControls", "Climb", 5.0);
+-    const std::string iwh = ability_ini_str(ini, "CombatDamage", "IvanWarhead");
+-    if (!iwh.empty()) {
+-        r.ivan_warhead.verses = rules.verses(iwh);
+-        r.ivan_warhead.cell_spread = rules.section_double(iwh, "CellSpread", 1.5);
+-        r.ivan_warhead.percent_at_max = rules.section_double(iwh, "PercentAtMax", 0.25);
+-        r.ivan_warhead.affects_allies = rules.section_flag(iwh, "AffectsAllies", true);   // W6-04-03
+-        r.ivan_warhead.prone_damage = ra2engine::warhead_prone_damage(rules, iwh);
+-        r.ivan_warhead.inf_death = static_cast<int>(rules.section_double(iwh, "InfDeath", 0.0));
+-        r.ivan_warhead.wall_flags = ra2engine::warhead_wall_flags(rules, iwh);   // W6-04-04
+-    }
++    auto load_warhead = [&](const char* key, ra2engine::WeaponSpec& w) {
++        const std::string wh = ability_ini_str(ini, "CombatDamage", key);
++        if (wh.empty()) return;
++        w.verses = rules.verses(wh);
++        w.cell_spread = rules.section_double(wh, "CellSpread", w.cell_spread);
++        w.percent_at_max = rules.section_double(wh, "PercentAtMax", w.percent_at_max);
++        w.affects_allies = rules.section_flag(wh, "AffectsAllies", true);   // W6-04-03
++        w.prone_damage = ra2engine::warhead_prone_damage(rules, wh);
++        w.inf_death = static_cast<int>(rules.section_double(wh, "InfDeath", 0.0));
++        w.wall_flags = ra2engine::warhead_wall_flags(rules, wh);   // W6-04-04
++    };
++    load_warhead("IvanWarhead", r.ivan_warhead);
++    load_warhead("CrushWarhead", r.crush_warhead);   // Rallypoint: Magnetron drop blast
+     r.ivan_warhead.damage = r.ivan_damage;
+     return r;
+ }
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+index f8a76ee..807ca2c 100644
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -1011,7 +1011,7 @@ private:
+         for (std::size_t i = 0; i < us.size(); ++i) {
+             const ra2engine::Unit& u = us[i];
+             if (u.cargo_of >= 0 || !u.alive || u.die_time >= 0.0) continue;
+-            if (!u.w_drain_weapon || u.target_building < 0) continue;
++            if (u.drain_target < 0) continue;   // DrainTarget set: DISKRAY while it lasts (0053)
+             if (u.house != g_local_house && !w.object_visible_at(g_local_house, u.cell_x, u.cell_y)) continue;
+             double ox = 0, lift = 0;
+             muzzle_point(w, u, ox, lift);
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index d37945b..b701c7e 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -828,6 +828,7 @@ template <class Ar> void fields(Ar& ar, AbilityRules& v) {
+     io(ar, v.mag_climb);
+     io(ar, v.mag_falling_damage_milli);
+     io(ar, v.mag_current_strength_damage);
++    io(ar, v.crush_warhead);                  // v63: CrushWarhead (Magnetron drop)
+ }
+ template <class Ar> void fields(Ar& ar, RadSite& v) {
+     io(ar, v.cx); io(ar, v.cy);
+@@ -1173,7 +1174,7 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
+     io(ar, v.w_affects_allies);   // v20: W5-B
+     io(ar, v.w_mind_control);     // v24: campaign mind-control shot (re-armed each frame)
+     io(ar, v.w_drain_weapon);     // v48: Rallypoint Floating Disc DrainWeapon
+-    io(ar, v.drain_frames);       // v48: money-tick counter while draining
++    io(ar, v.drain_target);       // v63: DrainTarget (was v48 drain_frames)
+     io(ar, v.spot);
+     io(ar, v.sub_x);
+     io(ar, v.sub_y);
+@@ -1197,7 +1198,7 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
+     io(ar, v.is_vehicle);
+     io(ar, v.body_facing);
+     io(ar, v.turret_facing);
+-    io(ar, v.turret_idle_frames);   // v61: turret home delay (FUN_00736990)
++    io(ar, v.turret_idle_frames);   // v63: turret home delay (FUN_00736990)
+     io(ar, v.rot_u16_per_sec);
+     io(ar, v.speed_cps);
+     io(ar, v.weight_milli);   // Rallypoint: Magnetron Weight=
+@@ -1361,6 +1362,7 @@ template <class Ar> void fields(Ar& ar, Building& v) {
+     io(ar, v.slave_spawn_frames);   // Rallypoint: Slave Miner
+     io(ar, v.slave_needs_regen);
+     io(ar, v.slave_guard_frames);   // v58: AI scoot KickFrameDelay
++    io(ar, v.drained_by);           // v63: DrainingMe
+     io(ar, v.selling);
+     io(ar, v.sell_time);
+     io(ar, v.sold);
+diff --git a/engine/savegame.cpp b/engine/savegame.cpp
+index e367936..01d12cb 100644
+--- a/engine/savegame.cpp
++++ b/engine/savegame.cpp
+@@ -359,7 +359,8 @@ bool SaveAccess::valid_world(const World& w, std::string* why) {
+             return bad(at + "unit reference");
+         if (!bld_ix(u.target_building) || !bld_ix(u.dock_refinery) || !bld_ix(u.capture_target) ||
+             !bld_ix(u.infiltrate_target) || !bld_ix(u.garrison_of) || !bld_ix(u.occupy_target) ||
+-            !bld_ix(u.temporal_target_building) || !bld_ix(u.ability_fired_building))
++            !bld_ix(u.temporal_target_building) || !bld_ix(u.ability_fired_building) ||
++            !bld_ix(u.drain_target))
+             return bad(at + "building reference");
+         if (u.bomb_house < -1 || u.bomb_house >= kMaxHouses) return bad(at + "bomb house");
+         // W8-06-01 audit: the lists and air/naval links later code indexes
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index 17bae99..e6c07f6 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 62;   // 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 63;   // 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/world.cpp b/engine/world.cpp
+index 1fb8d78..ee2135e 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -3596,56 +3596,62 @@ void World::step_tech_structures(double dt) {
+ }
+ 
+ void World::step_disc_drain() {
+-    // Rallypoint: Floating Disc DrainWeapon while above a Drainable building.
+-    // Money: [CombatDamage] DrainMoneyFrameDelay/Amount. Power: blackout the
+-    // owner (same apply_blackout path as a spy on a power plant).
+-    for (Unit& u : units_) {
+-        if (!u.alive || u.die_time >= 0.0 || !u.w_drain_weapon || u.target_building < 0) {
+-            u.drain_frames = 0;
+-            continue;
+-        }
+-        const int bi = u.target_building;
+-        if (bi >= static_cast<int>(buildings_.size())) {
+-            u.drain_frames = 0;
+-            continue;
+-        }
++    // Rallypoint: Floating Disc drain [RE: DrainStart FUN_0070FD70 / DrainEnd
++    // FUN_0070FE50; the drain is a Disc DrainTarget <-> building DrainingMe pair
++    // that outlives the shot (combat.cpp starts it)]. Money: [CombatDamage]
++    // DrainMoneyFrameDelay/Amount on the global frame. Power: a drained building
++    // with Power > 0 zeroes its owner's output [RE: HouseClass power total
++    // @0x508D1E: IsBeingDrained FUN_0070FEC0 && output > 0 -> +0x53A4 = 0],
++    // which here is the spy blackout path.
++    const std::uint64_t F = vet_frame_;
++    const int nb = static_cast<int>(buildings_.size());
++    const int nu = static_cast<int>(units_.size());
++    auto standing = [&](int bi) {
++        return bi >= 0 && bi < nb && buildings_[static_cast<std::size_t>(bi)].alive &&
++               buildings_[static_cast<std::size_t>(bi)].state != Building::State::Dead;
++    };
++    // 1) The Disc side: DrainEnd when the Disc is gone, the building is gone,
++    //    the owners became allies [RE: TechnoClass::AI @0x6FA1C5..0x6FA21E,
++    //    FUN_004F9A90 every frame] or the live check [UnitClass::AI 0x7361A9,
++    //    Frame % 16 == 2] finds another building (or none) under the Disc.
++    for (int i = 0; i < nu; ++i) {
++        Unit& u = units_[static_cast<std::size_t>(i)];
++        if (u.drain_target < 0) continue;
++        const int bi = u.drain_target;
++        int scratch = -1;
++        int& slot = standing(bi) ? buildings_[static_cast<std::size_t>(bi)].drained_by : scratch;
++        if (!u.alive || u.die_time >= 0.0 || !standing(bi)) { disc_drain::end(u.drain_target, slot); continue; }
++        const Building& b = buildings_[static_cast<std::size_t>(bi)];
++        if (are_allied(b.house, u.house) ||
++            (disc_drain::live_check_due(F) &&
++             !disc_drain::above_foundation(u.cell_x, u.cell_y, b.cx, b.cy, b.fw, b.fh)))
++            disc_drain::end(u.drain_target, slot);
++    }
++    // 2) The building side: effects while DrainingMe names a live Disc.
++    for (int bi = 0; bi < nb; ++bi) {
+         Building& b = buildings_[static_cast<std::size_t>(bi)];
+-        if (!b.alive || b.state == Building::State::Dead || b.house == u.house) {
+-            u.drain_frames = 0;
+-            continue;
+-        }
+-        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) {
+-            u.drain_frames = 0;
++        if (b.drained_by < 0) continue;
++        const int d = b.drained_by;
++        if (!standing(bi) || d >= nu || units_[static_cast<std::size_t>(d)].drain_target != bi) {
++            b.drained_by = -1;
+             continue;
+         }
++        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
+         const BuildingTypeDef& td = btypes()[static_cast<std::size_t>(b.type)];
+-        if (!disc_drain::can_target(td.drainable, true) ||
+-            !disc_drain::above_foundation(u.cell_x, u.cell_y, b.cx, b.cy, b.fw, b.fh)) {
+-            u.drain_frames = 0;
+-            continue;
+-        }
+         const disc_drain::Effect effect =
+             disc_drain::classify(td.drainable, td.resource_destination, td.power);
+         if (disc_drain::causes_blackout(effect) && b.house >= 0 && b.house < house_count())
+             blackout_frames_[static_cast<std::size_t>(b.house)] =
+                 std::max(blackout_frames_[static_cast<std::size_t>(b.house)], 2);
+-        if (!disc_drain::causes_money(effect)) {
+-            u.drain_frames = 0;
++        if (!disc_drain::causes_money(effect) || !disc_drain::money_due(F, disc_drain::kDefaultMoneyDelay))
+             continue;
+-        }
+-        const int victim = b.house, thief = u.house;
+-        if (victim < 0 || victim >= house_count() || thief < 0 || thief >= house_count()) {
+-            u.drain_frames = 0;
+-            continue;
+-        }
+-        const int bal = static_cast<int>(credits(victim));
+-        const disc_drain::MoneyTick tick =
+-            disc_drain::money_tick(u.drain_frames, disc_drain::kDefaultMoneyDelay,
+-                                   disc_drain::kDefaultMoneyAmount, bal);
+-        u.drain_frames = tick.frames_held;
+-        if (tick.transfer <= 0) continue;
+-        set_wallet(victim, credits(victim) - static_cast<double>(tick.transfer));
+-        set_wallet(thief, credits(thief) + static_cast<double>(tick.transfer));
++        const int victim = b.house, thief = units_[static_cast<std::size_t>(d)].house;
++        if (victim < 0 || victim >= house_count() || thief < 0 || thief >= house_count()) continue;
++        const int transfer = disc_drain::money_transfer(static_cast<int>(credits(victim)),
++                                                        disc_drain::kDefaultMoneyAmount);
++        if (transfer <= 0) continue;
++        set_wallet(victim, credits(victim) - static_cast<double>(transfer));
++        set_wallet(thief, credits(thief) + static_cast<double>(transfer));
+     }
+ }
+ 
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 8420c7a..cd68910 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -141,7 +141,10 @@ struct Unit {
+     bool w_mind_control = false;
+     // Rallypoint: active weapon is DrainWeapon=yes (Floating Disc DiskDrain).
+     bool w_drain_weapon = false;
+-    int drain_frames = 0;            // frames on the current drain target (money tick)
++    // [RE: TechnoClass+0x1CC DrainTarget, set by DrainStart FUN_0070FD70,
++    // cleared by DrainEnd FUN_0070FE50]: the building this Disc drains, -1 none.
++    // Outlives target_building (Fire clears the target, FireOnce).
++    int drain_target = -1;
+     // W5-B R-061 infantry sub-cells [RE: FindInfantrySubposition FUN_00481090,
+     // spot coords DAT_0089D960]: the spot (2 right, 3 left, 4 down; 0 centre =
+     // vehicles / sub-cells off) the unit holds in its cell, and its lepton
+diff --git a/engine/world_abilities.cpp b/engine/world_abilities.cpp
+index 77e25fc..30238ac 100644
+--- a/engine/world_abilities.cpp
++++ b/engine/world_abilities.cpp
+@@ -965,14 +965,17 @@ void World::step_abilities(double dt) {
+             const int dmg = into_water ? v.hp : magnetron::drop_damage(mr, mv);
+             ability_events_.push_back({Ev::Kind::MagDrop, holder, victim, dmg, into_water ? 1 : 0, false});
+             v.altitude = 0.0; v.magnet_holder = -1; h.magnet_victim = -1; h.magnet_drop_bld = -1;
+-            if (into_water || dmg >= v.hp) { v.vet.killed_by = holder; ability_kill_unit(victim, 0); }
+-            else if (dmg > 0) ability_damage_unit(victim, dmg);
+-            if (!into_water && h.target_building >= 0 && h.target_building < (int)buildings_.size()) {
+-                Building& b = buildings_[h.target_building];
+-                if (b.alive && b.state != Building::State::Dead &&
+-                    v.cell_x >= b.cx && v.cell_x < b.cx + b.fw && v.cell_y >= b.cy && v.cell_y < b.cy + b.fh)
+-                    ability_damage_building(h.target_building, dmg);
+-            }
++            if (into_water) { v.vet.killed_by = holder; ability_kill_unit(victim, 0); return; }
++            // T2.4 [RE: Release FUN_0070FEE0 stamps the victim +0x428 = firer,
++            // +0x42C = firer's house; the landing (UnitClass 0x746209..0x7462DA)
++            // makes a bullet of [CombatDamage] DeathWeapon's projectile with
++            // CrushWarhead, damage = fall damage, owner = the firer, and
++            // detonates it (FUN_004690B0) at the ground point]: the "toss" is a
++            // Crush blast where the victim lands. It hits the victim and
++            // whatever stands there -- any building under it, not only the one
++            // the Magnetron targeted -- credited to the Magnetron.
++            if (dmg > 0)
++                ability_area_damage(holder, v.fx, v.fy, ability_rules_.crush_warhead, dmg, unit_abs_z(v));
+         };
+         for (int i = 0; i < n; ++i) {
+             Unit& h = units_[i];
+diff --git a/tests/test_disc_drain.cpp b/tests/test_disc_drain.cpp
+index 57789f1..92c8a9b 100644
+--- a/tests/test_disc_drain.cpp
++++ b/tests/test_disc_drain.cpp
+@@ -1,6 +1,8 @@
+ // Rallypoint: Floating Disc drain — pure math and targeting (no game data).
+ #include "doctest.h"
+ #include "disc_drain.hpp"
++#include "ra2assets/map.hpp"
++#include "world.hpp"
+ 
+ namespace d = ra2engine::disc_drain;
+ 
+@@ -53,30 +55,125 @@ TEST_CASE("disc_drain: money transfer clamps to the victim wallet") {
+     CHECK(d::money_transfer(-5, 30) == 0);
+ }
+ 
+-TEST_CASE("disc_drain: money ticks every DrainMoneyFrameDelay frames") {
+-    int held = 0;
+-    int total = 0;
+-    // 30-frame delay, 30 credits, victim starts at 1000
+-    int wallet = 1000;
+-    for (int f = 0; f < 90; ++f) {
+-        const d::MoneyTick t = d::money_tick(held, d::kDefaultMoneyDelay, d::kDefaultMoneyAmount, wallet);
+-        held = t.frames_held;
+-        if (t.transfer > 0) {
+-            total += t.transfer;
+-            wallet -= t.transfer;
+-        }
++TEST_CASE("disc_drain: money is due on the global frame [RE: 0x6FA167]") {
++    CHECK(d::money_due(0, 30));
++    CHECK_FALSE(d::money_due(29, 30));
++    CHECK(d::money_due(30, 30));
++    CHECK(d::money_due(90, 30));
++    CHECK(d::money_due(7, 0));   // delay 0 treated as 1
++    CHECK(d::money_due(7, 1));
++}
++
++TEST_CASE("disc_drain: live check runs on Frame % 16 == 2 [RE: 0x7361B3]") {
++    CHECK(d::live_check_due(2));
++    CHECK(d::live_check_due(18));
++    CHECK(d::live_check_due(16 * 1000 + 2));
++    CHECK_FALSE(d::live_check_due(0));
++    CHECK_FALSE(d::live_check_due(3));
++    CHECK_FALSE(d::live_check_due(17));
++}
++
++TEST_CASE("disc_drain: DrainStart / DrainEnd keep gamemd's single DrainingMe slot") {
++    int t0 = -1, t1 = -1, slot = -1;
++    d::start(t0, slot, 4, 0);
++    CHECK(t0 == 4);
++    CHECK(slot == 0);
++    d::start(t1, slot, 4, 1);   // a second Disc takes the slot
++    CHECK(slot == 1);
++    d::end(t0, slot);           // the first Disc's DrainEnd clears it anyway
++    CHECK(t0 == -1);
++    CHECK(slot == -1);
++    CHECK(t1 == 4);
++}
++
++namespace {
++using namespace ra2engine;
++
++struct DiscRig {
++    ra2assets::MapFile map = ra2assets::MapFile::parse("[Map]\nSize=0,0,32,32\nTheater=TEMPERATE\n");
++    World w{map};
++    explicit DiscRig(bool refinery) {
++        BuildingTypeDef t;
++        t.id = refinery ? "NAREFN" : "NAPOWR";
++        t.fw = 3;
++        t.fh = 3;
++        t.drainable = true;
++        t.resource_destination = refinery;
++        t.power = refinery ? -50 : 200;
++        w.set_building_types({t});
++        w.set_house(0, World::HouseRec{});
++        w.set_house(1, World::HouseRec{});
++        w.add_building(0, 10, 10, 3, 3, 1, 900, 0, 0.0, /*instant=*/true);
++        UnitCombat disc;
++        disc.strength = 600;
++        w.add_combat_unit(11, 11, 0, disc);
++        w.set_wallet(0, 0.0);
++        w.set_wallet(1, 1000.0);
++    }
++    void drain(int unit) {
++        disc_drain::start(w.units()[(size_t)unit].drain_target, w.buildings()[0].drained_by, 0, unit);
+     }
+-    // frames 30, 60, 90 each pay 30
+-    CHECK(total == 90);
+-    CHECK(wallet == 910);
+-    CHECK(held == 0);
++    // Step until the frame the next World::step will run at is `f`.
++    void step_to(std::uint64_t f) {
++        while (w.vet_frame() < f) w.step(1.0 / 15.0);
++    }
++};
++}  // namespace
++
++TEST_CASE("disc_drain: world money: one payout per building every 30 frames") {
++    DiscRig r(true);
++    UnitCombat disc2;
++    disc2.strength = 600;
++    r.w.add_combat_unit(12, 11, 0, disc2);
++    r.drain(0);
++    r.drain(1);   // two Discs on one refinery still pay once a tick
++    r.step_to(61);   // frames 0, 30 and 60 ran
++    CHECK(r.w.credits(1) == doctest::Approx(1000.0 - 90.0));
++    CHECK(r.w.credits(0) == doctest::Approx(90.0));
++    CHECK(r.w.buildings()[0].drained_by == 1);
++}
++
++TEST_CASE("disc_drain: world money stops at an empty wallet") {
++    DiscRig r(true);
++    r.w.set_wallet(1, 40.0);
++    r.drain(0);
++    r.step_to(61);
++    CHECK(r.w.credits(1) == doctest::Approx(0.0));
++    CHECK(r.w.credits(0) == doctest::Approx(40.0));
++}
++
++TEST_CASE("disc_drain: world live check ends the drain only on Frame % 16 == 2") {
++    DiscRig r(true);
++    r.drain(0);
++    r.step_to(3);   // frame 2 checked: still over the refinery
++    CHECK(r.w.units()[0].drain_target == 0);
++    Unit& u = r.w.units()[0];
++    u.cell_x = 20; u.cell_y = 20; u.fx = 20.0; u.fy = 20.0;   // flown off the base
++    r.step_to(18);  // frames 3..17: no check yet, the drain lives on
++    CHECK(r.w.units()[0].drain_target == 0);
++    CHECK(r.w.buildings()[0].drained_by == 0);
++    r.step_to(19);  // frame 18: the live check ends it
++    CHECK(r.w.units()[0].drain_target == -1);
++    CHECK(r.w.buildings()[0].drained_by == -1);
++}
++
++TEST_CASE("disc_drain: world drain ends at once when the owners become allies") {
++    DiscRig r(true);
++    r.drain(0);
++    r.step_to(5);
++    CHECK(r.w.units()[0].drain_target == 0);
++    r.w.set_pair_alliance(0, 1, true);
++    r.step_to(6);
++    CHECK(r.w.units()[0].drain_target == -1);
++    CHECK(r.w.buildings()[0].drained_by == -1);
+ }
+ 
+-TEST_CASE("disc_drain: money tick with a short wallet and delay 1") {
+-    const d::MoneyTick t = d::money_tick(0, 1, 30, 10);
+-    CHECK(t.transfer == 10);
+-    CHECK(t.frames_held == 0);
+-    // delay 0 treated as 1
+-    const d::MoneyTick u = d::money_tick(0, 0, 5, 100);
+-    CHECK(u.transfer == 5);
++TEST_CASE("disc_drain: world drained power plant blacks its owner out") {
++    DiscRig r(false);
++    r.step_to(1);
++    CHECK_FALSE(r.w.house_blacked_out(1));
++    r.drain(0);
++    r.step_to(2);
++    CHECK(r.w.house_blacked_out(1));
++    CHECK(r.w.credits(1) == doctest::Approx(1000.0));   // no ResourceDestination: no money
+ }
+diff --git a/tests/test_magnetron.cpp b/tests/test_magnetron.cpp
+index 6e95777..2916ed7 100644
+--- a/tests/test_magnetron.cpp
++++ b/tests/test_magnetron.cpp
+@@ -157,3 +157,56 @@ TEST_CASE("magnetron: Weight from rules into milli-units") {
+     CHECK(milli == 3000);
+     CHECK(m::climb_step(m::MagRules{}, milli) == 1);
+ }
++
++TEST_CASE("magnetron: drop is a Crush blast that hits the building under it [RE: 0x746209]") {
++    // The Magnetron never targets the building: gamemd's landing detonates
++    // CrushWarhead at the landing point, so whatever stands there is hit.
++    const ra2assets::MapFile map =
++        ra2assets::MapFile::parse("[Map]\nSize=0,0,20,20\nTheater=TEMPERATE\n");
++    World world(map);
++    BuildingTypeDef bt;
++    bt.id = "GAPOWR";
++    bt.fw = 2;
++    bt.fh = 2;
++    world.set_building_types({bt});
++    const int bi = world.add_building(0, 8, 4, 2, 2, 1, 750, 0, 0.0, /*instant=*/true);
++    AbilityProfile tele;
++    tele.fire_kind = AbilityKind::MagBeam;
++    world.register_ability_profile("TELE", tele);
++    UnitCombat mag;
++    mag.image = "TELE";
++    mag.strength = 150;
++    mag.is_vehicle = true;
++    mag.weight_milli = 1000;
++    mag.range = 12.0;
++    mag.verses = {0, 0, 0, 100, 100, 100, 0, 0, 0, 100, 0};
++    world.add_combat_unit(4, 4, 0, mag);
++    world.add_combat_unit(8, 4, 1, mk_tank());   // on the plant's foundation
++    world.units()[1].hp = 120;
++    world.units()[0].target = 1;
++    world.units()[0].ability_fired_unit = 1;
++    AbilityRules ar;
++    ar.mag_climb = 100;
++    world.set_ability_rules(ar);
++    world.step_abilities(1.0 / 15.0);
++    for (int i = 0; i < 8; ++i) {
++        world.units()[0].target = 1;
++        world.step_abilities(1.0 / 15.0);
++    }
++    CHECK(world.units()[1].altitude > 0.0);
++    CHECK(world.units()[0].target_building == -1);
++    const int bhp = world.buildings()[static_cast<std::size_t>(bi)].hp;
++    world.units()[0].target = -1;   // let go
++    world.step_abilities(1.0 / 15.0);
++    CHECK(world.units()[1].altitude == doctest::Approx(0.0));
++    CHECK(world.units()[1].hp <= 0);                                  // 120 fall damage, Crush 100%
++    CHECK(world.buildings()[static_cast<std::size_t>(bi)].hp == bhp - 120);
++}
++
++TEST_CASE("magnetron: CrushWarhead default is this install's [Crush]") {
++    const WeaponSpec w = default_crush_warhead();
++    CHECK(w.cell_spread == doctest::Approx(0.5));
++    CHECK(w.percent_at_max == doctest::Approx(1.0));
++    CHECK(w.inf_death == 2);
++    for (int v : w.verses) CHECK(v == 100);
++}
+diff --git a/tests/test_saveload.cpp b/tests/test_saveload.cpp
+index cccb4e5..52f90f8 100644
+--- a/tests/test_saveload.cpp
++++ b/tests/test_saveload.cpp
+@@ -236,7 +236,7 @@ TEST_CASE("saveload: private-state classes' sizeof is pinned (World et al.)") {
+ #if defined(__MINGW64__) && defined(__GLIBCXX__) && defined(__x86_64__)
+     INFO("a class with private save-state changed size: add the member to "
+          "SaveAccess in engine/save_fields.hpp, bump kFormatVersion, re-pin");
+-    CHECK(sizeof(World) == 10248);   // Rallypoint 0049 slave scoot scans (+16); was 10232 (0040 country_bonuses_ +24); was 10208 through 0022 (save v55); was 7904. W9-05 econ_rules_digest_ (+24, hashed, not saved); W9-02-01 Occupancy claim index claims_/claims_dirty_ (+32, derived, NOT saved); w9fix-match diplomacy rules / game_over_ / observer_reveal_ / victory_defeats_seen_ (+8), save v46; w8fix-place build_static_ (+24, save v45) + build_mask_ scratch (+48, not saved); w8fix-layer: Occupancy deck plane owner_d_/spots_d_/lay_ (+72), save v42; fv7c (+120): ai_protect_reqs_ removed (-24), campaign_team_flags_ + team_flags_ (+48), beach_ (+24), house_repair_delay_/clock_ (+48), CombatW7Rules base_defense_delay/iq_repair_sell/ai_credit_reserve (+24), save v40; w7fix-move loco_rules_ (+48), save v39; w7fix-combat w7_rules_/house_iq_/w7_hits_ (+152), save v39; W7 pres rad/nuke/storm_inf_death_ + frag_events_ (+40);  W7 AI transient ai_protect_reqs_ (+24);  W7 air/naval: AnWorld sonic waves + SwParams C4Warhead (+64), save v36; wave-7 fix (units) side_disguise_ + infantry_blink_disguise_ (+40), save v35; L2 per-house economy econ_/econ_rules_/econ_rules_set_/human_mask_/victory_cheered_/house_outcome_/order_issuer_/econ_launches_ (+160) minus wallet_hint_ (-24), save v32; R-210 deck_land_/deck_amph_/deck_ver_ derived deck grids (+56), save v30; W6 fix #2 usable area playfield_ + per-house handicap vectors (+96), save v29; wave-6 #4: map wall overlay types/stages/kill list (+96) and SwParams storm/nuke wall keys (+8), WeaponSpec Burst/OmniFire/AffectsAllies/ProneDamage/InfDeath/wall keys in the ability rules (+24), save v25; P4 crushable walls crush_wall_ + derived crush grids (+72) and WeaponSpec delay-kill fields in the ability rules (+16), save v23; W5-A wall leak mask + AI SW quarry (+48), save v22; W5-B sub-cells/land speed/crush/elevation rules (+600), save v20; wave-5 abilities: w5_ (stolen tech, rules, unit profiles, witnesses) + gap scratch (+344), save v17; W4-SQ player-order queue + passive houses + high-bridge state + scripted-team AI demand (+128), save v16; W4 per-type RocketParams in SwParams (+824) + ProjectileRules homing keys + proj_seq_ (+24), save v15; W3-B infantry anim switches + tables (+64), save v14; gap C + gF MCV deploy (3744) + G16 garrison/bridge state (+128), save v7; W2-AN air/naval/SW (+648) + W2-GA-03 fog flag (in padding), save v10; w2fix-campaign entered events + pair alliances (+56), save v12; W2-SK harvest scan/income, wallet hints, depot/AI state (+96), save v13
++    CHECK(sizeof(World) == 10416);   // Rallypoint 0053 AbilityRules::crush_warhead (+168); was 10248: Rallypoint 0049 slave scoot scans (+16); was 10232 (0040 country_bonuses_ +24); was 10208 through 0022 (save v55); was 7904. W9-05 econ_rules_digest_ (+24, hashed, not saved); W9-02-01 Occupancy claim index claims_/claims_dirty_ (+32, derived, NOT saved); w9fix-match diplomacy rules / game_over_ / observer_reveal_ / victory_defeats_seen_ (+8), save v46; w8fix-place build_static_ (+24, save v45) + build_mask_ scratch (+48, not saved); w8fix-layer: Occupancy deck plane owner_d_/spots_d_/lay_ (+72), save v42; fv7c (+120): ai_protect_reqs_ removed (-24), campaign_team_flags_ + team_flags_ (+48), beach_ (+24), house_repair_delay_/clock_ (+48), CombatW7Rules base_defense_delay/iq_repair_sell/ai_credit_reserve (+24), save v40; w7fix-move loco_rules_ (+48), save v39; w7fix-combat w7_rules_/house_iq_/w7_hits_ (+152), save v39; W7 pres rad/nuke/storm_inf_death_ + frag_events_ (+40);  W7 AI transient ai_protect_reqs_ (+24);  W7 air/naval: AnWorld sonic waves + SwParams C4Warhead (+64), save v36; wave-7 fix (units) side_disguise_ + infantry_blink_disguise_ (+40), save v35; L2 per-house economy econ_/econ_rules_/econ_rules_set_/human_mask_/victory_cheered_/house_outcome_/order_issuer_/econ_launches_ (+160) minus wallet_hint_ (-24), save v32; R-210 deck_land_/deck_amph_/deck_ver_ derived deck grids (+56), save v30; W6 fix #2 usable area playfield_ + per-house handicap vectors (+96), save v29; wave-6 #4: map wall overlay types/stages/kill list (+96) and SwParams storm/nuke wall keys (+8), WeaponSpec Burst/OmniFire/AffectsAllies/ProneDamage/InfDeath/wall keys in the ability rules (+24), save v25; P4 crushable walls crush_wall_ + derived crush grids (+72) and WeaponSpec delay-kill fields in the ability rules (+16), save v23; W5-A wall leak mask + AI SW quarry (+48), save v22; W5-B sub-cells/land speed/crush/elevation rules (+600), save v20; wave-5 abilities: w5_ (stolen tech, rules, unit profiles, witnesses) + gap scratch (+344), save v17; W4-SQ player-order queue + passive houses + high-bridge state + scripted-team AI demand (+128), save v16; W4 per-type RocketParams in SwParams (+824) + ProjectileRules homing keys + proj_seq_ (+24), save v15; W3-B infantry anim switches + tables (+64), save v14; gap C + gF MCV deploy (3744) + G16 garrison/bridge state (+128), save v7; W2-AN air/naval/SW (+648) + W2-GA-03 fog flag (in padding), save v10; w2fix-campaign entered events + pair alliances (+56), save v12; W2-SK harvest scan/income, wallet hints, depot/AI state (+96), save v13
+     CHECK(sizeof(MapTriggerSystem) == 408);   // W6-05-04 +timer_text_ (save v25); P10: +campaign_mode_/semi_detached_
+     CHECK(sizeof(OreField) == 128);   // W2-SK-01 +mines_ (v10)
+     CHECK(sizeof(Occupancy) == 184);   // W9-02-01 claims_ + claims_dirty_ (+32, derived, rebuilt after a load, NOT saved); w8fix-layer +owner_d_ +spots_d_ +lay_ (v42); W5-B +spots_ +inf_ (v20)

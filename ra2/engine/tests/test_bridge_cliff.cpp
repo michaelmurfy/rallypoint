@@ -1,5 +1,5 @@
 // R-210 bridges and cliffs: the height-aware search [RE: FootClass height gate
-// FUN_004D9B70 -- a neighbour is entered at the same height, or one level up /
+// FUN_004D9C60 -- a neighbour is entered at the same height, or one level up /
 // down when the LOWER cell is a slope; a high-bridge deck stands at Level + 4;
 // CellClass::IsClearToMove FUN_004833B0] and the allied gate opening
 // (IsCellOccupied -> Move::ClosedGate). Pure pathfind.hpp tests, no assets.
@@ -207,4 +207,24 @@ TEST_CASE("R-210 a null terrain is the historical search") {
         CHECK(a[k].x == c[k].x);
         CHECK(a[k].y == c[k].y);
     }
+}
+
+TEST_CASE("R-210 paved ramp: a one-cell-wide stair down to flat ground is walkable") {
+    // NewHghts-style paved slope, one cell wide, descending +y:
+    //   flat L2, slope L1, slope L0, flat L0.
+    // Each one-level step has the slope on the LOWER cell (gamemd 0x4D9C60).
+    // The last step is flat-to-flat at the same height.
+    Terrain g(1, 4);
+    g.level = {2, 1, 0, 0};
+    g.slope = {0, 1, 1, 0};
+    const PathTerrain t = g.t(0, false);
+    const auto p = find_path_t(g.pass, g.w, g.h, {0, 0}, {0, 3}, nullptr, &t);
+    REQUIRE(p.size() == 4);
+    CHECK(p.back().y == 3);
+    CHECK(max_step(g, p) == 1);
+    // The cliff beside it, with no slope on the lower cell, stays closed.
+    g.slope[1] = 0;
+    PathTerrain cliff = g.t(0, false);
+    cliff.version = 1;
+    CHECK(find_path_t(g.pass, g.w, g.h, {0, 0}, {0, 3}, nullptr, &cliff).empty());
 }

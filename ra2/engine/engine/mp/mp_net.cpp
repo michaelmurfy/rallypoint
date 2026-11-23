@@ -3,6 +3,8 @@
 
 #include "net/wire.hpp"
 
+#include <cstring>
+
 namespace ra2mp {
 
 namespace {
@@ -19,11 +21,26 @@ bool MpNet::open_direct(std::uint16_t port) {
 }
 
 bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3) {
+    return open_tunnel(tunnel, my_v3, ra2::net::TunnelMode::V3, nullptr);
+}
+
+bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3, ra2::net::TunnelMode mode,
+                        const std::uint8_t* token) {
     auto io = std::make_unique<ra2::net::UdpDatagramIO>();
     if (!io->open(0)) return false;
-    io->set_tunnel(ra2::net::TunnelMode::V3, tunnel, my_v3);
+    io->set_tunnel(mode, tunnel, my_v3);
+    wire_mode_ = mode;
+    need_auth_ = token != nullptr;
+    authed_ = !need_auth_;
+    last_auth_ = 0;
+    if (token) std::memcpy(token_, token, ra2::net::kTunnelAuthTokenSize);
     io->on_foreign = [this](const ra2::net::NetAddr& from, const std::uint8_t* d, std::size_t n) {
-        if (ping_sent_ && from == tunnel_ && ra2::net::is_tunnel_ping_reply(d, n, ping_nonce_)) {
+        if (from != tunnel_) return;
+        if (need_auth_ && !authed_ && ra2::net::is_tunnel_auth_reply(d, n)) {
+            authed_ = true;
+            return;
+        }
+        if (ping_sent_ && ra2::net::is_tunnel_ping_reply(d, n, ping_nonce_)) {
             rtt_ = static_cast<int>(now_ms() - ping_sent_);
             ping_sent_ = 0;
         }
@@ -34,7 +51,15 @@ bool MpNet::open_tunnel(const Addr& tunnel, std::uint32_t my_v3) {
     me_ = my_v3;
     last_keep_ = 0;
     net_ = std::make_unique<ra2::net::NetManager>(*udp_, wall_ms);
+    if (need_auth_) send_tunnel_auth();
     return true;
+}
+
+void MpNet::send_tunnel_auth() {
+    if (!udp_ || !need_auth_) return;
+    const std::vector<std::uint8_t> auth = ra2::net::make_tunnel_auth(token_);
+    udp_->socket().send_to(tunnel_, auth.data(), auth.size());
+    last_auth_ = now_ms();
 }
 
 void MpNet::open_loopback(ra2::net::LoopbackHub& hub, const Addr& self, std::function<std::uint32_t()> clock_ms) {
@@ -62,12 +87,20 @@ std::string MpNet::describe(PeerId p) const {
 
 void MpNet::tick(std::uint64_t now) {
     if (!tunnel_mode_ || !udp_) return;
+    // Rallypoint agent: prove the launch token before any tunnel traffic.
+    if (need_auth_ && !authed_) {
+        if (last_auth_ == 0 || now - last_auth_ >= 250) send_tunnel_auth();
+        return;
+    }
     // Register / refresh our id at the tunnel (V3 learns the sender's
     // endpoint from its first packet; the receiver may not exist yet, the
     // tunnel then just drops the payload). 0xFFFFFFFE is never a real id.
     if (last_keep_ == 0 || now - last_keep_ >= 5000) {
         std::vector<std::uint8_t> out;
-        ra2::net::tunnel_wrap(ra2::net::TunnelMode::V3, me_, 0xFFFFFFFEu, nullptr, 0, out);
+        // V2 forwarders drop datagrams under 5 bytes, so its keep-alive carries one zero byte.
+        static const std::uint8_t kZero = 0;
+        const bool v2 = wire_mode_ == ra2::net::TunnelMode::V2;
+        ra2::net::tunnel_wrap(wire_mode_, me_, 0xFFFFFFFEu, v2 ? &kZero : nullptr, v2 ? 1 : 0, out);
         udp_->socket().send_to(tunnel_, out.data(), out.size());
         if (ping_sent_ == 0 || now - ping_sent_ > 4000) {
             ping_nonce_ = static_cast<std::uint32_t>(now * 2654435761u) | 1u;

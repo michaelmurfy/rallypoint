@@ -20,6 +20,9 @@ PowerTotals power_totals(const std::vector<Building>& buildings,
         if (!b.alive || b.house != house || b.state != Building::State::Idle) continue;
         if (b.type < 0 || b.type >= (int)types.size()) continue;
         int pw = types[b.type].power;
+        // Rallypoint: YAPOWR InfantryAbsorb — ExtraPower * occupants (ModEnc).
+        if (types[b.type].infantry_absorb && types[b.type].extra_power > 0)
+            pw += types[b.type].extra_power * static_cast<int>(b.occupants.size());
         // [RE: BuildingClass::Power_Output FUN_0044E7B0 @0x44E85F-0x44E86A,
         // construction.md §8] a positive PowerBonus is scaled by the health
         // ratio -- ftol(Health / Type.Strength * PowerBonus) -- so a damaged
@@ -80,6 +83,15 @@ bool prerequisites_met(const std::vector<std::string>& tokens,
     return true;
 }
 
+bool build_limit_reached(const std::vector<BuildingTypeDef>& types, const std::vector<Building>& buildings,
+                         int house, int type) {
+    if (type < 0 || type >= (int)types.size() || types[type].build_limit <= 0) return false;
+    int owned = 0;
+    for (const Building& b : buildings)
+        owned += b.alive && b.state != Building::State::Dead && b.house == house && b.type == type;
+    return owned >= types[type].build_limit;
+}
+
 bool can_start(const ProductionState& ps, int type,
                const std::vector<BuildingTypeDef>& types,
                const std::vector<Building>& buildings, int house,
@@ -88,6 +100,7 @@ bool can_start(const ProductionState& ps, int type,
     if (type < 0 || type >= (int)types.size()) return false;
     if (!conyard_alive || ps.slot.type != -1) return false;
     if (types[type].tech_level <= 0) return false;       // -1 = never buildable
+    if (build_limit_reached(types, buildings, house, type)) return false;   // BuildLimit= (Nuke silo: 1)
     return prerequisites_met(types[type].prerequisite, buildings, types, house, groups);
 }
 

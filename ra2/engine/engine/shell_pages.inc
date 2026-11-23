@@ -45,7 +45,7 @@ inline void shell_small_button(const ShellPainter& p, const ra2engine::SbRect& r
         if (SDL_Texture* t = shp_frame_tex(p.tc, "shell:mnbtn" + std::to_string(frame), *art.btn, frame, *pal)) {
             SDL_SetTextureColorMod(t, en ? 255 : 120, en ? 255 : 120, en ? 255 : 130);
             const SDL_Rect d = p.dev(r);
-            SDL_RenderCopy(p.ren, t, nullptr, &d);
+            render_copy_smooth(p.ren, t, &d);
             SDL_SetTextureColorMod(t, 255, 255, 255);
             drawn = true;
         }
@@ -102,7 +102,7 @@ void popup_render(SDL_Renderer* ren, ra2engine::TextureCache& tc, const std::str
         if (SDL_Texture* t = shp_frame_tex(tc, soviet && art.pudlg_s ? "shell:pudlgs" : "shell:pudlga",
                                            *bg, 0, *art.dialog_pal)) {
             const SDL_Rect d = p.dev(b);
-            SDL_RenderCopy(ren, t, nullptr, &d);
+            render_copy_smooth(ren, t, &d);
             drawn = true;
         }
     }

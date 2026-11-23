@@ -1,5 +1,4 @@
 #include "pathfind.hpp"
-#include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,11 +25,20 @@ constexpr int kDy[8]   = { 0, 0, 1, -1, 1, -1, 1, -1 };
 constexpr int kTie[8]  = { 2, 4, 3, 1, 6, 5, 7, 8 };   // E W S N SE NE SW NW
 constexpr long long kUnit = 1000;
 
-// [RE: FUN_00429A10] the heuristic is the straight-line (Euclidean) distance
-// in cells, x1000.
-inline long long euclid_h(int x, int y, Cellxy goal) {
-    const double dx = static_cast<double>(x - goal.x), dy = static_cast<double>(y - goal.y);
-    return static_cast<long long>(om::ftol(om::sqrt(dx * dx + dy * dy) * static_cast<double>(kUnit)));
+// Heuristic for the 8-way, unit-cost grid: Chebyshev distance max(|dx|,|dy|),
+// x1000. Under the uniform step model (a diagonal costs the same as an
+// orthogonal -- see test_locomotion.cpp "uniform step cost") this is the
+// admissible and CONSISTENT lower bound, so the goal-pop early exit in
+// astar()/astar_terrain() is optimal. The previous Euclidean distance
+// over-estimated diagonal progress (sqrt(2) per step on a pure diagonal),
+// making the heuristic inadmissible and letting A* settle for sub-optimal /
+// zig-zag routes. (The surrounding lambdas are already named "octile_h":
+// octile distance with a diagonal costing the same as an orthogonal reduces
+// to exactly Chebyshev.)
+inline long long cheb_h(int x, int y, Cellxy goal) {
+    const int dx = x - goal.x, dy = y - goal.y;
+    const int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    return static_cast<long long>(adx > ady ? adx : ady) * kUnit;
 }
 
 // Node kept in the open set's binary heap.
@@ -92,7 +100,7 @@ std::vector<Cellxy> astar(const std::vector<uint8_t>& passable, int width, int h
     const int start_idx = index_of(start.x, start.y);
     const int goal_idx = index_of(goal.x, goal.y);
     const long long kInf = std::numeric_limits<long long>::max();
-    auto octile_h = [&](int x, int y) { return euclid_h(x, y, goal); };
+    auto octile_h = [&](int x, int y) { return cheb_h(x, y, goal); };
     Scratch& S = t_scratch;
     S.prepare(n);
     const std::uint32_t gen = S.gen;
@@ -210,7 +218,7 @@ std::vector<Cellxy> astar_terrain(const std::vector<uint8_t>& passable, int widt
     };
     auto in_range = [&](int x, int y) { return x >= 0 && x < width && y >= 0 && y < height; };
     const long long kInf = std::numeric_limits<long long>::max();
-    auto octile_h = [&](int x, int y) { return euclid_h(x, y, goal); };
+    auto octile_h = [&](int x, int y) { return cheb_h(x, y, goal); };
     const int start_cell = start.y * width + start.x;
     const int goal_cell = goal.y * width + goal.x;
     int start_layer = (decks && t.start_layer == 1 && deck_of(start_cell) != 0) ? 1 : 0;
@@ -477,14 +485,14 @@ int path_step_layer(const PathTerrain& t, int width, int sx, int sy, int sl, int
         const int hd = lv[(size_t)d];
         if (hd == hs) return 0;
         // One level up or down only over a slope: the LOWER cell must be a
-        // ramp [FUN_004D9B70: |diff| == 1 -> SlopeIndex (+0x11C) of the lower].
+        // ramp [RE: FUN_004D9C60: |diff| == 1 -> SlopeIndex (+0x11C) of the lower].
         if (sl != 1 && (hd - hs == 1 || hs - hd == 1)) {
             const long long lower = hd > hs ? s : d;
             if (t.slope && (size_t)lower < t.slope->size() && (*t.slope)[(size_t)lower] != 0) return 0;
         }
     }
     // A deck (Level + 4) entered at the same height: from the high ground at
-    // its ends or from the next deck cell [FUN_004D9B70 |diff| == 4 cases].
+    // its ends or from the next deck cell [RE: FUN_004D9C60 |diff| == 4 cases].
     if (dk != 0 && lv[(size_t)d] + 4 == hs) return 1;
     return -1;
 }
@@ -558,6 +566,63 @@ std::vector<Cellxy> find_path_nearest_t(const std::vector<uint8_t>& passable, in
     }
     if (start.x == goal.x && start.y == goal.y) return { start };
     return astar_memo(passable, width, height, start, goal, max_expand, Mode::Nearest, leak, t, cost);
+}
+
+std::vector<uint8_t> reach_mask(const std::vector<uint8_t>& passable, int width, int height,
+                                const std::vector<Cellxy>& seeds, const std::vector<uint8_t>* leak,
+                                const PathTerrain* terrain) {
+    std::vector<uint8_t> out;
+    if (width <= 0 || height <= 0 || passable.size() != static_cast<size_t>(width) * static_cast<size_t>(height))
+        return out;
+    out.assign(passable.size(), 0);
+    if (leak && leak->size() != passable.size()) leak = nullptr;
+    const PathTerrain none{};
+    const PathTerrain* tp = terrain_of(terrain, passable);
+    const PathTerrain& t = tp ? *tp : none;
+    const int n = width * height;
+    const bool decks = t.deck && t.deck->size() == passable.size();
+    const int layers = decks ? 2 : 1;
+    // The neighbour rules of astar_terrain (a null terrain = astar's).
+    auto base_ok = [&](int c) { return passable[(size_t)c] != 0 || gate_open(&t, c); };
+    auto deck_of = [&](int c) { return decks ? (*t.deck)[(size_t)c] : 0; };
+    auto state_ok = [&](int c, int layer) {
+        if (!base_ok(c)) return false;
+        return layer == 0 ? deck_of(c) != 2 : deck_of(c) != 0;
+    };
+    std::vector<uint8_t> seen(static_cast<size_t>(n) * static_cast<size_t>(layers), 0);
+    std::vector<int> q;
+    for (const Cellxy& s : seeds) {
+        if (s.x < 0 || s.y < 0 || s.x >= width || s.y >= height) continue;
+        const int c = s.y * width + s.x;
+        for (int l = 0; l < layers; ++l)
+            if (state_ok(c, l) && !seen[(size_t)(c + l * n)]) {
+                seen[(size_t)(c + l * n)] = 1;
+                q.push_back(c + l * n);
+            }
+    }
+    for (size_t head = 0; head < q.size(); ++head) {
+        const int cc = q[head] % n, cl = q[head] / n;
+        out[(size_t)cc] = 1;
+        const int cx = cc % width, cy = cc / width;
+        for (int dir = 0; dir < 8; ++dir) {
+            const int nx = cx + kDx[dir], ny = cy + kDy[dir];
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            const int ncell = ny * width + nx;
+            if (!base_ok(ncell)) continue;
+            if (kDx[dir] != 0 && kDy[dir] != 0) {
+                const int c1 = cy * width + cx + kDx[dir], c2 = (cy + kDy[dir]) * width + cx;
+                if (!base_ok(c1) && !(leak && (*leak)[(size_t)c1])) continue;
+                if (!base_ok(c2) && !(leak && (*leak)[(size_t)c2])) continue;
+            }
+            const int nl = path_step_layer(t, width, cx, cy, cl, nx, ny);
+            if (nl < 0 || nl >= layers || !state_ok(ncell, nl)) continue;
+            const int ns = ncell + nl * n;
+            if (seen[(size_t)ns]) continue;
+            seen[(size_t)ns] = 1;
+            q.push_back(ns);
+        }
+    }
+    return out;
 }
 
 }  // namespace ra2engine

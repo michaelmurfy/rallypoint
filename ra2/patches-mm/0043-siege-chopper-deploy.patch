@@ -1,0 +1,229 @@
+diff --git a/engine/input_original.cpp b/engine/input_original.cpp
+index 127cfdd..a741d1c 100644
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -58,7 +58,10 @@ bool selection_can_move(const World& w, const Selection& sel) {
+         const Unit& u = w.units()[i];
+         if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !w.controllable(u.house)) continue;
+         any = true;
+-        if (!(u.deployed && !u.is_vehicle && (u.deploy_fire || u.abil.deployer))) return true;
++        // T3.3: deployed IsSimpleDeployer vehicles also refuse a ground move.
++        if (!(u.deployed && (u.deploy_fire || u.abil.deployer) &&
++              (!u.is_vehicle || (u.deploy_fire && !u.is_infantry))))
++            return true;
+     }
+     return !any;
+ }
+diff --git a/engine/main.cpp b/engine/main.cpp
+index d1c8ef5..e43cd21 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -4486,7 +4486,10 @@ void render_world(SDL_Renderer* ren, ra2engine::TextureCache& tc, Assets& a,
+             g_draw_unit_idx = idx;   // W3-B: walk stage (HVA frame)
+             // W3-B [RE: FUN_0073c1cc, Harvester=yes + unloading -> UnloadingClass]:
+             // a harvester dumping at the refinery draws its UnloadingClass.
+-            if (u.is_harvester && u.harv == ra2engine::HarvState::Unloading) {
++            // T3.3 [RE: IsSimpleDeployer FUN_00739AC0 / UnloadingClass=SCHD]:
++            // a deployed Siege Chopper draws its UnloadingClass (landed body).
++            if ((u.is_harvester && u.harv == ra2engine::HarvState::Unloading) ||
++                (u.deployed && u.deploy_fire && !u.is_infantry)) {
+                 auto ul = g_unloading_class.find(draw_image);
+                 if (ul != g_unloading_class.end() && ul->second) va = ul->second;
+             }
+@@ -6735,7 +6738,10 @@ public:
+         g_gf_spawned.clear();
+         start_vxl_prewarm();   // W2-GA-P4
+         // gF G-23: clicking the selected MCV deploys it (ACTION_SELF, B's hook).
+-        input_.set_deploy_check([](const ra2engine::Unit& u) { return u.deploys_into >= 0; });
++        // T3.3: DeployFire / IsSimpleDeployer (Siege Chopper) also get Deploy.
++        input_.set_deploy_check([](const ra2engine::Unit& u) {
++            return u.deploys_into >= 0 || u.deploy_fire;
++        });
+ 
+         // Register each infantry def's SHP + anim into the shared UnitAssets store
+         // so launched infantry (player + AI-2 Soviet rosters) render. Guarded: a
+diff --git a/engine/pres_audio_events.inc b/engine/pres_audio_events.inc
+index 3cd5066..f4c7d99 100644
+--- a/engine/pres_audio_events.inc
++++ b/engine/pres_audio_events.inc
+@@ -223,6 +223,12 @@ public:
+             const UnitVoices& v = voices_of(u);
+             if (e.x) snd_.play_at(v.deploy_snd, u.fx, u.fy, "deploy");
+             else snd_.play_at(v.undeploy_snd, u.fx, u.fy, "undeploy");
++            // T3.3 [RE: FUN_00739AC0 / FUN_00739CD0 DeployingAnim at type+0x6bc]:
++            // SCHPDEPL (and StartSound=SeigeChopperDeploy) on deploy and undeploy.
++            if (rules_ini_ && u.deploy_fire && !u.is_infantry) {
++                const std::string anim = pres_clean(rules_ini_->get(pres_type_id(u), "DeployingAnim"));
++                if (!anim.empty()) fx_.spawn(anim, u.fx, u.fy, u.level, 0.0);
++            }
+         }
+         const auto& bs = w.buildings();
+         for (const auto& e : gar) {
+diff --git a/engine/unit_orders.cpp b/engine/unit_orders.cpp
+index 8fe650d..09108ff 100644
+--- a/engine/unit_orders.cpp
++++ b/engine/unit_orders.cpp
+@@ -184,7 +184,10 @@ void World::group_scatter(int issuer, const std::vector<int>& ids) {
+         // 0x51CEB3..0x51CF18]: a human infantry in its Deploy / Deployed
+         // sequence ignores it, and a moving unit does not scatter.
+         const Unit& u = units_[static_cast<std::size_t>(i)];
+-        if (w7_rules_.armed && ((u.deployed && !u.is_vehicle && human_commanded(u.house)) || u.moving())) continue;
++        // T3.3: deployed IsSimpleDeployer vehicles also skip scatter.
++        const bool deployed_post = u.deployed && (u.deploy_fire || u.abil.deployer) &&
++                                   (!u.is_vehicle || (u.deploy_fire && !u.is_infantry));
++        if (w7_rules_.armed && ((deployed_post && human_commanded(u.house)) || u.moving())) continue;
+         order_scatter(i);
+     }
+ }
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index 2c92487..582a6b9 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -129,9 +129,14 @@ void fill_unit_combat_extras(const ra2assets::Rules& rules, const std::string& t
+     // read into type+0x6A8 by FUN_00711510]: the deployed infantry fires that
+     // slot through the normal target path. A RadLevel deploy weapon (DESO
+     // RadEruptionWeapon) is the P4 eruption ability instead.
++    // T3.3 [RE: UnitType IsSimpleDeployer +0xe13 FUN_00747688 / UnitClass
++    // FUN_00739AC0]: Siege Chopper (SCHP) is DeployFire=yes Deployer=no with
++    // IsSimpleDeployer=yes -- same DeployFireWeapon arming as a Deployer.
+     const bool deployer = rules.section_flag(type_id, "Deployer", false) &&
+                           rules.section_flag(type_id, "DeployFire", false);
+-    if (deployer) {
++    const bool simple_deployer = rules.section_flag(type_id, "IsSimpleDeployer", false) &&
++                                 rules.section_flag(type_id, "DeployFire", false);
++    if (deployer || simple_deployer) {
+         const int slot = tw.deploy_fire_weapon == 0 ? 0 : 1;
+         const WeaponSlot& dw = tw.slot[slot];
+         const bool rad = dw.valid && rules.section_double(dw.id, "RadLevel", 0.0) > 0.0;
+diff --git a/engine/world.cpp b/engine/world.cpp
+index ac426db..56e622b 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1553,7 +1553,12 @@ void World::order_unit_move(int idx, int gx, int gy) {
+     // Desolator) owned by a human refuses the move (the destination is
+     // cleared, it stays put); a computer-owned one undeploys first (the
+     // Undeploy sequence and sound) and then walks.
+-    if (u.deployed && !u.is_vehicle && (u.deploy_fire || u.abil.deployer)) {
++    // T3.3 [RE: IsSimpleDeployer FUN_00739AC0]: a deployed Siege Chopper
++    // (vehicle + deploy_fire) is immobile the same way.
++    const bool deployed_post =
++        u.deployed && (u.deploy_fire || u.abil.deployer) &&
++        (!u.is_vehicle || (u.deploy_fire && !u.is_infantry));
++    if (deployed_post) {
+         if (!house_is_computer(u.house)) return;
+         (void)order_deploy(idx);   // toggles back: emits Deploy(0)
+     }
+diff --git a/engine/world_abilities.cpp b/engine/world_abilities.cpp
+index bfc080f..77e25fc 100644
+--- a/engine/world_abilities.cpp
++++ b/engine/world_abilities.cpp
+@@ -78,6 +78,18 @@ bool World::order_deploy(int idx) {
+             u.fx = u.cell_x;
+             u.fy = u.cell_y;
+             u.attack_order = false;   // a deployed GI holds its post
++            // T3.3 [RE: FUN_0054BD30 IsSimpleDeployer + DeployToLand +0x6ad]:
++            // Siege Chopper lands before the deployed post (SCHD / secondary).
++            // Stock SCHP is jumpjet + DeployToLand; landable=no so it never
++            // auto-lands. Instant ground for now (DeployingAnim is presentation).
++            if (u.is_aircraft && !u.is_infantry) {
++                occ_.release_all_of(idx, -1, -1);
++                u.altitude = 0.0;
++                u.flight_state = FlightState::Grounded;
++                u.has_flight_goal = false;
++                u.an.landing = false;
++                occ_.set(u.cell_x, u.cell_y, idx);
++            }
+             // W7-10-06 [RE: InfantryClass::Mission_Unload 0x51F3F0]: an
+             // AreaFire deploy weapon (the Yuri's PsiWave; any type but DESO)
+             // does SetTarget(own cell) -- one blast around the unit at once --
+@@ -108,6 +120,14 @@ bool World::order_deploy(int idx) {
+             }
+         } else {
+             u.w7.undeploy_at = -1;
++            // T3.3 [RE: FUN_00739CD0]: undeploy lifts a DeployToLand jumper again.
++            if (u.is_aircraft && !u.is_infantry && u.cruise_altitude > 0.0) {
++                occ_.release_all_of(idx, u.cell_x, u.cell_y);
++                u.flight_state = FlightState::TakingOff;
++                u.has_flight_goal = false;
++                u.an.landing = false;
++                aircraft_any_ = true;
++            }
+         }
+         ability_events_.push_back({Ev::Kind::Deploy, idx, -1, u.deployed ? 1 : 0, 0, false});
+         return true;
+diff --git a/engine/world_an.cpp b/engine/world_an.cpp
+index 680db68..af61eee 100644
+--- a/engine/world_an.cpp
++++ b/engine/world_an.cpp
+@@ -1708,8 +1708,11 @@ void World::step_air_naval(double dt) {
+         // W7-05-13 [RE: FootClass Mission_Attack FUN_004D4CE0 / Guard
+         // FUN_004D4F90: a HoverAttack (+0x390) unit at height 0 with a target
+         // gets SetDestination(its own cell) -- it lifts off and fights hovering].
++        // T3.3: a deployed IsSimpleDeployer (Siege Chopper) holds the ground
++        // post -- HoverAttack must not lift it for air combat.
+         if (u.an.t.hover_attack && u.is_aircraft && !u.an.t.fixed_wing && live(u) &&
+-            u.flight_state == FlightState::Grounded && (u.target >= 0 || u.target_building >= 0)) {
++            !u.deployed && u.flight_state == FlightState::Grounded &&
++            (u.target >= 0 || u.target_building >= 0)) {
+             occ_.release_all_of(i, -1, -1);
+             u.flight_state = FlightState::TakingOff;
+             u.flight_goal_x = u.cell_x;
+diff --git a/tests/test_gap_combat.cpp b/tests/test_gap_combat.cpp
+index 4a73d95..cef7f4b 100644
+--- a/tests/test_gap_combat.cpp
++++ b/tests/test_gap_combat.cpp
+@@ -75,6 +75,11 @@ TEST_CASE("gapC weapon: real rulesmd slots (SREF Weapon1, APOC/HTK secondary AA,
+     UnitCombat m;
+     fill_unit_combat_extras(r, "MTNK", resolve_type_weapons(r, "MTNK"), m);
+     CHECK(m.crusher);
++    // T3.3: SCHP IsSimpleDeployer=yes Deployer=no still arms DeployFireWeapon.
++    UnitCombat schp;
++    fill_unit_combat_extras(r, "SCHP", resolve_type_weapons(r, "SCHP"), schp);
++    CHECK(schp.deploy_fire);
++    CHECK(schp.deploy_fire_slot == 1);
+ }
+ 
+ TEST_CASE("gapC weapon: a Flak Track engages an airborne Kirov with its AA secondary") {
+diff --git a/tests/test_w7_units.cpp b/tests/test_w7_units.cpp
+index 2e85979..85346e7 100644
+--- a/tests/test_w7_units.cpp
++++ b/tests/test_w7_units.cpp
+@@ -316,6 +316,38 @@ TEST_CASE("w7units W7-01-05: a human's deployed GI refuses a move; a computer's
+     CHECK_FALSE(world.units()[0].moving());
+ }
+ 
++// T3.3 [RE: FUN_00739AC0 / FUN_0054BD30]: IsSimpleDeployer + DeployToLand
++// (Siege Chopper) lands, switches to DeployFireWeapon, refuses a move.
++// Blank map (no install) -- same shape as gapC deploy-fire tests.
++TEST_CASE("w7units T3.3: Siege Chopper deploy lands and holds the post") {
++    ra2assets::MapFile map;
++    World world(map);
++    UnitCombat schp = mk("SCHP", 300, "light", 25, 20, 6.0, kAll100, true);
++    schp.is_aircraft = true;
++    schp.cruise_altitude = 500.0;
++    schp.deploy_fire = true;
++    schp.deploy_fire_slot = 1;
++    schp.secondary.valid = true;
++    schp.secondary.damage = 150;
++    schp.secondary.range = 8.0;
++    schp.secondary.verses = kAll100;
++    schp.an.hover_attack = true;
++    world.add_combat_unit(2, 2, 0, schp);
++    world.units()[0].altitude = 500.0;
++    world.units()[0].flight_state = FlightState::Cruising;
++    REQUIRE(world.order_deploy(0));
++    CHECK(world.units()[0].deployed);
++    CHECK(world.units()[0].altitude == doctest::Approx(0.0));
++    CHECK(world.units()[0].flight_state == FlightState::Grounded);
++    CHECK(unit_weapon_for_building(world.units()[0], 0, false, false) == 1);
++    world.order_unit_move(0, 6, 2);
++    CHECK(world.units()[0].deployed);
++    CHECK_FALSE(world.units()[0].moving());
++    REQUIRE(world.order_deploy(0));
++    CHECK_FALSE(world.units()[0].deployed);
++    CHECK(world.units()[0].flight_state == FlightState::TakingOff);
++}
++
+ TEST_CASE("w7units W7-01-03/02: PermaDisguise fools nobody; a disguise as an enemy fools that enemy but not a dog") {
+     W7_WORLD(world, x0, y0);
+     UnitCombat spy = mk("SPY", 100, "none", 0, 0, 0.0, {});

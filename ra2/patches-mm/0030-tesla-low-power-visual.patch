@@ -1,0 +1,96 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -3361,7 +3361,7 @@
+ // origin cell's terrain level (buildings flatten their footprint).
+ void draw_building(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ra2engine::Building& b,
+                    const BuildingAssets& ba, int level, double condition_yellow,
+-                   const ra2engine::Camera& cam, int W, int H,
++                   const ra2engine::Camera& cam, int W, int H, const ra2engine::World* world,
+                    const std::vector<ra2engine::Building>* all = nullptr) {
+     if (b.type < 0 || b.type >= static_cast<int>(ba.art.size())) return;
+     const BuildingArt& art = ba.art[b.type];
+@@ -3454,10 +3454,11 @@
+     // G-85: ActiveAnim/Bib/damage-fire overlays (live game only; g_fx null in gates).
+     const bool overlay = g_fx && !buildup && b.state == ra2engine::Building::State::Idle;
+     const bool bdamaged = b.max_hp > 0 && b.hp <= condition_yellow * b.max_hp;
++    const bool bpowered = pres_building_powered(world, b);
+     const ra2assets::Palette opal = overlay ? ra2engine::house_draw_palette(ba.unit_pal, b.house) : ba.unit_pal;
+     const std::string& oimg = def.image.empty() ? def.id : def.image;
+     if (overlay)
+-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, !(b.house == g_local_house && g_pres_low_power), opal,
++        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bpowered, opal,
+                               ra2engine::house_draw_key(b.house), W, H, 0);
+     // G-85: the shadow half (frame + Frames/2) first, darkened 50 % [RE:
+     // presentation.md §7, FUN_00705290 + the Darken blitter dst = dst >> 1].
+@@ -3495,7 +3496,7 @@
+         ra2engine::blit_object(ren, tex, &dst);   // W5-PRES ObjTint (none in the gates)
+     }
+     if (overlay)
+-        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, !(b.house == g_local_house && g_pres_low_power), opal,
++        pres_building_overlay(ren, tc, oimg, fcx, fcy, bdamaged, bpowered, opal,
+                               ra2engine::house_draw_key(b.house), W, H, 1);
+     // W4-FIX-POS: RA2_POS_DBG=1 outlines the foundation (magenta) and marks
+     // the draw point (green x) -- the visual check for the anchor.
+@@ -4499,7 +4500,7 @@
+             const ra2assets::MapCell* mc = a.map.at(b.cx, b.cy);
+             ra2engine::ObjTint btint;   // W5-PRES R-120 Iron Curtain envelope
+             ra2engine::set_obj_tint(pres_building_tint(world, b, btint) ? &btint : nullptr);
+-            draw_building(ren, tc, b, *ba, mc ? mc->level : 0, ba->condition_yellow, cam, W, H,
++            draw_building(ren, tc, b, *ba, mc ? mc->level : 0, ba->condition_yellow, cam, W, H, &world,
+                           &world.buildings());
+             if (g_turrets && b.type >= 0 && b.type < static_cast<int>(ba->roster.size()))   // W2-GA-13
+                 g_turrets->draw(ren, tc, world, b, ba->roster[static_cast<std::size_t>(b.type)].id,
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -36,8 +36,14 @@
+ enum : int {
+     kBsActive = 3, kBsActive4 = 6, kBsPreProduction = 7, kBsProduction = 8, kBsTurret = 9,
+     kBsSpecial = 10, kBsSpecial2 = 11, kBsSpecial3 = 12, kBsSpecial4 = 13, kBsSuper = 14, kBsSuper4 = 17,
+-    kBsIdle = 18,
++    kBsIdle = 18, kBsLowPower = 19,
+ };
++// Same predicate as defense fire (house_low_power + per-building power down).
++inline bool pres_building_powered(const ra2engine::World* world, const ra2engine::Building& b) {
++    if (b.power_off) return false;
++    if (world) return !world->house_low_power(b.house);
++    return !(b.house == g_local_house && g_pres_low_power);
++}
+ struct BldSlotRun { long start = -1; bool on = false; };
+ struct BldEventState {
+     long door_start = -1;          // tick a unit left the factory
+@@ -347,11 +353,18 @@
+             const FxAnimType* t = slot_t(sl);
+             if (!t) continue;
+             // <Slot>PoweredLight: the anim goes away without power; <Slot>Powered
+-            // (default yes): it holds still.
++            // (default yes): it holds still (except Active.., where start often
++            // still looks charged -- Tesla Coil, Prism Tower).
+             if (!powered && sl.powered_light) continue;
++            if (!powered && s >= kBsActive && s <= kBsActive4 && sl.powered) continue;
+             const int fr = (sl.powered && !powered) ? t->start : bld_run_frame(*t, ev->run[s].start, now);
+             draw_t(t, fr, sl.x, sl.y);
+         }
++        if (!powered) {
++            const PresFx::BldAnims::Slot& lps = a.slot[kBsLowPower];
++            if (const FxAnimType* lt = slot_t(lps))
++                draw_t(lt, PresFx::loop_frame(*lt, now), lps.x, lps.y);
++        }
+     }
+     if (damaged && !a.fire_offsets.empty()) {
+         // [RE: W4-FIX-POS, RE-P6 resolved -- FUN_0043c050, called from the
+diff --git a/engine/pres_fx.inc b/engine/pres_fx.inc
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -557,7 +557,9 @@
+             sl.x = std::atoi(aget(image, s + "X").c_str());
+             sl.y = std::atoi(aget(image, s + "Y").c_str());
+             sl.powered = yes(s + "Powered", true);
+-            sl.powered_light = yes(s + "PoweredLight", false);
++            const bool active_slot =
++                s == "ActiveAnim" || s == "ActiveAnimTwo" || s == "ActiveAnimThree" || s == "ActiveAnimFour";
++            sl.powered_light = yes(s + "PoweredLight", active_slot && sl.powered);
+             return sl;
+         };
+         int n = 0;

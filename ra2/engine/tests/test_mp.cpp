@@ -13,6 +13,8 @@
 #include "mp/mp_net.hpp"
 #include "net/wire.hpp"
 
+#include <array>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <set>
@@ -154,6 +156,14 @@ TEST_CASE("mp: session resolution is deterministic and keeps colours / starts un
     CHECK_FALSE(cfg.slots[2].is_ai);          // remote human: driven by lockstep, not AI
     CHECK(cfg.slots[0].alliance_team == 0);
     CHECK(cfg.starting_cash == 7500);
+    CHECK(cfg.allies_allowed == -1);          // absent launch override
+    a.lobby.opt.crates = false;
+    a.lobby.opt.superweapons = false;
+    a.lobby.opt.allies_allowed = 0;
+    const auto opts = session_to_skirmish(a, ctx);
+    CHECK_FALSE(opts.crates);
+    CHECK_FALSE(opts.superweapons);
+    CHECK(opts.allies_allowed == 0);
     const auto prev = session_to_local_preview(a, ctx);
     CHECK_FALSE(prev.slots[0].is_ai);         // local player first
     CHECK(prev.slots[1].is_ai);
@@ -487,6 +497,81 @@ TEST_CASE("mp: lobby through a CnCNet V3 tunnel (8-byte LE header)") {
     REQUIRE(ok);
     CHECK(forwarded > 2);
     CHECK(host.peer_of_slot(1) == peer_of_v3(0xBBBB0002));
+    // The tunnel answered our 50-byte ping (seen through UdpDatagramIO::on_foreign).
+    for (int i = 0; i < 200 && th.rtt_ms() < 0; ++i) {
+        run_relay();
+        th.net().service();
+        const std::uint64_t until = now_ms() + 2;
+        while (now_ms() < until) {}
+    }
+    CHECK(th.rtt_ms() >= 0);
+}
+
+TEST_CASE("mp: lobby through a CnCNet V2 tunnel (Rallypoint agent: 4-byte BE header)") {
+    // A minimal V2 forwarder (what the Rallypoint agent emulates): token first, then register sender -> endpoint.
+    UdpSocket relay;
+    REQUIRE(relay.open(0));
+    const Addr ra{kLoopback, relay.local_port()};
+    std::map<std::uint32_t, Addr> reg;
+    std::map<Addr, std::array<std::uint8_t, 16>> tokens;
+    std::size_t largest = 0;
+    int forwarded = 0;
+    auto run_relay = [&]() {
+        std::uint8_t buf[2048];
+        Addr from;
+        for (int n; (n = relay.recv_from(from, buf, sizeof buf)) > 0;) {
+            if (static_cast<std::size_t>(n) == ra2::net::kTunnelAuthSize &&
+                std::memcmp(buf, ra2::net::kTunnelAuthPrefix, sizeof(ra2::net::kTunnelAuthPrefix)) == 0) {
+                std::array<std::uint8_t, 16> tok{};
+                std::memcpy(tok.data(), buf + sizeof(ra2::net::kTunnelAuthPrefix), 16);
+                // First endpoint with this token owns it; others are ignored (as the agent does).
+                bool taken = false;
+                for (const auto& e : tokens)
+                    if (e.second == tok && e.first != from) { taken = true; break; }
+                if (!taken) {
+                    tokens[from] = tok;
+                    relay.send_to(from, ra2::net::kTunnelAuthPrefix, sizeof(ra2::net::kTunnelAuthPrefix));
+                }
+                continue;
+            }
+            if (tokens.count(from) == 0) continue;  // drop until the token is presented
+            std::uint32_t s, r;
+            const std::uint8_t* pl;
+            std::size_t pn;
+            if (n == 50 && buf[0] == 0 && buf[4] == 0) { relay.send_to(from, buf, 12); continue; }
+            if (!ra2::net::tunnel_unwrap(ra2::net::TunnelMode::V2, buf, static_cast<std::size_t>(n), &s, &r, &pl, &pn) ||
+                s == 0)
+                continue;
+            reg[s] = from;
+            largest = std::max(largest, static_cast<std::size_t>(n));
+            const auto it = reg.find(r);
+            if (it != reg.end()) { relay.send_to(it->second, buf, static_cast<std::size_t>(n)); ++forwarded; }
+        }
+    };
+    std::uint8_t tok_h[16], tok_c[16];
+    for (int i = 0; i < 16; ++i) { tok_h[i] = static_cast<std::uint8_t>(0x10 + i); tok_c[i] = static_cast<std::uint8_t>(0x40 + i); }
+    MpNet th, tc;
+    REQUIRE(th.open_tunnel(ra, 3, ra2::net::TunnelMode::V2, tok_h));
+    REQUIRE(tc.open_tunnel(ra, 7, ra2::net::TunnelMode::V2, tok_c));
+    LobbyHost host(th, ident("Host", 1), host_model());
+    LobbyClient c(tc, peer_of_v3(3), ident("Tunnel", 2));
+    bool ok = false;
+    for (int i = 0; i < 600 && !ok; ++i) {
+        const std::uint64_t t = now_ms();
+        host.update(t);
+        run_relay();
+        c.update(t);
+        run_relay();
+        ok = c.state() == LobbyClient::State::Joined && c.rev() == host.rev();
+        if (!ok) {
+            const std::uint64_t until = now_ms() + 5;
+            while (now_ms() < until) {}
+        }
+    }
+    REQUIRE(ok);
+    CHECK(forwarded > 2);
+    CHECK(largest <= 4 + 1020);   // the agent carries up to 1020 payload bytes
+    CHECK(host.peer_of_slot(1) == peer_of_v3(7));
     // The tunnel answered our 50-byte ping (seen through UdpDatagramIO::on_foreign).
     for (int i = 0; i < 200 && th.rtt_ms() < 0; ++i) {
         run_relay();

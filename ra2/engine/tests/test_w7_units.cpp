@@ -106,7 +106,9 @@ TEST_CASE("w7units: rulesmd type flags (Agent/Engineer, PermaDisguise, DetectDis
     CHECK(w7("MGTK").fake_blink == 15);
     CHECK(w7("YURI").deploy_area_fire);
     CHECK(w7("YURI").undeploy_delay == 150);
+    CHECK(w7("YURI").mind_control);
     CHECK(w7("YURI").mc_capacity == 1);
+    CHECK_FALSE(w7("E1").mind_control);
     CHECK(w7("DOG").default_to_guard_area);
     CHECK(w7("DRON").default_to_guard_area);
     CHECK_FALSE(w7("CLEG").move_to_shroud);
@@ -312,6 +314,38 @@ TEST_CASE("w7units W7-01-05: a human's deployed GI refuses a move; a computer's 
     world.order_unit_move(0, x0 + 6, y0);
     CHECK(world.units()[0].deployed);
     CHECK_FALSE(world.units()[0].moving());
+}
+
+// T3.3 [RE: FUN_00739AC0 / FUN_0054BD30]: IsSimpleDeployer + DeployToLand
+// (Siege Chopper) lands, switches to DeployFireWeapon, refuses a move.
+// Blank map (no install) -- same shape as gapC deploy-fire tests.
+TEST_CASE("w7units T3.3: Siege Chopper deploy lands and holds the post") {
+    ra2assets::MapFile map;
+    World world(map);
+    UnitCombat schp = mk("SCHP", 300, "light", 25, 20, 6.0, kAll100, true);
+    schp.is_aircraft = true;
+    schp.cruise_altitude = 500.0;
+    schp.deploy_fire = true;
+    schp.deploy_fire_slot = 1;
+    schp.secondary.valid = true;
+    schp.secondary.damage = 150;
+    schp.secondary.range = 8.0;
+    schp.secondary.verses = kAll100;
+    schp.an.hover_attack = true;
+    world.add_combat_unit(2, 2, 0, schp);
+    world.units()[0].altitude = 500.0;
+    world.units()[0].flight_state = FlightState::Cruising;
+    REQUIRE(world.order_deploy(0));
+    CHECK(world.units()[0].deployed);
+    CHECK(world.units()[0].altitude == doctest::Approx(0.0));
+    CHECK(world.units()[0].flight_state == FlightState::Grounded);
+    CHECK(unit_weapon_for_building(world.units()[0], 0, false, false) == 1);
+    world.order_unit_move(0, 6, 2);
+    CHECK(world.units()[0].deployed);
+    CHECK_FALSE(world.units()[0].moving());
+    REQUIRE(world.order_deploy(0));
+    CHECK_FALSE(world.units()[0].deployed);
+    CHECK(world.units()[0].flight_state == FlightState::TakingOff);
 }
 
 TEST_CASE("w7units W7-01-03/02: PermaDisguise fools nobody; a disguise as an enemy fools that enemy but not a dog") {

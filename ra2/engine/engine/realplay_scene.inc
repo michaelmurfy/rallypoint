@@ -83,6 +83,17 @@ public:
         r.unit_build_limit.assign(r.units.size(), 0);
         for (std::size_t i = 0; i < r.units.size(); ++i)
             r.unit_build_limit[i] = static_cast<int>(rules_.section_double(r.units[i].id, "BuildLimit", 0.0));
+        // Rallypoint: country CostInfantry/Units/AircraftMult (+ Cost=).
+        if (h >= 0 && h < static_cast<int>(cfg_.slots.size())) {
+            const ra2engine::country::Bonuses bon = ra2engine::country::parse(
+                rules_, rp_player_country(rules_, cfg_.slots[(std::size_t)h]));
+            for (ra2engine::UnitTypeDef& d : r.units) {
+                const ra2engine::country::Kind ck = d.aircraft ? ra2engine::country::Kind::Aircraft
+                    : (d.is_vehicle ? ra2engine::country::Kind::Unit
+                                    : ra2engine::country::Kind::Infantry);
+                d.cost = ra2engine::country::scale_cost(d.cost, bon, ck);
+            }
+        }
         return r;
     }
     // House h's buildable building mask (the sidebar's rp_bld_allowed_ rule
@@ -278,6 +289,7 @@ private:
                 const bool def = i < static_cast<int>(ba_.defense.size()) && ba_.defense[i] != 0;
                 if (def != (tab == 1)) continue;
                 const bool queued = lq().producing(bc) == i;
+                if (!queued && ra2engine::build_limit_reached(ba_.roster, bs, local_house_, i)) continue;   // BuildLimit=
                 if (!queued &&
                     !ra2engine::prerequisites_met(d.prerequisite, bs, ba_.roster, local_house_, ba_.groups))
                     continue;
@@ -333,9 +345,10 @@ private:
     void rp_refresh_sidebar() {
         if (!rp_on_) return;
         std::vector<int> now = rp_tab_buildable(active_tab_);
-        if (now != buildable_) {
+        const int slots = static_cast<int>(world_.sw_types(local_house_).size());
+        if (now != buildable_ || slots != lay_.sw_slots) {
             buildable_ = std::move(now);
-            lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, lay_.top_row);   // keep the G-12 strip scroll
+            lay_ = ra2engine::SidebarLayout::compute(kWinW, kWinH, buildable_, lay_.top_row, slots);
         }
     }
 

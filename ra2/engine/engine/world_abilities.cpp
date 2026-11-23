@@ -10,6 +10,7 @@
 #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
 #include "combat.hpp"      // damage_vs
 #include "group_move.hpp"  // nearest_free_cells
+#include "magnetron.hpp"
 #include "weapon_unit.hpp" // secondary_view (W7-10-06)
 #include "world.hpp"
 
@@ -77,6 +78,18 @@ bool World::order_deploy(int idx) {
             u.fx = u.cell_x;
             u.fy = u.cell_y;
             u.attack_order = false;   // a deployed GI holds its post
+            // T3.3 [RE: FUN_0054BD30 IsSimpleDeployer + DeployToLand +0x6ad]:
+            // Siege Chopper lands before the deployed post (SCHD / secondary).
+            // Stock SCHP is jumpjet + DeployToLand; landable=no so it never
+            // auto-lands. Instant ground for now (DeployingAnim is presentation).
+            if (u.is_aircraft && !u.is_infantry) {
+                occ_.release_all_of(idx, -1, -1);
+                u.altitude = 0.0;
+                u.flight_state = FlightState::Grounded;
+                u.has_flight_goal = false;
+                u.an.landing = false;
+                occ_.set(u.cell_x, u.cell_y, idx);
+            }
             // W7-10-06 [RE: InfantryClass::Mission_Unload 0x51F3F0]: an
             // AreaFire deploy weapon (the Yuri's PsiWave; any type but DESO)
             // does SetTarget(own cell) -- one blast around the unit at once --
@@ -107,6 +120,14 @@ bool World::order_deploy(int idx) {
             }
         } else {
             u.w7.undeploy_at = -1;
+            // T3.3 [RE: FUN_00739CD0]: undeploy lifts a DeployToLand jumper again.
+            if (u.is_aircraft && !u.is_infantry && u.cruise_altitude > 0.0) {
+                occ_.release_all_of(idx, u.cell_x, u.cell_y);
+                u.flight_state = FlightState::TakingOff;
+                u.has_flight_goal = false;
+                u.an.landing = false;
+                aircraft_any_ = true;
+            }
         }
         ability_events_.push_back({Ev::Kind::Deploy, idx, -1, u.deployed ? 1 : 0, 0, false});
         return true;
@@ -540,6 +561,26 @@ void World::ability_fire_event(int i) {
         ability_events_.push_back({Ev::Kind::Suicide, i, vt, 0, 0, false});
         ability_kill_unit(i, u.w_inf_death);   // W7-12-08: its own weapon's warhead
         break;
+    case AbilityKind::MagBeam: {
+        const int un = static_cast<int>(units_.size());
+        magnetron::MagVictim mv;
+        mv.is_vehicle = v.is_vehicle; mv.is_aircraft = v.is_aircraft;
+        mv.is_infantry = is_infantry_unit(v); mv.is_naval = v.is_naval;
+        mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
+        mv.armor_ix = v.armor_ix; mv.hp = v.hp; mv.max_hp = v.max_hp;
+        if (!magnetron::can_lift(mv, u.w_verses) || v.an.iron_left_frames > 0) {
+            u.target = -1; u.attack_order = false; return;
+        }
+        if (u.magnet_victim >= 0 && u.magnet_victim < un && u.magnet_victim != vt) {
+            if (units_[u.magnet_victim].magnet_holder == i) units_[u.magnet_victim].magnet_holder = -1;
+        }
+        if (v.magnet_holder >= 0 && v.magnet_holder < un && v.magnet_holder != i)
+            units_[v.magnet_holder].magnet_victim = -1;
+        u.magnet_victim = vt; u.magnet_drop_bld = -1; v.magnet_holder = i;
+        v.path.clear(); v.path_idx = 0; v.target = -1; v.target_building = -1; v.attack_order = false;
+        ability_events_.push_back({Ev::Kind::MagLift, i, vt, static_cast<int>(v.altitude), 0, false});
+        break;
+    }
     default:
         break;
     }
@@ -908,6 +949,79 @@ void World::step_abilities(double dt) {
         }
     }
 
+
+    // (7b) Magnetron MagneticBeam.
+    {
+        magnetron::MagRules mr;
+        mr.cruise_height = ability_rules_.mag_cruise_height;
+        mr.climb = std::max(1, ability_rules_.mag_climb);
+        mr.falling_damage_milli = ability_rules_.mag_falling_damage_milli;
+        mr.current_strength_damage = ability_rules_.mag_current_strength_damage;
+        auto release_drop = [&](int holder, int victim, bool into_water) {
+            Unit& h = units_[holder]; Unit& v = units_[victim];
+            magnetron::MagVictim mv;
+            mv.hp = v.hp; mv.max_hp = v.max_hp; mv.is_vehicle = v.is_vehicle;
+            mv.is_naval = v.is_naval; mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
+            const int dmg = into_water ? v.hp : magnetron::drop_damage(mr, mv);
+            ability_events_.push_back({Ev::Kind::MagDrop, holder, victim, dmg, into_water ? 1 : 0, false});
+            v.altitude = 0.0; v.magnet_holder = -1; h.magnet_victim = -1; h.magnet_drop_bld = -1;
+            if (into_water) { v.vet.killed_by = holder; ability_kill_unit(victim, 0); return; }
+            // T2.4 [RE: Release FUN_0070FEE0 stamps the victim +0x428 = firer,
+            // +0x42C = firer's house; the landing (UnitClass 0x746209..0x7462DA)
+            // makes a bullet of [CombatDamage] DeathWeapon's projectile with
+            // CrushWarhead, damage = fall damage, owner = the firer, and
+            // detonates it (FUN_004690B0) at the ground point]: the "toss" is a
+            // Crush blast where the victim lands. It hits the victim and
+            // whatever stands there -- any building under it, not only the one
+            // the Magnetron targeted -- credited to the Magnetron.
+            if (dmg > 0)
+                ability_area_damage(holder, v.fx, v.fy, ability_rules_.crush_warhead, dmg, unit_abs_z(v));
+        };
+        for (int i = 0; i < n; ++i) {
+            Unit& h = units_[i];
+            if (h.magnet_victim < 0) continue;
+            const int vi = h.magnet_victim;
+            if (vi >= n || !on_map_alive(units_[vi]) || units_[vi].magnet_holder != i) {
+                if (vi >= 0 && vi < n && units_[vi].magnet_holder == i) units_[vi].magnet_holder = -1;
+                h.magnet_victim = -1; h.magnet_drop_bld = -1; continue;
+            }
+            if (!on_map_alive(h) || h.abil.fire_kind != AbilityKind::MagBeam) {
+                Unit& v = units_[vi];
+                magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
+                mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
+                release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
+                continue;
+            }
+            Unit& v = units_[vi];
+            if (h.target_building >= 0 && h.target_building < (int)buildings_.size() && buildings_[h.target_building].alive)
+                h.magnet_drop_bld = h.target_building;
+            if (!((h.target == vi || h.magnet_drop_bld >= 0) &&
+                  magnetron::in_beam_range(h.cell_x, h.cell_y, v.cell_x, v.cell_y, h.w_range > 0 ? h.w_range : 12.0))) {
+                magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
+                mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
+                release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
+                continue;
+            }
+            v.altitude = (double)magnetron::rise(mr, (int)v.altitude, v.weight_milli > 0 ? v.weight_milli : 1000);
+            v.path.clear(); v.path_idx = 0;
+            if (h.magnet_drop_bld >= 0 && magnetron::at_cruise(mr, (int)v.altitude)) {
+                Building& b = buildings_[h.magnet_drop_bld];
+                if (!b.alive || b.state == Building::State::Dead) h.magnet_drop_bld = -1;
+                else {
+                    int fx = (int)(v.fx * 256.0), fy = (int)(v.fy * 256.0);
+                    int tx = (int)((bld_cx(b) + 0.5) * 256.0), ty = (int)((bld_cy(b) + 0.5) * 256.0);
+                    bool arrived = magnetron::drag_toward(fx, fy, tx, ty, mr.drag);
+                    v.fx = fx / 256.0; v.fy = fy / 256.0; v.cell_x = (int)v.fx; v.cell_y = (int)v.fy;
+                    if (arrived) {
+                        magnetron::MagVictim mv; mv.is_vehicle = v.is_vehicle; mv.is_naval = v.is_naval;
+                        mv.amphibious = v.movement_domain == MovementDomain::Amphibious;
+                        release_drop(i, vi, magnetron::drop_destroys_in_water(mv, cell_is_water(v.cell_x, v.cell_y)));
+                    }
+                }
+            }
+        }
+    }
+
     // (8) radiation [§A3/§A4]: RadSite AI, then the 16-frame application.
     rad_.step(ability_frame_, ability_rules_);
     if (rad_apply_due(ability_frame_, ability_rules_)) {
@@ -935,7 +1049,8 @@ void World::step_abilities(double dt) {
         // the Desolator freeze.
         u.frozen = u.alive && ((u.deployed && !u.deploy_fire) || next < u.warp_until ||
                                u.warp_remaining > 0 || u.w6.unpowered ||   // W6-04-18
-                               next < u.w7.paralysed_until);               // W7-04-13
+                               next < u.w7.paralysed_until ||
+                               u.magnet_holder >= 0);
         if (was && !u.frozen && u.warp_until >= 0 && next >= u.warp_until && u.alive &&
             u.warp_remaining <= 0 && (!u.deployed || u.deploy_fire)) {
             ability_events_.push_back({Ev::Kind::Unfreeze, i, -1, static_cast<int>(next), 0, false});

@@ -113,17 +113,26 @@ bool trigger_condition_true(const AITriggerType& t, const TriggerView& view) {
     }
 }
 
-bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view) {
+bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view,
+                          bool team1_is_base_defense) {
     // [RE-GATE APPLIED: ai-trigger.md §5 — ConditionMet's CONFIRMED filter
     // set, in the recovered order. Filter #2 (IsGlobal) passes vacuously:
     // aimd-loaded triggers are never Global in the original (IsGlobal=0),
     // so the field is not parsed or checked.]
-    // #1 base-defense vs offense split: AI-3's scope is OFFENSIVE triggers;
-    // ALL stock triggers are IsForBaseDefense=0. [RE-FALLBACK: the recovered
-    // split consults the house's defensive-team need (Rules+0x1394[diff] vs
-    // house+0x566c), inputs this engine does not track — base-defense
-    // triggers are rejected until a defensive-need input exists.]
-    if (t.base_defense) return false;
+    // #1 UseMinDefenseRule [RE: FUN_0041e740 @0x41e760..0x41e7b1, Rules
+    // +0x17f3 / MinimumAIDefensiveTeams +0x1394 vs house+0x566c]: under the
+    // minimum, only a Team1 IsBaseDefense (dl from TeamType+0xf6) — or the
+    // rare IsForBaseDefense=1 trigger — may fire; at/above the minimum those
+    // are rejected so offense takes over. use_min_defense_rule false keeps
+    // the pre-hunt behaviour (no split; tests / synthetic configs).
+    if (view.use_min_defense_rule) {
+        const bool bd = team1_is_base_defense || t.base_defense;
+        if (view.defense_teams < view.min_defense_teams) {
+            if (!bd) return false;
+        } else if (bd) {
+            return false;
+        }
+    }
     // #3 per-trigger [AITriggerTypesEnable] flag [RE: §5].
     if (!t.is_enabled) return false;
     // #4 IsForSkirmish must be 1 — skirmish-only engine [RE: §5].
@@ -150,8 +159,10 @@ bool trigger_filters_pass(const AITriggerType& t, const TriggerView& view) {
     return true;
 }
 
-bool trigger_eligible(const AITriggerType& t, const TriggerView& view) {
-    return trigger_condition_true(t, view) && trigger_filters_pass(t, view);
+bool trigger_eligible(const AITriggerType& t, const TriggerView& view,
+                      bool team1_is_base_defense) {
+    return trigger_condition_true(t, view) &&
+           trigger_filters_pass(t, view, team1_is_base_defense);
 }
 
 TriggerDecision select_trigger(const AimdData& aimd,
@@ -170,7 +181,10 @@ TriggerDecision select_trigger(const AimdData& aimd,
         const AITriggerType& t = aimd.triggers[i];
         const long w = om::lround(weights[i]);
         if (w <= 0) continue;                        // no probability mass
-        if (!trigger_eligible(t, view)) continue;
+        const bool team1_bd =
+            t.team1 >= 0 && t.team1 < (int)aimd.teams.size() &&
+            aimd.teams[t.team1].is_base_defense;
+        if (!trigger_eligible(t, view, team1_bd)) continue;
         // Per-TeamType Max cap for BOTH Team1 and Team2, INSIDE eligibility,
         // before the draw (Max < 0 = UNCAPPED) [RE-GATE APPLIED:
         // ai-trigger.md §5/§6 — CONFIRMED at ConditionMet's tail]. The
@@ -218,7 +232,7 @@ TriggerDecision select_trigger(const AimdData& aimd,
 }
 
 void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
-                   bool success) {
+                   bool success, double success_nudge) {
     if (trigger < 0 || trigger >= (int)st.weights.size() ||
         trigger >= (int)aimd.triggers.size())
         return;
@@ -236,7 +250,8 @@ void adjust_weight(AiTriggerState& st, const AimdData& aimd, int trigger,
             delta = ((double)C / (double)E - 0.5) * (double)E;
             if (delta < 0.0) delta = 0.0;            // bonus >= 0
         }
-        w += kAiTriggerSuccessWeightDelta + delta;
+        // [RP-AI-BOOST] success_nudge is 0 at stock; L3 adds a small bias.
+        w += kAiTriggerSuccessWeightDelta + delta + success_nudge;
     } else {
         if (E > 0) {
             delta = ((double)C / (double)E - 0.5) *

@@ -229,6 +229,13 @@ struct SaveAccess {
         save::io(ar, w.spread_pct_); save::mark(ar, "spread_pct_");
         save::io(ar, w.purifier_bonus_); save::mark(ar, "purifier_bonus_");   // gap owner A (G-27)
         save::io(ar, w.harvest_scan_); save::mark(ar, "harvest_scan_");     // W2-SK-02 (v13)
+        save::io(ar, w.slave_scan_); save::mark(ar, "slave_scan_");         // Rallypoint: Slave Miner
+        save::io(ar, w.slave_short_scan_); save::mark(ar, "slave_short_scan_");
+        save::io(ar, w.slave_long_scan_); save::mark(ar, "slave_long_scan_");
+        save::io(ar, w.slave_scan_correction_); save::mark(ar, "slave_scan_correction_");
+        save::io(ar, w.slave_kick_delay_); save::mark(ar, "slave_kick_delay_");
+        save::io(ar, w.slave_proto_); save::mark(ar, "slave_proto_");
+        save::io(ar, w.slave_proto_ok_); save::mark(ar, "slave_proto_ok_");
         save::io(ar, w.harvest_income_); save::mark(ar, "harvest_income_");   // W2-SK income witness (v13)
         save::io(ar, w.house_credits_); save::mark(ar, "house_credits_");
         save::io(ar, w.harvest_events_); save::mark(ar, "harvest_events_");
@@ -238,6 +245,7 @@ struct SaveAccess {
         save::io(ar, w.repair_frame_); save::mark(ar, "repair_frame_");
         save::io(ar, w.survivor_crew_); save::mark(ar, "survivor_crew_");
         save::io(ar, w.survivor_crew_set_); save::mark(ar, "survivor_crew_set_");
+        save::io(ar, w.house_country_bonuses_); save::mark(ar, "house_country_bonuses_");   // Rallypoint HouseType bonuses
         // P5 Veterancy + crates
         save::io(ar, w.vet_any_); save::mark(ar, "vet_any_");
         save::io(ar, w.vet_rules_); save::mark(ar, "vet_rules_");
@@ -390,6 +398,18 @@ template <class Ar> void fields(Ar& ar, SaveAccess::Trig& v) { SaveAccess::trig(
 template <class Ar> void fields(Ar& ar, SaveAccess::Tag& v) { SaveAccess::tag(ar, v); }
 
 // --- small leaf structs ---
+template <class Ar> void fields(Ar& ar, country::Bonuses& v) {   // Rallypoint HouseType bonuses
+    io(ar, v.cost); io(ar, v.armor); io(ar, v.rof); io(ar, v.firepower);
+    io(ar, v.groundspeed); io(ar, v.airspeed); io(ar, v.build_time); io(ar, v.income);
+    io(ar, v.cost_infantry); io(ar, v.cost_units); io(ar, v.cost_aircraft);
+    io(ar, v.cost_buildings); io(ar, v.cost_defenses);
+    io(ar, v.armor_infantry); io(ar, v.armor_units); io(ar, v.armor_aircraft);
+    io(ar, v.armor_buildings); io(ar, v.armor_defenses);
+    io(ar, v.speed_infantry); io(ar, v.speed_units); io(ar, v.speed_aircraft);
+    io(ar, v.build_time_infantry); io(ar, v.build_time_units); io(ar, v.build_time_aircraft);
+    io(ar, v.build_time_buildings); io(ar, v.build_time_defenses);
+    io(ar, v.veteran_infantry); io(ar, v.veteran_units); io(ar, v.veteran_aircraft);
+}
 template <class Ar> void fields(Ar& ar, SwParams& v) {   // W2-AN (save v9)
     io(ar, v.nuke_up_frames); io(ar, v.nuke_down_frames); io(ar, v.nuke_rad_level);
     io(ar, v.iron_frames); io(ar, v.chrono_delay_frames); io(ar, v.storm_deferment);
@@ -568,6 +588,16 @@ template <class Ar> void fields(Ar& ar, World::FireEvent& v) {
     io(ar, v.unit); io(ar, v.building); io(ar, v.target_unit); io(ar, v.target_building);
     io(ar, v.slot); io(ar, v.weapon);
 }
+// Rallypoint: IsGattling rules (gattling.hpp).
+template <class Ar> void fields(Ar& ar, GattlingRules& v) {
+    io(ar, v.enabled);
+    io(ar, v.rate_up);
+    io(ar, v.rate_down);
+    io(ar, v.weapon_stages);
+    for (int i = 0; i < kGattlingMaxStages; ++i) io(ar, v.stage_end[i]);
+    for (int i = 0; i < kGattlingMaxStages; ++i) io(ar, v.elite_stage_end[i]);
+    io(ar, v.has_elite_stages);
+}
 // Gap fix C: one resolved weapon slot.
 template <class Ar> void fields(Ar& ar, WeaponSlot& v) {
     io(ar, v.valid);
@@ -592,6 +622,7 @@ template <class Ar> void fields(Ar& ar, WeaponSlot& v) {
     io(ar, v.shrapnel_count); io(ar, v.shrapnel_damage); io(ar, v.shrapnel_range); io(ar, v.shrapnel_verses);   // v25: W6-04-02
     io(ar, v.min_range);   // v25: W6-04-22
     io(ar, v.never_use);   // v35: W7-01-01
+    io(ar, v.drain_weapon);   // v48: Rallypoint Floating Disc DrainWeapon=
 }
 // G16 world depth (agent G)
 template <class Ar> void fields(Ar& ar, World::DepthRules& v) {
@@ -668,6 +699,7 @@ template <class Ar> void fields(Ar& ar, UnitVet& v) {
     io(ar, v.killed_by);
     io(ar, v.credited);
     io(ar, v.cost);
+    io(ar, v.soylent);   // v51: Grinder Soylent
     io(ar, v.trainable);
     io(ar, v.dont_score);
     io(ar, v.self_healing);
@@ -792,6 +824,11 @@ template <class Ar> void fields(Ar& ar, AbilityRules& v) {
     io(ar, v.ivan_damage);
     io(ar, v.ivan_timed_delay);
     io(ar, v.ivan_warhead);
+    io(ar, v.mag_cruise_height);              // Rallypoint: Magnetron
+    io(ar, v.mag_climb);
+    io(ar, v.mag_falling_damage_milli);
+    io(ar, v.mag_current_strength_damage);
+    io(ar, v.crush_warhead);                  // v63: CrushWarhead (Magnetron drop)
 }
 template <class Ar> void fields(Ar& ar, RadSite& v) {
     io(ar, v.cx); io(ar, v.cy);
@@ -840,6 +877,7 @@ template <class Ar> void fields(Ar& ar, UnitTgt& v) {
     // w7fix-combat (save v35): the mission model
     io(ar, v.mission); io(ar, v.scan_timer); io(ar, v.opportunity); io(ar, v.overridden);
     io(ar, v.resume_x); io(ar, v.resume_y); io(ar, v.resume_area_guard); io(ar, v.home_x); io(ar, v.home_y);
+    io(ar, v.archive_self);   // Rallypoint 0057 (save v59)
     io(ar, v.amove_x); io(ar, v.amove_y); io(ar, v.help_frame); io(ar, v.team_aggressive); io(ar, v.team_suicide); io(ar, v.crush_warn);
     io(ar, v.w7_rof); io(ar, v.rof_raw); io(ar, v.house_rof); io(ar, v.house_fp); io(ar, v.rof_vet);
 }
@@ -847,14 +885,16 @@ template <class Ar> void fields(Ar& ar, UnitTgt& v) {
 template <class Ar> void fields(Ar& ar, UnitTypeW7& v) {
     io(ar, v.agent); io(ar, v.infiltrate); io(ar, v.engineer); io(ar, v.perma_disguise);
     io(ar, v.detect_disguise); io(ar, v.selectable_combatant); io(ar, v.move_to_shroud);
-    io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
-    io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mc_capacity); io(ar, v.mc_infinite);
+    io(ar, v.default_to_guard_area); io(ar, v.has_turret); io(ar, v.turret_spins); io(ar, v.fake_blink); io(ar, v.fake_blink_elite);
+    io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mind_control);
+    io(ar, v.mc_capacity); io(ar, v.mc_infinite);
     io(ar, v.build_time_mult);
 }
 template <class Ar> void fields(Ar& ar, UnitW7& v) {
     io(ar, v.t); io(ar, v.blink_left); io(ar, v.redisguise_left); io(ar, v.flash_seen); io(ar, v.hull_aiming);
     io(ar, v.paralysed_until); io(ar, v.host_raw_hit); io(ar, v.deploy_ready_at); io(ar, v.undeploy_at); io(ar, v.erased_by);
     io(ar, v.depot_target); io(ar, v.mc_controller); io(ar, v.mc_victims); io(ar, v.mc_shot);
+    io(ar, v.mc_orig_house);   // v48: skirmish/MP mind-control original house
 }
 template <class Ar> void fields(Ar& ar, BldW7& v) {
     io(ar, v.depot_next); io(ar, v.depot_client); io(ar, v.warp_unpowered); io(ar, v.garrison_target_building);
@@ -944,6 +984,7 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
     io(ar, v.turret);
     io(ar, v.speed_cps);
     io(ar, v.speed_type);   // v20: W5-B
+    io(ar, v.weight_milli);   // Rallypoint: Magnetron Weight=
     io(ar, v.auto_crush);
     io(ar, v.is_infantry);
     io(ar, v.land_speed_loco);
@@ -965,6 +1006,7 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
     io(ar, v.sight);
     // P5
     io(ar, v.cost);
+    io(ar, v.soylent);   // v51: Grinder Soylent
     io(ar, v.trainable);
     io(ar, v.dont_score);
     io(ar, v.self_healing);
@@ -1000,6 +1042,9 @@ template <class Ar> void fields(Ar& ar, UnitCombat& v) {
     io(ar, v.tg);   // W6 fix #2 (save v29)
     io(ar, v.loco);   // W7 locomotion (save v35)
     io(ar, v.w7);   // v35: wave-7 fix (units)
+    io(ar, v.gatt);                 // Rallypoint: IsGattling
+    io(ar, v.gatt_weapons);
+    io(ar, v.gatt_weapons_elite);
 }
 template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
     io(ar, v.id);
@@ -1014,6 +1059,11 @@ template <class Ar> void fields(Ar& ar, UnitTypeDef& v) {
     io(ar, v.aircraft);
     io(ar, v.harvester);
     io(ar, v.storage);
+    io(ar, v.enslaves);            // Rallypoint: SMIN Enslaves=
+    io(ar, v.slaves_number);
+    io(ar, v.slave_regen_rate);
+    io(ar, v.slave_reload_rate);
+    io(ar, v.slave_storage);
     io(ar, v.w5);   // wave-5 stolen tech (agent C)
 }
 // W9-05: never saved (re-installed by the host after a load) -- only hashed,
@@ -1044,10 +1094,14 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
     io(ar, v.id);
     io(ar, v.fw); io(ar, v.fh);
     io(ar, v.strength);
+    io(ar, v.build_limit);   // v64: BuildLimit=
+    io(ar, v.mc_capacity); io(ar, v.mc_infinite);   // v65: Psychic Tower
     io(ar, v.armor_ix);
     io(ar, v.cost);
     io(ar, v.charge);
     io(ar, v.power);
+    io(ar, v.drainable);              // v48: Rallypoint Floating Disc
+    io(ar, v.resource_destination);   // v48: Rallypoint Floating Disc
     io(ar, v.adjacent);
     io(ar, v.tech_level);
     io(ar, v.conyard);
@@ -1066,6 +1120,11 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
     io(ar, v.crewed);
     io(ar, v.deploy_facing);   // gF
     io(ar, v.ore_purifier);   // gap owner A (G-27)
+    io(ar, v.enslaves);           // Rallypoint: Slave Miner
+    io(ar, v.slaves_number);
+    io(ar, v.slave_regen_rate);
+    io(ar, v.slave_reload_rate);
+    io(ar, v.slave_storage);
     io(ar, v.capturable);     // W2-SK-12 (v13)
     io(ar, v.spyable);        // W2-SK-20 (v13)
     io(ar, v.unit_repair);    // W2-SK-19 (v13)
@@ -1081,11 +1140,18 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
     io(ar, v.can_be_occupied);   // G16
     io(ar, v.can_occupy_fire);
     io(ar, v.max_occupants);
+    io(ar, v.grinding);          // v51: Yuri Grinder
+    io(ar, v.infantry_absorb);   // v51: Yuri Bio Reactor
+    io(ar, v.extra_power);
+    io(ar, v.passengers);
     io(ar, v.bridge_repair_hut);
     io(ar, v.w5);   // wave-5 abilities (agent C)
     io(ar, v.wall);            // W6-03-01 (v25)
     io(ar, v.insignificant);   // W6-03-01 (v25)
     io(ar, v.w6);   // v25: W6-04-04 wall damage levels
+    io(ar, v.gatt);                 // Rallypoint: IsGattling
+    io(ar, v.gatt_weapons);
+    io(ar, v.gatt_weapons_elite);
 }
 
 // --- the live objects ---
@@ -1109,6 +1175,8 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
     io(ar, v.w_percent_at_max);
     io(ar, v.w_affects_allies);   // v20: W5-B
     io(ar, v.w_mind_control);     // v24: campaign mind-control shot (re-armed each frame)
+    io(ar, v.w_drain_weapon);     // v48: Rallypoint Floating Disc DrainWeapon
+    io(ar, v.drain_target);       // v63: DrainTarget (was v48 drain_frames)
     io(ar, v.spot);
     io(ar, v.sub_x);
     io(ar, v.sub_y);
@@ -1132,8 +1200,10 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
     io(ar, v.is_vehicle);
     io(ar, v.body_facing);
     io(ar, v.turret_facing);
+    io(ar, v.turret_idle_frames);   // v63: turret home delay (FUN_00736990)
     io(ar, v.rot_u16_per_sec);
     io(ar, v.speed_cps);
+    io(ar, v.weight_milli);   // Rallypoint: Magnetron Weight=
     // economy
     io(ar, v.is_harvester);
     io(ar, v.chrono_miner);
@@ -1147,6 +1217,18 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
     io(ar, v.manual_hold);
     io(ar, v.harv_skip_x);   // W2-SK-04 (v13)
     io(ar, v.harv_skip_y);
+    io(ar, v.is_slave);       // Rallypoint: Slave Miner
+    io(ar, v.slave_master);
+    io(ar, v.slave_master_is_unit);
+    io(ar, v.slave);
+    io(ar, v.is_slave_master);
+    io(ar, v.slaves_number);
+    io(ar, v.slave_regen_rate);
+    io(ar, v.slave_reload_rate);
+    io(ar, v.slave_worker_storage);
+    io(ar, v.slave_spawn_frames);
+    io(ar, v.slave_needs_regen);
+    io(ar, v.slave_guard_frames);  // v58: AI scoot KickFrameDelay
     // cargo
     io(ar, v.passengers_max);
     io(ar, v.size_limit);
@@ -1201,6 +1283,9 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
     io(ar, v.last_hp);
     io(ar, v.temporal_target);
     io(ar, v.temporal_target_building);
+    io(ar, v.magnet_victim);     // Rallypoint: Magnetron MagBeam
+    io(ar, v.magnet_holder);
+    io(ar, v.magnet_drop_bld);
     io(ar, v.warp_remaining);
     io(ar, v.bomb_frame);
     io(ar, v.bomb_owner);
@@ -1218,6 +1303,10 @@ template <class Ar> void fields(Ar& ar, Unit& v) {
     io(ar, v.p_proj_elite_set);
     io(ar, v.w_active);
     io(ar, v.w_aa); io(ar, v.w_ag);
+    io(ar, v.gatt);                 // Rallypoint: IsGattling
+    io(ar, v.gatt_weapons);
+    io(ar, v.gatt_weapons_elite);
+    io(ar, v.gatt_timer);
     io(ar, v.deploy_fire);
     io(ar, v.deploy_fire_slot);
     io(ar, v.crusher);
@@ -1272,6 +1361,10 @@ template <class Ar> void fields(Ar& ar, Building& v) {
     io(ar, v.has_rally);
     io(ar, v.grants_superweapon);
     io(ar, v.being_repaired);
+    io(ar, v.slave_spawn_frames);   // Rallypoint: Slave Miner
+    io(ar, v.slave_needs_regen);
+    io(ar, v.slave_guard_frames);   // v58: AI scoot KickFrameDelay
+    io(ar, v.drained_by);           // v63: DrainingMe
     io(ar, v.selling);
     io(ar, v.sell_time);
     io(ar, v.sold);
@@ -1296,6 +1389,8 @@ template <class Ar> void fields(Ar& ar, Building& v) {
     io(ar, v.def_slot);
     io(ar, v.def_fire_flash);
     io(ar, v.def_offline);
+    io(ar, v.gatt_timer);   // Rallypoint: IsGattling
+    io(ar, v.mc_victims);   // v65: Psychic Tower
     // G16 garrison
     io(ar, v.occupants);
     io(ar, v.firing_occupant);
@@ -1480,10 +1575,13 @@ template <class Ar> void fields(Ar& ar, AiTeamConfig& v) {
     io(ar, v.building_type_roster);
     io(ar, v.building_class);
     io(ar, v.harvesters_per_refinery);
+    io(ar, v.ai_slave_miner_number);  // v58: AISlaveMinerNumber
     io(ar, v.rules);
     io(ar, v.triggers_enabled);
     io(ar, v.trigger_side);
     io(ar, v.trigger_tech_level);
+    io(ar, v.use_min_defense_rule);   // v56: UseMinDefenseRule / MinimumAIDefensiveTeams
+    io(ar, v.min_defense_teams);
 }
 template <class Ar> void fields(Ar& ar, AiHouseConfig& v) {
     io(ar, v.difficulty);
@@ -1503,6 +1601,7 @@ template <class Ar> void fields(Ar& ar, AiHouseConfig& v) {
     io(ar, v.hate_delay_frames);  // W6-03-04 (v25)
     io(ar, v.auto_deploy_frames); // W7-01-08 (v35)
     io(ar, v.roster_to_protect);  // W7-04-18 (v35)
+    io(ar, v.ai_boost);           // [RP-AI-BOOST] (v56)
 }
 
 // --- skirmish config (the 'CONF' section: rebuilds the scene's assets) ---
@@ -1531,6 +1630,10 @@ template <class Ar> void fields(Ar& ar, SkirmishConfig& v) {
     io(ar, v.mode_rules);            // W9-03-04 game type rules overlay (v47)
     io(ar, v.build_off_ally);        // W9-05-09 (v46)
     io(ar, v.mp_mode);               // W9-05-03 (v46)
+    io(ar, v.allies_allowed);        // Rallypoint --launch AlliesAllowed= (v53)
+    io(ar, v.auto_repair);           // Rallypoint --launch AutoRepair= (v54)
+    io(ar, v.crate_minimum);         // Rallypoint --launch CrateMinimum= (v54)
+    io(ar, v.ai_boost);              // [RP-AI-BOOST] AIBoost= (v56)
 }
 
 // --- P10 campaign runtime state (the 'HOST' section of a campaign save) ---

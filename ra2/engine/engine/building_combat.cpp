@@ -9,6 +9,7 @@
 #include "combat.hpp"      // deliver_hit_from, apply_spread_damage, damage_vs
 #include "production.hpp"  // power_totals
 #include "weapon_unit.hpp"
+#include "gattling.hpp"
 #include "world.hpp"
 
 namespace ra2engine {
@@ -32,6 +33,18 @@ bool World::defense_power_ok(int house) const {
     // output/drain ratio (FUN_004fcc50) < 1.0 -> not operational. Same
     // predicate as A's house_low_power (blackout included).
     return !house_low_power(house);
+}
+
+// Rallypoint: stage WeaponX for IsGattling (timer already ticked this frame).
+const WeaponSlot& gattling_defense_weapon(const BuildingTypeDef& t, const Building& b, int slot,
+                                          bool air) {
+    if (t.gatt.enabled && t.gatt.weapon_stages > 0) {
+        const int stage = gattling_stage(b.gatt_timer, t.gatt, false);
+        const WeaponSlot& gw = gattling_pick(t.gatt_weapons, t.gatt_weapons_elite,
+                                            gattling_weapon_index(stage, air), false);
+        if (gw.valid) return gw;
+    }
+    return t.weapon[slot];
 }
 
 Unit World::defense_shooter(int b_idx, int slot) const {
@@ -222,6 +235,11 @@ void World::step_building_combat(double dt) {
             }
         }
         if (b.def_rearm_frames > 0) --b.def_rearm_frames;   // Net L0: whole frames
+        // Rallypoint: IsGattling — one tick per frame (engage if a target held).
+        if (t.gatt.enabled) {
+            const bool eng = b.def_target >= 0 || b.w6.def_target_building >= 0;
+            b.gatt_timer = gattling_tick(b.gatt_timer, eng, t.gatt);
+        }
 
         const double cx = bcenter_x(b), cy = bcenter_y(b);
         auto slot_for = [&](const Unit& v) {
@@ -233,6 +251,13 @@ void World::step_building_combat(double dt) {
             // airborne Kirov; the forced index skipped the test and they shot
             // airships down.
             const bool air = unit_airborne(v);
+            if (t.gatt.enabled) {
+                const int stage = gattling_stage(b.gatt_timer, t.gatt, false);
+                const WeaponSlot& gw =
+                    gattling_pick(t.gatt_weapons, t.gatt_weapons_elite,
+                                  gattling_weapon_index(stage, air), false);
+                return (gw.valid && slot_can_target(gw, air, v.armor_ix)) ? 0 : -1;
+            }
             if (w5_.armed && t.w5.prism)   // PrismSupport is the beam, not a gun
                 return slot_can_target(t.weapon[0], air, v.armor_ix) ? 0 : -1;
             // Wave-5 (R-045) [TechnoClass::SelectWeapon FUN_006F2890]: an
@@ -252,7 +277,7 @@ void World::step_building_combat(double dt) {
         int bx = 0, by = 0, bz = 0;
         building_aim_lept(b, cell_level(b.cx, b.cy), bx, by, bz);
         auto in_range = [&](const Unit& v, int slot) {
-            const WeaponSlot& ws = t.weapon[slot];
+            const WeaponSlot& ws = gattling_defense_weapon(t, b, slot, unit_airborne(v));
             // W9-02-07: ONE scratch shooter, reused (a default Unit was
             // constructed + destroyed per candidate unit per defence per
             // frame); only w_range / w_proj are ever set on it, the rest stays
@@ -272,6 +297,7 @@ void World::step_building_combat(double dt) {
             const Unit& v = units_[j];
             if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0) return false;
             if (!is_enemy(b.house, v.house) || disguise_fools(b.house, v)) return false;   // W7-01-02
+            if (t.mc_capacity > 0 && !tower_mc_ok(bi, j)) return false;   // Psychic Tower: only what it can take
             // W2-AN-13/14: base defenses are NavalTargeting=0 (UNDERWATER_NEVER).
             if (v.an.submerged) return false;
             if (rocket_on_launcher(v)) return false;   // W4: not yet in the air
@@ -438,20 +464,40 @@ void World::step_building_combat(double dt) {
             b.w5.prism_stage = 1;
             continue;
         }
-        const WeaponSlot& w = t.weapon[slot];
+        const Unit& tv = units_[b.def_target];
+        const WeaponSlot& w = gattling_defense_weapon(t, b, slot, unit_airborne(tv));
         // W6-02-03 [RE: Building vtbl 0x7E2EBC +0x318 = GetROF FUN_006FC460]: the owner's
         // handicap ROF multiplies a defence rearm too.
         b.def_rearm_frames = burst_rearm_frames(b.w6.burst_index, w.burst, house_rof_frames(b.house, w.rof), &combat_rng_);   // G-50 jitter, W6-04-01 Burst
         b.def_fire_flash = kFireFlashSecs;
         b.def_slot = slot;
         fire_events_.push_back({-1, bi, b.def_target, -1, slot, w.id});
+        if (t.mc_capacity > 0) {   // Psychic Tower: the Controller shot takes control, no damage
+            tower_capture(bi, b.def_target);
+            b.def_target = -1;
+            continue;
+        }
         if (projectiles_enabled_ && w.proj.flies()) {
             launch_defense_projectile(bi, b.def_target, slot);
             continue;
         }
-        const Unit shooter = defense_shooter(bi, slot);
+        Unit shooter = defense_shooter(bi, slot);
+        // Rallypoint: IsGattling stage stats override the type's Primary slot.
+        if (t.gatt.enabled && w.valid) {
+            shooter.w_damage = w.damage;
+            shooter.w_rof = w.rof;
+            shooter.w_range = w.range;
+            shooter.w_verses = w.verses;
+            shooter.w_cell_spread = w.cell_spread;
+            shooter.w_percent_at_max = w.percent_at_max;
+            shooter.w_affects_allies = w.affects_allies;
+            shooter.w_proj = w.proj;
+            shooter.w_aa = w.aa;
+            shooter.w_ag = w.ag;
+            shooter.w6.burst = w.burst;
+            shooter.w6.wall_flags = w.wall_flags;
+        }
         // W5-B R-060 [RE: DamageArea FUN_00489190]: detonate at the target.
-        const Unit& tv = units_[b.def_target];
         damage_area(*this, units_, buildings_, occ_, shooter, -1, bi, unit_lept_x(tv),
                     unit_lept_y(tv), unit_lept_z(tv));
     }

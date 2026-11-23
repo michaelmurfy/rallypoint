@@ -1,0 +1,3 @@
+/home/mmurphy/projects/rallypoint/ra2/build-mingw/_deps/sdl2-subbuild/CMakeFiles/sdl2-populate.dir
+/home/mmurphy/projects/rallypoint/ra2/build-mingw/_deps/sdl2-subbuild/CMakeFiles/edit_cache.dir
+/home/mmurphy/projects/rallypoint/ra2/build-mingw/_deps/sdl2-subbuild/CMakeFiles/rebuild_cache.dir
