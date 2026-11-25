@@ -55,7 +55,8 @@ fn spawn_relay_full(serials: &str, open: bool) -> (String, Arc<AtomicBool>, Key,
 
 fn wait(a: &Agent, want: impl Fn(Status) -> bool) -> Status {
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(5) {
+    // Returns as soon as `want` holds; the long limit is for a busy CI runner, where a lost handshake waits for a resend.
+    while t.elapsed() < Duration::from_secs(15) {
         if want(a.status()) {
             break;
         }
@@ -227,7 +228,8 @@ fn the_tunnel_carries_game_packets_and_nothing_else() {
         Status::Connected(v) => v,
         s => panic!("{s:?}"),
     };
-    wait(&a, |s| matches!(s, Status::Connected(_)));
+    // a's sends are dropped until it is connected too, which once failed this test on Windows with no clue why
+    assert!(matches!(wait(&a, |s| matches!(s, Status::Connected(_))), Status::Connected(_)), "a never connected");
     let (a_game, b_game) = (engine_socket(&a, 8088), engine_socket(&b, 8088));
     std::thread::sleep(Duration::from_millis(200));
     let send = |payload: Vec<u8>, src: u16, dst: u16| a_game.send_to(&Packet::Data { vip: vb, src_port: src, dst_port: dst, payload }.encode(), a.local).unwrap();

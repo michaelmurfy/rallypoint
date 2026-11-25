@@ -320,8 +320,7 @@ jobs:
         run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
       - if: env.BUILD == '1'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libx11-dev libvulkan-dev libasound2-dev libfreetype6-dev fonts-dejavu-core
+          sh scripts/ci-apt.sh clang cmake ninja-build pkg-config libx11-dev libvulkan-dev libasound2-dev libfreetype6-dev fonts-dejavu-core
           sh patches/apply.sh
       - name: Configure and build
         if: env.BUILD == '1'
@@ -373,18 +372,32 @@ jobs:
         run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
       - if: env.BUILD == '1'
         run: |
-          sudo apt-get update
           # SDL is built from the vendored tarball; these are the backends it compiles in (loaded at run time).
-          sudo apt-get install -y clang cmake ninja-build python3 libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+          sh scripts/ci-apt.sh ccache clang cmake ninja-build python3 libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxi-dev libxss-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
             libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libgl1-mesa-dev libegl1-mesa-dev
           sh ra2/patches/apply.sh
+      # The compiler cache CI's ra2-engine job saves on main: same compiler, flags and paths, so a release only compiles
+      # what changed since the last merge. Never saved here (main's CI owns it).
+      - if: env.BUILD == '1'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ra2-ccache-linux-${{ github.sha }}
+          restore-keys: ra2-ccache-linux-
       - name: Configure, build and test
         if: env.BUILD == '1'
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build ra2/build
-          ra2/build/ra2assets_tests
+          ccache -s
+          ra2/build/ra2assets_tests 2>&1 | tee test.log
+      - if: failure()
+        run: sh scripts/ci-test-report.sh test.log
       - name: Collect
         if: env.BUILD == '1'
         run: |
@@ -425,15 +438,29 @@ jobs:
         run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
       - if: env.BUILD == '1'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3 mingw-w64 wine64
+          sh scripts/ci-apt.sh ccache cmake ninja-build python3 mingw-w64 wine wine64
           sh ra2/patches/apply.sh
+      # The compiler cache CI's ra2-engine job saves on main: same compiler, flags and paths, so a release only compiles
+      # what changed since the last merge. Never saved here (main's CI owns it).
+      - if: env.BUILD == '1'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ra2-ccache-windows-mingw-${{ github.sha }}
+          restore-keys: ra2-ccache-windows-mingw-
       - name: Configure, build and test
         if: env.BUILD == '1'
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/ra2/mingw-w64-x86_64.cmake"
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$PWD/ra2/mingw-w64-x86_64.cmake" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build ra2/build
-          WINEDEBUG=-all wine ra2/build/ra2assets_tests.exe
+          ccache -s
+          WINEDEBUG=-all wine ra2/build/ra2assets_tests.exe 2>&1 | tee test.log
+      - if: failure()
+        run: sh scripts/ci-test-report.sh test.log
       - name: Collect
         if: env.BUILD == '1'
         run: |
@@ -474,14 +501,29 @@ jobs:
         run: rm -rf out && echo "BUILD=1" >> "$GITHUB_ENV"
       - if: env.BUILD == '1'
         run: |
-          brew install ninja
+          brew install ninja ccache
           sh ra2/patches/apply.sh
+      # The compiler cache CI's ra2-engine job saves on main: same compiler, flags and paths, so a release only compiles
+      # what changed since the last merge. Never saved here (main's CI owns it).
+      - if: env.BUILD == '1'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ccache
+          key: ra2-ccache-macos-${{ github.sha }}
+          restore-keys: ra2-ccache-macos-
       - name: Configure, build and test
         if: env.BUILD == '1'
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake -S ra2/engine -B ra2/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build ra2/build
-          ra2/build/ra2assets_tests
+          ccache -s
+          ra2/build/ra2assets_tests 2>&1 | tee test.log
+      - if: failure()
+        run: sh scripts/ci-test-report.sh test.log
       - name: Collect (ad-hoc signed)
         if: env.BUILD == '1'
         run: |
@@ -546,8 +588,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           chmod 755 launcher/src-tauri/engine/generalszh
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sh scripts/ci-apt.sh libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Only main saves: nothing else can read a cache a tag saved, and each release was uploading about 1 GB of them.
@@ -634,6 +675,7 @@ jobs:
   server:
     name: Relay server
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write # push the image to GHCR
@@ -702,6 +744,7 @@ jobs:
           - { os: macos-15, name: macos-arm64 }
           - { os: windows-latest, name: windows-x86_64 }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -737,6 +780,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [launcher, server, server-desktop]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write # create the release
     steps:
