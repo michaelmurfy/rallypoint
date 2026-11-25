@@ -611,7 +611,7 @@ two-house World).
 | `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
 | `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | ~~S each~~ done (0249; radar event type 5 inferred, not binary-recovered) |
 | `Immune=yes` | `CABHUT` | take no damage | ~~S~~ done (0246) |
-| `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
+| `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | ~~S, cosmetic~~ `Selectable` done (0257); `Repairable`/`TogglePower` open (need binary confirmation of what they gate beyond ClickRepairable) |
 | `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
 
 Real-data suite (`RA2_INSTALL_DIR=/home/mmurphy/rp-steam/game/RA2 ra2assets_tests`): 1284 cases, 0 skipped, all
