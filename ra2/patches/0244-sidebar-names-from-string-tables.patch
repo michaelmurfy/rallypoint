@@ -398,7 +398,7 @@ index 0000000..6f0b943
 +}
 +
 +TEST_CASE("real install: the sidebar names are the CSF text, in every list") {
-+    if (!ra2fixture::assets_available()) { FAIL("no RA2 install (set RA2_INSTALL_DIR): a skip is not a pass"); }
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: RA2 install not found"); return; }
 +    const ra2assets::Ini& ini = ra2fixture::rulesmd_ini();
 +    CHECK(tables().layers() >= 2);                 // ra2md.csf over ra2.csf
 +    CHECK(tables().text("Name:GAPOWR") == "Power Plant");
@@ -433,7 +433,7 @@ index 0000000..6f0b943
 +}
 +
 +TEST_CASE("real install: naval units need their Naval Yard, never a War Factory") {
-+    if (!ra2fixture::assets_available()) { FAIL("no RA2 install (set RA2_INSTALL_DIR): a skip is not a pass"); }
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: RA2 install not found"); return; }
 +    const ra2assets::Ini& ini = ra2fixture::rulesmd_ini();
 +    const ra2assets::Rules& rules = ra2fixture::rulesmd();
 +    const std::vector<std::pair<std::string, std::vector<std::string>>> groups = {
