@@ -1,0 +1,226 @@
+RevealToAll= and RadarVisible= building keys (tech + superweapon buildings).
+
+BuildingTypeDef gains RevealToAll= (the six superweapon buildings GACSPH,
+GAWEAT, NAIRON, NAMISL, YAGNTC, YAPPET + the GADUMY dummy: when built -- first
+Idle = grand opening -- or captured, a radar event is generated, type 5 Enemy
+Object Sensed, so every house's radar pings through shroud; the Granted EVA
+already names enemy SW buildings) and RadarVisible= (the eight tech buildings
+CAOUTP/CAAIRP/CAOILD/CAPOWR/CAMACH/CATHOSP/CAHOSP/CASLAB: drawn on the radar
+even when no foundation cell is explored, i.e. unowned/insignificant shroud).
+Resolved in the roster loader and the campaign roster copy. World exposes
+building_reveal_to_all / building_radar_visible (false for invalid indices
+and untyped test buildings), honoured by the presentation building loop
+(first-sighting/capture edges, pre-placed map buildings stay silent) and the
+radar footprint pass. Save format 71. Tests in test_gap_combat.cpp: World
+queries follow the flags (synthetic roster) and the real rulesmd pins all
+seven RevealToAll + all eight RadarVisible sections.
+
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -127,6 +127,12 @@ struct BuildingTypeDef {
+     bool wall = false;              // Wall=
+     bool insignificant = false;     // Insignificant=
+     bool immune = false;            // Immune= (e.g. CABHUT takes no damage)
++    // RevealToAll= (the six superweapon buildings + GADUMY): built or captured
++    // -> a radar event for every house (seen through shroud).
++    bool reveal_to_all = false;
++    // RadarVisible= (eight tech buildings): on the radar even if insignificant
++    // and unowned (neutral buildings under shroud).
++    bool radar_visible = false;
+     BldTypeW5 w5;                   // wave-5 abilities (abil_w5.hpp)
+     BldTypeW6 w6;                   // wave-6 #4 (unit_w6.hpp): wall damage levels
+     // Rallypoint: IsGattling (GTGCAN). Inert unless enabled.
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2917,6 +2917,8 @@
+         d.wall             = rules.section_flag(id, "Wall", false);            // W6-03-01
+         d.insignificant    = rules.section_flag(id, "Insignificant", false);   // W6-03-01
+         d.immune           = rules.section_flag(id, "Immune", false);          // Immune= (CABHUT takes no damage)
++        d.reveal_to_all    = rules.section_flag(id, "RevealToAll", false);     // built/captured -> radar event, every house
++        d.radar_visible    = rules.section_flag(id, "RadarVisible", false);    // tech buildings on the radar under shroud
+         // W2-SK-12/19/20: Capturable= / Spyable= / UnitRepair= (absent = no in
+         // rulesmd: GAPILL/TESLA/ATESLA/NAMISL/GACSPH/GAGAP say false, walls say
+         // nothing) and the factory category a spy's veterancy bonus follows.
+--- a/engine/campaign_runtime.inc
++++ b/engine/campaign_runtime.inc
+@@ -250,6 +250,8 @@
+         d.capturable = rules_.section_flag(id, "Capturable", false);
+         d.spyable = rules_.section_flag(id, "Spyable", false);
+         d.unit_repair = rules_.section_flag(id, "UnitRepair", false);
++        d.reveal_to_all = rules_.section_flag(id, "RevealToAll", false);
++        d.radar_visible = rules_.section_flag(id, "RadarVisible", false);
+         d.crewed = rules_.section_flag(id, "Crewed", false);
+         // W3-FIX-A: the MAP's theater (was hard-coded TEMPERATE -- snow missions
+         // drew summer art) over the global MIX search list (isogen.mix holds
+--- a/engine/world_depth.inc
++++ b/engine/world_depth.inc
+@@ -122,5 +122,7 @@
+     // W2-SK-12/19/20: the same Capturable/Spyable/UnitRepair flags as the roster.
+     d.capturable = rules.section_flag(id, "Capturable", false);
+     d.spyable = rules.section_flag(id, "Spyable", false);
+     d.unit_repair = rules.section_flag(id, "UnitRepair", false);
++    d.reveal_to_all = rules.section_flag(id, "RevealToAll", false);
++    d.radar_visible = rules.section_flag(id, "RadarVisible", false);
+     BuildingArt slot;
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1158,6 +1158,8 @@
+     io(ar, v.wall);            // W6-03-01 (v25)
+     io(ar, v.insignificant);   // W6-03-01 (v25)
+     io(ar, v.immune);          // Immune= (v69)
++    io(ar, v.reveal_to_all);   // RevealToAll= (v71)
++    io(ar, v.radar_visible);   // RadarVisible= (v71)
+     io(ar, v.w6);   // v25: W6-04-04 wall damage levels
+     io(ar, v.gatt);                 // Rallypoint: IsGattling
+     io(ar, v.gatt_weapons);
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 70;   // 70: CloakingSpeed= (AnType::cloak_fade_frames, AnUnit::cloak_left_frames) on top of 69: Immune= (BuildingTypeDef::immune) on top of 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 71;   // 71: RevealToAll=/RadarVisible= (BuildingTypeDef::reveal_to_all/radar_visible) on top of 70: CloakingSpeed= (AnType::cloak_fade_frames, AnUnit::cloak_left_frames) on top of 69: Immune= (BuildingTypeDef::immune) on top of 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -1958,6 +1958,24 @@
+         // A bridge repair hut is "entered", not captured (world-depth.md §B4).
+         return btypes()[(std::size_t)t].capturable || btypes()[(std::size_t)t].bridge_repair_hut;
+     }
++    // RevealToAll= / RadarVisible= (superweapon + tech buildings). A RevealToAll
++    // building built (first Idle = grand opening) or captured pings every
++    // house's radar (presentation type 5); a RadarVisible building is drawn on
++    // the radar even with no explored foundation cell. False for invalid
++    // indices and untyped test buildings (no flag set). Public so the
++    // presentation halves (pres_audio_events.inc / pres_radar.inc) honour them.
++    bool building_reveal_to_all(int b_idx) const {
++        if (b_idx < 0 || b_idx >= (int)buildings_.size()) return false;
++        const int t = buildings_[(std::size_t)b_idx].type;
++        if (t < 0 || t >= (int)btypes().size()) return false;
++        return btypes()[(std::size_t)t].reveal_to_all;
++    }
++    bool building_radar_visible(int b_idx) const {
++        if (b_idx < 0 || b_idx >= (int)buildings_.size()) return false;
++        const int t = buildings_[(std::size_t)b_idx].type;
++        if (t < 0 || t >= (int)btypes().size()) return false;
++        return btypes()[(std::size_t)t].radar_visible;
++    }
+ 
+     // --- Projectile phase (P2) [RE: projectile.md] -------------------------
+     // ALL inert by default. projectiles_enabled_ is opened ONLY by
+--- a/engine/pres_audio_events.inc
++++ b/engine/pres_audio_events.inc
+@@ -499,6 +499,21 @@
+             const ra2engine::BuildingTypeDef* t =
+                 (ba.ok && b.type >= 0 && b.type < static_cast<int>(ba.roster.size())) ? &ba.roster[static_cast<std::size_t>(b.type)]
+                                                                                        : nullptr;
++            // RevealToAll= [RE: rulesmd "when built or captured, a radar event
++            // is generated"]: type 5 (Enemy Object Sensed) pings every house's
++            // radar through shroud. Built = first Idle (the grand opening);
++            // pre-placed map buildings stay silent (w5_b_live_).
++            if (!dead && w.building_reveal_to_all(static_cast<int>(i))) {
++                if (b.state == ra2engine::Building::State::Idle && !p.reveal_pinged) {
++                    if (w5_b_live_) radar_event(5, cx, cy);
++                    p.reveal_pinged = true;
++                } else if (p.seen && b.house != p.house && p.house >= 0 &&
++                           !w5_garrison_flip(static_cast<int>(i))) {
++                    radar_event(5, cx, cy);
++                }
++            }
+             if (!p.seen) {
++                const bool announced = p.reveal_pinged;   // RevealToAll= built ping above runs pre-reset
+                 p = W5B{true, b.hp, b.house, b.def_turret_facing, b.being_repaired, 0, b.power_off};
++                p.reveal_pinged = announced;
+                 p.bomb = b.bomb_frame >= 0;
+@@ -565,6 +576,7 @@
+             p.hp = b.hp;
+             p.house = b.house;
+             p.turret = b.def_turret_facing;
+             p.wrench = b.being_repaired;
+         }
++        w5_b_live_ = true;   // RevealToAll=: pre-placed buildings (first tick) never ping as "built"
+         // Bridge repaired (a hut entered): fewer destroyed bridge cells.
+@@ -836,12 +848,13 @@
+     struct W5B {
+         bool seen = false;
+         int hp = 0, house = -1;
+         double turret = 0.0;
+         bool wrench = false;
+         std::uint32_t turret_loop = 0;
+         bool power_off = false;
+         bool working = false;            // W6: +0x598, the last "working" state
+         std::uint32_t work_loop = 0;     // W6: the +0x584 audio controller
+         bool bomb = false;
+         std::uint32_t bomb_loop = 0;
++        bool reveal_pinged = false;   // RevealToAll= built ping already sent (survives the first-sighting reset)
+     };
+@@ -854,4 +867,5 @@
+     bool w5_inited_ = false;
+     bool w6_live_ = false;   // W6: past the first tick (initial units are not "created")
++    bool w5_b_live_ = false;   // RevealToAll=: past the first tick (pre-placed buildings are not "built")
+     std::string w5_cheer_, w5_bld_repaired_, w5_garrisoned_, w5_crate_[7], w5_heal_crate_, w5_sinking_,
+         w5_repair_bridge_, w5_credit_up_, w5_credit_down_, w5_bunker_up_, w5_bunker_down_;
+--- a/engine/pres_radar.inc
++++ b/engine/pres_radar.inc
+@@ -121,3 +121,7 @@
+-            for (const ra2engine::Building& b : w.buildings()) {
+-                if (!b.alive || b.state == ra2engine::Building::State::Dead || !pres_building_seen(w, b)) continue;
++            for (std::size_t bi = 0; bi < w.buildings().size(); ++bi) {
++                const ra2engine::Building& b = w.buildings()[bi];
++                if (!b.alive || b.state == ra2engine::Building::State::Dead) continue;
++                // RadarVisible= (tech buildings): on the radar even when no
++                // foundation cell is explored (unowned/insignificant shroud).
++                if (!pres_building_seen(w, b) && !w.building_radar_visible((int)bi)) continue;
+                 const ra2assets::Rgba hc = w.house_palette(ba.unit_pal, b.house)[24];
+--- a/tests/test_gap_combat.cpp
++++ b/tests/test_gap_combat.cpp
+@@ -452,4 +452,46 @@
+     bool fired = false;
+     for (const auto& ev : w.take_fire_events()) fired = fired || ev.target_building == hut_b;
+     CHECK(fired);   // the gun spoke; the hut ignored it
+ }
++
++TEST_CASE("reveal/radar: World queries follow the type flags (RevealToAll=, RadarVisible=)") {
++    ra2assets::MapFile map;
++    World w(map);
++    BuildingTypeDef sw;
++    sw.id = "NAMISL";
++    sw.reveal_to_all = true;
++    BuildingTypeDef derrick;
++    derrick.id = "CAOILD";
++    derrick.radar_visible = true;
++    BuildingTypeDef pill;
++    pill.id = "GAPILL";
++    w.set_building_types({sw, derrick, pill});
++    const int a = w.add_building(0, 2, 2, 1, 1, 0, 1000, 0, 0.0, true);
++    const int b = w.add_building(1, 5, 5, 1, 1, 1, 1000, 0, 0.0, true);
++    const int c = w.add_building(2, 8, 8, 1, 1, 0, 400, 0, 0.0, true);
++    REQUIRE(a == 0);
++    REQUIRE(b == 1);
++    REQUIRE(c == 2);
++    CHECK(w.building_reveal_to_all(a));
++    CHECK_FALSE(w.building_reveal_to_all(b));
++    CHECK_FALSE(w.building_reveal_to_all(c));
++    CHECK(w.building_radar_visible(b));
++    CHECK_FALSE(w.building_radar_visible(a));
++    CHECK_FALSE(w.building_radar_visible(c));
++    CHECK_FALSE(w.building_reveal_to_all(-1));
++    CHECK_FALSE(w.building_radar_visible(99));
++    const int u = w.add_building(-1, 10, 10, 1, 1, 0, 100, 0, 0.0, true);   // untyped: no flags
++    CHECK_FALSE(w.building_reveal_to_all(u));
++    CHECK_FALSE(w.building_radar_visible(u));
++}
++
++TEST_CASE("reveal/radar: real rulesmd sets RevealToAll on the SW buildings, RadarVisible on tech") {
++    if (!ra2fixture::assets_available()) { MESSAGE("no install"); return; }
++    const ra2assets::Rules& r = ra2fixture::rulesmd();
++    for (const char* id : {"GACSPH", "GAWEAT", "NAIRON", "NAMISL", "YAGNTC", "YAPPET", "GADUMY"})
++        CHECK(r.section_flag(id, "RevealToAll", false));
++    CHECK_FALSE(r.section_flag("GAPILL", "RevealToAll", false));
++    for (const char* id : {"CAOUTP", "CAAIRP", "CAOILD", "CAPOWR", "CAMACH", "CATHOSP", "CAHOSP", "CASLAB"})
++        CHECK(r.section_flag(id, "RadarVisible", false));
++    CHECK_FALSE(r.section_flag("GAPILL", "RadarVisible", false));
++}

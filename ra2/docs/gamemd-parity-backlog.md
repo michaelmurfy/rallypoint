@@ -605,7 +605,7 @@ two-house World).
 | `CloakingSpeed=` | `SUB`, `SQD`, `DLPH`, `BSUB` | Our cloak is a state flag with no fade; the key only changes the fade length and the re-cloak step | ~~S~~ done (0247) |
 | `GateCloseDelay=` | `GAGATE_A` | Allied gate: the gate stays open this long after the mover has passed; our gate opens for allied movers on the path only | ~~S~~ done (0248, visual close timer; untraced open/close mission stays RE-FALLBACK) |
 | `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
-| `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | S each |
+| `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | ~~S each~~ done (0249; radar event type 5 inferred, not binary-recovered) |
 | `Immune=yes` | `CABHUT` | take no damage | ~~S~~ done (0246) |
 | `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
 | `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
