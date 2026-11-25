@@ -2,13 +2,15 @@
 
 # Rallypoint
 
-Play **Command & Conquer: Generals – Zero Hour** on a Mac, a Windows PC or Linux, at any resolution, and play it online with friends.
+Play **Command & Conquer: Generals – Zero Hour** and **Red Alert 2 / Yuri's Revenge** on a Mac, a Windows PC or Linux, at any resolution, and play them online with friends.
 
-You need your own copy of the game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data, and never will.
+You need your own copy of each game (for example *C&C The Ultimate Collection* on Steam). Rallypoint ships no EA game data, and never will.
 
 **Playing over the internet needs a Rallypoint server.** It's a small program that passes the game's traffic between you and your friends, and one cheap server is enough for everyone. Setting one up takes about ten minutes: see [Run a server](#run-a-server). Skirmishes, mods and maps work without one, and so does a LAN game on the same network.
 
-**Where it stands:** single player works on macOS, Windows and Linux, and online games have been played Windows against Windows, Mac against Windows, and Linux against the others. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
+**Where it stands (Red Alert 2):** skirmish, maps and online play all work, on macOS, Windows and Linux. See [Red Alert 2](#red-alert-2--yuris-revenge).
+
+**Where it stands (Zero Hour):** single player works on macOS, Windows and Linux, and online games have been played Windows against Windows, Mac against Windows, and Linux against the others. It isn't perfect. Some long games still drift out of sync, and we're hunting that down (see [Debug logs](#debug-logs)). If you hit one, your logs are how you help.
 
 ## Get started
 
@@ -61,6 +63,7 @@ The `.tar.gz` works on any other distribution too: install the same libraries un
 | Widescreen, 4K, HiDPI | ✅ | ✅ | ✅ |
 | Mods (Shockwave, Chaos, Cold War Crisis) | ✅ | ✅ | ✅ |
 | Online through the relay | ✅ | ✅ | ✅ |
+| Red Alert 2 / Yuri's Revenge (skirmish, online) | ✅ | ✅ | ✅ |
 | Packages | `.dmg` | `-setup.exe` | `.deb`, `.rpm`, `.tar.gz` |
 | Relay server | – | – | ✅ x86_64, arm64, armv7 (Debian and Ubuntu setup script) |
 
@@ -81,6 +84,21 @@ On the **Play** tab:
 - **Play** opens the full game; **Start skirmish** (in the Quick Skirmish block) starts a match straight away with the opponents (1–3) and difficulty you choose
 
 **Widescreen and HiDPI** are on by default: wide screens see more of the map instead of a zoomed-in one, and the menus, command bar and text scale together. Set `GEN_STRETCH=1` to get the original stretched look back. *Settings → Graphics* has camera distance and the community's high-quality graphics settings (your `Options.ini` is backed up first).
+
+## Red Alert 2 / Yuri's Revenge
+
+Rallypoint plays Red Alert 2 and Yuri's Revenge with its own engine, a from-scratch reimplementation studied from the original game. It reads **your** game files and ships none of them.
+
+1. Switch to Red Alert 2 with the game switcher in the sidebar. The whole launcher follows: Play, Maps, Online and Settings.
+2. Point Rallypoint at your game folder, or let it find the Steam install. It needs `ra2.mix`, `ra2md.mix`, `language.mix` and `multimd.mix`.
+3. Press **Play**. Choose Allied, Soviet, Yuri or a country, the map, your opponents and their difficulty, then start.
+
+- **Skirmish:** every start position, team and computer level, with the AI's behaviour taken from the game's own rules. A **Stronger AI** setting makes the computer sharper.
+- **Maps:** your game's maps and your own, with a preview, player count and start positions.
+- **Online:** Red Alert 2 rooms use the same encrypted relay server as Zero Hour (see [Play online](#play-online)). Players meet in the launcher's own lobby, pick sides and colours, and the host starts the game. Everyone needs the same Rallypoint version.
+- **Send a map:** see [Maps](#maps). It works for both games.
+- **Graphics:** *Settings → Graphics* has the scaling filter, sprite smoothing, a smooth wide zoom, glow, dark corners and a colour look. Every option is off by default.
+- **Fidelity:** damage, build times, ore growth, pathfinding and the menus follow the original game, checked against its rules files and its executable.
 
 ## Mods
 
@@ -103,6 +121,7 @@ The **Maps** tab has two parts.
 
 - **Get more maps:** one-click packs from [GenTool](https://www.gentool.net/download/) (all ranked maps, or the 1v1, 2v2 or 3v3 set) and the [Epic Showdown 707 pack](https://www.moddb.com/mods/cc-epic-showdown-707-mappack) (download it, then choose the file). Any other archive or folder works too.
 - **Maps:** the skirmish maps that come with the game are listed too, tagged **Official**. They differ by game: Zero Hour shows its own (and the original Generals' maps), and a mod shows the ones it ships. They can't be switched off or deleted. Search, filter by pack (tick one or several) and player count, sort, and switch maps on or off. Big packs arrive switched off so they don't bury your list. Switched-off maps move to `<app data>/GeneralsZH/MapLibrary`; nothing is deleted until you delete it. Changes apply the next time the game starts.
+- **Send to room:** every map has a **Send** button when you are connected to a room. Pick who gets it. They see who sent it and can accept, decline or block that player; nothing moves until they accept. Maps are checked before they are installed, and one with the same name as yours is saved beside it, never over it. Needs a relay server that has been updated to this release.
 - **Skirmish** (on every map in the list) opens the map with its numbered start positions. Set up the whole match: switch the game, then give each place a player (you, Easy/Medium/Brutal AI or closed), a general read from the game or mod, a team and a start position (click the map to assign one). Pick the **starting money** ($5,000 to $250,000; the game's own setting until you change it) and a game speed (50% to 200%; normal until you change it) beside the button, then press **Play skirmish**. Both only apply to skirmishes: online games use the host's money and run at the same speed for everyone.
 
 ## Play online
@@ -277,6 +296,7 @@ Engine: `sh patches/apply.sh`, then follow `engine/README.md` (macOS: `cmake --p
 - Linux is x86_64 only and new: it has had one tester on one machine, including mods and online play. There is no Flatpak yet.
 - Mods and the Epic Showdown pack are downloaded in your browser, not inside the launcher.
 - Game speed can be changed in skirmishes only, not in online games.
+- Red Alert 2: Windows and macOS builds are checked by CI and play-tested; report anything odd with the debug logs.
 - Not built yet: save and load in multiplayer, controlling allies' units, co-op, bringing an out-of-step player back mid-game.
 - The first connection to a relay trusts whoever answers (like SSH); after that its identity is checked.
 
