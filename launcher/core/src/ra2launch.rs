@@ -268,6 +268,9 @@ pub fn command(engine: &Path, game_dir: &Path, launch_file: &Path, display: &cra
     if display.world_zoom != 0 {
         c.env(crate::ra2::WORLD_ZOOM_ENV, format!("{}", display.world_zoom as f64 / 100.0));
     }
+    if let Some(g) = display.gfx.env_value() {
+        c.env(crate::ra2::GFX_ENV, g);
+    }
     c
 }
 
@@ -415,6 +418,9 @@ mod tests {
         assert!(!native_args.contains(&OsStr::new("--no-audio")), "sound is on by default");
         let quiet = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config { sound: false, ..Default::default() });
         assert!(quiet.get_args().any(|a| a == OsStr::new("--no-audio")));
+        assert!(native.get_envs().all(|(k, _)| k != OsStr::new(crate::ra2::GFX_ENV)), "default graphics send nothing");
+        let fx = command(Path::new("e"), Path::new("."), Path::new("x.ini"), &Ra2Config { gfx: crate::ra2::Ra2Gfx { bloom: 1, ..Default::default() }, ..Default::default() });
+        assert_eq!(fx.get_envs().find(|(k, _)| *k == OsStr::new(crate::ra2::GFX_ENV)).map(|(_, v)| v), Some(OsStr::new("Bloom=1").into()));
         assert!(native.get_envs().all(|(k, _)| k != OsStr::new(crate::ra2::UI_SCALE_ENV) && k != OsStr::new(crate::ra2::WORLD_ZOOM_ENV)));
     }
 

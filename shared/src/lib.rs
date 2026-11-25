@@ -90,6 +90,122 @@ pub enum Packet {
     /// The launcher's own Red Alert 2 pre-game lobby: an opaque blob. Agent -> server: `vip` ignored; the server hands it
     /// to every other player in the room with `vip` set to the sender's.
     Lobby { vip: Vip, payload: Vec<u8> },
+    /// Map sharing between the launchers of one room (see `MapMsg` and docs/send-map-threat-model.md). Agent -> server:
+    /// `vip` is the destination (all zero for `Hi`, which goes to the whole room). Server -> agent: the sender, as the server
+    /// knows it (never what the payload says); a `Caps` answer comes from the server itself, with `vip` all zero.
+    Map { vip: Vip, msg: MapMsg },
+}
+
+/// Map sharing, version 1. A transfer is one `Offer` (sender -> one player), an `Accept` from that player, `Data` chunks
+/// answered by cumulative `Ack`s, and an `End` from the receiver (or a `Cancel` from the sender). The relay checks every
+/// step (`server/src/lib.rs`), so nothing reaches a player who did not accept and nothing is stored on the relay.
+pub const MAP_PROTO: u8 = 1;
+/// The most one transfer may carry: the packed (compressed) map. The relay refuses a bigger `Offer`.
+pub const MAX_MAP_BYTES: u32 = 8 << 20;
+/// Bytes of map in one `MapMsg::Data` (the packet stays well below `MAX_WIRE`).
+pub const MAP_CHUNK: usize = 900;
+pub const MAX_MAP_NAME: usize = 120;
+pub const MAX_PEER_NAME: usize = 24;
+pub const MAP_GENERALS: u8 = 0;
+pub const MAP_RA2: u8 = 1;
+/// How an `End` ended (the receiver says; the sender shows it).
+pub mod map_end {
+    pub const DELIVERED: u8 = 0;
+    pub const DECLINED: u8 = 1;
+    /// The receiver already has this exact map.
+    pub const HAVE_IT: u8 = 2;
+    pub const BLOCKED: u8 = 3;
+    pub const BUSY: u8 = 4;
+    /// The receiver plays the other game.
+    pub const OTHER_GAME: u8 = 5;
+    /// What arrived was not a good map (hash, structure or install failed).
+    pub const BAD: u8 = 6;
+    pub const CANCELLED: u8 = 7;
+    /// Too big or not allowed.
+    pub const REFUSED: u8 = 8;
+    pub const LAST: u8 = 8;
+}
+
+/// Number of chunks a transfer of `size` bytes has.
+pub const fn map_chunks(size: u32) -> u32 {
+    size.div_ceil(MAP_CHUNK as u32)
+}
+
+/// Exact length chunk `seq` must have (every chunk is `MAP_CHUNK` bytes but the last).
+pub const fn map_chunk_len(size: u32, seq: u32) -> usize {
+    let rest = size as usize - seq as usize * MAP_CHUNK;
+    if rest > MAP_CHUNK { MAP_CHUNK } else { rest }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MapMsg {
+    /// "I am here": which game this player has selected and a name to show. Sent to the whole room every few seconds. The
+    /// server fills `master` in on the way (a client's value is ignored), the sender's address replaces `vip`.
+    Hi { game: u8, master: bool, name: String },
+    /// Server -> client only, answering the first `Hi`: this relay shares maps. An old relay never says it.
+    Caps { proto: u8, max_bytes: u32 },
+    /// Sender -> one player: "may I send you this map?" `size` is the packed size, `hash` identifies the map's content,
+    /// `players` is how many start positions it has (display only). `master` is filled in by the server.
+    Offer { id: u32, game: u8, master: bool, size: u32, players: u8, hash: [u8; 32], name: String },
+    /// Receiver -> sender: yes, send it.
+    Accept { id: u32 },
+    /// Receiver -> sender: finished, one of `map_end`. Also the way to say no.
+    End { id: u32, code: u8 },
+    /// Sender -> receiver: chunk `seq` (see `map_chunk_len`).
+    Data { id: u32, seq: u32, bytes: Vec<u8> },
+    /// Receiver -> sender: every chunk below `next` has arrived.
+    Ack { id: u32, next: u32 },
+    /// Sender -> receiver: stop.
+    Cancel { id: u32 },
+}
+
+impl MapMsg {
+    pub fn encode(&self) -> Vec<u8> {
+        let id = |n: u32| n.to_be_bytes();
+        match self {
+            MapMsg::Hi { game, master, name } => [&[1, *game, *master as u8, name.len().min(MAX_PEER_NAME) as u8][..], &name.as_bytes()[..name.len().min(MAX_PEER_NAME)]].concat(),
+            MapMsg::Caps { proto, max_bytes } => [&[2, *proto][..], &max_bytes.to_be_bytes()].concat(),
+            MapMsg::Offer { id: i, game, master, size, players, hash, name } => {
+                [&[3][..], &id(*i), &[*game, *master as u8], &size.to_be_bytes(), &[*players], hash, &[name.len().min(MAX_MAP_NAME) as u8], &name.as_bytes()[..name.len().min(MAX_MAP_NAME)]].concat()
+            }
+            MapMsg::Accept { id: i } => [&[4][..], &id(*i)].concat(),
+            MapMsg::End { id: i, code } => [&[5][..], &id(*i), &[*code]].concat(),
+            MapMsg::Data { id: i, seq, bytes } => [&[6][..], &id(*i), &seq.to_be_bytes(), bytes].concat(),
+            MapMsg::Ack { id: i, next } => [&[7][..], &id(*i), &next.to_be_bytes()].concat(),
+            MapMsg::Cancel { id: i } => [&[8][..], &id(*i)].concat(),
+        }
+    }
+
+    /// Strict: wrong lengths, unknown values and oversize fields are all `None`.
+    pub fn decode(b: &[u8]) -> Option<MapMsg> {
+        let (&kind, r) = b.split_first()?;
+        let u32_at = |r: &[u8], i: usize| -> Option<u32> { Some(u32::from_be_bytes(r.get(i..i + 4)?.try_into().ok()?)) };
+        let game_ok = |g: u8| g == MAP_GENERALS || g == MAP_RA2;
+        Some(match kind {
+            1 if r.len() >= 3 && game_ok(r[0]) && r[1] <= 1 => {
+                let (name, tail) = take_str(&r[2..], MAX_PEER_NAME)?;
+                tail.is_empty().then_some(MapMsg::Hi { game: r[0], master: r[1] != 0, name })?
+            }
+            2 if r.len() == 5 => MapMsg::Caps { proto: r[0], max_bytes: u32_at(r, 1)? },
+            3 if r.len() >= 44 && game_ok(r[4]) && r[5] <= 1 => {
+                let size = u32_at(r, 6)?;
+                if size == 0 || size > MAX_MAP_BYTES {
+                    return None;
+                }
+                let (name, tail) = take_str(&r[43..], MAX_MAP_NAME)?;
+                if !tail.is_empty() || name.is_empty() {
+                    return None;
+                }
+                MapMsg::Offer { id: u32_at(r, 0)?, game: r[4], master: r[5] != 0, size, players: r[10], hash: r[11..43].try_into().ok()?, name }
+            }
+            4 if r.len() == 4 => MapMsg::Accept { id: u32_at(r, 0)? },
+            5 if r.len() == 5 && r[4] <= map_end::LAST => MapMsg::End { id: u32_at(r, 0)?, code: r[4] },
+            6 if (9..=8 + MAP_CHUNK).contains(&r.len()) => MapMsg::Data { id: u32_at(r, 0)?, seq: u32_at(r, 4)?, bytes: r[8..].to_vec() },
+            7 if r.len() == 8 => MapMsg::Ack { id: u32_at(r, 0)?, next: u32_at(r, 4)? },
+            8 if r.len() == 4 => MapMsg::Cancel { id: u32_at(r, 0)? },
+            _ => return None,
+        })
+    }
 }
 
 /// Largest Red Alert 2 datagram relayed. The CnCNet v2 tunnel server reads into a 1024-byte buffer, 4 of which are the
@@ -190,6 +306,7 @@ impl Packet {
             Packet::Room { master, ai } => vec![19, *master as u8, *ai],
             Packet::Tunnel { vip, payload } => [&[26][..], vip, payload].concat(),
             Packet::Lobby { vip, payload } => [&[27][..], vip, payload].concat(),
+            Packet::Map { vip, msg } => [&[28][..], vip, &msg.encode()].concat(),
             Packet::Stats(s) => [
                 &[14][..],
                 &s.uptime_secs.to_be_bytes(),
@@ -268,6 +385,7 @@ impl Packet {
             19 if rest.len() == 2 && rest[1] <= MAX_AI_LEVEL => Packet::Room { master: rest[0] != 0, ai: rest[1] },
             26 if (5..=4 + MAX_TUNNEL_PAYLOAD).contains(&rest.len()) => Packet::Tunnel { vip: rest[..4].try_into().ok()?, payload: rest[4..].to_vec() },
             27 if (4..=4 + MAX_LOBBY_PAYLOAD).contains(&rest.len()) => Packet::Lobby { vip: rest[..4].try_into().ok()?, payload: rest[4..].to_vec() },
+            28 if rest.len() > 4 => Packet::Map { vip: rest[..4].try_into().ok()?, msg: MapMsg::decode(&rest[4..])? },
             14 if rest.len() >= 23 => {
                 let u32_at = |i: usize| u32::from_be_bytes(rest[i..i + 4].try_into().unwrap());
                 let u16_at = |i: usize| u16::from_be_bytes(rest[i..i + 2].try_into().unwrap());
@@ -512,6 +630,62 @@ mod tests {
         assert_eq!(Packet::decode(&[&[27, 0, 0, 0, 0][..], &[0; MAX_LOBBY_PAYLOAD + 1]].concat()), None);
         // the encrypted transport has room for the biggest of them
         assert!(Packet::Lobby { vip: [0; 4], payload: vec![0; MAX_LOBBY_PAYLOAD] }.encode().len() + 64 < MAX_WIRE);
+    }
+
+    #[test]
+    fn map_messages_roundtrip_layout_and_limits() {
+        let offer = MapMsg::Offer { id: 7, game: MAP_RA2, master: true, size: 1234, players: 4, hash: [9; 32], name: "Dune Wars".into() };
+        for m in [
+            MapMsg::Hi { game: MAP_GENERALS, master: false, name: "Sam".into() },
+            MapMsg::Caps { proto: MAP_PROTO, max_bytes: MAX_MAP_BYTES },
+            offer.clone(),
+            MapMsg::Accept { id: 7 },
+            MapMsg::End { id: 7, code: map_end::HAVE_IT },
+            MapMsg::Data { id: 7, seq: 3, bytes: vec![1; MAP_CHUNK] },
+            MapMsg::Data { id: 7, seq: 3, bytes: vec![1] },
+            MapMsg::Ack { id: 7, next: 4 },
+            MapMsg::Cancel { id: 7 },
+        ] {
+            assert_eq!(Packet::decode(&Packet::Map { vip: [10, 77, 0, 2], msg: m.clone() }.encode()), Some(Packet::Map { vip: [10, 77, 0, 2], msg: m }));
+        }
+        // golden bytes: tag 28, the address, the kind, then big-endian fields
+        assert_eq!(Packet::Map { vip: [10, 77, 0, 2], msg: MapMsg::Accept { id: 0x01020304 } }.encode(), [28, 10, 77, 0, 2, 4, 1, 2, 3, 4]);
+        assert_eq!(Packet::Map { vip: [0; 4], msg: MapMsg::Hi { game: 1, master: false, name: "Sam".into() } }.encode(), [28, 0, 0, 0, 0, 1, 1, 0, 3, b'S', b'a', b'm']);
+        assert_eq!(Packet::Map { vip: [10, 77, 0, 1], msg: MapMsg::Ack { id: 1, next: 2 } }.encode(), [28, 10, 77, 0, 1, 7, 0, 0, 0, 1, 0, 0, 0, 2]);
+        let mut o = vec![28, 10, 77, 0, 3, 3, 0, 0, 0, 7, 1, 1, 0, 0, 4, 0xD2, 4];
+        o.extend([9; 32]);
+        o.extend([9, b'D', b'u', b'n', b'e', b' ', b'W', b'a', b'r', b's']);
+        assert_eq!(Packet::Map { vip: [10, 77, 0, 3], msg: offer }.encode(), o);
+        // too long, too short, trailing bytes, unknown kinds and values are all refused
+        let dec = |m: &[u8]| Packet::decode(&[&[28, 10, 77, 0, 2][..], m].concat());
+        assert_eq!(dec(&[]), None);
+        assert_eq!(dec(&[4, 0, 0, 0]), None);
+        assert_eq!(dec(&[4, 0, 0, 0, 1, 0]), None, "Accept is exactly an id");
+        assert_eq!(dec(&[5, 0, 0, 0, 1, map_end::LAST + 1]), None, "unknown end code");
+        assert_eq!(dec(&[9, 0, 0, 0, 1]), None, "unknown kind");
+        assert_eq!(dec(&[1, 2, 0, 0]), None, "unknown game");
+        assert_eq!(dec(&[6, 0, 0, 0, 1, 0, 0, 0, 0]), None, "a chunk carries at least a byte");
+        assert_eq!(dec(&[&[6, 0, 0, 0, 1, 0, 0, 0, 0][..], &[0; MAP_CHUNK + 1]].concat()), None, "chunk too long");
+        assert_eq!(Packet::decode(&[28, 10, 77, 0, 2]), None);
+        let big = |size: u32| MapMsg::Offer { id: 1, game: 0, master: false, size, players: 2, hash: [0; 32], name: "m".into() }.encode();
+        assert!(MapMsg::decode(&big(MAX_MAP_BYTES)).is_some());
+        assert_eq!(MapMsg::decode(&big(MAX_MAP_BYTES + 1)), None);
+        assert_eq!(MapMsg::decode(&big(0)), None);
+        let mut long = big(5);
+        long[43 + 1] = MAX_MAP_NAME as u8 + 1; // length byte (kind + 43)
+        long.extend(vec![b'x'; MAX_MAP_NAME + 1]);
+        assert_eq!(MapMsg::decode(&long), None, "name over the limit");
+        let hi_long = [&[1, 0, 0, MAX_PEER_NAME as u8 + 1][..], &[b'x'; MAX_PEER_NAME + 1]].concat();
+        assert_eq!(MapMsg::decode(&hi_long), None);
+        assert_eq!(MapMsg::decode(&[1, 0, 0, 2, 0xFF, 0xFE]), None, "names are UTF-8");
+        // the biggest map message fits the encrypted transport
+        assert!(Packet::Map { vip: [0; 4], msg: MapMsg::Data { id: 1, seq: 1, bytes: vec![0; MAP_CHUNK] } }.encode().len() + 64 < MAX_WIRE);
+        assert!(Packet::Map { vip: [0; 4], msg: MapMsg::Offer { id: 1, game: 0, master: false, size: 1, players: 0, hash: [0; 32], name: "x".repeat(MAX_MAP_NAME) } }.encode().len() + 64 < MAX_WIRE);
+        // chunk arithmetic
+        assert_eq!((map_chunks(1), map_chunks(900), map_chunks(901), map_chunks(MAX_MAP_BYTES)), (1, 1, 2, 9321));
+        assert_eq!((map_chunk_len(901, 0), map_chunk_len(901, 1), map_chunk_len(900, 0)), (900, 1, 900));
+        let total: usize = (0..map_chunks(MAX_MAP_BYTES)).map(|s| map_chunk_len(MAX_MAP_BYTES, s)).sum();
+        assert_eq!(total, MAX_MAP_BYTES as usize);
     }
 
     #[test]

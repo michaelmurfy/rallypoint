@@ -17,6 +17,9 @@ pub const UI_SCALE_ENV: &str = "RA2_UI_SCALE";
 /// Environment variable for the world zoom: 1 is native, 1.5 and 2 make units bigger.
 pub const WORLD_ZOOM_ENV: &str = "RA2_WORLD_ZOOM";
 
+/// Environment variable for the presentation settings, `Key=value;Key=value` (`ra2/engine/engine/gfx_settings.hpp`).
+pub const GFX_ENV: &str = "RA2_GFX";
+
 /// Values the launcher may store for `ui_scale` (0 = Automatic, from the screen height).
 pub const UI_SCALE_CHOICES: &[u32] = &[1, 2, 3];
 /// Values for `world_zoom` in percent (0 = Automatic: the screen's own pixels).
@@ -37,6 +40,75 @@ pub fn validate_display(width: u32, height: u32, ui_scale: u32, world_zoom: u32)
         return Err("Unknown world zoom".into());
     }
     Ok(())
+}
+
+/// Picture settings (Settings > Graphics). The defaults, empty strings and zeros, are the picture of
+/// builds before these settings existed, and send nothing to the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ra2Gfx {
+    /// "", "nearest", "integer", "bilinear" or "sharp": how the finished picture reaches the window.
+    pub scale: String,
+    /// 0..2: a soft copy over the nearest/integer picture.
+    pub smooth: u8,
+    /// "", "scale2x" or "off": the sprite upscaler ("" = the 2x anti-aliased one).
+    pub sprites: String,
+    /// 0..2: glow on very bright things (lasers, superweapons).
+    pub bloom: u8,
+    /// 0..2: darker corners.
+    pub vignette: u8,
+    /// "", "warm", "cool" or "vivid".
+    pub grade: String,
+    /// The mouse wheel glides to its zoom.
+    pub zoom_smooth: bool,
+    /// Zoom out further and in closer.
+    pub zoom_wide: bool,
+}
+
+impl Ra2Gfx {
+    pub fn validate(&self) -> Result<(), String> {
+        let ok = |v: &str, allowed: &[&str]| v.is_empty() || allowed.contains(&v);
+        if !ok(&self.scale, &["nearest", "integer", "bilinear", "sharp"])
+            || !ok(&self.sprites, &["scale2x", "off"])
+            || !ok(&self.grade, &["warm", "cool", "vivid"])
+            || self.smooth > 2
+            || self.bloom > 2
+            || self.vignette > 2
+        {
+            return Err("Unknown graphics setting".into());
+        }
+        Ok(())
+    }
+
+    /// The value for `RA2_GFX`, or `None` when everything is at its default.
+    pub fn env_value(&self) -> Option<String> {
+        let mut v: Vec<String> = Vec::new();
+        if !self.scale.is_empty() {
+            v.push(format!("Scale={}", self.scale));
+        }
+        if self.smooth > 0 {
+            v.push(format!("Smooth={}", self.smooth));
+        }
+        if !self.sprites.is_empty() {
+            v.push(format!("Sprites={}", self.sprites));
+        }
+        if self.bloom > 0 {
+            v.push(format!("Bloom={}", self.bloom));
+        }
+        if self.vignette > 0 {
+            v.push(format!("Vignette={}", self.vignette));
+        }
+        if !self.grade.is_empty() {
+            v.push(format!("Grade={}", self.grade));
+        }
+        if self.zoom_smooth {
+            v.push("ZoomSmooth=1".into());
+        }
+        if self.zoom_wide {
+            v.push("ZoomRange=wide".into());
+        }
+        (!v.is_empty()).then(|| v.join(";"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,6 +196,9 @@ pub struct Ra2Config {
     /// World zoom in percent for `RA2_WORLD_ZOOM` (0 = Automatic: the map at the screen's own pixels).
     #[serde(default)]
     pub world_zoom: u32,
+    /// Picture settings for `RA2_GFX`.
+    #[serde(default)]
+    pub gfx: Ra2Gfx,
     /// Game sound on. Off starts the engine with `--no-audio`.
     pub sound: bool,
     /// Country 0..9 (America .. Russia, then Yuri: `ra2launch::SIDES`), -1 random.
@@ -137,7 +212,7 @@ pub struct Ra2Config {
 
 impl Default for Ra2Config {
     fn default() -> Self {
-        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, ui_scale: 0, world_zoom: 0, sound: true, side: -1, color: -1, setup_done: false }
+        Ra2Config { game_dir: String::new(), width: 0, height: 0, windowed: false, ui_scale: 0, world_zoom: 0, gfx: Ra2Gfx::default(), sound: true, side: -1, color: -1, setup_done: false }
     }
 }
 
@@ -171,6 +246,32 @@ pub fn game_art(game_dir: &Path) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn graphics_defaults_send_nothing_and_choices_become_one_variable() {
+        assert_eq!(Ra2Gfx::default().env_value(), None);
+        assert!(Ra2Gfx::default().validate().is_ok());
+        let g = Ra2Gfx {
+            scale: "sharp".into(),
+            smooth: 0,
+            sprites: "scale2x".into(),
+            bloom: 1,
+            vignette: 2,
+            grade: "warm".into(),
+            zoom_smooth: true,
+            zoom_wide: true,
+        };
+        assert!(g.validate().is_ok());
+        assert_eq!(
+            g.env_value().as_deref(),
+            Some("Scale=sharp;Sprites=scale2x;Bloom=1;Vignette=2;Grade=warm;ZoomSmooth=1;ZoomRange=wide")
+        );
+        assert!(Ra2Gfx { scale: "x;Bloom=2".into(), ..Default::default() }.validate().is_err());
+        assert!(Ra2Gfx { bloom: 3, ..Default::default() }.validate().is_err());
+        // an old config file without the field loads as the defaults
+        let c: Ra2Config = serde_json::from_str("{\"windowed\":true}").unwrap();
+        assert_eq!(c.gfx, Ra2Gfx::default());
+    }
+
     use super::*;
 
     fn touch(p: &Path) {
