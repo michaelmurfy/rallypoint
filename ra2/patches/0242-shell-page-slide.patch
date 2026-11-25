@@ -1,0 +1,575 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 0ab8ec6..37ab353 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -104,6 +104,7 @@ static char* ra2_cli_pref_path() {
+ #include "rectfont.hpp"    // glyph_rows (5x7 rect-font for menu labels) [Task 5]
+ #include "repair_sell.hpp" // RepairSellRules (Repair & Sell phase)
+ #include "settings.hpp"    // P8 Options: RA2.INI settings, slider math, edge-scroll table
++#include "shell_wave.hpp"  // the shell page slide (enter / leave bands)
+ #include "save_fields.hpp"  // P7 Save/Load: archive + visitors + SceneSave
+ #include <filesystem>        // P7: temp save dir for --demo-saveload
+ #include <ctime>             // P7: save timestamps
+@@ -6170,7 +6171,20 @@ void apply_audio_settings(ra2engine::Mixer& m, const ra2engine::Settings& s) {
+ // [RE: skirmish.md §2, D4] Minimal polymorphic scene interface. Additive: driven
+ // ONLY at the two non-gate main() seams (Android + desktop fallthrough); no gate
+ // constructs or enters it. NOT hashed.
++// The slide band of the page now showing (see shell_wave.hpp). A page that declares a
++// slide_spec() gets it run by the scene driver: in on its first paint, out before the
++// driver switches to the next scene. draw_shell reads it when the page passes no frames.
++inline ra2engine::ShellBand g_band;
++// The page's own panel content (map preview) is shown only when the SDWRNTMP shutter is open.
++inline bool band_panel_visible() {
++    if (!g_band.active || !g_band.spec.top_panel) return true;
++    const int sh = ra2engine::wave_panel(g_band.tick(), g_band.entering, g_band.spec).shutter;
++    return g_band.entering ? sh == 0 : sh <= 0;
++}
+ struct Scene {
++    // A shell page with a right-hand button column slides it in and out (the driver runs it).
++    virtual bool   slide_spec(ra2engine::WaveSpec& s) const { (void)s; return false; }
++    virtual void   slide_sound(bool in) const { (void)in; }   // GUIMoveIn/OutSound as a band starts
+     virtual void   handle(const ra2engine::InputEvent& ev) { (void)ev; }
+     virtual void   update(double dt)                        { (void)dt; }
+     virtual void   render(ra2engine::Platform& plat, ra2engine::TextureCache& tc) {
+@@ -6264,6 +6278,19 @@ int run_scene_driver(ra2engine::Platform& plat, ra2engine::TextureCache& tc, Sce
+     // already waits, so this only sleeps the part of the budget left.
+     Uint64 frame_start = SDL_GetPerformanceCounter();
+     const double perf_ms = 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
++    // The shell page slide: not under --play or a replay (their frames must not move).
++    const bool slides = !hooks && !replay && !std::getenv("RA2_NO_PAGE_SLIDE");
++    Scene* leave_to_scene = nullptr;   // the scene to switch to when the leave band ends
++    auto begin_page = [&](Scene* sc) {
++        ra2engine::WaveSpec sp;
++        g_band = ra2engine::ShellBand{};
++        if (slides && sc && sc->slide_spec(sp)) {
++            g_band.active = true; g_band.entering = true; g_band.spec = sp;
++            sc->slide_sound(true);
++        }
++    };
++    begin_page(scene.get());
++    struct BandOff { ~BandOff() { g_band = ra2engine::ShellBand{}; } } band_off;
+     while (scene && !scene->wants_quit()) {
+         // W2-AR-06: the canvas follows the scene (shell 1280x720, the game
+         // as wide as the panel's aspect allows) BEFORE input is polled, so
+@@ -6311,7 +6338,7 @@ int run_scene_driver(ra2engine::Platform& plat, ra2engine::TextureCache& tc, Sce
+             } else if (ev.kind == ra2engine::InputEvent::AppLowMemory) {
+                 SDL_Log("[lifecycle] low memory: freed %lu texture bytes", static_cast<unsigned long>(tc.trim()));
+             }
+-            scene->handle(ev);
++            if (!leave_to_scene) scene->handle(ev);   // a page that is sliding out takes no input
+         }
+         const Uint32 now = SDL_GetTicks();
+         const double dt = replay ? replay->dt() : fixed_dt > 0.0 ? fixed_dt : (now - prev) / 1000.0;
+@@ -6320,6 +6347,7 @@ int run_scene_driver(ra2engine::Platform& plat, ra2engine::TextureCache& tc, Sce
+         const Uint64 pc1 = SDL_GetPerformanceCounter();
+         net_linger_pump();   // NET-PLAY
+         scene->update(dt);
++        if (g_band.active) g_band.t += dt;
+         const Uint64 pc2 = SDL_GetPerformanceCounter();
+         Uint64 pc3 = pc2;
+         if (!hooks || hooks->want_render(frame)) {   // --play may render sparsely
+@@ -6346,7 +6374,22 @@ int run_scene_driver(ra2engine::Platform& plat, ra2engine::TextureCache& tc, Sce
+             ++frame;
+             continue;
+         }
+-        if (Scene* nx = scene->next()) {   // transition (variable dt continues)
++        Scene* nx = nullptr;
++        if (leave_to_scene) {
++            if (g_band.done()) { nx = leave_to_scene; leave_to_scene = nullptr; }
++        } else if ((nx = scene->next()) != nullptr) {
++            ra2engine::WaveSpec sp;
++            if (slides && !g_band.active && scene->slide_spec(sp)) {   // slide out first
++                leave_to_scene = nx;
++                nx = nullptr;
++                g_band = ra2engine::ShellBand{};
++                g_band.active = true; g_band.entering = false; g_band.spec = sp;
++                scene->slide_sound(false);
++            }
++        } else if (g_band.active && g_band.entering && g_band.done()) {
++            g_band.active = false;
++        }
++        if (nx) {   // transition (variable dt continues)
+             if (auto* d = dynamic_cast<DeferredScene*>(nx)) {
+                 // W2-AR-10: tear the current scene down BEFORE building the
+                 // next one (a loaded save used to hold two games at once);
+@@ -6360,6 +6403,7 @@ int run_scene_driver(ra2engine::Platform& plat, ra2engine::TextureCache& tc, Sce
+             } else {
+                 scene.reset(nx);
+             }
++            begin_page(scene.get());
+             if (hooks) hooks->transition(frame);
+         }
+         if (fixed_dt <= 0.0 && !(replay && g_replay_hidden)) {   // a hidden replay runs flat out
+@@ -6493,6 +6537,7 @@ struct MenuArt {
+     // [Task exact / mainmenu_true.md §7] TRUE main-menu button + monitor assets.
+     ra2assets::ShpFile* sdbtnanm = nullptr;   // neutral.mix/sdbtnanm.shp (156x42, 17fr) — the REAL buttons
+     ra2assets::ShpFile* sdwrnanm = nullptr;   // neutral.mix/sdwrnanm.shp (92x53, 91fr) — WARNING monitor loop
++    ra2assets::ShpFile* sdwrntmp = nullptr;   // neutral.mix/sdwrntmp.shp (168x177, 6fr) — the top panel's shutter in the page slide
+     ra2assets::Palette shell_pal{};           // cache.mix/shell.pal (chrome palette)
+     ra2assets::Palette shell2_pal{};          // cache.mix/shell2.pal (sdbtnbkgd + sdwrnanm palette)
+     ra2assets::Palette sdbtnanm_pal{};        // neutral.mix/sdbtnanm.pal (SDBTNANM own palette)
+@@ -6627,6 +6672,12 @@ struct ShellXform {
+ // frame (the original advances a shell anim control one SHP frame per timer
+ // tick; the monitor's needle was observed at ~60-90 ms a frame). A single clock
+ // keeps the phase across page changes instead of restarting per scene.
++// [AudioVisual] GUIMoveOutSound / GUIMoveInSound: one per page band.
++void play_menu_slide(const MenuArt& art, bool in) {
++    if (art.audio && art.audio->sys.enabled && art.audio->sys.mixer)
++        art.audio->sys.mixer->play(in ? "menu:slidein" : "menu:slideout");
++}
++
+ int shell_monitor_frame(int count) {
+     static constexpr double kFrameDt = 1.0 / 15.0;
+     static const Uint64 t0 = SDL_GetTicks64();
+@@ -6642,6 +6693,14 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+                 const int* row_frames = nullptr /* W2-UI-24: per-row SDBTNANM transition frame, -1 = none */,
+                 int press_ix = -1, double press_t = -1.0 /* shell button sink/rise (see ShellScene) */) {
+     const double canvas_scale = xf.s;
++    // The scene driver's slide band (a page that passes its own frames runs its own).
++    const bool band_on = g_band.active && !row_frames;
++    ra2engine::WavePanel band_panel;
++    if (band_on && g_band.spec.top_panel) {
++        band_panel = ra2engine::wave_panel(g_band.tick(), g_band.entering, g_band.spec);
++        sdtp_frame = band_panel.sdtp;
++    }
++    int band_rows[6] = {-1, -1, -1, -1, -1, -1};
+     // The ONE logical->device transform (shared verbatim with the hit-test).
+     auto dev = [&](int lx, int ly, int lw, int lh) -> SDL_Rect {
+         return xf.dev(lx, ly, lw, lh);
+@@ -6682,6 +6741,15 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+     blit_layer(sdtp_frame == 1 ? "shell:sdtp1" : "shell:sdtp", art.sdtp,
+                (art.sdtp && sdtp_frame < art.sdtp->count()) ? sdtp_frame : 0,
+                shell_pal, 472, 0, 168, 199);
++    if (band_panel.shutter >= 0 && art.sdwrntmp && shell_pal) {   // the warning display moving over the panel
++        const ra2assets::ShpFile::Frame f = art.sdwrntmp->frame_info(band_panel.shutter);
++        if (SDL_Texture* st = shp_frame_tex(tc, "shell:sdwrntmp" + std::to_string(band_panel.shutter),
++                                            *art.sdwrntmp, band_panel.shutter, *shell_pal)) {
++            SDL_SetTextureColorMod(st, 255, 255, 255);
++            SDL_Rect sd = dev(472 + f.x, f.y, f.w, f.h);
++            render_copy_smooth(ren, st, &sd);
++        }
++    }
+     // 3b. §7.3: animated WARNING monitor (SDWRNANM, shell2.pal) into ctrl-0x71C
+     //     hole at logical (508,47,92,53). Null-guarded: absent SHP/pal simply
+     //     leaves SDTP's baked screen showing.
+@@ -6715,12 +6783,13 @@ void draw_shell(SDL_Renderer* ren, ra2engine::TextureCache& tc, const MenuArt& a
+         const int r = (b.rect.y - 199) / 42;
+         if (r >= 0 && r < 6) row_used[r] = true;
+     }
++    if (band_on) { g_band.rows(row_used, band_rows); row_frames = band_rows; }
+     for (int r = 0; r < 6; ++r) {
+         const int ry = 199 + 42 * r;
+         blit_layer("shell:sdbtnbkgd", art.sdbtnbkgd, 0, shell2_pal, 472, ry, 168, 42);
+         if (!row_used[r] && art.sdbtnanm && sdbtn_pal && art.sdbtnanm->count() > 10) {
+-            // W5-E2: an empty row plays the 11..16 plate band while leaving.
+-            int ef = 10;
++            // An empty row is the blank plate (frame 0); the page slide plays 16..11 / 11..16.
++            int ef = 0;
+             if (row_frames && row_frames[r] >= 0 && row_frames[r] < art.sdbtnanm->count()) ef = row_frames[r];
+             SDL_Texture* et = shp_frame_tex(tc, "shell:sdbtn" + std::to_string(ef), *art.sdbtnanm, ef, *sdbtn_pal);
+             if (et) {
+@@ -8910,7 +8979,7 @@ struct MenuArtStore {
+     // [Task 1] True-design chrome SHPs.
+     std::unique_ptr<ra2assets::ShpFile> bg_s, lwscrn, sdtp, sdbtm, sdbtnbkgd;
+     // [Task exact] TRUE button + monitor animation SHPs.
+-    std::unique_ptr<ra2assets::ShpFile> sdbtnanm, sdwrnanm;
++    std::unique_ptr<ra2assets::ShpFile> sdbtnanm, sdwrnanm, sdwrntmp;
+     // [Task 1] Chrome/button palettes (value type; validity tracked by *_ok bools).
+     ra2assets::Palette shell_pal{}, mainbttn_pal{}, shell2_pal{}, sdbtnanm_pal{};
+     bool shell_pal_ok = false, mainbttn_pal_ok = false;
+@@ -9153,6 +9222,7 @@ void load_menu_art(const std::string& dir, bool no_audio, MenuArtStore& store) {
+               // neutral.mix; SDBTNANM has its OWN palette (also in neutral.mix).
+               store.sdbtnanm  = try_shp(neutral, "sdbtnanm.shp");
+               store.sdwrnanm  = try_shp(neutral, "sdwrnanm.shp");
++              store.sdwrntmp  = try_shp(neutral, "sdwrntmp.shp");
+               // W2-UI-18: campaign page 0x94 screen (Allied / tutorial / Soviet
+               // emblems) under FSSCRN.PAL [mainmenu_true.md §8.2, FUN_006F2C40].
+               store.fsbkgd    = try_shp(neutral, "fsbkgdsm.shp");
+@@ -9295,6 +9365,7 @@ void load_menu_art(const std::string& dir, bool no_audio, MenuArtStore& store) {
+     store.art.sdbtnbkgd     = store.sdbtnbkgd.get();
+     store.art.sdbtnanm      = store.sdbtnanm.get();
+     store.art.sdwrnanm      = store.sdwrnanm.get();
++    store.art.sdwrntmp      = store.sdwrntmp.get();
+     store.art.shell_pal     = store.shell_pal;
+     store.art.shell2_pal    = store.shell2_pal;
+     store.art.sdbtnanm_pal  = store.sdbtnanm_pal;
+@@ -9724,10 +9795,7 @@ private:
+             art_.audio->sys.mixer->play(open ? "menu:comboopen" : "menu:comboclose");
+     }
+     // [AudioVisual] GUIMoveOutSound / GUIMoveInSound: one per page band.
+-    void play_slide(bool in) const {
+-        if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer)
+-            art_.audio->sys.mixer->play(in ? "menu:slidein" : "menu:slideout");
+-    }
++    void play_slide(bool in) const { play_menu_slide(art_, in); }
+     bool audio_live() const {
+         return art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer;
+     }
+@@ -9801,7 +9869,7 @@ private:
+     // --play: the band is skipped (an immediate switch keeps every existing
+     // script frame-identical -- several skirmish scripts are sensitive to the
+     // frame the game starts on) unless the script says `set leave_band 1`.
+-    static constexpr int kLeaveTicks = 15;   // 6 rows + 3 (the array's sentinels) + 6
++    static constexpr int kLeaveTicks = ra2engine::kWaveTicks;   // 6 rows + 3 (the array's sentinels) + 6
+     double       leave_t_ = -1.0;            // >= 0 while the leave band plays
+     Scene*       leave_next_ = nullptr;      // the page to switch to when it ends
+     // [RE: SDBTNANM 0..16: 2 normal, 3 hover, 4 pressed, 5..9 the face sliding
+@@ -9831,23 +9899,16 @@ private:
+             const int r = (b.rect.y - 199) / 42;
+             if (r >= 0 && r < 6) row_used[r] = true;
+         }
+-        if (leave_t_ >= 0.0) {   // W5-E2: the leave band
+-            const int tick = static_cast<int>(leave_t_ / 0.030);
+-            for (int r = 0; r < 6; ++r) {
+-                const int step = tick - (r + 1);
+-                out[r] = step < 0 ? -1 : step < 6 ? (row_used[r] ? 5 : 11) + step : 10;
+-            }
+-            return true;
+-        }
+-        if (enter_t_ <= 0.0) return false;   // a never-updated page (--menu-shot) draws settled
+-        const int tick = static_cast<int>(enter_t_ / 0.030);
+-        bool any = false;
+-        for (int r = 0; r < 6; ++r) {
+-            const int step = tick - r;
+-            out[r] = !row_used[r] ? -1 : step < 0 ? 10 : step < 6 ? 10 - step : -1;
+-            any = any || out[r] >= 0;
+-        }
+-        return any;
++        // The page slide (shell_wave.hpp): leaving, a button row plays 5..10 and an empty row
++        // the plate 11..16; entering, buttons come back 10..5 and the plates 16..11, row r
++        // starting r + 1 ticks late.
++        const bool leaving = leave_t_ >= 0.0;
++        if (!leaving && enter_t_ <= 0.0) return false;   // a never-updated page (--menu-shot) draws settled
++        const int tick = ra2engine::wave_tick(leaving ? leave_t_ : enter_t_);
++        if (tick >= ra2engine::kWaveTicks && !leaving) return false;
++        for (int r = 0; r < 6; ++r)
++            out[r] = ra2engine::wave_row_frame(tick, r, row_used[r], !leaving, false);
++        return true;
+     }
+     // [Task 5 / mainmenu_true.md §9] The Bink CRT movie clock + streaming texture.
+     // update(dt) advances the frame at the file's 15 fps (accumulator; one
+@@ -9943,7 +10004,7 @@ void MainMenuScene::update(double dt) {
+     enter_t_ += dt;   // W2-UI-24
+     if (leave_t_ >= 0.0) {   // W5-E2 (R-143): the leave band, then the page switch
+         leave_t_ += dt;
+-        if (leave_t_ >= kLeaveTicks * 0.030 && leave_next_) {   // the last frame keeps the emptied sockets
++        if (leave_t_ >= kLeaveTicks * ra2engine::kWaveTickSec && leave_next_) {   // the last frame keeps the emptied sockets
+             next_ = leave_next_;
+             leave_next_ = nullptr;
+         }
+diff --git a/engine/mp_pages.inc b/engine/mp_pages.inc
+index 2a1d60a..d01fb32 100644
+--- a/engine/mp_pages.inc
++++ b/engine/mp_pages.inc
+@@ -328,6 +328,8 @@ public:
+         art_.audio->sys.out.pump(*art_.audio->sys.mixer);
+     }
+     Scene* next() override { Scene* n = next_; next_ = nullptr; return n; }
++    bool slide_spec(ra2engine::WaveSpec& s) const override { s.top_panel = true; return true; }
++    void slide_sound(bool in) const override { play_menu_slide(art_, in); }
+     bool locate(const std::string& what, int& x, int& y) const override {
+         const auto t = targets();
+         const auto it = t.find(what);
+@@ -1609,13 +1611,14 @@ private:
+         edits_[0].enabled = joined() && !choosing_;
+         // Preview well 0x468 + game type 0x6EC + map name 0x5A8 + where (LAN address / room code).
+         const ra2engine::SbRect pr = preview_rect();
+-        p.fill(p.dev(pr), 0, 0, 0);
++        const bool panel_open = band_panel_visible();   // the page slide's shutter hides the well
++        if (panel_open) p.fill(p.dev(pr), 0, 0, 0);
+         const int mi = choosing_ ? (map_list_.sel >= 0 && map_list_.sel < static_cast<int>(map_list_.data.size())
+                                         ? map_list_.data[static_cast<std::size_t>(map_list_.sel)] : -1)
+                                  : map_index_of(model().map.file);
+         int pw = 0, ph = 0;
+         preview_w_ = 0;
+-        if (SDL_Texture* t = preview_tex(tc, mi, pw, ph)) {
++        if (SDL_Texture* t = panel_open ? preview_tex(tc, mi, pw, ph) : nullptr) {
+             const double sc = std::min(double(pr.w - 2) / pw, double(pr.h - 2) / ph);
+             const int w = std::max(1, int(pw * sc)), h = std::max(1, int(ph * sc));
+             const SDL_Rect d = p.dev(pr.x + (pr.w - w) / 2, pr.y + (pr.h - h) / 2, w, h);
+diff --git a/engine/skirmish_page.inc b/engine/skirmish_page.inc
+index 1330c24..b316afb 100644
+--- a/engine/skirmish_page.inc
++++ b/engine/skirmish_page.inc
+@@ -230,6 +230,8 @@ public:
+     }
+     void render(ra2engine::Platform& plat, ra2engine::TextureCache& tc) override;
+     Scene* next() override { Scene* n = next_; next_ = nullptr; return n; }
++    bool slide_spec(ra2engine::WaveSpec& s) const override { s.top_panel = true; return true; }
++    void slide_sound(bool in) const override { play_menu_slide(art_, in); }
+     const char* name() const override { return "lobby"; }
+     bool locate(const std::string& what, int& x, int& y) const override {
+         const std::map<std::string, ra2engine::SbRect> t = targets();
+@@ -760,9 +762,10 @@ void SkirmishSetupScene::render(ra2engine::Platform& plat, ra2engine::TextureCac
+     // --- sidebar: preview well 0x468 (aspect-fit, black frame) ---
+     {
+         const ra2engine::SbRect pr = preview_rect();
+-        p.fill(p.dev(pr), 0, 0, 0);
++        const bool panel_open = band_panel_visible();   // the page slide's shutter hides the well
++        if (panel_open) p.fill(p.dev(pr), 0, 0, 0);
+         const int mi = shown_map();
+-        if (SDL_Texture* t = preview_tex(tc, mi)) {
++        if (SDL_Texture* t = panel_open ? preview_tex(tc, mi) : nullptr) {
+             const auto* m = map_at(mi);
+             const auto sz = preview_size_[m->file_name];
+             // [RE-FALLBACK, audit Q4: scaling mode not recovered] aspect-fit,
+diff --git a/engine/movies_page.inc b/engine/movies_page.inc
+index 6b25589..b5e181c 100644
+--- a/engine/movies_page.inc
++++ b/engine/movies_page.inc
+@@ -126,6 +126,8 @@ public:
+             p.label(p.fit(list_[(std::size_t)(top_ + i)].title, r.w - 8), r.x + 4, r.y, r.w - 8, r.h, 0);
+         }
+     }
++    bool slide_spec(ra2engine::WaveSpec&) const override { return true; }
++    void slide_sound(bool in) const override { play_menu_slide(art_, in); }
+     Scene* next() override {
+         if (back_) {
+             back_ = false;
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ed36a38..4d63971 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -347,6 +347,7 @@ target_sources(ra2assets_tests PRIVATE engine/ttfont.cpp tests/test_ttfont.cpp)
+ # OptionsClass defaults/clamps/save list, slider/trackbar math, the recovered
+ # edge-scroll table) [RE: docs/re/options.md]. SDL-free; main.cpp owns the UI.
+ target_sources(ra2assets_tests PRIVATE tests/test_settings.cpp engine/settings.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_shell_wave.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_logical_canvas.cpp tests/test_gfx_settings.cpp tests/test_pixel_scale.cpp engine/pixel_scale.cpp)
+ # G0 --play harness: the pure script parser / assertion evaluator / play_hash.
+ target_sources(ra2assets_tests PRIVATE tests/test_play_script.cpp engine/play_script.cpp)
+diff --git a/engine/shell_wave.hpp b/engine/shell_wave.hpp
+new file mode 100644
+index 0000000..f6a191e
+--- /dev/null
++++ b/engine/shell_wave.hpp
+@@ -0,0 +1,95 @@
++#pragma once
++// The shell's page slide, as a pure function of the tick (RE: gamemd 0x006071E0 for the
++// enter/leave bands, 0x00606980 for the page-to-page leave). Every front-end shell page
++// slides its right-hand column in on its first paint and out when it closes, one tick
++// per 30 ms, never skipped:
++//   * button rows (SDBTNANM 17 frames: 2 normal, 3 hover, 4 pressed, 5..9 the face
++//     sliding out, 10 the empty socket, 11..16 the blank plate coming in)
++//       enter: 10 held, then 10..5, then the settled face
++//       leave: the settled face, then 5..10, then 10 held
++//   * empty tile rows
++//       enter: 10 held, then 16..11, then 0 (the plate)
++//       leave: 0 held, then 11..16, then 10
++//   * row r (of 6) starts at tick r + 1, or r on a page with a map button (it takes
++//     row 0, entry tick 0); the bottom row (Back) starts at tick 6; the top panel at 9.
++//   * a page with a top panel shows SDTP 0 (enter) / 1 (leave) until tick 9, then SDTP 1
++//     with SDWRNTMP (6 frames) over it: 5..0 entering, 0..5 leaving.
++//   * a map button is SDMPBTN (7 frames): 6..0 entering, 1..6 leaving, over ticks 0..5.
++//   * the loop runs rows + 9 = 15 ticks.
++namespace ra2engine {
++
++constexpr double kWaveTickSec = 0.030;
++constexpr int kWaveRows = 6;
++constexpr int kWaveRamp = 6;
++constexpr int kWaveTicks = kWaveRows + 9;
++constexpr int kWavePanelEntry = kWaveRows + 3;
++constexpr int kBtnSettled = -1;   // "draw the normal / hover / pressed face"
++
++struct WaveSpec {
++    bool map_button = false;
++    bool top_panel = false;
++};
++
++inline int wave_tick(double t) { return t < 0.0 ? 0 : static_cast<int>(t / kWaveTickSec); }
++
++inline int wave_entry_tick(int row, bool map_button) {
++    return (row == kWaveRows - 1 || !map_button) ? row + 1 : row;
++}
++
++// SDBTNANM frame of one row at `tick`. `button`: the row holds a button. Returns
++// kBtnSettled for a button at rest (the caller draws its normal/hover/pressed face).
++inline int wave_row_frame(int tick, int row, bool button, bool entering, bool map_button) {
++    const int d = tick - wave_entry_tick(row, map_button);
++    if (entering) {
++        if (d < 0) return 10;
++        if (d < kWaveRamp) return button ? 10 - d : 16 - d;
++        return button ? kBtnSettled : 0;
++    }
++    if (d < 0) return button ? kBtnSettled : 0;
++    if (d < kWaveRamp) return button ? 5 + d : 11 + d;
++    return 10;
++}
++
++struct WavePanel {
++    int sdtp = 1;       // SDTP frame
++    int shutter = -1;   // SDWRNTMP frame over it, -1 = none
++    int map = -1;       // SDMPBTN frame, -1 = none
++    bool map_under = false;   // leaving: the closed map rail is drawn under the panel
++};
++
++inline WavePanel wave_panel(int tick, bool entering, WaveSpec spec) {
++    WavePanel p;
++    if (spec.top_panel) {
++        const int d = tick - kWavePanelEntry;
++        p.sdtp = (d < 0 && entering) ? 0 : 1;
++        if (d >= 0) {
++            const int f = entering ? 5 - d : d;
++            p.shutter = f < 0 ? 0 : f > 5 ? 5 : f;
++        }
++    }
++    if (spec.map_button) {
++        const bool ramp = tick < kWaveRamp;
++        p.map = entering ? (ramp ? 6 - tick : 0) : (ramp ? 1 + tick : 6);
++        p.map_under = !entering && !ramp;
++    }
++    return p;
++}
++
++// One page's band: which way it runs, how long it has run, what the page has.
++struct ShellBand {
++    bool active = false;
++    bool entering = true;
++    double t = 0.0;
++    WaveSpec spec;
++    int tick() const { return wave_tick(t); }
++    bool done() const { return tick() >= kWaveTicks; }
++    // rows[r]: SDBTNANM frame per row; kBtnSettled = a button at rest.
++    void rows(const bool used[kWaveRows], int out[kWaveRows]) const {
++        for (int r = 0; r < kWaveRows; ++r) {
++            if (spec.map_button && r == 0) { out[r] = kBtnSettled; continue; }   // SDMPBTN's row
++            out[r] = wave_row_frame(tick(), r, used[r], entering, spec.map_button);
++        }
++    }
++};
++
++}  // namespace ra2engine
+diff --git a/tests/test_shell_wave.cpp b/tests/test_shell_wave.cpp
+new file mode 100644
+index 0000000..62e34e0
+--- /dev/null
++++ b/tests/test_shell_wave.cpp
+@@ -0,0 +1,128 @@
++#include "doctest.h"
++#include "asset_fixture.hpp"
++#include "ra2assets/shp.hpp"
++#include "../engine/shell_wave.hpp"
++#include <vector>
++using namespace ra2engine;
++
++static std::vector<int> row_run(int row, bool button, bool entering, bool map = false) {
++    std::vector<int> v;
++    for (int t = 0; t < kWaveTicks; ++t) v.push_back(wave_row_frame(t, row, button, entering, map));
++    return v;
++}
++
++TEST_CASE("page slide: the loop is rows + 9 ticks of 30 ms") {
++    CHECK(kWaveTicks == 15);
++    CHECK(wave_tick(0.0) == 0);
++    CHECK(wave_tick(0.029) == 0);
++    CHECK(wave_tick(0.030) == 1);
++    CHECK(wave_tick(0.449) == 14);
++    ShellBand b;
++    b.t = 0.449;
++    CHECK_FALSE(b.done());
++    b.t = 0.450;
++    CHECK(b.done());
++}
++
++TEST_CASE("page slide: button rows sink 5..10 leaving and rise 10..5 entering, row r starts at r + 1") {
++    const int S = kBtnSettled;
++    // row 0 leaves from tick 1, row 5 (Back) from tick 6
++    CHECK(row_run(0, true, false) == std::vector<int>{S, 5, 6, 7, 8, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10});
++    CHECK(row_run(5, true, false) == std::vector<int>{S, S, S, S, S, S, 5, 6, 7, 8, 9, 10, 10, 10, 10});
++    CHECK(row_run(0, true, true) == std::vector<int>{10, 10, 9, 8, 7, 6, 5, S, S, S, S, S, S, S, S});
++    CHECK(row_run(5, true, true) == std::vector<int>{10, 10, 10, 10, 10, 10, 10, 9, 8, 7, 6, 5, S, S, S});
++}
++
++TEST_CASE("page slide: empty rows play the plate, 16..11 entering to frame 0 and 11..16 leaving to the socket") {
++    CHECK(row_run(2, false, true) == std::vector<int>{10, 10, 10, 16, 15, 14, 13, 12, 11, 0, 0, 0, 0, 0, 0});
++    CHECK(row_run(2, false, false) == std::vector<int>{0, 0, 0, 11, 12, 13, 14, 15, 16, 10, 10, 10, 10, 10, 10});
++}
++
++TEST_CASE("page slide: a map button takes row 0 and moves every other row one tick earlier") {
++    CHECK(wave_entry_tick(0, true) == 0);
++    CHECK(wave_entry_tick(1, true) == 1);
++    CHECK(wave_entry_tick(1, false) == 2);
++    CHECK(wave_entry_tick(5, true) == 6);   // Back keeps its own entry
++    CHECK(wave_entry_tick(5, false) == 6);
++}
++
++TEST_CASE("page slide: top panel housing then SDWRNTMP over it from tick 9") {
++    WaveSpec s;
++    s.top_panel = true;
++    for (int t = 0; t < 9; ++t) {
++        CHECK(wave_panel(t, true, s).sdtp == 0);
++        CHECK(wave_panel(t, true, s).shutter == -1);
++        CHECK(wave_panel(t, false, s).sdtp == 1);
++        CHECK(wave_panel(t, false, s).shutter == -1);
++    }
++    const int in[] = {5, 4, 3, 2, 1, 0};
++    for (int k = 0; k < 6; ++k) {
++        CHECK(wave_panel(9 + k, true, s).shutter == in[k]);
++        CHECK(wave_panel(9 + k, true, s).sdtp == 1);
++        CHECK(wave_panel(9 + k, false, s).shutter == k);
++    }
++    s.top_panel = false;
++    CHECK(wave_panel(10, true, s).shutter == -1);
++    s.map_button = true;
++    CHECK(wave_panel(0, true, s).map == 6);
++    CHECK(wave_panel(5, true, s).map == 1);
++    CHECK(wave_panel(6, true, s).map == 0);
++    CHECK(wave_panel(0, false, s).map == 1);
++    CHECK(wave_panel(6, false, s).map == 6);
++    CHECK(wave_panel(6, false, s).map_under);
++}
++
++TEST_CASE("page slide: ShellBand rows follow the page's buttons") {
++    ShellBand b;
++    b.active = true;
++    b.entering = false;
++    b.t = 0.030 * 3;   // tick 3
++    const bool used[kWaveRows] = {false, true, true, false, false, true};
++    int out[kWaveRows];
++    b.rows(used, out);
++    CHECK(out[0] == 13);        // plate, 2 ticks in (entry tick 1)
++    CHECK(out[1] == 5 + 1);     // button, 1 tick in
++    CHECK(out[2] == 5);         // entry tick 3: starts now
++    CHECK(out[3] == 0);
++    CHECK(out[5] == kBtnSettled);
++}
++
++TEST_CASE("page slide: every frame it asks for exists in the real shell art") {
++    REQUIRE_MESSAGE(ra2fixture::ra2_available(), "RA2_INSTALL_DIR must point at a Yuri's Revenge install");
++    ra2assets::MixFile n = ra2fixture::ra2_mix().open_nested("neutral.mix");
++    auto load = [&](const char* name) {
++        const auto* e = n.find(name);
++        REQUIRE_MESSAGE(e, name);
++        return ra2assets::ShpFile::load(n.read(*e));
++    };
++    const ra2assets::ShpFile btn = load("sdbtnanm.shp"), tmp = load("sdwrntmp.shp"), mp = load("sdmpbtn.shp"),
++                             tp = load("sdtp.shp");
++    // frame counts the frame tables rely on
++    CHECK(btn.count() == 17);
++    CHECK(tmp.count() == 6);
++    CHECK(mp.count() == 7);
++    CHECK(tp.count() == 2);
++    CHECK(btn.width() == 156);
++    CHECK(btn.height() == 42);
++    CHECK(tmp.width() == 168);
++    for (bool entering : {true, false})
++        for (bool button : {true, false})
++            for (int row = 0; row < kWaveRows; ++row)
++                for (int t = 0; t < kWaveTicks; ++t) {
++                    const int f = wave_row_frame(t, row, button, entering, false);
++                    if (f == kBtnSettled) continue;
++                    REQUIRE(f >= 0);
++                    REQUIRE(f < btn.count());
++                    CHECK(btn.frame_info(f).w > 0);
++                }
++    WaveSpec s;
++    s.top_panel = true;
++    s.map_button = true;
++    for (bool entering : {true, false})
++        for (int t = 0; t < kWaveTicks; ++t) {
++            const WavePanel p = wave_panel(t, entering, s);
++            CHECK(p.sdtp < tp.count());
++            if (p.shutter >= 0) { CHECK(p.shutter < tmp.count()); CHECK(tmp.frame_info(p.shutter).w > 0); }
++            if (p.map >= 0) { CHECK(p.map < mp.count()); CHECK(mp.frame_info(p.map).w > 0); }
++        }
++}
