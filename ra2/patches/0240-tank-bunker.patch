@@ -946,7 +946,7 @@ new file mode 100644
 index 0000000..0fc9b6b
 --- /dev/null
 +++ b/tests/test_tank_bunker.cpp
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,305 @@
 +// Tank Bunker (Rallypoint 0240): Bunker= / Bunkerable= against the real rulesmd.ini, and the
 +// mechanic in a World (enter, protection, bunker bonuses, unload, sell, destruction, save).
 +// Real-data cases need RA2_INSTALL_DIR and fail (not skip) when it is set but the files are missing.
@@ -1222,6 +1222,7 @@ index 0000000..0fc9b6b
 +TEST_CASE("Tank Bunker: AI script action 61 is EnterTankBunker, and the team member leaves the team") {
 +    CHECK(classify_op(kSaRemoveIfB) == OpClass::EnterBunker);
 +    CHECK(classify_op(kSaRemoveIfA) == OpClass::Inert);
++    NEED_MAP();
 +    BunkerWorld t;
 +    const int a = t.add_tank(-6, 0);
 +    CHECK(t.w.nearest_free_bunker(a) == t.bunker);
