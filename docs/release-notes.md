@@ -1,3 +1,12 @@
+## Rallypoint 1.0.2
+
+**Four more retail rules ported for Red Alert 2.** Everyone in a room needs 1.0.2.
+
+- **Immune buildings.** Civilian huts and the like (`Immune=yes`) no longer take damage from any weapon, and the AI leaves them alone.
+- **CloakingSpeed fade.** Submarines re-cloak gradually over their retail fade length instead of vanishing instantly.
+- **GateCloseDelay.** The Allied gate holds its last open stage for the retail delay before closing.
+- **RevealToAll and RadarVisible.** Superweapon buildings ping every house's radar when built or captured, and tech buildings show on the radar through the shroud.
+
 ## Rallypoint 1.0.1
 
 **Red Alert 2 fixes and a smoother map dock.** Everyone in a room needs 1.0.1.
