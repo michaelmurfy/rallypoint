@@ -1,0 +1,273 @@
+diff -ruN a/engine/chop_math.hpp b/engine/chop_math.hpp
+--- a/engine/chop_math.hpp
++++ b/engine/chop_math.hpp
+@@ -4,9 +4,10 @@
+ // every double multiply/divide is truncated, not rounded to nearest. A product
+ // that "should" be an integer, such as 2200 * 0.3 or 100 * (30 * 0.01), lands one
+ // ulp BELOW it and _ftol then drops a whole unit (659, 29). These helpers give
+-// the truncated result exactly (fma recovers the rounding error); results are
++// the truncated result exactly (the rounding error is recovered exactly); results are
+ // bit-identical on every platform. Cited from the reverse-engineered notes of
+ // github.com/YuriPlanet/vera20k (ore_growth.rs, factory.rs, kernel.rs); no code copied.
++// The rounding error comes from Dekker's exact product (no fma: MinGW's was not exact).
+ #include <cmath>
+ 
+ namespace ra2engine {
+@@ -18,15 +19,24 @@
+     if (err != 0.0 && ((err < 0.0) != (r < 0.0)) && r != 0.0) return std::nextafter(r, 0.0);
+     return r;
+ }
++// Exact error of a*b (Veltkamp split, valid while nothing overflows or underflows).
++inline double product_error(double a, double b, double p) {
++    const double ca = 134217729.0 * a, ah = ca - (ca - a), al = a - ah;
++    const double cb = 134217729.0 * b, bh = cb - (cb - b), bl = b - bh;
++    return ((ah * bh - p) + ah * bl + al * bh) + al * bl;
++}
+ inline double mul(double a, double b) {
+     const double r = a * b;
+-    if (!std::isfinite(r)) return r;
+-    return toward_zero(r, std::fma(a, b, -r));
++    if (!std::isfinite(r) || r == 0.0 || std::fabs(r) > 1e300 || std::fabs(r) < 1e-290) return r;
++    return toward_zero(r, product_error(a, b, r));
+ }
+ inline double div(double a, double b) {
+     const double r = a / b;
+     if (!std::isfinite(r) || r == 0.0) return r;
+-    return toward_zero(r, std::fma(-r, b, a) / b);   // sign of (a - r*b) / b = sign of exact - r
++    if (std::fabs(r) > 1e300 || std::fabs(r) < 1e-290) return r;
++    const double p = r * b;
++    const double rem = (a - p) - product_error(r, b, p);   // a - r*b, exact
++    return toward_zero(r, rem / b);                          // sign of exact - r
+ }
+ inline double add(double a, double b) {
+     const double r = a + b;
+diff -ruN a/engine/locomotion.cpp b/engine/locomotion.cpp
+--- a/engine/locomotion.cpp
++++ b/engine/locomotion.cpp
+@@ -1,3 +1,4 @@
++#include "chop_math.hpp"
+ #include "locomotion.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00)
+ 
+@@ -212,7 +213,7 @@
+ }
+ 
+ int apply_speed_pct(int speed, double pct) {
+-    return om::ftol(static_cast<double>(speed) * pct);
++    return om::ftol(chop::mul(static_cast<double>(speed), pct));
+ }
+ 
+ int infantry_speed(int s, bool prone, bool crawls) {
+diff -ruN a/engine/ore.cpp b/engine/ore.cpp
+--- a/engine/ore.cpp
++++ b/engine/ore.cpp
+@@ -153,7 +153,7 @@
+         for (int i = 0; i < w_ * h_; ++i)
+             if (kind_[i] == (std::uint8_t)OreKind::Ore && density_[i] < kMaxOreDensity) cand.push_back(i);
+         if (cand.empty()) continue;
+-        const int cap = std::max(5, std::min(50, om::ftol((cand.size() * growth_pct))));
++        const int cap = std::max(5, std::min(50, om::ftol(chop::mul(static_cast<double>(cand.size()), growth_pct))));
+         int n = rng.below(cap) + 1;
+         for (; n > 0 && !cand.empty(); --n) {
+             const int j = rng.below((int)cand.size());
+@@ -176,7 +176,7 @@
+             if (open) cand.push_back(i);
+         }
+         if (cand.empty()) continue;
+-        const int cap = std::max(5, std::min(25, om::ftol((cand.size() * spread_pct))));
++        const int cap = std::max(5, std::min(25, om::ftol(chop::mul(static_cast<double>(cand.size()), spread_pct))));
+         int n = rng.below(cap) + 1;
+         for (; n > 0 && !cand.empty(); --n) {
+             const int j = rng.below((int)cand.size());
+@@ -209,7 +209,7 @@
+             if (kind_[i] == (std::uint8_t)OreKind::Ore && density_[i] < kMaxOreDensity)
+                 cand.push_back(i);
+         if (!cand.empty() && growth_pct > 0.0) {
+-            int n = std::max(1, om::ftol((cand.size() * growth_pct)));
++            int n = std::max(1, om::ftol(chop::mul(static_cast<double>(cand.size()), growth_pct)));
+             for (int k = 0; k < n && !cand.empty(); ++k) {
+                 int j = rng.below((int)cand.size());
+                 ++density_[cand[j]];
+@@ -222,7 +222,7 @@
+             if (kind_[i] == (std::uint8_t)OreKind::Ore && density_[i] == kMaxOreDensity)
+                 src.push_back(i);
+         if (!src.empty() && spread_pct > 0.0) {
+-            int n = std::max(1, om::ftol((src.size() * spread_pct)));
++            int n = std::max(1, om::ftol(chop::mul(static_cast<double>(src.size()), spread_pct)));
+             for (int k = 0; k < n; ++k) {
+                 int i = src[rng.below((int)src.size())];
+                 int sx = i % w_, sy = i / w_;
+diff -ruN a/engine/production.cpp b/engine/production.cpp
+--- a/engine/production.cpp
++++ b/engine/production.cpp
+@@ -35,7 +35,9 @@
+         // W7-01-11 [RE: TemporalClass::Fire 0x71A1A0 -> 0x4521B0 HasPower=0]: a
+         // plant being erased delivers nothing (LetGo 0x452200 restores it).
+         if (pw > 0 && b.w7.warp_unpowered) continue;
+-        if (pw > 0 && st > 0) p.output += om::ftol(((double)b.hp / (double)st * (double)pw));
++        if (pw > 0 && st > 0) // GetHealthRatio 0x005F5C60 is a chopped divide, then FIMUL and _ftol: a plant at
++        // 600/750 gives 159 of 200, not 160 (0.8 chops just below 4/5).
++        p.output += om::ftol(chop::mul(chop::div((double)b.hp, (double)st), (double)pw));
+         else if (pw >= 0) p.output += pw;
+         else if (!b.power_off) p.drain -= pw;   // W5-E2: a powered-down building draws nothing
+     }
+diff -ruN a/engine/repair_sell.cpp b/engine/repair_sell.cpp
+--- a/engine/repair_sell.cpp
++++ b/engine/repair_sell.cpp
+@@ -9,7 +9,7 @@
+ int repair_interval_frames(double repair_rate) {
+     // [RE: repair-sell.md §A2] FLD Rules.RepairRate; FMUL 900.0; __ftol.
+     // __ftol truncates toward zero -- 0.016*900 = 14.4 -> 14.
+-    const int n = om::ftol(repair_rate * 900.0);
++    const int n = om::ftol(chop::mul(repair_rate, 900.0));
+     return n > 1 ? n : 1;   // floor at 1: a zero rate must not divide by zero
+ }
+ 
+@@ -39,9 +39,9 @@
+     // override and BYPASSES RefundPercent. [RE-GATE APPLIED §D0.2] GAREFN and
+     // NAREFN -- both rostered -- set Soylent=300, so this branch is REACHED in
+     // the clone today: a refinery refunds 300, not trunc(2000 * 0.50) = 1000.
+-    if (soylent != 0) return om::ftol(static_cast<double>(soylent) * country_mult);
++    if (soylent != 0) return om::ftol(chop::mul(static_cast<double>(soylent), country_mult));
+     // v = ftol(Cost * HouseCostMult * CountryCostMult)
+-    const int v = om::ftol(static_cast<double>(cost) * house_mult * country_mult);
++    const int v = om::ftol(chop::mul(chop::mul(static_cast<double>(cost), house_mult), country_mult));
+     // RefundPercent is applied ONLY when the owning house is human-controlled
+     // (TEST AL,AL / JZ at 0x00711399). An AI house receives the UNSCALED value.
+     if (!owner_is_human) return v;
+diff -ruN a/engine/roster2.cpp b/engine/roster2.cpp
+--- a/engine/roster2.cpp
++++ b/engine/roster2.cpp
+@@ -119,7 +119,7 @@
+ }
+ 
+ int reload_cycle_frames(double reload_rate_minutes) {
+-    return std::max(1, om::ftol(reload_rate_minutes * 900.0));
++    return std::max(1, om::ftol(chop::mul(reload_rate_minutes, 900.0)));
+ }
+ 
+ int first_free_pad(const std::vector<int>& pad_owner) {
+diff -ruN a/engine/world_depth.cpp b/engine/world_depth.cpp
+--- a/engine/world_depth.cpp
++++ b/engine/world_depth.cpp
+@@ -2,6 +2,7 @@
+ // World members kept in their own TU (the building_combat.cpp precedent);
+ // world.cpp only calls step_depth and the engineer-at-hut hook.
+ // Every behaviour is cited to docs/re/world-depth.md (gamemd.exe anchors).
++#include "chop_math.hpp"
+ #include <algorithm>
+ #include <cmath>
+ 
+@@ -509,14 +510,14 @@
+         // veterancy is the BUILDING's own (never veteran), the 0..2 jitter is
+         // rearm_frames_for's Random(0,2).
+         int rof = w.rof / static_cast<int>(b.occupants.size());
+-        if (depth_rules_.occupy_rof_mult > 1.0) rof = ftol(rof / depth_rules_.occupy_rof_mult);
++        if (depth_rules_.occupy_rof_mult > 1.0) rof = ftol(chop::div(rof, depth_rules_.occupy_rof_mult));
+         if (w7_rules_.armed) {
+             // W7-07-14 [RE: FUN_006FC460]: ftol((ROF * houseROF + Random(0,2))
+             // / occupants / OccupyROFMultiplier) -- the jitter and the house
+             // ROF before the divisions (ROF 20, 5 occupants: a constant 3).
+-            double t = w.rof * house_rof_mul(b.house) + combat_rng_.random(0, 2);
+-            t /= static_cast<double>(b.occupants.size());
+-            if (depth_rules_.occupy_rof_mult > 1.0) t /= depth_rules_.occupy_rof_mult;
++            double t = chop::add(chop::mul(w.rof, house_rof_mul(b.house)), combat_rng_.random(0, 2));
++            t = chop::div(t, static_cast<double>(b.occupants.size()));
++            if (depth_rules_.occupy_rof_mult > 1.0) t = chop::div(t, depth_rules_.occupy_rof_mult);
+             b.garrison_rearm_frames = ftol(t);
+         } else {
+             b.garrison_rearm_frames = rearm_frames_for(rof, &combat_rng_);
+@@ -529,7 +530,7 @@
+         shooter.fy = cy;
+         shooter.cell_x = static_cast<int>(om::lround(cx));
+         shooter.cell_y = static_cast<int>(om::lround(cy));
+-        shooter.w_damage = ftol(w.damage * depth_rules_.occupy_damage_mult);
++        shooter.w_damage = ftol(chop::mul(w.damage, depth_rules_.occupy_damage_mult));
+         shooter.w_rof = rof;
+         shooter.w_range = range;
+         shooter.w_verses = w.verses;
+diff -ruN a/tests/test_chop_math.cpp b/tests/test_chop_math.cpp
+--- a/tests/test_chop_math.cpp
++++ b/tests/test_chop_math.cpp
+@@ -35,3 +35,37 @@
+     for (const Row& r : rows)
+         CHECK(om::ftol(chop::mul(static_cast<double>(r.dmg), chop::percent(r.pct))) == r.want);
+ }
++
++TEST_CASE("chop: mul and div match exact truncation on random operands") {
++    struct R { double a, b; std::uint64_t mul, div; };
++    const R rows[] = {
++        {-352.3344703336753, 75.42543611307704, 0xC0D9F3BECA0E9EF5ull, 0xC012AF67FBC02A57ull},
++        {301.8689460797075, 36.21907089748471, 0x40C55AB4D5503E58ull, 0x4020AB479048E683ull},
++        {71.76400861337834, 182.84509276737586, 0x40C9A0D93124FFADull, 0x3FD91E7A9B619913ull},
++        {-884.0021504505864, 253.71835915897697, 0xC10B60FC99D0D2BCull, 0xC00BDF9D50487D7Aull},
++        {-925.0086831160303, 216.8234081855093, 0xC1087B9C483DF2D3ull, 0xC0111092B18FD10Full},
++        {-860.2891528507621, 45.357415958919184, 0xC0E30D8FC640C09Cull, 0xC032F78626D5724Cull},
++        {-150.96162171497213, 413.42623548389435, 0xC0EE796FD6C779F6ull, 0xBFD75E9448849867ull},
++        {-752.3960777007088, 111.62025906454267, 0xC0F480EA5261106Full, 0xC01AF673F2D4F515ull},
++        {254.86644481117855, 473.85452351956036, 0x40FD7C19E25FC7FEull, 0x3FE13621F949797Cull},
++        {154.20589723499734, 198.34084064491543, 0x40DDDE54F251B9DBull, 0x3FE8E11C42ED71C9ull},
++        {952.51021118584, 23.292293726197524, 0x40D5AA89728AFAA8ull, 0x40447267C5679F87ull},
++        {716.936918097359, 144.8053535565518, 0x40F95884DCC93779ull, 0x4013CDDD1ACBBD7Full},
++        {-711.4898332851249, 58.897001246946104, 0xC0E47613C35D4402ull, 0xC02829150BB8F6C9ull},
++        {-383.03635179613127, 408.06336343365655, 0xC1031478D0F5C77Aull, 0xBFEE09932C23C219ull},
++        {-638.547240152125, 290.80050023106946, 0xC106AACEDAD80E5Cull, 0xC001910D1D8A664Dull},
++        {277.826937852368, 186.1993989653229, 0x40E94266AEDAA239ull, 0x3FF7DF9D930A2E5Eull},
++        {95.48893141911572, 31.3954246976866, 0x40A76BD4C3BBE31Dull, 0x400854F9BAFA715Bull},
++        {-880.7976600675347, 102.98015045095046, 0xC0F6250ACF0E2552ull, 0xC0211B2D8CBD23D5ull},
++        {360.79994636357173, 213.79672524239578, 0x40F2D51D8D500B2Bull, 0x3FFB005825A4E173ull},
++        {-371.705659246417, 292.78134619195583, 0xC0FA91C7BB9A2E14ull, 0xBFF45025EE2B7C5Full},
++        {-93.63124725844932, 149.88419866484432, 0xC0CB68EC17708F8Aull, 0xBFE3FD771A56F63Eull},
++        {588.7589630449822, 349.4975178703519, 0x41091E4E5EA26009ull, 0x3FFAF411763AC1FCull},
++        {-511.80697855569423, 287.21228070562523, 0xC101F1A9FF2A1BFEull, 0xBFFC82FF0FCB39D6ull},
++        {50.393007622902815, 437.56887264921886, 0x40D5889A5696B773ull, 0x3FBD7B82F908E2C1ull},
++    };
++    for (const R& r : rows) {
++        CHECK(bits(chop::mul(r.a, r.b)) == r.mul);
++        CHECK(bits(chop::div(r.a, r.b)) == r.div);
++    }
++}
+diff -ruN a/tests/test_production.cpp b/tests/test_production.cpp
+--- a/tests/test_production.cpp
++++ b/tests/test_production.cpp
+@@ -61,9 +61,9 @@
+     bs[0].hp = 50;
+     CHECK(power_totals(bs, t, 0).output == 100);         // ftol(50/100*200)
+     bs[0].hp = 33;
+-    CHECK(power_totals(bs, t, 0).output == 66);          // ftol(66.0) -- truncation
++    CHECK(power_totals(bs, t, 0).output == 65);          // 33/100 chops below .33: 65.99.. -> 65 (nearest rounding gave 66)
+     bs[0].hp = 1;
+-    CHECK(power_totals(bs, t, 0).output == 2);
++    CHECK(power_totals(bs, t, 0).output == 1);          // 0.01 chops below 1/100
+     bs[1].hp = 1;
+     CHECK(power_totals(bs, t, 0).drain == 10);           // FUN_0044E880: no scaling
+ }
+@@ -481,3 +481,16 @@
+     CHECK(count_factories(bs, 1, {2}) == 1);
+     CHECK(count_factories(bs, 0, {1, 2}) == 3);
+ }
++
++TEST_CASE("power_totals: a damaged plant outputs ftol(chop(hp / Strength) * Power) [0x0044E85F]") {
++    auto t = roster();
++    Building plant = live(1);
++    plant.max_hp = 750;
++    plant.hp = 750;
++    std::vector<Building> bs{plant};
++    CHECK(power_totals(bs, t, 0).output == 200);
++    bs[0].hp = 600;   // 80%: 0.8 chops below 4/5, so 159 of 200
++    CHECK(power_totals(bs, t, 0).output == 159);
++    bs[0].hp = 375;   // exactly half: 100
++    CHECK(power_totals(bs, t, 0).output == 100);
++}
+diff -ruN a/tests/test_roster2.cpp b/tests/test_roster2.cpp
+--- a/tests/test_roster2.cpp
++++ b/tests/test_roster2.cpp
+@@ -156,7 +156,7 @@
+ }
+ 
+ TEST_CASE("roster2 airfield: reload cadence ftol(ReloadRate*900) and pad pick [RE: TL;DR 10]") {
+-    CHECK(reload_cycle_frames(0.3) == 270);
++    CHECK(reload_cycle_frames(0.3) == 269);   // chop: 0.3 * 900 is 269.99.. (was 270)
+     CHECK(reload_cycle_frames(0.0) == 1);
+     CHECK(first_free_pad({-1, -1, -1, -1}) == 0);
+     CHECK(first_free_pad({3, -1, 5, -1}) == 1);
