@@ -599,18 +599,60 @@ two-house World).
 
 | Key(s) | Used by | gamemd / reference | Effort |
 |---|---|---|---|
-| `Bunker=yes` / `Bunkerable=no` (the Tank Bunker mechanic) | `NATBNK`; 17 vehicles opt out (`Bunkerable=no`: MCVs, miners, V3, Terror Drone...) | `+0x2E4` building<->unit link, `FUN_00459301` (already named in `world_w7.cpp`); the whole garrison-by-vehicle feature is missing | L |
 | `ExitCoord=` | `GAWEAP`/`NAWEAP`/`YAWEAP` (512,256,0), `GAPILE`/`YABRCK` (-64,64,0) | `factory.cpp` `exit_cell` drops it ("cell resolution"); retail spawns the unit at the exit coordinate and lets it drive out | M |
 | `CrateBeneath=` / `CrateBeneathIsMoney=` | 14 civilian buildings | `BuildingClass::AfterDestruction @ 0x00441F60`, crate tail `0x004421A4..0x0044222D`: `Place_Crate` at the origin cell, powerup Money or random, lobby Crates option not consulted. Our crate store only exists once `enable_crates` ran, so it needs that split first | M |
-| `TypeImmune=yes` | `YURI`, `DLPH` | Damage is ignored when the attacker has the same type AND the same owner (friendly splash only), see `Receive_Damage` gate list | S (five damage sites in `combat.cpp`) |
 | `HarvestRate=` on slaves | `SLAV` (150) | vera20k `infantry_mission_harvest` (`0x00522E70`): one level per `HarvestRate` frames. The engine digs one bale per second (`kGulpSecs`). Unit of "frames" and the payout per level need a binary check before changing the economy | S, risky |
 | `CloakingSpeed=` | `SUB`, `SQD`, `DLPH`, `BSUB` | Our cloak is a state flag with no fade; the key only changes the fade length and the re-cloak step | S |
 | `GateCloseDelay=` | `GAGATE_A` | Allied gate: the gate stays open this long after the mover has passed; our gate opens for allied movers on the path only | S |
 | `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
-| `RevealToAll=`, `RadarVisible=`, `DetectDisguiseRange=` | tech buildings, `NAPSIS` | reveal-on-capture, minimap visibility of neutral buildings, spy detection radius | S each |
+| `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | S each |
 | `Immune=yes` | `CABHUT` | take no damage | S |
 | `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
 | `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
 
 Real-data suite (`RA2_INSTALL_DIR=/home/mmurphy/rp-steam/game/RA2 ra2assets_tests`): 1284 cases, 0 skipped, all
 pass with patch 0140.
+
+### Tank Bunker and the Yuri audit (patches 0240 and 0241, 2026-11-25)
+
+**Landed (0240):** the Tank Bunker mechanic. Rules `Bunker=` / `Bunkerable=`, `[CombatDamage]`
+`BunkerDamageMultiplier` / `BunkerROFMultiplier` / `BunkerWeaponRangeBonus` (1.3 / 1.3 / 2 in retail),
+`[AudioVisual]` `BunkerWallsUpSound` / `BunkerWallsDownSound`. Admission follows `FUN_0070FB50` as
+vera20k documents it (read only, nothing copied): `Bunkerable`, a `Turret=`, a weapon, SpeedType not
+Hover, no parasite on board; the building must be own, idle, not selling and free. The vehicle stays a
+live unit (its own targeting, turret and projectiles fire from the pad) and carries the three
+multipliers in `UnitW7::bunker_*`; every scan, splash and direct hit skips a bunkered vehicle so the
+bunker is what an enemy hits, and a manned bunker counts as armed. It leaves on Deploy (the selected
+bunker), sell, destruction, capture or an owner change (mind control). AI: script action 61 is
+`EnterTankBunker` (`FUN_004DFF40`, the stock "Yuri Unit Hunter" script uses it). Save format 68.
+Tests: `tests/test_tank_bunker.cpp` (real `rulesmd`: exactly one `Bunker=yes` building, 17
+`Bunkerable=no` vehicles, the three multipliers, the four `PenetratesBunker` warheads; a synthetic
+world on the real map for the rest).
+
+**Open (bunker):**
+- The retail install is a state machine (`UpdateBunker @ 0x00458E50`: scatter the occupy cells, turn to
+  the building, force-track onto the centre, turn south, raise the walls, then link). Here the vehicle
+  walks beside the bunker and settles in one step; there is no wall-rise delay.
+- `PenetratesBunker` (`Super`, `Crush`, `ORCAAP`, `DiskWH` warheads): in retail such a shot hurts the
+  vehicle instead of the bunker. Not read; they hurt the bunker like anything else. The Floating Disc
+  laser (`DiskWH`) is the one players meet.
+- Walls: `SpecialAnim` (in front of the tank), `SpecialAnimTwo` (behind) and `SpecialAnimThree`
+  (falling) start on the occupancy edge in `pres_bldanim.inc`; their depth against the vehicle's draw
+  order was compiled but never looked at on a screen.
+- Allied vehicles are refused (own house only); retail's rule for an ally was not read from the binary.
+
+**Landed (0241):** `TypeImmune=` (same type, same owner: no damage) and `DetectDisguiseRange=` (the
+Psychic Sensor sees through spy and Mirage disguises inside 15 cells while powered).
+`tests/test_yuri_audit.cpp` resolves all 36 weapons of the Yuri roster (infantry, tanks, Disc, Chaos
+Drone, Slave Miner, Magnetron, Mastermind, the buildings' own guns) and compares damage, ROF, range,
+burst, minimum range, OmniFire, CellSpread, PercentAtMax, AffectsAllies and the eleven `Verses` with
+the retail ini: all agree, so weapons, warheads and veterancy of the Yuri tree need no change.
+
+**Yuri keys still unread (little of it changes a fight):** `ExitCoord=` (the factory door stays the
+deterministic south-first ring cell; honouring it moves every produced unit's first cell, so it needs
+its own save/replay-visible patch and the door art), `RevealToAll=` (`YAGNTC`, `YAPPET`),
+`LeadershipRating=` (team leader pick), `HarvestRate=` (`SLAV`), `Unnatural=`, `TiberiumProof=`,
+`ImmuneToVeins=`, `Bombable=`, `ProtectWithWall=`, `BerserkFriendly=` (Chaos Drone), and on weapons
+`FireWhileMoving=no` (`DiskDrain`) and `RevealOnFire=no` (`Virusgun`). `Poison=yes` belongs to the `VirusGas` warhead
+of a map gas cloud, not to the Virus soldier, whose `ImmuneToPoison=` therefore has nothing to resist.
+

@@ -1,0 +1,1253 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ed36a38..ccf79c6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -160,7 +160,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_w7_airnav.cpp)   # wave-7 air/
+ target_sources(ra2assets_tests PRIVATE tests/test_w8_misc.cpp)   # wave-8 fix (w8fix-misc)
+ # G16 world depth (agent G): bridges (pure) + the World garrison/bridge members.
+ target_sources(ra2assets_tests PRIVATE engine/inf_anim.cpp tests/test_inf_anim.cpp)   # W3-B
+-target_sources(ra2assets_tests PRIVATE engine/bridges.cpp engine/world_depth.cpp
++target_sources(ra2assets_tests PRIVATE engine/bridges.cpp engine/world_depth.cpp engine/world_bunker.cpp tests/test_tank_bunker.cpp
+                                        tests/test_bridges.cpp tests/test_high_bridges.cpp
+                                        tests/test_w8_bridges.cpp)   # wave-8 bridges
+ # building.cpp is pure C++17 (no SDL): BuildingTypeDef/Building struct defs,
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 6e25bd6..201872e 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -176,6 +176,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/net_frame_crc.cpp   # W9-01-04 per-frame lockstep CRC
+     ${RA2_ROOT}/engine/bridges.cpp
+     ${RA2_ROOT}/engine/world_depth.cpp
++    ${RA2_ROOT}/engine/world_bunker.cpp          # Tank Bunker (Rallypoint 0240)
+     ${RA2_ROOT}/engine/inf_anim.cpp      # W3-B infantry DoType machine
+     # Gap fix C (combat/units/movement)
+     ${RA2_ROOT}/engine/weapon.cpp
+diff --git a/engine/ai_team.cpp b/engine/ai_team.cpp
+index b326ff6..91f0deb 100644
+--- a/engine/ai_team.cpp
++++ b/engine/ai_team.cpp
+@@ -32,6 +32,7 @@ OpClass classify_op(int action) {
+         case kSaWaitLoaded:           return OpClass::WaitLoaded;   // W2-SK-09
+         case kSaUnload:               return OpClass::Unload;       // W2-SK-09
+         case kSaDeploy:               return OpClass::Deploy;       // W2-SK-10
++        case kSaRemoveIfB:            return OpClass::EnterBunker;  // 61: vfunc +0x344 = EnterTankBunker
+         case kSaIronCurtainMe:        return OpClass::IronCurtainMe;   // W6-03-05
+         case kSaChronoPrepAB:
+         case kSaChronoPrepAQ:         return OpClass::ChronoPrep;      // W6-03-05
+@@ -329,6 +330,10 @@ TeamCommand step_team(TeamInstance& team, const TeamView& view,
+                     c.kind = TeamCommand::Kind::Deploy;
+                     advance();
+                     return c;
++                case OpClass::EnterBunker:
++                    c.kind = TeamCommand::Kind::EnterBunker;
++                    advance();
++                    return c;
+                 // W6-03-05 [RE: FUN_006ef1d0 / FUN_006ef3c0 / FUN_006ef690]:
+                 // fire-and-complete, wait, or complete without firing.
+                 case OpClass::IronCurtainMe:
+diff --git a/engine/ai_team.hpp b/engine/ai_team.hpp
+index 8eee50d..d9d8404 100644
+--- a/engine/ai_team.hpp
++++ b/engine/ai_team.hpp
+@@ -101,7 +101,8 @@ enum class OpClass {
+     MoveFriendlyBuilding, GatherEnemy, RegroupBase, TimedGuard, DoMission,
+     Scatter, Jump, Success, Inert,
+     Load, WaitLoaded, Unload, Deploy,  // W2-SK-09/10: 14 / 43 / 8 / 9
+-    IronCurtainMe, ChronoPrep          // W6-03-05: 55 / 56-57
++    IronCurtainMe, ChronoPrep,         // W6-03-05: 55 / 56-57
++    EnterBunker                        // 61: each member that can drives into the nearest free own Tank Bunker
+ };
+ OpClass classify_op(int action);  // [G-61: the 0..64 executor table]
+ 
+@@ -151,7 +152,8 @@ struct TeamView {
+ struct TeamCommand {
+     enum class Kind { None, MoveTeam, AttackQuarry, GuardArea, Wait, Inert,
+                       Load, Unload, Deploy,     // W2-SK-09/10
+-                      IronCurtain, ChronoShift };   // W6-03-05 (55 / 56-57)
++                      IronCurtain, ChronoShift,   // W6-03-05 (55 / 56-57)
++                      EnterBunker };              // Tank Bunker (0240): action 61, EnterTankBunker FUN_004DFF40 per member
+     Kind kind = Kind::None;
+     int x = 0, y = 0;      // MoveTeam goal / GuardArea center
+     int radius = 0;        // GuardArea radius (kAiGatherRadius)
+diff --git a/engine/ai_unit.cpp b/engine/ai_unit.cpp
+index e8963e9..ae533a4 100644
+--- a/engine/ai_unit.cpp
++++ b/engine/ai_unit.cpp
+@@ -90,7 +90,7 @@ void World::step_ai_unit_rules() {
+                 if (has_target && in_deploy_range(u, tx, ty, tz)) order_deploy(i);
+                 continue;
+             }
+-            if (u.moving() || u.enter_target >= 0 || u.occupy_target >= 0) {
++            if (u.moving() || u.enter_target >= 0 || u.occupy_target >= 0 || u.w7.bunker_target >= 0 || u.w7.bunker_of >= 0) {
+                 u.ai.guard_since = -1;
+                 continue;
+             }
+diff --git a/engine/building.hpp b/engine/building.hpp
+index ae11273..0412a19 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -110,6 +110,7 @@ struct BuildingTypeDef {
+     bool can_be_occupied = false;   // CanBeOccupied=     (BuildingType +0x157B)
+     bool can_occupy_fire = false;   // CanOccupyFire=     (+0x157C)
+     int max_occupants = 0;          // MaxNumberOccupants= (+0x1580)
++    bool bunker = false;            // Bunker=yes: a Tank Bunker (one vehicle, Rallypoint 0240)
+     // Rallypoint: Yuri Grinder / Bio Reactor (rulesmd YAGRND / YAPOWR).
+     bool grinding = false;          // Grinding=          (YAGRND)
+     bool infantry_absorb = false;   // InfantryAbsorb=    (YAPOWR Bio Reactor)
+diff --git a/engine/building_combat.cpp b/engine/building_combat.cpp
+index 034f6ab..90e9147 100644
+--- a/engine/building_combat.cpp
++++ b/engine/building_combat.cpp
+@@ -341,7 +341,7 @@ void World::step_building_combat(double dt) {
+                 if (o.type < 0 || o.type >= static_cast<int>(types.size())) return false;
+                 const BuildingTypeDef& ot = types[static_cast<std::size_t>(o.type)];
+                 if (ot.wall || ot.insignificant || o.iron_left_frames > 0.0) return false;
+-                const bool armed = ot.armed || (ot.can_occupy_fire && !o.occupants.empty());
++                const bool armed = ot.armed || (ot.can_occupy_fire && !o.occupants.empty()) || o.w7.bunker_unit >= 0;
+                 if (!armed && !(house_is_computer(b.house) && ai_threat_any_building())) return false;
+                 if (!object_visible_at(b.house, o.cx, o.cy)) return false;
+                 const int s = bld_slot(o);
+diff --git a/engine/combat.cpp b/engine/combat.cpp
+index 12f1c31..43bef07 100644
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -68,7 +68,7 @@ bool valid_target(const std::vector<Unit>& units, const World& world, const Unit
+     // target (its cell is not "seen" in the water layer).
+     // Chaos gas (Psychedelic warhead): a confused unit takes every other unit for an enemy.
+     const bool hostile = world.is_enemy(self.house, v.house) || (&v != &self && world.unit_confused(self));
+-    return v.alive && v.die_time < 0.0 && v.cargo_of < 0 && hostile &&
++    return v.alive && v.die_time < 0.0 && v.cargo_of < 0 && v.w7.bunker_of < 0 && hostile &&   // a bunkered vehicle is not a target
+            !world.unit_hidden_from(self.house, v) && unit_weapon_for_unit(self, v) >= 0;
+     // Multi-house/Alliances [RE: multihouse.md §3/§4]: hostility routes through
+     // World::is_enemy. carried: untargetable (CB-1).
+@@ -80,14 +80,21 @@ bool valid_target(const std::vector<Unit>& units, const World& world, const Unit
+     // that armor at all. unit_weapon_for_unit picks primary, else secondary.
+ }
+ 
++// Tank Bunker (Rallypoint 0240): a bunkered vehicle's shots hit
++// BunkerDamageMultiplier harder; neutral (1.0) everywhere else.
++static int shot_damage(const Unit& u) {
++    return u.w7.bunker_dmg == 1.0 ? u.w_damage : om::ftol(chop::mul(u.w_damage, u.w7.bunker_dmg));
++}
++
+ // Range (cells) of unit u's weapon slot `slot` without activating it: the
+ // active slot's live w_range (it may carry vet/IFV adjustments), else the
+ // type data of the other slot.
+ double slot_range(const Unit& u, int slot) {
+-    if (slot == u.w_active) return u.w_range;
+-    if (slot == 1) return secondary_view(u).range;
+-    if (u.vet.recv && is_elite(u.vet.veterancy) && u.vet.has_elite) return u.vet.elite.range;
+-    return u.vet.base.range;
++    const double bunker = u.w7.bunker_range;   // BunkerWeaponRangeBonus, 0 outside a Tank Bunker
++    if (slot == u.w_active) return u.w_range + bunker;
++    if (slot == 1) return secondary_view(u).range + bunker;
++    if (u.vet.recv && is_elite(u.vet.veterancy) && u.vet.has_elite) return u.vet.elite.range + bunker;
++    return u.vet.base.range + bunker;
+ }
+ 
+ // W6-02-11 [RE: the threat scan FUN_006F8320 @0x6F8520..0x6F8678 takes its
+@@ -375,7 +382,7 @@ bool w7_greatest_threat(const World& world, std::vector<Unit>& units, std::vecto
+             // R-064 [RE: Evaluate_Object @0x6F7ADB]: a human unit skips an
+             // unarmed building, a computer unit may pick any.
+             if (b.type < 0 || b.type >= static_cast<int>(bt.size()) ||
+-                (!bt[static_cast<std::size_t>(b.type)].armed &&
++                (!bt[static_cast<std::size_t>(b.type)].armed && b.w7.bunker_unit < 0 &&   // a manned Tank Bunker is armed
+                  !(world.house_is_computer(u.house) && world.ai_threat_any_building())))
+                 continue;
+             if (!world.is_enemy(u.house, b.house) || !world.legal_threat_building(u.house, b) ||
+@@ -443,7 +450,7 @@ int burst_rearm_frames(int& burst_index, int burst, int rof_frames, ProjRng* rng
+     return frames;
+ }
+ 
+-int unit_rearm_frames(Unit& u, ProjRng* rng) {
++static int unit_rearm_frames_base(Unit& u, ProjRng* rng) {
+     if (u.tg.w7_rof && u.tg.rof_raw > 0) {
+         // W7-07-14 [RE: FUN_006FC460 0x6FC55E..0x6FC60C]: r = ftol(ROF *
+         // houseROF + Random(0,2)); with the ROF ability r = ftol(r *
+@@ -466,6 +473,13 @@ int unit_rearm_frames(Unit& u, ProjRng* rng) {
+     return burst_rearm_frames(u.w6.burst_index, u.w6.burst, u.w_rof, rng);
+ }
+ 
++int unit_rearm_frames(Unit& u, ProjRng* rng) {
++    const int frames = unit_rearm_frames_base(u, rng);
++    // Tank Bunker: ROF / BunkerROFMultiplier (a larger multiplier fires faster).
++    if (u.w7.bunker_rof > 1.0) return om::ftol(chop::div(frames, u.w7.bunker_rof));
++    return frames;
++}
++
+ // P2: the single-target damage tail extracted VERBATIM from try_fire's old
+ // else-branch (same statements, same order) so the instant path and the
+ // projectile detonation path share one implementation.
+@@ -481,6 +495,7 @@ void deliver_unit_hit(std::vector<Unit>& units, Occupancy& occ, int attacker_idx
+ void deliver_hit_from(std::vector<Unit>& units, Occupancy& occ, const Unit& u, int attacker_idx,
+                       int attacker_building, int victim_idx) {
+     Unit& v = units[victim_idx];
++    if (v.w7.bunker_of >= 0) return;   // Tank Bunker: a shot already in flight at the vehicle finds only the bunker
+     // W6-04-09 [RE: FUN_004D7250 @0x4D7262: a Sonic warhead on a host with a
+     // parasite (+0x694) -> ParasiteClass::ExitUnit]: marked here, the exit
+     // runs in World::step_abilities (combat.cpp cannot move units).
+@@ -488,7 +503,7 @@ void deliver_hit_from(std::vector<Unit>& units, Occupancy& occ, const Unit& u, i
+     // P5 [RE: veterancy.md V6]: a vet-enabled World arms v.vet.recv; the
+     // receive chain (ArmorMultiplier, STRONGER, max 1) runs BEFORE the Verses.
+     // v.vet.recv is false in every legacy World -> raw == u.w_damage as before.
+-    int raw = u.w_damage;
++    int raw = shot_damage(u);
+     if (v.vet.recv) raw = vet_receive(raw, v.vet);
+     raw = inf_prone_damage(v.ia, raw, u.w_prone_damage);   // W3-B ProneDamage (armed infantry only)
+     // W7-04-14 [RE: FootClass::ReceiveDamage 0x4D7250]: a hit from anything
+@@ -556,7 +571,7 @@ void deliver_building_hit(std::vector<Unit>& units, std::vector<Building>& build
+     Building* b = &buildings[b_idx];
+     // P5 [RE: veterancy.md V6]: a vet-enabled World arms b->vet_recv
+     // (ArmorMultiplier, max 1, then Verses); false in every legacy World.
+-    int raw = u.w_damage;
++    int raw = shot_damage(u);
+     if (b->vet_recv) raw = receive_damage(raw, b->armor_mult, false, 1.0);
+     const int dmg = (b->iron_left_frames > 0.0 || b->warp_remaining > 0) ? 0 : damage_vs(raw, u.w_verses, b->armor_ix);   // W2-AN-04, W7-01-09
+     b->hp -= dmg;
+@@ -597,7 +612,7 @@ void apply_spread_damage(std::vector<Unit>& units, Occupancy& occ, const Unit& a
+     for (int j = 0; j < static_cast<int>(units.size()); ++j) {
+         Unit& w = units[j];
+         if (!w.alive || w.die_time >= 0.0) continue;                  // dead/dying: skip
+-        if (w.cargo_of >= 0) continue;                               // carried: off-map
++        if (w.cargo_of >= 0 || w.w7.bunker_of >= 0) continue;        // carried: off-map; bunkered: the bunker takes the blast
+         // Gap fix C (G-44): the blast stays in its own layer -- an AA burst at
+         // an airborne target hits airborne units, a ground blast ground units
+         // (the original's 3-D distance; the clone has no shared Z scale).
+@@ -615,7 +630,7 @@ void apply_spread_damage(std::vector<Unit>& units, Occupancy& occ, const Unit& a
+         // P5 [RE: veterancy.md V6]: the receive chain runs on the full hit
+         // before the falloff/Verses; only when the victim's hook is armed
+         // (never in a legacy World -> the base expression is unchanged).
+-        const int full = w.vet.recv ? vet_receive(attacker.w_damage, w.vet) : attacker.w_damage;
++        const int full = w.vet.recv ? vet_receive(shot_damage(attacker), w.vet) : shot_damage(attacker);
+         const int base = inf_prone_damage(w.ia, om::ftol(full * scale),   // trunc (combat.md §3)
+                                           attacker.w_prone_damage);                // W3-B ProneDamage
+         const int dmg = damage_vs(base, attacker.w_verses, w.armor_ix);
+@@ -819,7 +834,7 @@ bool weapon_in_range_from(const World& world, const Unit& u, int ux, int uy, int
+         ty = lept_cell(ty) * 256;
+     }
+     if (range_infinite(u.w_range)) return true;   // fv7c [RE: FUN_006F6750 head]
+-    int range = ftol_i(u.w_range * 256.0) + extra;
++    int range = ftol_i((u.w_range + u.w7.bunker_range) * 256.0) + extra;   // Tank Bunker range bonus
+     if (u.w_proj.subject_to_elevation)
+         range += elevation_bonus(world, world.cell_bridge_level(lept_cell(ux), lept_cell(uy)) -   // w8fix-layer:
+                                             world.cell_bridge_level(lept_cell(tx), lept_cell(ty)));   // FUN_00487C60
+@@ -966,7 +981,7 @@ AreaResult damage_area(const World& world, std::vector<Unit>& units,
+     std::vector<Hit> hits;
+     for (int j = 0; j < static_cast<int>(units.size()); ++j) {
+         const Unit& w = units[static_cast<std::size_t>(j)];
+-        if (!w.alive || w.die_time >= 0.0 || w.cargo_of >= 0) continue;
++        if (!w.alive || w.die_time >= 0.0 || w.cargo_of >= 0 || w.w7.bunker_of >= 0) continue;   // Tank Bunker: the bunker takes the blast
+         if (j == src_unit) continue;                                 // the source itself
+         const bool air = unit_airborne(w);
+         if (air && iz <= ground_z) continue;     // ground burst: the air layer is not scanned
+@@ -994,7 +1009,7 @@ AreaResult damage_area(const World& world, std::vector<Unit>& units,
+         if (w.an.iron_left_frames > 0.0 || w.warp_remaining > 0) continue;   // W2-AN-04 Iron Curtain, W7-01-09 erase
+         // TechnoClass::ReceiveDamage: the house/veterancy armour multipliers on
+         // the raw damage, floor 1 (P5 vet_receive; W3-B ProneDamage first).
+-        int raw = shooter.w_damage;
++        int raw = shot_damage(shooter);
+         if (w.vet.recv) raw = vet_receive(raw, w.vet);
+         raw = inf_prone_damage(w.ia, raw, shooter.w_prone_damage);
+         if (raw < 1) raw = 1;
+@@ -1073,7 +1088,7 @@ AreaResult damage_area(const World& world, std::vector<Unit>& units,
+                 if (d > radius) continue;
+                 if (spared(b.house)) continue;
+                 if (b.iron_left_frames > 0.0 || b.warp_remaining > 0) continue;   // W2-AN-04, W7-01-09
+-                int raw = shooter.w_damage;
++                int raw = shot_damage(shooter);
+                 if (b.vet_recv) raw = receive_damage(raw, b.armor_mult, false, 1.0);
+                 if (raw < 1) raw = 1;
+                 int dmg = modify_damage(raw, shooter.w_verses, b.armor_ix, shooter.w_cell_spread,
+@@ -1779,7 +1794,7 @@ std::vector<MoveRequest> step_combat(const World& world, std::vector<Unit>& unit
+                             // house's unit skips a building with no weapon; a
+                             // computer house's unit may pick any enemy building.
+                             if (b.type < 0 || b.type >= static_cast<int>(bt.size()) ||
+-                                (!bt[b.type].armed && !(world.house_is_computer(u.house) && world.ai_threat_any_building())))
++                                (!bt[b.type].armed && b.w7.bunker_unit < 0 && !(world.house_is_computer(u.house) && world.ai_threat_any_building())))
+                                 continue;
+                             if (!world.is_enemy(u.house, b.house)) continue;
+                             if (!world.legal_threat_building(u.house, b)) continue;   // W6-02-07/08
+diff --git a/engine/command.cpp b/engine/command.cpp
+index 4b4ded4..0d09a79 100644
+--- a/engine/command.cpp
++++ b/engine/command.cpp
+@@ -299,6 +299,7 @@ void apply_deploy(World& w, const Command& c) {
+         if (t.is_building() && bld_ok(w, t.id)) {
+             const Building& b = w.buildings()[static_cast<std::size_t>(t.id)];
+             if (b.house == H && !b.occupants.empty()) w.unload_occupants(t.id);
++            else if (b.house == H && b.w7.bunker_unit >= 0) w.bunker_release(t.id);   // Tank Bunker: Deploy unloads it
+         }
+     const std::vector<int> ids = unit_whom(c);
+     w.group_unload(H, ids);
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index 2c44fa3..e32df04 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -156,7 +156,8 @@
+         c.type = ra2engine::EventType::Deploy;
+         const int sb = input_.selected_building();
+         if (sb >= 0 && sb < static_cast<int>(world_.buildings().size()) &&
+-            world_.buildings()[sb].house == local_house_ && !world_.buildings()[sb].occupants.empty())
++            world_.buildings()[sb].house == local_house_ &&
++            (!world_.buildings()[sb].occupants.empty() || world_.buildings()[sb].w7.bunker_unit >= 0))   // Tank Bunker unloads too
+             c.whom.push_back(ra2engine::Target::building(sb));
+         int first = -1;
+         for (int i : input_.selection().ids()) {
+diff --git a/engine/input.hpp b/engine/input.hpp
+index 670ca68..43f32fc 100644
+--- a/engine/input.hpp
++++ b/engine/input.hpp
+@@ -16,7 +16,7 @@ namespace ra2engine {
+ // A parachuting unit is temporarily off-map but remains selectable. Other
+ // non-negative cargo markers (transport and garrison) still mean carried.
+ inline bool carried(const Unit& u) {
+-    return u.cargo_of >= 0 && u.cargo_of != kParachuteCargo;
++    return (u.cargo_of >= 0 && u.cargo_of != kParachuteCargo) || u.w7.bunker_of >= 0;   // Tank Bunker: off limits to the player
+ }
+ 
+ // Reports what handle() did since the last take_actions() call, for audio
+diff --git a/engine/input_original.cpp b/engine/input_original.cpp
+index 8734119..7d3caa9 100644
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -183,6 +183,7 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
+                 const auto& sbt = world_.btypes()[static_cast<std::size_t>(SB.type)];
+                 if (sbt.infantry_absorb || sbt.can_be_occupied) return Action::Deploy;
+             }
++            if (selected_building_valid() && b == selected_building_ && SB.w7.bunker_unit >= 0) return Action::Deploy;   // Tank Bunker
+             return Action::SelectBuilding;
+         }
+         if (selected_building_valid() &&
+@@ -339,7 +340,7 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
+             for (int si : sel_.ids()) {
+                 if (si >= static_cast<int>(us.size())) break;
+                 if (!world_.controllable(us[si].house) || !us[si].alive || us[si].die_time >= 0.0) continue;
+-                if (world_.can_occupy(si, b) || world_.can_grind(si, b) || world_.can_absorb(si, b)) {
++                if (world_.can_occupy(si, b) || world_.can_grind(si, b) || world_.can_absorb(si, b) || world_.can_bunker(si, b)) {
+                     want_enter = true;
+                     break;
+                 }
+@@ -380,6 +381,7 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
+                 const auto& bt = world_.btypes()[static_cast<std::size_t>(B.type)];
+                 if (bt.infantry_absorb || bt.can_be_occupied) return Action::Deploy;
+             }
++            if (selected_building_valid() && b == selected_building_ && B.w7.bunker_unit >= 0) return Action::Deploy;   // Tank Bunker
+             return shift ? Action::None : Action::SelectBuilding;
+         }
+         if (world_.is_enemy(world_.order_issuer(), B.house)) return Action::Attack;
+diff --git a/engine/pres_audio_events.inc b/engine/pres_audio_events.inc
+index 10a5443..2856f88 100644
+--- a/engine/pres_audio_events.inc
++++ b/engine/pres_audio_events.inc
+@@ -259,6 +259,10 @@ public:
+             if (e.kind == ra2engine::World::GarrisonEvent::Garrisoned && e.house == g_local_house) {
+                 snd_.eva("EVA_StructureGarrisoned");
+                 snd_.play_at(w5_garrisoned_, cx, cy, "garrisoned");
++            } else if (e.kind == ra2engine::World::GarrisonEvent::BunkerUp) {
++                snd_.play_at(w5_bunker_up_, cx, cy, "bunker walls up");   // Tank Bunker: BunkerWallsUpSound
++            } else if (e.kind == ra2engine::World::GarrisonEvent::BunkerDown) {
++                snd_.play_at(w5_bunker_down_, cx, cy, "bunker walls down");
+             } else if (e.kind == ra2engine::World::GarrisonEvent::Abandoned && e.house == g_local_house &&
+                        radar_event(15, cx, cy)) {
+                 snd_.eva("EVA_StructureAbandoned");
+@@ -298,6 +302,8 @@ private:
+         w5_cheer_ = av("CheerSound");
+         w5_bld_repaired_ = av("BuildingRepairedSound");
+         w5_garrisoned_ = av("BuildingGarrisonedSound");
++        w5_bunker_up_ = av("BunkerWallsUpSound");
++        w5_bunker_down_ = av("BunkerWallsDownSound");
+         static const char* kCrate[7] = {"CrateMoneySound", "CrateRevealSound", "CrateFireSound", "CrateArmourSound",
+                                         "CrateSpeedSound", "CrateUnitSound", "CratePromoteSound"};
+         for (int i = 0; i < 7; ++i) w5_crate_[i] = av(kCrate[i]);
+@@ -312,7 +318,7 @@ private:
+         const std::string cy = av("ConditionYellow");
+         if (!cy.empty()) w5_yellow_ = std::atof(cy.c_str()) / 100.0;
+         for (const std::string& s : {w5_cheer_, w5_bld_repaired_, w5_garrisoned_, w5_heal_crate_, w5_sinking_,
+-                                     w5_repair_bridge_, w5_credit_up_, w5_credit_down_})
++                                     w5_repair_bridge_, w5_credit_up_, w5_credit_down_, w5_bunker_up_, w5_bunker_down_})
+             snd_.ensure_sound(s);
+         for (const std::string& s : w5_crate_) snd_.ensure_sound(s);
+         // Type=SHROUD events are silent over unrevealed cells (local player).
+@@ -907,7 +913,7 @@ private:
+     bool w5_inited_ = false;
+     bool w6_live_ = false;   // W6: past the first tick (initial units are not "created")
+     std::string w5_cheer_, w5_bld_repaired_, w5_garrisoned_, w5_crate_[7], w5_heal_crate_, w5_sinking_,
+-        w5_repair_bridge_, w5_credit_up_, w5_credit_down_;
++        w5_repair_bridge_, w5_credit_up_, w5_credit_down_, w5_bunker_up_, w5_bunker_down_;
+     int w5_credit_ticks_ = 0;
+     double w5_yellow_ = 0.5;
+     std::uint32_t w5_rng_ = 0x5EED5u;   // audio-local (never the sim RNG)
+diff --git a/engine/pres_bldanim.inc b/engine/pres_bldanim.inc
+index 829e96e..ebde4c7 100644
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -61,6 +61,7 @@ struct BldEventState {
+     // Art AnimActive stage on the building's own SHP [RE: Building+0xf8].
+     int anim_active_stage = 0;
+     int anim_active_timer = 0;
++    bool bunker_up = false;        // Tank Bunker: walls raised (a vehicle inside)
+ };
+ std::map<long long, BldEventState> g_bld_events;
+ inline long long bld_event_key(const ra2engine::Building& b) {
+@@ -243,6 +244,21 @@ void pres_bld_anim_tick(const ra2engine::World& w, const BuildingAssets& ba, Pre
+                 else { st.depot = 0; start(st, a, kBsIdle, now); }
+             }
+         }
++        // Tank Bunker [RE: UpdateBunker FUN_00458E50 state 4 / ClearBunker FUN_00459470]:
++        // SpecialAnim (in front of the tank) and SpecialAnimTwo (behind it) rise
++        // with the vehicle inside; SpecialAnimThree plays the walls back down.
++        if (b.w7.bunker_unit >= 0 != st.bunker_up) {
++            st.bunker_up = b.w7.bunker_unit >= 0;
++            if (st.bunker_up) {
++                stop(st, kBsSpecial3);
++                start(st, a, kBsSpecial, now);
++                start(st, a, kBsSpecial2, now);
++            } else {
++                stop(st, kBsSpecial);
++                stop(st, kBsSpecial2);
++                start(st, a, kBsSpecial3, now);
++            }
++        }
+         // Refinery ore dump: a harvester starts unloading here.
+         if (a.slot[kBsSpecial].t && r.refinery) {
+             bool dumping = false;
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 2b5e37c..0332c7a 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -634,6 +634,7 @@ template <class Ar> void fields(Ar& ar, WeaponSlot& v) {
+ template <class Ar> void fields(Ar& ar, World::DepthRules& v) {
+     io(ar, v.occupy_damage_mult); io(ar, v.occupy_rof_mult); io(ar, v.occupy_weapon_range);
+     io(ar, v.bridge_strength); io(ar, v.bridge_destruction); io(ar, v.armed);
++    io(ar, v.bunker_damage_mult); io(ar, v.bunker_rof_mult); io(ar, v.bunker_range_bonus);   // v68: Tank Bunker
+ }
+ template <class Ar> void fields(Ar& ar, World::EnteredEvent& v) {   // W2-CA-01
+     io(ar, v.kind); io(ar, v.unit); io(ar, v.building); io(ar, v.house); io(ar, v.consumed);
+@@ -895,6 +896,7 @@ template <class Ar> void fields(Ar& ar, UnitTypeW7& v) {
+     io(ar, v.deploy_area_fire); io(ar, v.undeploy_delay); io(ar, v.mind_control);
+     io(ar, v.mc_capacity); io(ar, v.mc_infinite); io(ar, v.psychedelic);   // v66: Chaos gas
+     io(ar, v.build_time_mult);
++    io(ar, v.bunkerable);   // v68: Tank Bunker
+ }
+ template <class Ar> void fields(Ar& ar, UnitW7& v) {
+     io(ar, v.t); io(ar, v.blink_left); io(ar, v.redisguise_left); io(ar, v.flash_seen); io(ar, v.hull_aiming);
+@@ -902,9 +904,11 @@ template <class Ar> void fields(Ar& ar, UnitW7& v) {
+     io(ar, v.depot_target); io(ar, v.mc_controller); io(ar, v.mc_victims); io(ar, v.mc_shot);
+     io(ar, v.mc_orig_house);   // v48: skirmish/MP mind-control original house
+     io(ar, v.psy_shot); io(ar, v.confused_until);   // v66: Chaos gas
++    io(ar, v.bunker_of); io(ar, v.bunker_target); io(ar, v.bunker_dmg); io(ar, v.bunker_rof); io(ar, v.bunker_range);   // v68: Tank Bunker
+ }
+ template <class Ar> void fields(Ar& ar, BldW7& v) {
+     io(ar, v.depot_next); io(ar, v.depot_client); io(ar, v.warp_unpowered); io(ar, v.garrison_target_building);
++    io(ar, v.bunker_unit);   // v68: Tank Bunker
+ }
+ template <class Ar> void fields(Ar& ar, UnitAi& v) { io(ar, v.guard_since); }   // W7 (save v35)
+ template <class Ar> void fields(Ar& ar, BldTgt& v) {
+@@ -1148,6 +1152,7 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
+     io(ar, v.can_be_occupied);   // G16
+     io(ar, v.can_occupy_fire);
+     io(ar, v.max_occupants);
++    io(ar, v.bunker);            // v68: Tank Bunker (Bunker=yes)
+     io(ar, v.grinding);          // v51: Yuri Grinder
+     io(ar, v.infantry_absorb);   // v51: Yuri Bio Reactor
+     io(ar, v.extra_power);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index bdef041..8e828af 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 67;   // 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 68;   // 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/selection.hpp b/engine/selection.hpp
+index f2db044..a2510bb 100644
+--- a/engine/selection.hpp
++++ b/engine/selection.hpp
+@@ -53,7 +53,7 @@ public:
+     }
+     // Whether the sim removed unit u from what a player can hold selected.
+     static bool unselectable(const Unit& u) {
+-        return u.cargo_of >= 0 || (!u.alive && u.die_time < 0.0) || u.an.t.spawned;
++        return u.cargo_of >= 0 || u.w7.bunker_of >= 0 || (!u.alive && u.die_time < 0.0) || u.an.t.spawned;
+     }
+     void prune(const World& w) {
+         const std::vector<Unit>& us = w.units();
+diff --git a/engine/unit_orders.cpp b/engine/unit_orders.cpp
+index f475508..fb94fd6 100644
+--- a/engine/unit_orders.cpp
++++ b/engine/unit_orders.cpp
+@@ -12,7 +12,7 @@
+ namespace ra2engine {
+ 
+ namespace {
+-bool orderable(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0; }
++bool orderable(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0 && u.w7.bunker_of < 0; }
+ }  // namespace
+ 
+ void World::order_stop(int idx) {
+diff --git a/engine/unit_w7.hpp b/engine/unit_w7.hpp
+index 9a9f8c3..a7b54f6 100644
+--- a/engine/unit_w7.hpp
++++ b/engine/unit_w7.hpp
+@@ -59,6 +59,9 @@ struct UnitTypeW7 {
+     // W7-04-03 [RE: Time_To_Build FUN_006F3D00 @0x6F3D4E, type +0x608]:
+     // BuildTimeMultiplier= (HTNK / MTNK / LTNK 1.5, TTNK / ROBO 1.3).
+     double build_time_mult = 1.0;
++    // Tank Bunker [RE: TechnoType +0xD2E Bunkerable=; vehicles default yes,
++    // everything else no]: may drive into a Bunker=yes building.
++    bool bunkerable = false;
+ };
+ 
+ // Per-unit state.
+@@ -100,6 +103,16 @@ struct UnitW7 {
+     // Psychedelic warhead (Chaos gas): until this repair_frame() the unit takes
+     // every other unit for an enemy. -1 none.
+     std::int64_t confused_until = -1;
++    // Tank Bunker (Rallypoint 0240) [RE: Techno +0x2E4, FUN_00459301]: the
++    // building this vehicle sits in (-1 none), the bunker it was ordered to
++    // enter (-1 none), and the shot multipliers it carries while inside
++    // ([CombatDamage] BunkerDamageMultiplier / BunkerROFMultiplier /
++    // BunkerWeaponRangeBonus). Neutral values outside a bunker.
++    int bunker_of = -1;
++    int bunker_target = -1;
++    double bunker_dmg = 1.0;
++    double bunker_rof = 1.0;
++    double bunker_range = 0.0;   // cells
+     // (W7-04-08's per-unit missile_holds list was removed in fv7c / save v40:
+     // the PauseFrames + TiltFrames hold lives in the spawn-manager node,
+     // AnUnit::sp_state / sp_timer [RE: SpawnManagerClass::AI FUN_006B68B0 / 0x6B72E0].)
+@@ -117,6 +130,8 @@ struct BldW7 {
+     // W7-02-10: a garrison's structure target (-1 none) -- player-ordered or
+     // auto-acquired by the defence rule (W6-04-13) when no unit is in range.
+     int garrison_target_building = -1;
++    // Tank Bunker: the vehicle inside this Bunker=yes building (-1 empty).
++    int bunker_unit = -1;
+ };
+ 
+ }  // namespace ra2engine
+diff --git a/engine/weapon_resolve.cpp b/engine/weapon_resolve.cpp
+index a550846..d31c807 100644
+--- a/engine/weapon_resolve.cpp
++++ b/engine/weapon_resolve.cpp
+@@ -203,6 +203,7 @@ void fill_unit_w7(const ra2assets::Rules& rules, const std::string& type_id, con
+     w.move_to_shroud = rules.section_flag(type_id, "MoveToShroud", true);
+     w.default_to_guard_area = rules.section_flag(type_id, "DefaultToGuardArea", false);
+     w.has_turret = rules.section_flag(type_id, "Turret", false);
++    w.bunkerable = rules.section_flag(type_id, "Bunkerable", rules.is_vehicle(type_id));
+     w.turret_spins = w.has_turret && rules.section_flag(type_id, "TurretSpins", false);
+     if (tw.slot[0].valid)
+         w.fake_blink = om::ftol(rules.section_double(tw.slot[0].id, "DisguiseFakeBlinkTime", 0.0));
+@@ -253,6 +254,7 @@ void fill_building_weapons(const ra2assets::Rules& rules, const std::string& typ
+     d.can_be_occupied = rules.section_flag(type_id, "CanBeOccupied", false);
+     d.can_occupy_fire = rules.section_flag(type_id, "CanOccupyFire", false);
+     d.max_occupants = om::ftol(rules.section_double(type_id, "MaxNumberOccupants", 0.0));
++    d.bunker = rules.section_flag(type_id, "Bunker", false);   // Tank Bunker
+     d.bridge_repair_hut = rules.section_flag(type_id, "BridgeRepairHut", false);
+     d.w6.gate = rules.section_flag(type_id, "Gate", false);   // R-210
+     fill_gattling(rules, type_id, d.gatt, d.gatt_weapons, d.gatt_weapons_elite);
+diff --git a/engine/world.cpp b/engine/world.cpp
+index b4ccfe1..d116d49 100644
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -902,6 +902,7 @@ void World::update_sub_offsets() {
+     if (!occ_.subcells()) return;
+     for (int i = 0; i < static_cast<int>(units_.size()); ++i) {
+         Unit& u = units_[static_cast<std::size_t>(i)];
++        if (u.w7.bunker_of >= 0) continue;   // Tank Bunker: keeps the offset onto the foundation centre
+         if (!occ_.is_infantry(i)) {
+             u.spot = 0;
+             u.sub_x = u.sub_y = 0.0;
+@@ -1583,6 +1584,8 @@ bool reaches(const Unit& u, Cellxy g) {
+ void World::order_unit_move(int idx, int gx, int gy) {
+     if (idx < 0 || idx >= static_cast<int>(units_.size())) return;
+     Unit& u = units_[idx];
++    if (u.w7.bunker_of >= 0) return;   // Tank Bunker: a bunkered vehicle takes no order until it is unloaded
++    u.w7.bunker_target = -1;           // any other move cancels a pending "enter the bunker"
+     u.tg.area_guard = false;   // W6-02-11: a move order leaves Area_Guard
+     // w7fix-combat: a move order replaces the mission (Sleep / Harmless /
+     // Sticky / Attack Move, a retaliation's saved order, the area-guard home).
+@@ -5434,6 +5437,20 @@ void World::ai_execute_team_command(int house, HouseAiRec& rec, TeamInstance& te
+             }
+             break;
+         }
++        case TeamCommand::Kind::EnterBunker:   // Tank Bunker (0240) [RE: script 61 -> FootClass::EnterTankBunker 0x4DFF40]
++            // Each member that may drives into the nearest own bunker nobody holds
++            // and leaves the team (the original removes a member whose call succeeds).
++            for (int k = static_cast<int>(team.members.size()) - 1; k >= 0; --k) {
++                const int m = team.members[static_cast<std::size_t>(k)];
++                if (m < 0 || m >= (int)units_.size()) continue;
++                const int bi = nearest_free_bunker(m);
++                if (bi < 0) continue;
++                order_bunker(m, bi);
++                if (units_[(std::size_t)m].w7.bunker_target != bi) continue;
++                team.members.erase(team.members.begin() + k);
++                team.member_types.erase(team.member_types.begin() + k);
++            }
++            break;
+         case TeamCommand::Kind::Deploy:   // W2-SK-10: GI sandbags, Desolator rad
+             for (int m : team.members)
+                 if (m >= 0 && m < (int)units_.size() && units_[(std::size_t)m].alive &&
+@@ -6426,6 +6443,7 @@ void World::step(double dt) {
+     // G16 world depth (agent G): garrisons + ground shots / bridges. Inert
+     // unless a garrison order was given or a unit has a ground target.
+     step_depth(dt);
++    step_bunkers();   // Tank Bunker (Rallypoint 0240): arrivals, and release when the bunker dies or is sold
+     // Wave-5 abilities (agent C, world_w5.cpp): stolen tech, prism/tesla/gap,
+     // tech buildings, transports. Inert without wave-5 type data.
+     step_w5(dt);
+diff --git a/engine/world.hpp b/engine/world.hpp
+index e4f9e1c..f30a59f 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -2587,6 +2587,11 @@ public:
+         int bridge_strength = 1500;        // BridgeStrength (+0x1740)
+         bool bridge_destruction = true;    // [CombatDamage] DestroyableBridges && BridgeDestruction
+         bool armed = false;                // set by the real game only (gates never)
++        // Tank Bunker [CombatDamage] BunkerDamageMultiplier / BunkerROFMultiplier /
++        // BunkerWeaponRangeBonus (the stock file says 1.3 / 1.3 / 2).
++        double bunker_damage_mult = 1.0;
++        double bunker_rof_mult = 1.0;
++        int bunker_range_bonus = 0;
+     };
+     void set_depth_rules(const DepthRules& r) { depth_rules_ = r; }
+     const DepthRules& depth_rules() const { return depth_rules_; }
+@@ -2595,6 +2600,21 @@ public:
+     bool garrison_red(const Building& b) const;              // W7-08-09: hp ratio <= ConditionRed
+     bool garrison_attack(int issuer, int b_idx, int unit_target, int bld_target);   // W7-02-10
+     void order_occupy(int unit_idx, int b_idx);              // walk adjacent, then enter
++    // Tank Bunker (Rallypoint 0240) [RE: UnitClass Enter + BuildingClass::UpdateBunker
++    // FUN_00458E50, link +0x2E4]: an own, armed, turreted, non-hover vehicle
++    // that is not Bunkerable=no drives to a free own Bunker=yes building and
++    // sits on it; the building then counts as armed (its occupant fires with
++    // BunkerWeaponRangeBonus, BunkerDamageMultiplier and BunkerROFMultiplier),
++    // and the vehicle cannot be ordered, selected, targeted or hurt (the
++    // bunker takes the hits) until it leaves: unload, sell, or the bunker dying.
++    bool can_bunker(int unit_idx, int b_idx) const;
++    void order_bunker(int unit_idx, int b_idx);
++    void bunker_install(int unit_idx, int b_idx);
++    void bunker_release(int b_idx);                          // the vehicle drives out beside the bunker
++    bool bunker_occupied(int b_idx) const;
++    // AI script action 61 (EnterTankBunker FUN_004DFF40): the nearest own free bunker, -1 none.
++    int nearest_free_bunker(int unit_idx) const;
++    void step_bunkers();
+     int group_occupy(int issuer, const std::vector<int>& ids, int b_idx);   // returns #ordered
+     int group_occupy_count(int issuer, const std::vector<int>& ids, int b_idx) const;   // the same, dry run
+     // BuildingClass::UnloadOccupants FUN_00457DD0. `place_inside`: the
+@@ -2719,7 +2739,7 @@ public:
+     void order_absorb(int unit_idx, int b_idx);
+     bool garrison_firing(int b_idx) const;                   // CanOccupyFire && occupants
+     double garrison_range(int b_idx) const;                  // cells
+-    struct GarrisonEvent { enum Kind { Entered, Garrisoned, Abandoned, Unloaded } kind = Entered; int building = -1; int house = -1; };
++    struct GarrisonEvent { enum Kind { Entered, Garrisoned, Abandoned, Unloaded, BunkerUp, BunkerDown } kind = Entered; int building = -1; int house = -1; };
+     std::vector<GarrisonEvent> take_garrison_events();
+     // W2-CA-01 [RE: FUN_00519449 raises event 1 EnteredBy on the TARGET
+     // building's tag at every "infantry arrived into a building" site
+diff --git a/engine/world_bunker.cpp b/engine/world_bunker.cpp
+new file mode 100644
+index 0000000..d7bc085
+--- /dev/null
++++ b/engine/world_bunker.cpp
+@@ -0,0 +1,204 @@
++// Tank Bunker (Rallypoint 0240). Rules: Bunker=yes on the building, Bunkerable=
++// on the vehicle (default yes for vehicles), [CombatDamage] BunkerDamageMultiplier
++// / BunkerROFMultiplier / BunkerWeaponRangeBonus, [AudioVisual] BunkerWallsUp/DownSound.
++// [RE: gamemd Techno +0x2E4 = the building<->unit link, set by UpdateBunker
++// FUN_00458E50 state 5 @0x459301, released by EmptyBunker @0x4595C0 (unload),
++// the sell/death release @0x4593A0 and ClearBunker @0x459470; admission is
++// FUN_0070FB50: Bunkerable, a turret, a current weapon, SpeedType not Hover,
++// no parasite.]
++// The retail install is a state machine of turns and a forced track onto the
++// foundation centre; here the vehicle walks beside the bunker, then settles on
++// the foundation centre facing south in one step [RE-FALLBACK: no walls-rising
++// animation delay]. The vehicle stays a live unit, so its own targeting,
++// turret and projectiles fire from the bunker; combat.cpp applies the three
++// multipliers through Unit::w7.bunker_*, and every scan skips a bunkered
++// vehicle (the building is what an enemy hits).
++#include <algorithm>
++#include <cmath>
++
++#include "group_move.hpp"   // nearest_free_cells
++#include "world.hpp"
++
++namespace ra2engine {
++
++namespace {
++int cheb_to_foundation(const Building& b, int x, int y) {
++    int best = -1;
++    for (const Cellxy& c : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
++        const int d = std::max(std::abs(x - c.x), std::abs(y - c.y));
++        if (best < 0 || d < best) best = d;
++    }
++    return best;
++}
++constexpr double kSouth = 32768.0;   // 0x8000
++}  // namespace
++
++bool World::bunker_occupied(int bi) const {
++    return bi >= 0 && bi < static_cast<int>(buildings_.size()) &&
++           buildings_[static_cast<std::size_t>(bi)].w7.bunker_unit >= 0;
++}
++
++bool World::can_bunker(int ui, int bi) const {
++    if (ui < 0 || ui >= static_cast<int>(units_.size())) return false;
++    if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return false;
++    const Unit& u = units_[static_cast<std::size_t>(ui)];
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || u.w7.bunker_of >= 0) return false;
++    if (!u.is_vehicle || u.is_aircraft || u.is_naval) return false;
++    if (!u.w7.t.bunkerable || !u.w7.t.has_turret) return false;
++    if (u.speed_type == 3 || u.parasite_on_me >= 0) return false;       // Hover / a parasite on board
++    if (!(u.w_damage > 0 || u.w2.valid)) return false;                   // a current weapon
++    if (!b.alive || b.state != Building::State::Idle || b.selling) return false;
++    if (b.type < 0 || b.type >= static_cast<int>(btypes().size()) || !btypes()[static_cast<std::size_t>(b.type)].bunker)
++        return false;
++    return b.w7.bunker_unit < 0 && b.house == u.house;
++}
++
++int World::nearest_free_bunker(int ui) const {
++    if (ui < 0 || ui >= static_cast<int>(units_.size())) return -1;
++    const Unit& u = units_[static_cast<std::size_t>(ui)];
++    int best = -1, best_d = 0;
++    for (int bi = 0; bi < static_cast<int>(buildings_.size()); ++bi) {
++        if (!can_bunker(ui, bi)) continue;
++        const Building& b = buildings_[static_cast<std::size_t>(bi)];
++        bool taken = false;   // another vehicle is already on its way
++        for (const Unit& o : units_)
++            if (o.w7.bunker_target == bi && o.alive) { taken = true; break; }
++        if (taken) continue;
++        const int d = cheb_to_foundation(b, u.cell_x, u.cell_y);
++        if (best < 0 || d < best_d) { best = bi; best_d = d; }
++    }
++    return best;
++}
++
++void World::order_bunker(int ui, int bi) {
++    if (!can_bunker(ui, bi)) return;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    u.target = -1;
++    u.target_building = -1;
++    u.attack_order = false;
++    u.enter_target = -1;
++    u.capture_target = -1;
++    u.infiltrate_target = -1;
++    u.occupy_target = -1;
++    u.attack_cell_x = u.attack_cell_y = -1;
++    const Building& b = buildings_[static_cast<std::size_t>(bi)];
++    if (cheb_to_foundation(b, u.cell_x, u.cell_y) > 1) {
++        int nx = b.cx, ny = b.cy, best = -1;
++        for (const Cellxy& c : foundation_cells(b.cx, b.cy, b.fw, b.fh)) {
++            const int d = std::max(std::abs(u.cell_x - c.x), std::abs(u.cell_y - c.y));
++            if (best < 0 || d < best) { best = d; nx = c.x; ny = c.y; }
++        }
++        const std::vector<Cellxy> free = nearest_free_cells({nx, ny}, 8, passable_, grid_w_, grid_h_, occ_);
++        for (const Cellxy& g : free) {
++            order_unit_move(ui, g.x, g.y);
++            if (units_[static_cast<std::size_t>(ui)].moving()) break;
++        }
++    }
++    units_[static_cast<std::size_t>(ui)].w7.bunker_target = bi;   // after order_unit_move, which clears it
++}
++
++// UpdateBunker state 5 [@0x459301..0x459337]: reciprocal links, then the
++// walls-up sound at the building.
++void World::bunker_install(int ui, int bi) {
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    Building& b = buildings_[static_cast<std::size_t>(bi)];
++    occ_.release_all_of(ui, -1, -1);
++    u.path.clear();
++    u.path_idx = 0;
++    u.target = -1;
++    u.target_building = -1;
++    u.attack_order = false;
++    u.cell_x = b.cx + b.fw - 1;
++    u.cell_y = b.cy + b.fh - 1;
++    u.fx = u.cell_x;                  // idle units are snapped to their cell every step, so the
++    u.fy = u.cell_y;                  // foundation centre is carried as the lepton offset from it
++    u.sub_x = (b.cx + (b.fw - 1) / 2.0 - u.cell_x) * 256.0;
++    u.sub_y = (b.cy + (b.fh - 1) / 2.0 - u.cell_y) * 256.0;
++    u.body_facing = kSouth;
++    u.on_deck = 0;
++    if (map_) if (const ra2assets::MapCell* mc = map_->at(b.cx, b.cy)) u.level = mc->level;
++    u.guard_x = u.cell_x;
++    u.guard_y = u.cell_y;
++    occ_.set(u.cell_x, u.cell_y, ui);
++    u.w7.bunker_of = bi;
++    u.w7.bunker_target = -1;
++    u.w7.bunker_dmg = depth_rules_.bunker_damage_mult;
++    u.w7.bunker_rof = depth_rules_.bunker_rof_mult;
++    u.w7.bunker_range = depth_rules_.bunker_range_bonus;
++    b.w7.bunker_unit = ui;
++    garrison_events_.push_back({GarrisonEvent::BunkerUp, bi, b.house});
++}
++
++// EmptyBunker / the sell and death release: the vehicle leaves its link and
++// stands on the nearest free cell beside the foundation, alive and unhurt.
++void World::bunker_release(int bi) {
++    if (bi < 0 || bi >= static_cast<int>(buildings_.size())) return;
++    Building& b = buildings_[static_cast<std::size_t>(bi)];
++    const int ui = b.w7.bunker_unit;
++    b.w7.bunker_unit = -1;
++    if (ui < 0 || ui >= static_cast<int>(units_.size())) return;
++    Unit& u = units_[static_cast<std::size_t>(ui)];
++    if (u.w7.bunker_of != bi) return;
++    u.w7.bunker_of = -1;
++    u.w7.bunker_dmg = u.w7.bunker_rof = 1.0;
++    u.w7.bunker_range = 0.0;
++    garrison_events_.push_back({GarrisonEvent::BunkerDown, bi, b.house});
++    if (!u.alive || u.die_time >= 0.0) return;
++    occ_.release_all_of(ui, -1, -1);   // the cell on the foundation is not free ground
++    int layer = 0;
++    Cellxy c = nearest_exit_from_host(u, b.cx + b.fw, b.cy + b.fh, 0, &layer);
++    if (c.x < 0) c = Cellxy{b.cx + b.fw - 1, b.cy + b.fh - 1};   // nowhere to go: stay on the pad
++    u.cell_x = c.x;
++    u.cell_y = c.y;
++    u.fx = c.x;
++    u.fy = c.y;
++    u.sub_x = u.sub_y = 0.0;
++    u.guard_x = c.x;
++    u.guard_y = c.y;
++    u.on_deck = static_cast<std::uint8_t>(layer == 1 ? 1 : 0);
++    if (map_) if (const ra2assets::MapCell* mc = map_->at(c.x, c.y)) u.level = mc->level;
++    occ_.set(c.x, c.y, ui);
++}
++
++void World::step_bunkers() {
++    for (int ui = 0; ui < static_cast<int>(units_.size()); ++ui) {
++        Unit& u = units_[static_cast<std::size_t>(ui)];
++        const int bi = u.w7.bunker_target;
++        if (bi < 0) continue;
++        if (!can_bunker(ui, bi)) { u.w7.bunker_target = -1; continue; }
++        if (u.moving()) continue;
++        const Building& b = buildings_[static_cast<std::size_t>(bi)];
++        if (cheb_to_foundation(b, u.cell_x, u.cell_y) <= 1) {
++            bunker_install(ui, bi);
++            continue;
++        }
++        order_bunker(ui, bi);   // blocked on the way: ask again once
++        if (!units_[static_cast<std::size_t>(ui)].moving()) units_[static_cast<std::size_t>(ui)].w7.bunker_target = -1;
++    }
++    for (int bi = 0; bi < static_cast<int>(buildings_.size()); ++bi) {
++        Building& b = buildings_[static_cast<std::size_t>(bi)];
++        const int ui = b.w7.bunker_unit;
++        if (ui < 0) continue;
++        const bool bad_unit = ui >= static_cast<int>(units_.size()) || !units_[static_cast<std::size_t>(ui)].alive ||
++                              units_[static_cast<std::size_t>(ui)].die_time >= 0.0 ||
++                              units_[static_cast<std::size_t>(ui)].w7.bunker_of != bi;
++        if (bad_unit) {   // it died, was erased or mind-controlled away: the bunker is free again
++            b.w7.bunker_unit = -1;
++            if (ui < static_cast<int>(units_.size()) && units_[static_cast<std::size_t>(ui)].w7.bunker_of == bi) {
++                Unit& u = units_[static_cast<std::size_t>(ui)];
++                u.w7.bunker_of = -1;
++                u.w7.bunker_dmg = u.w7.bunker_rof = 1.0;
++                u.w7.bunker_range = 0.0;
++            }
++            garrison_events_.push_back({GarrisonEvent::BunkerDown, bi, b.house});
++            continue;
++        }
++        // The bunker died or is being sold, or changed hands (an engineer, a
++        // trigger): the vehicle drives out [RE: @0x4593A0 / ClearBunker].
++        if (!b.alive || b.state == Building::State::Dead || b.selling || units_[static_cast<std::size_t>(ui)].house != b.house)
++            bunker_release(bi);
++    }
++}
++
++}  // namespace ra2engine
+diff --git a/engine/world_depth.cpp b/engine/world_depth.cpp
+index b2301e4..3dc51cc 100644
+--- a/engine/world_depth.cpp
++++ b/engine/world_depth.cpp
+@@ -136,7 +136,7 @@ int World::group_occupy_count(int issuer, const std::vector<int>& ids, int bi) c
+         return 0;
+     const Building& b = buildings_[static_cast<std::size_t>(bi)];
+     const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b.type)];
+-    int n = 0, occupy_n = 0, absorb_n = 0;
++    int n = 0, occupy_n = 0, absorb_n = 0, bunker_n = 0;
+     for (int i : ids) {
+         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
+         const Unit& u = units_[static_cast<std::size_t>(i)];
+@@ -145,6 +145,10 @@ int World::group_occupy_count(int issuer, const std::vector<int>& ids, int bi) c
+             ++n;
+             continue;
+         }
++        if (can_bunker(i, bi)) {   // Tank Bunker: one vehicle
++            if (bunker_n++ == 0) ++n;
++            continue;
++        }
+         if (can_absorb(i, bi)) {
+             if (static_cast<int>(b.occupants.size()) + absorb_n >= bt.passengers) continue;
+             ++absorb_n;
+@@ -166,7 +170,7 @@ int World::group_occupy(int issuer, const std::vector<int>& ids, int bi) {
+         return 0;
+     const Building& b0 = buildings_[static_cast<std::size_t>(bi)];
+     const BuildingTypeDef& bt = btypes()[static_cast<std::size_t>(b0.type)];
+-    int n = 0, occupy_n = 0, absorb_n = 0;
++    int n = 0, occupy_n = 0, absorb_n = 0, bunker_n = 0;
+     for (int i : ids) {
+         if (i < 0 || i >= static_cast<int>(units_.size())) continue;
+         const Unit& u = units_[static_cast<std::size_t>(i)];
+@@ -176,6 +180,13 @@ int World::group_occupy(int issuer, const std::vector<int>& ids, int bi) {
+             ++n;
+             continue;
+         }
++        if (can_bunker(i, bi)) {   // Tank Bunker: the first fit takes it, the rest are left alone
++            if (bunker_n++ == 0) {
++                order_bunker(i, bi);
++                ++n;
++            }
++            continue;
++        }
+         if (can_absorb(i, bi)) {
+             if (static_cast<int>(buildings_[static_cast<std::size_t>(bi)].occupants.size()) + absorb_n >=
+                 bt.passengers)
+@@ -470,7 +481,7 @@ void World::step_garrison_combat(double dt) {
+             if (ot.wall || o.iron_left_frames > 0) return false;
+             if (!ordered) {
+                 if (ot.insignificant) return false;
+-                const bool armed = ot.armed || (ot.can_occupy_fire && !o.occupants.empty());
++                const bool armed = ot.armed || (ot.can_occupy_fire && !o.occupants.empty()) || o.w7.bunker_unit >= 0;
+                 if (!armed && !(house_is_computer(b.house) && ai_threat_any_building())) return false;
+                 if (!object_visible_at(b.house, o.cx, o.cy)) return false;
+             }
+diff --git a/engine/world_depth.inc b/engine/world_depth.inc
+index 22dee78..17af1c4 100644
+--- a/engine/world_depth.inc
++++ b/engine/world_depth.inc
+@@ -64,6 +64,9 @@ void depth_arm_rules(ra2engine::World& world, const Rules& rules) {
+     r.bridge_strength = static_cast<int>(rules.section_double("CombatDamage", "BridgeStrength", 1500.0));
+     r.bridge_destruction = rules.section_flag("CombatDamage", "DestroyableBridges", true) &&
+                            rules.section_flag("MultiplayerDialogSettings", "BridgeDestruction", true);
++    r.bunker_damage_mult = rules.section_double("CombatDamage", "BunkerDamageMultiplier", 1.0);
++    r.bunker_rof_mult = rules.section_double("CombatDamage", "BunkerROFMultiplier", 1.0);
++    r.bunker_range_bonus = static_cast<int>(rules.section_double("CombatDamage", "BunkerWeaponRangeBonus", 0.0));
+     r.armed = true;
+     world.set_depth_rules(r);
+     // Wave-7 fix (units): W7-01-03 the PermaDisguise look per side ([General]
+diff --git a/engine/world_w6.cpp b/engine/world_w6.cpp
+index 64e8b27..4454413 100644
+--- a/engine/world_w6.cpp
++++ b/engine/world_w6.cpp
+@@ -20,7 +20,7 @@ bool World::legal_threat_building(int scanner_house, int bi) const {
+ }
+ 
+ bool World::legal_threat_unit(int /*scanner_house*/, const Unit& v) const {
+-    if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0) return false;
++    if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0 || v.w7.bunker_of >= 0) return false;   // Tank Bunker: the building is the target
+     // [RE: Evaluate_Object FUN_006F71D0 @0x6F7A5C: type +0x231 LegalTarget]
+     if (!v.tg.t.legal_target) return false;
+     // [@0x6F735E: +0x3D5 IsInPlayfield]
+diff --git a/tests/test_tank_bunker.cpp b/tests/test_tank_bunker.cpp
+new file mode 100644
+index 0000000..0fc9b6b
+--- /dev/null
++++ b/tests/test_tank_bunker.cpp
+@@ -0,0 +1,304 @@
++// Tank Bunker (Rallypoint 0240): Bunker= / Bunkerable= against the real rulesmd.ini, and the
++// mechanic in a World (enter, protection, bunker bonuses, unload, sell, destruction, save).
++// Real-data cases need RA2_INSTALL_DIR and fail (not skip) when it is set but the files are missing.
++#include "doctest.h"
++
++#include <cstdlib>
++#include <string>
++
++#include "asset_fixture.hpp"
++#include "../engine/ai_team.hpp"
++#include "../engine/save_fields.hpp"
++#include "../engine/savegame.hpp"
++#include "../engine/selection.hpp"
++#include "../engine/weapon_resolve.hpp"
++#include "../engine/world.hpp"
++
++using namespace ra2engine;
++
++namespace {
++bool have_assets() {
++    if (ra2fixture::assets_available()) return true;
++    if (std::getenv("RA2_INSTALL_DIR")) FAIL("RA2_INSTALL_DIR set but real assets missing");
++    MESSAGE("skipped: real assets not found");
++    return false;
++}
++bool yes(const std::string& v) { return !v.empty() && (v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == '1'); }
++
++UnitCombat mk_tank() {
++    UnitCombat t;
++    t.strength = 300;
++    t.damage = 40;
++    t.rof = 30;
++    t.range = 5.0;
++    t.is_vehicle = true;
++    t.speed_cps = 3.0;
++    t.rot = 127;
++    t.w7.bunkerable = true;
++    t.w7.has_turret = true;
++    return t;
++}
++
++// A free walkable block on the real map: bunker origin (ox, oy) with room to the west and south.
++bool free_block(const World& w, int& ox, int& oy) {
++    for (int y = 12; y + 10 < w.grid_h() - 2; ++y)
++        for (int x = 12; x + 14 < w.grid_w() - 2; ++x) {
++            bool ok = true;
++            for (int dy = -2; dy <= 8 && ok; ++dy)
++                for (int dx = -8; dx <= 10 && ok; ++dx) ok = w.walkable(x + dx, y + dy);
++            if (ok) { ox = x; oy = y; return true; }
++        }
++    return false;
++}
++
++struct BunkerWorld {
++    World w{ra2fixture::mapsmd03_map()};
++    int ox = 0, oy = 0;
++    int bunker = -1;
++    BunkerWorld() {
++        REQUIRE(free_block(w, ox, oy));
++        BuildingTypeDef b;
++        b.id = "NATBNK";
++        b.strength = 1000;
++        b.fw = b.fh = 2;
++        b.bunker = true;
++        b.armor_ix = 0;
++        World::DepthRules r;
++        r.bunker_damage_mult = 1.3;
++        r.bunker_rof_mult = 1.3;
++        r.bunker_range_bonus = 2;
++        w.set_depth_rules(r);
++        w.set_building_types({b});
++        bunker = w.add_building(0, ox, oy, 2, 2, 0, 1000, 0, 0.0, true);
++    }
++    int add_tank(int dx, int dy, int house = 0) { w.add_combat_unit(ox + dx, oy + dy, house, mk_tank()); return static_cast<int>(w.units().size()) - 1; }
++    void run(int frames) { for (int f = 0; f < frames; ++f) w.step(1.0 / 15.0); }
++};
++}  // namespace
++
++TEST_CASE("Tank Bunker: Bunker= and Bunkerable= in the real rules") {
++    if (!have_assets()) return;
++    const ra2assets::Ini& r = ra2fixture::rulesmd_ini();
++    const ra2assets::Rules& rules = ra2fixture::rulesmd();
++    // Exactly one building is a Tank Bunker.
++    int bunkers = 0;
++    for (const auto& kv : r.section("BuildingTypes")) {
++        BuildingTypeDef d;
++        fill_building_weapons(rules, kv.second, d);
++        if (d.bunker) { ++bunkers; CHECK(kv.second == "NATBNK"); }
++    }
++    CHECK(bunkers == 1);
++    // Vehicles default to Bunkerable=yes; 17 opt out; infantry and aircraft default to no.
++    int opt_out = 0, vehicles = 0;
++    for (const auto& kv : r.section("VehicleTypes")) {
++        const TypeWeapons tw = resolve_type_weapons(rules, kv.second);
++        UnitTypeW7 w;
++        fill_unit_w7(rules, kv.second, tw, w);
++        const bool explicit_no = r.get(kv.second, "Bunkerable", "") == "no";
++        CHECK(w.bunkerable == !explicit_no);
++        ++vehicles;
++        if (explicit_no) ++opt_out;
++    }
++    CHECK(vehicles > 40);
++    CHECK(opt_out == 17);
++    for (const char* inf : {"E1", "E2", "ENGINEER"}) {
++        UnitTypeW7 w;
++        fill_unit_w7(rules, inf, resolve_type_weapons(rules, inf), w);
++        CHECK_FALSE(w.bunkerable);
++    }
++    for (const char* tank : {"MTNK", "HTNK", "FV", "LTNK", "TNKD"}) {   // Grizzly, Rhino, IFV, Lasher, Tank Destroyer
++        if (r.get(tank, "Strength", "").empty()) continue;
++        UnitTypeW7 w;
++        fill_unit_w7(rules, tank, resolve_type_weapons(rules, tank), w);
++        CHECK(w.bunkerable);
++    }
++    for (const char* no : {"AMCV", "SMCV", "HARV", "CMIN", "V3", "TERROR"}) {
++        if (r.get(no, "Strength", "").empty()) continue;
++        UnitTypeW7 w;
++        fill_unit_w7(rules, no, resolve_type_weapons(rules, no), w);
++        CHECK_FALSE(w.bunkerable);
++    }
++    // The shot multipliers the engine reads.
++    CHECK(rules.section_double("CombatDamage", "BunkerDamageMultiplier", 1.0) == doctest::Approx(1.3));
++    CHECK(rules.section_double("CombatDamage", "BunkerROFMultiplier", 1.0) == doctest::Approx(1.3));
++    CHECK(rules.section_double("CombatDamage", "BunkerWeaponRangeBonus", 0.0) == doctest::Approx(2.0));
++    CHECK(r.get("AudioVisual", "BunkerWallsUpSound", "").find("TankBunkerUp") != std::string::npos);
++}
++
++TEST_CASE("Tank Bunker: PenetratesBunker warheads of the real rules") {
++    if (!have_assets()) return;
++    const ra2assets::Ini& r = ra2fixture::rulesmd_ini();
++    for (const char* wh : {"Super", "Crush", "ORCAAP", "DiskWH"}) CHECK(yes(r.get(wh, "PenetratesBunker", "no")));
++    CHECK_FALSE(yes(r.get("AP", "PenetratesBunker", "no")));
++}
++
++#define NEED_MAP()                                                           \
++    if (!ra2fixture::mapsmd03_available()) {                                 \
++        if (std::getenv("RA2_INSTALL_DIR")) FAIL("RA2_INSTALL_DIR set but real map missing"); \
++        MESSAGE("skipped: real map assets not found");                       \
++        return;                                                              \
++    }
++
++TEST_CASE("Tank Bunker: a free own bunker takes one armed, turreted vehicle") {
++    NEED_MAP();
++    BunkerWorld t;
++    const int a = t.add_tank(-10, 0), b = t.add_tank(-8, 0), foe = t.add_tank(-6, 0, 1);
++    CHECK(t.w.can_bunker(a, t.bunker));
++    CHECK_FALSE(t.w.can_bunker(foe, t.bunker));               // another house
++    t.w.units()[static_cast<std::size_t>(b)].w7.t.bunkerable = false;   // Bunkerable=no (MCV, miners, V3...)
++    CHECK_FALSE(t.w.can_bunker(b, t.bunker));
++    t.w.units()[static_cast<std::size_t>(b)].w7.t.bunkerable = true;
++    t.w.units()[static_cast<std::size_t>(b)].w7.t.has_turret = false;   // no Turret=
++    CHECK_FALSE(t.w.can_bunker(b, t.bunker));
++    t.w.units()[static_cast<std::size_t>(b)].w7.t.has_turret = true;
++    t.w.units()[static_cast<std::size_t>(b)].speed_type = 3;            // Hover
++    CHECK_FALSE(t.w.can_bunker(b, t.bunker));
++    t.w.units()[static_cast<std::size_t>(b)].speed_type = -1;
++    t.w.units()[static_cast<std::size_t>(b)].w_damage = 0;              // no weapon
++    CHECK_FALSE(t.w.can_bunker(b, t.bunker));
++    t.w.units()[static_cast<std::size_t>(b)].w_damage = 40;
++    CHECK(t.w.can_bunker(b, t.bunker));
++    CHECK(t.w.group_occupy_count(0, {a, b}, t.bunker) == 1);   // one vehicle per bunker
++}
++
++TEST_CASE("Tank Bunker: the vehicle drives in, faces south and stops taking orders") {
++    NEED_MAP();
++    BunkerWorld t;
++    const int a = t.add_tank(-6, 0);
++    CHECK(t.w.group_occupy(0, {a}, t.bunker) == 1);
++    t.run(300);
++    const Unit& u = t.w.units()[static_cast<std::size_t>(a)];
++    REQUIRE(u.w7.bunker_of == t.bunker);
++    CHECK(t.w.buildings()[static_cast<std::size_t>(t.bunker)].w7.bunker_unit == a);
++    CHECK(u.fx + u.sub_x / 256.0 == doctest::Approx(t.ox + 0.5));   // the foundation centre
++    CHECK(u.fy + u.sub_y / 256.0 == doctest::Approx(t.oy + 0.5));
++    CHECK(u.body_facing == doctest::Approx(32768.0));
++    CHECK(u.w7.bunker_dmg == doctest::Approx(1.3));
++    CHECK(u.w7.bunker_range == doctest::Approx(2.0));
++    CHECK(Selection::unselectable(u));
++    // No order moves it, and a second vehicle is refused.
++    const int cx = u.cell_x, cy = u.cell_y;
++    t.w.order_unit_move(a, 30, 30);
++    t.run(30);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].cell_x == cx);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].cell_y == cy);
++    const int b = t.add_tank(-6, 4);
++    CHECK_FALSE(t.w.can_bunker(b, t.bunker));
++    // The occupied bunker is armed as far as an enemy's threat scan goes.
++    CHECK(t.w.bunker_occupied(t.bunker));
++}
++
++TEST_CASE("Tank Bunker: a bunkered vehicle is not a target and takes no damage; the bunker does") {
++    NEED_MAP();
++    BunkerWorld t;
++    const int a = t.add_tank(-6, 0);
++    t.w.group_occupy(0, {a}, t.bunker);
++    t.run(300);
++    REQUIRE(t.w.units()[static_cast<std::size_t>(a)].w7.bunker_of == t.bunker);
++    const int foe = t.add_tank(2, 4, 1);
++    t.w.units()[static_cast<std::size_t>(foe)].w_range = 8.0;
++    t.w.group_attack(1, {foe}, a);   // an order against the vehicle itself
++    t.run(120);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].hp == 300);
++    t.w.units()[static_cast<std::size_t>(foe)].target = -1;   // idle: it picks the manned bunker on its own
++    t.run(150);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].hp == 300);
++    CHECK(t.w.buildings()[static_cast<std::size_t>(t.bunker)].hp < 1000);
++}
++
++TEST_CASE("Tank Bunker: range bonus, damage and rate of fire come from the bunker") {
++    NEED_MAP();
++    BunkerWorld t;
++    const int a = t.add_tank(-6, 0);
++    t.w.group_occupy(0, {a}, t.bunker);
++    t.run(300);
++    REQUIRE(t.w.units()[static_cast<std::size_t>(a)].w7.bunker_of == t.bunker);
++    // Weapon range 5 + bonus 2 = 7 cells from the bunker centre (20.5, 20.5): a target at 6.8 cells
++    // is out of reach for a loose tank and in reach from the bunker.
++    UnitCombat dummy = mk_tank();
++    dummy.damage = 0;
++    dummy.strength = 1000;
++    t.w.add_combat_unit(t.ox + 7, t.oy, 1, dummy);
++    const int d = static_cast<int>(t.w.units().size()) - 1;
++    t.run(60);
++    CHECK(t.w.units()[static_cast<std::size_t>(d)].hp < 1000);
++    // First hit is 40 x 1.3 = 52.
++    CHECK((1000 - t.w.units()[static_cast<std::size_t>(d)].hp) % 52 == 0);
++    // ROF 30 / 1.3 = 23 frames (+ jitter) between shots: more shots than the loose rate.
++    const int shots = (1000 - t.w.units()[static_cast<std::size_t>(d)].hp) / 52;
++    CHECK(shots >= 2);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].cell_x == t.ox + 1);   // it did not move to get there
++}
++
++TEST_CASE("Tank Bunker: Deploy (unload), sell and destruction put the vehicle beside the bunker, alive") {
++    NEED_MAP();
++    for (int how = 0; how < 3; ++how) {
++        BunkerWorld t;
++        const int a = t.add_tank(-6, 0);
++        t.w.group_occupy(0, {a}, t.bunker);
++        t.run(300);
++        REQUIRE(t.w.units()[static_cast<std::size_t>(a)].w7.bunker_of == t.bunker);
++        if (how == 0) t.w.bunker_release(t.bunker);
++        else if (how == 1) REQUIRE(t.w.begin_sell(t.bunker, 0));
++        else { t.w.buildings()[static_cast<std::size_t>(t.bunker)].hp = 0; kill_building(t.w.buildings()[static_cast<std::size_t>(t.bunker)]); }
++        t.run(5);
++        const Unit& u = t.w.units()[static_cast<std::size_t>(a)];
++        CHECK(u.w7.bunker_of == -1);
++        CHECK(t.w.buildings()[static_cast<std::size_t>(t.bunker)].w7.bunker_unit == -1);
++        CHECK(u.alive);
++        CHECK(u.hp == 300);
++        CHECK(u.w7.bunker_dmg == doctest::Approx(1.0));
++        CHECK_FALSE(Selection::unselectable(u));
++        const bool beside = (u.cell_x < t.ox || u.cell_x > t.ox + 1 || u.cell_y < t.oy || u.cell_y > t.oy + 1);
++        CHECK(beside);
++        // It takes orders again.
++        t.w.order_unit_move(a, u.cell_x, u.cell_y + 3);
++        CHECK(t.w.units()[static_cast<std::size_t>(a)].moving());
++    }
++}
++
++TEST_CASE("Tank Bunker: a vehicle that dies, or changes owner, frees the bunker") {
++    NEED_MAP();
++    BunkerWorld t;
++    const int a = t.add_tank(-6, 0);
++    t.w.group_occupy(0, {a}, t.bunker);
++    t.run(300);
++    REQUIRE(t.w.units()[static_cast<std::size_t>(a)].w7.bunker_of == t.bunker);
++    t.w.set_unit_owner(a, 1);   // mind control
++    t.run(3);
++    CHECK(t.w.units()[static_cast<std::size_t>(a)].w7.bunker_of == -1);
++    CHECK_FALSE(t.w.bunker_occupied(t.bunker));
++}
++
++TEST_CASE("Tank Bunker: AI script action 61 is EnterTankBunker, and the team member leaves the team") {
++    CHECK(classify_op(kSaRemoveIfB) == OpClass::EnterBunker);
++    CHECK(classify_op(kSaRemoveIfA) == OpClass::Inert);
++    BunkerWorld t;
++    const int a = t.add_tank(-6, 0);
++    CHECK(t.w.nearest_free_bunker(a) == t.bunker);
++    t.w.order_bunker(a, t.bunker);
++    const int b = t.add_tank(-6, 4);
++    CHECK(t.w.nearest_free_bunker(b) == -1);   // a vehicle is already on its way
++}
++
++TEST_CASE("Tank Bunker: the new fields survive a save round trip") {
++    UnitW7 u;
++    u.bunker_of = 3; u.bunker_target = 4; u.bunker_dmg = 1.3; u.bunker_rof = 1.3; u.bunker_range = 2.0;
++    UnitW7 u2;
++    REQUIRE(save::from_bytes(save::to_bytes(u), u2));
++    CHECK(u2.bunker_of == 3);
++    CHECK(u2.bunker_target == 4);
++    CHECK(u2.bunker_dmg == doctest::Approx(1.3));
++    CHECK(u2.bunker_range == doctest::Approx(2.0));
++    BldW7 b;
++    b.bunker_unit = 9;
++    BldW7 b2;
++    REQUIRE(save::from_bytes(save::to_bytes(b), b2));
++    CHECK(b2.bunker_unit == 9);
++    BuildingTypeDef d;
++    d.bunker = true;
++    BuildingTypeDef d2;
++    REQUIRE(save::from_bytes(save::to_bytes(d), d2));
++    CHECK(d2.bunker);
++    CHECK(save::kFormatVersion >= 68);
++}
