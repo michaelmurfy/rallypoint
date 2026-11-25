@@ -1,0 +1,499 @@
+Sidebar and tooltip names come from the string tables, never the codename.
+
+The cameo tooltip printed the rules id when UIName was empty and "Name:<id>" when the
+label was missing; only ra2.csf (language.mix) was read, so every Yuri unit and
+structure (ra2md.csf in langmd.mix) lost its name. ra2engine::StringTables layers
+ra2md.csf over ra2.csf (loose file before the mix copy, file names case-insensitive);
+display_name() = UIName -> "Name:<id>" -> rules Name= -> readable_name(id).
+Superweapon cameos get a tooltip too; the superweapon timer label uses the same names.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ed36a38..8cffb1e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -75,6 +75,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_pkt.cpp)
+ # catalog. Reached only by the skirmish setup UI and --demo-maps, never by a
+ # gate path (maps.md §7 rule 5).
+ target_sources(ra2assets_tests PRIVATE tests/test_maplist.cpp engine/maplist.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_ui_names.cpp engine/ui_names.cpp)
+ # G0 --play (agent G): the script language (ra2play) half of engine/play_script.cpp.
+ target_sources(ra2assets_tests PRIVATE tests/test_play_lang.cpp)
+ target_include_directories(ra2assets_tests PRIVATE engine)
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 6e25bd6..6c5939a 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -149,6 +149,7 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/rectfont.cpp
+     ${RA2_ROOT}/engine/ttfont.cpp
+     ${RA2_ROOT}/engine/maplist.cpp
++    ${RA2_ROOT}/engine/ui_names.cpp
+     ${RA2_ROOT}/engine/repair_sell.cpp
+     ${RA2_ROOT}/engine/settings.cpp
+ 
+diff --git a/engine/campaign_runtime.inc b/engine/campaign_runtime.inc
+index 544360d..edf6fc5 100644
+--- a/engine/campaign_runtime.inc
++++ b/engine/campaign_runtime.inc
+@@ -78,37 +78,23 @@ Ini load_map_ini(const std::string& dir, const std::string& map) {
+     return Ini::parse(std::string(raw.begin(), raw.end()));
+ }
+ 
+-// CSF strings (RE §3.2 labels): the loose patch ra2.csf first, then
+-// language.mix/ra2.csf. Loaded once.
+-const ra2assets::CsfStrings* csf(const std::string& dir) {
+-    static std::unique_ptr<ra2assets::CsfStrings> s;
+-    static bool tried = false;
+-    if (tried) return s.get();
+-    tried = true;
+-    try {
+-        const std::vector<std::uint8_t> raw = ra2assets::read_file(dir + "ra2.csf");
+-        if (!raw.empty()) s = std::make_unique<ra2assets::CsfStrings>(
+-                              ra2assets::CsfStrings::load(raw.data(), raw.size()));
+-    } catch (const std::exception&) {}
+-    if (!s) {
+-        try {
+-            MixFile lang = MixFile::open_path(dir + "language.mix");
+-            if (const MixEntry* e = lang.find(std::string("ra2.csf"))) {
+-                const auto raw = lang.read(*e);
+-                s = std::make_unique<ra2assets::CsfStrings>(
+-                    ra2assets::CsfStrings::load(raw.data(), raw.size()));
+-            }
+-        } catch (const std::exception&) {}
+-    }
+-    return s.get();
++// CSF strings (RE §3.2 labels): Yuri's ra2md.csf over the base ra2.csf, each
++// loose file before the copy in langmd.mix / language.mix (ra2engine::StringTables).
++// Loaded once per install dir.
++const ra2engine::StringTables& ui_tables(const std::string& dir) {
++    static std::map<std::string, ra2engine::StringTables> cache;
++    auto it = cache.find(dir);
++    if (it == cache.end()) it = cache.emplace(dir, ra2engine::StringTables::load_install(dir)).first;
++    return it->second;
+ }
++// The label's text, or the label itself when no table has it (callers test for that).
+ std::string csf_text(const std::string& dir, const std::string& label) {
+-    const ra2assets::CsfStrings* c = csf(dir);
+-    const std::u16string* t = c ? c->find(label) : nullptr;
+-    if (!t) return label;
+-    std::string out;
+-    for (char16_t ch : *t) out += (ch >= 32 && ch < 127) ? (char)ch : (ch == '\n' ? '\n' : ' ');
+-    return out;
++    const std::string t = ui_tables(dir).text(label);
++    return t.empty() ? label : t;
++}
++// The player-facing name of a rules section (never the codename).
++std::string ui_name(const std::string& dir, const ra2assets::Ini& rules, const std::string& id) {
++    return ra2engine::display_name(rules, ui_tables(dir), id);
+ }
+ 
+ // battle.ini / mission.ini / mapsel.ini from ra2.mix/local.mix (RE §1).
+diff --git a/engine/hud_messages.inc b/engine/hud_messages.inc
+index d748a99..797d0bf 100644
+--- a/engine/hud_messages.inc
++++ b/engine/hud_messages.inc
+@@ -110,8 +110,7 @@
+             const std::string sw = rp_building_classic_sw(rules_, bt.id);
+             if (sw.empty() || rp_sw_type_of(rp_upper(rules_.section_string(sw, "Type", ""))) != t) continue;
+             if (!rp_flag(rules_, sw, "ShowTimer")) break;
+-            const std::string ui = rules_.section_string(sw, "UIName", "");
+-            name = ui.empty() ? sw : camp::csf_text(dir_, ui);
++            name = tt_ui_name(sw);
+             break;
+         }
+         return sw_timer_names_[static_cast<int>(t)] = name;
+diff --git a/engine/hud_tooltip.inc b/engine/hud_tooltip.inc
+index cd113ec..aa53965 100644
+--- a/engine/hud_tooltip.inc
++++ b/engine/hud_tooltip.inc
+@@ -30,16 +30,31 @@
+         return t == key ? std::string(fallback) : t;
+     }
+ 
+-    std::string tt_ui_name(const std::string& id) const {
+-        const std::string lbl = pres_clean(rules_ini_.get(id, "UIName"));
+-        if (lbl.empty()) return id;
+-        const std::string t = camp::csf_text(dir_, lbl);
+-        return t;
++    std::string tt_ui_name(const std::string& id) const { return camp::ui_name(dir_, rules_ini_, id); }
++
++    // Superweapon cameo help: the weapon's own UIName ("Chronosphere"), else its building's name.
++    std::string tt_sw_name(ra2engine::SuperweaponType t) const {
++        for (const auto& bt : ba_.roster) {
++            const std::string sw = rp_building_classic_sw(rules_, bt.id);
++            if (sw.empty() || rp_sw_type_of(rp_upper(rules_.section_string(sw, "Type", ""))) != t) continue;
++            const std::string n = tt_ui_name(sw);
++            return rules_ini_.get(sw, "UIName").empty() ? tt_ui_name(bt.id) : n;
++        }
++        return "";
+     }
+ 
+     // Raw help text under window pixel (x, y); "" = none.
+     std::string tooltip_at(int x, int y) const {
+         if (!(sidebar_up_ && ba_.ok && ba_.sidebar_ok && lay_.contains(x, y))) return "";
++        {
++            const std::vector<ra2engine::SuperweaponType> sws = world_.sw_types(local_house_);
++            for (int k = 0; k < static_cast<int>(sws.size()) && k / 2 < lay_.side2_rows; ++k)
++                if (lay_.sw_slot(k).contains(x, y)) {
++                    std::string n = tt_sw_name(sws[(size_t)k]);
++                    for (char& ch : n) if (ch == ' ') ch = '\n';   // like the cameo tooltip
++                    return n;
++                }
++        }
+         for (const ra2engine::CameoCell& c : lay_.cameos) {
+             if (!c.rect.contains(x, y)) continue;
+             std::string id;
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 0ab8ec6..ec4df93 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -120,6 +120,7 @@ static char* ra2_cli_pref_path() {
+ #include "map_trigger.hpp" // MapTriggerSystem (P9 Map triggers; --demo-triggers only)
+ #include "campaign.hpp"    // P10 campaign core [RE: campaign.md]
+ #include "ra2assets/csf.hpp" // P10 briefing/objective text
++#include "ui_names.hpp"       // player-facing names (CSF layers + readable fallback)
+ #include "voxel_raster.hpp"
+ #include "weapon_resolve.hpp"  // Gap fix C: TechnoType weapon slots
+ #include "gamespeed.hpp"       // Gap fix C: RE-T1 logic rate per GameSpeed
+diff --git a/engine/ui_names.cpp b/engine/ui_names.cpp
+new file mode 100644
+index 0000000..0554e20
+--- /dev/null
++++ b/engine/ui_names.cpp
+@@ -0,0 +1,134 @@
++#include "ui_names.hpp"
++
++#include "ra2assets/fileio.hpp"
++#include "ra2assets/mix.hpp"
++
++#include <algorithm>
++#include <cctype>
++#include <filesystem>
++
++namespace ra2engine {
++
++namespace {
++
++namespace fs = std::filesystem;
++
++std::string lower(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return s;
++}
++
++// dir + name, matching the file name case-insensitively ("" when absent).
++std::string find_file(const std::string& dir, const std::string& name) {
++    std::error_code ec;
++    const fs::path exact = fs::path(dir) / name;
++    if (fs::is_regular_file(exact, ec)) return exact.string();
++    const std::string want = lower(name);
++    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
++        if (lower(it->path().filename().string()) == want) return it->path().string();
++    return "";
++}
++
++std::shared_ptr<const ra2assets::CsfStrings> parse(const std::vector<uint8_t>& raw) {
++    if (raw.empty()) return nullptr;
++    try {
++        return std::make_shared<const ra2assets::CsfStrings>(ra2assets::CsfStrings::load(raw.data(), raw.size()));
++    } catch (const std::exception&) { return nullptr; }
++}
++
++std::shared_ptr<const ra2assets::CsfStrings> from_file(const std::string& dir, const std::string& name) {
++    const std::string p = find_file(dir, name);
++    if (p.empty()) return nullptr;
++    try { return parse(ra2assets::read_file(p)); } catch (const std::exception&) { return nullptr; }
++}
++
++std::shared_ptr<const ra2assets::CsfStrings> from_mix(const std::string& dir, const std::string& mix,
++                                                       const std::string& name) {
++    const std::string p = find_file(dir, mix);
++    if (p.empty()) return nullptr;
++    try {
++        ra2assets::MixFile m = ra2assets::MixFile::open_path(p);
++        const ra2assets::MixEntry* e = m.find(name);
++        return e ? parse(m.read(*e)) : nullptr;
++    } catch (const std::exception&) { return nullptr; }
++}
++
++// "Name:" / "UI:" style prefix up to the first ':' is not part of a readable name.
++std::string strip_label_prefix(const std::string& s) {
++    const size_t c = s.find(':');
++    return c == std::string::npos ? s : s.substr(c + 1);
++}
++
++}  // namespace
++
++const std::u16string* StringTables::find(const std::string& label) const {
++    for (const auto& t : layers_)
++        if (const std::u16string* v = t->find(label)) return v;
++    return nullptr;
++}
++
++std::string StringTables::text(const std::string& label) const {
++    const std::u16string* t = find(label);
++    if (!t) return "";
++    std::string out;
++    for (char16_t ch : *t) out += (ch >= 32 && ch < 127) ? static_cast<char>(ch) : (ch == '\n' ? '\n' : '?');
++    return out;
++}
++
++StringTables StringTables::load_install(const std::string& dir) {
++    StringTables st;
++    // Yuri's Revenge strings first: ra2md.csf carries every Yuri unit and
++    // structure (and the YR wording of the base ones); ra2.csf is the fallback.
++    st.add(from_file(dir, "ra2md.csf"));
++    st.add(from_mix(dir, "langmd.mix", "ra2md.csf"));
++    st.add(from_file(dir, "ra2.csf"));
++    st.add(from_mix(dir, "language.mix", "ra2.csf"));
++    return st;
++}
++
++std::string readable_name(const std::string& id_or_label) {
++    const std::string s = strip_label_prefix(id_or_label);
++    const bool shouting = std::none_of(s.begin(), s.end(), [](unsigned char c) { return std::islower(c); });
++    std::string out;
++    for (size_t i = 0; i < s.size(); ++i) {
++        const unsigned char c = static_cast<unsigned char>(s[i]);
++        if (c == '_' || c == '-' || c == '.' || c == ' ') {
++            if (!out.empty() && out.back() != ' ') out += ' ';
++            continue;
++        }
++        // "CruiseShip" -> "Cruise Ship"
++        if (!shouting && i > 0 && std::isupper(c) && std::islower(static_cast<unsigned char>(s[i - 1])) && !out.empty() &&
++            out.back() != ' ')
++            out += ' ';
++        const bool start = out.empty() || out.back() == ' ';
++        out += static_cast<char>(start ? std::toupper(c) : (shouting ? std::tolower(c) : c));
++    }
++    while (!out.empty() && out.back() == ' ') out.pop_back();
++    return out;
++}
++
++std::string display_name(const ra2assets::Ini& rules, const StringTables& tables, const std::string& id) {
++    auto clean = [](std::string v) {
++        const size_t sc = v.find(';');
++        if (sc != std::string::npos) v.erase(sc);
++        while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
++        size_t b = 0;
++        while (b < v.size() && std::isspace(static_cast<unsigned char>(v[b]))) ++b;
++        return v.substr(b);
++    };
++    const std::string label = clean(rules.get(id, "UIName"));
++    if (!label.empty()) {
++        const std::string t = tables.text(label);
++        if (!t.empty()) return t;
++    }
++    const std::string byid = tables.text("Name:" + id);
++    if (!byid.empty()) return byid;
++    // rules Name= is a plain-text name on some entries (not on stock ones, where it is a label or absent).
++    const std::string nm = clean(rules.get(id, "Name"));
++    if (!nm.empty() && nm.find(':') == std::string::npos && nm != id &&
++        std::any_of(nm.begin(), nm.end(), [](unsigned char c) { return std::islower(c) || c == ' '; }))
++        return nm;
++    return readable_name(id);
++}
++
++}  // namespace ra2engine
+diff --git a/engine/ui_names.hpp b/engine/ui_names.hpp
+new file mode 100644
+index 0000000..a1c21eb
+--- /dev/null
++++ b/engine/ui_names.hpp
+@@ -0,0 +1,44 @@
++#pragma once
++// Player-facing names (SDL-free). The retail game shows the localised string
++// behind a rules section's UIName= (a CSF label such as "Name:GAPOWR"); it
++// never shows the section id. This module resolves that through every string
++// table the install has (Yuri's ra2md.csf over the base ra2.csf, loose files
++// over the ones inside language*.mix) and, when nothing resolves, builds a
++// readable name from the id so a codename never reaches the screen.
++#include "ra2assets/csf.hpp"
++#include "ra2assets/ini.hpp"
++
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace ra2engine {
++
++// CSF tables in priority order (first table holding a label wins).
++class StringTables {
++public:
++    void add(std::shared_ptr<const ra2assets::CsfStrings> t) { if (t) layers_.push_back(std::move(t)); }
++    bool empty() const { return layers_.empty(); }
++    size_t layers() const { return layers_.size(); }
++    // nullptr when no table holds the label.
++    const std::u16string* find(const std::string& label) const;
++    // ASCII text of a label ("" when absent): non-ASCII units become '?', newlines stay.
++    std::string text(const std::string& label) const;
++
++    // Loads ra2md.csf (loose, then langmd.mix) then ra2.csf (loose, then
++    // language.mix) from the install dir (ends with a separator). File names
++    // match case-insensitively; a missing or damaged file is skipped.
++    static StringTables load_install(const std::string& dir);
++
++private:
++    std::vector<std::shared_ptr<const ra2assets::CsfStrings>> layers_;
++};
++
++// "Name:GAPOWR" -> "Gapowr"; "MTNK_2" -> "Mtnk 2"; never empty for a non-empty input.
++std::string readable_name(const std::string& id_or_label);
++
++// The name the sidebar, selection and queue text show for rules section `id`:
++// UIName= label -> "Name:<id>" -> rules Name= (when it reads as text) -> readable_name(id).
++std::string display_name(const ra2assets::Ini& rules, const StringTables& tables, const std::string& id);
++
++}  // namespace ra2engine
+diff --git a/tests/test_ui_names.cpp b/tests/test_ui_names.cpp
+new file mode 100644
+index 0000000..6f0b943
+--- /dev/null
++++ b/tests/test_ui_names.cpp
+@@ -0,0 +1,146 @@
++// Player-facing names (tooltips and every other place a codename could leak)
++// and the Naval Yard availability rules, against the real rulesmd.ini and
++// string tables. Install-gated: RA2_INSTALL_DIR (a skip is not a pass).
++#include "doctest.h"
++#include "asset_fixture.hpp"
++#include "country_bonuses.hpp"
++#include "production.hpp"
++#include "ui_names.hpp"
++
++#include <algorithm>
++#include <set>
++
++using namespace ra2engine;
++
++namespace {
++std::vector<std::string> list_of(const ra2assets::Ini& ini, const char* sec) {
++    std::vector<std::string> v;
++    for (const auto& kv : ini.section(sec)) {
++        std::string s = kv.second.substr(0, kv.second.find(';'));
++        while (!s.empty() && (unsigned char)s.back() <= 0x20) s.pop_back();
++        if (!s.empty()) v.push_back(s);
++    }
++    return v;
++}
++const StringTables& tables() {
++    static const StringTables t = StringTables::load_install(ra2fixture::install_base());
++    return t;
++}
++}  // namespace
++
++TEST_CASE("readable_name never returns the raw label or codename shape") {
++    CHECK(readable_name("Name:GAPOWR") == "Gapowr");
++    CHECK(readable_name("CruiseShip") == "Cruise Ship");
++    CHECK(readable_name("MTNK_2") == "Mtnk 2");
++    CHECK(readable_name("Name:") == "");
++    CHECK(readable_name("E1") == "E1");
++}
++
++TEST_CASE("display_name falls back without any string table") {
++    ra2assets::Ini ini = ra2assets::Ini::parse("[GAPOWR]\nUIName=Name:GAPOWR\n[MYBOAT]\nName=Fast Boat\n[ZZZ]\n");
++    StringTables none;
++    CHECK(display_name(ini, none, "GAPOWR") == "Gapowr");   // readable, and never "Name:GAPOWR"
++    CHECK(display_name(ini, none, "MYBOAT") == "Fast Boat");
++    CHECK(display_name(ini, none, "ZZZ") == "Zzz");
++}
++
++TEST_CASE("real install: the sidebar names are the CSF text, in every list") {
++    if (!ra2fixture::assets_available()) { FAIL("no RA2 install (set RA2_INSTALL_DIR): a skip is not a pass"); }
++    const ra2assets::Ini& ini = ra2fixture::rulesmd_ini();
++    CHECK(tables().layers() >= 2);                 // ra2md.csf over ra2.csf
++    CHECK(tables().text("Name:GAPOWR") == "Power Plant");
++    CHECK(tables().text("Name:E1") == "GI");
++    CHECK(display_name(ini, tables(), "GAPOWR") == "Power Plant");
++    CHECK(display_name(ini, tables(), "E1") == "GI");
++    CHECK(display_name(ini, tables(), "DEST") == "Destroyer");
++    int checked = 0;
++    for (const char* list : {"InfantryTypes", "VehicleTypes", "AircraftTypes", "BuildingTypes", "SuperWeaponTypes"})
++        for (const std::string& id : list_of(ini, list)) {
++            const std::string n = display_name(ini, tables(), id);
++            INFO(list << " " << id << " -> '" << n << "'");
++            CHECK(!n.empty());
++            CHECK(n.find("Name:") == std::string::npos);
++            CHECK(n.find(':') == std::string::npos);
++            // the label the rules point at resolves, or the name is the readable fallback
++            const std::string lbl = ini.get(id, "UIName");
++            if (!lbl.empty() && !tables().text(lbl).empty()) CHECK(n == tables().text(lbl));
++            ++checked;
++        }
++    CHECK(checked > 400);
++    // everything a player can ever build resolves through the string tables (no fallback needed)
++    for (const char* list : {"InfantryTypes", "VehicleTypes", "AircraftTypes", "BuildingTypes"})
++        for (const std::string& id : list_of(ini, list)) {
++            if (ini.get(id, "TechLevel", "-1").empty() || std::atoi(ini.get(id, "TechLevel", "-1").c_str()) <= 0) continue;
++            if (ini.get(id, "Cost", "0") == "0" || ini.get(id, "Cameo").empty()) {}
++            const std::string lbl = ini.get(id, "UIName");
++            INFO("buildable " << id << " UIName='" << lbl << "'");
++            if (lbl.empty()) continue;   // map decorations with a tech level
++            CHECK(!tables().text(lbl).empty());
++        }
++}
++
++TEST_CASE("real install: naval units need their Naval Yard, never a War Factory") {
++    if (!ra2fixture::assets_available()) { FAIL("no RA2 install (set RA2_INSTALL_DIR): a skip is not a pass"); }
++    const ra2assets::Ini& ini = ra2fixture::rulesmd_ini();
++    const ra2assets::Rules& rules = ra2fixture::rulesmd();
++    const std::vector<std::pair<std::string, std::vector<std::string>>> groups = {
++        {"POWER", rules.prerequisite_group("Power")},   {"BARRACKS", rules.prerequisite_group("Barracks")},
++        {"PROC", rules.prerequisite_group("Proc")},     {"FACTORY", rules.prerequisite_group("Factory")},
++        {"RADAR", rules.prerequisite_group("Radar")},   {"TECH", rules.prerequisite_group("Tech")}};
++    std::set<std::string> war_factories;
++    for (const std::string& g : rules.prerequisite_group("Factory")) war_factories.insert(g);
++    // the group the unit's "FACTORY" token names holds the war factories, not the yards
++    for (const std::string& y : {"GAYARD", "NAYARD", "YAYARD"}) CHECK(war_factories.count(y) == 0);
++
++    std::vector<BuildingTypeDef> types;
++    auto type_of = [&](const std::string& id) {
++        for (size_t i = 0; i < types.size(); ++i) if (types[i].id == id) return static_cast<int>(i);
++        BuildingTypeDef d; d.id = id; types.push_back(d);
++        return static_cast<int>(types.size()) - 1;
++    };
++    int countries = 0, boats_seen = 0;
++    for (const std::string& country : list_of(ini, "Countries")) {
++        ++countries;
++        std::set<std::string> boats_for_country;
++        for (const std::string& id : list_of(ini, "VehicleTypes")) {
++            if (ini.get(id, "Naval") != "yes") continue;
++            if (std::atoi(ini.get(id, "TechLevel", "-1").c_str()) <= 0) continue;
++            if (ini.get(id, "Owner").empty() || !country::country_allows(rules, id, country)) continue;
++            boats_for_country.insert(id);
++            const std::vector<std::string> pre = rules.prerequisite(id);
++            std::string yard;
++            for (const std::string& t : pre) {
++                INFO(country << " " << id << " needs " << t);
++                CHECK(t != "GAWEAP");  CHECK(t != "NAWEAP");  CHECK(t != "FACTORY");   // no War Factory
++                if (t == "GAYARD" || t == "NAYARD" || t == "YAYARD") yard = t;
++            }
++            INFO(country << " " << id);
++            CHECK(!yard.empty());   // a Naval Yard is in the chain
++            // Everything the unit lists, placed, makes it available; without the yard it is not.
++            std::vector<Building> own, no_yard;
++            for (const std::string& t : pre) {
++                std::string real = t;
++                for (const auto& g : groups)
++                    if (g.first == t && !g.second.empty()) real = g.second.front();
++                Building b; b.type = type_of(real); b.house = 3; b.alive = true; b.state = Building::State::Idle;
++                own.push_back(b);
++                if (t != yard) no_yard.push_back(b);
++            }
++            CHECK(prerequisites_met(pre, own, types, 3, groups));
++            CHECK(!prerequisites_met(pre, no_yard, types, 3, groups));
++            // and the Naval queue's own state decides: a busy Vehicle queue changes nothing
++            UnitTypeDef u; u.id = id; u.tech_level = 4; u.naval = true; u.is_vehicle = true; u.prerequisite = pre;
++            ProductionQueues q;
++            q.set_credits(10000);
++            start(q.state(QueueCat::Vehicle), 1000, 1000, 0.7);   // a tank in production
++            CHECK(can_start_unit(q.state(QueueCat::Naval), 0, {u}, own, types, 3, groups, /*factory_alive=*/true));
++            CHECK(!can_start_unit(q.state(QueueCat::Naval), 0, {u}, own, types, 3, groups, /*factory_alive=*/false));
++            ++boats_seen;
++        }
++        // every faction gets boats, from its own yard
++        INFO(country);
++        if (country != "Civilian" && country != "Neutral" && country != "Special" && country != "GDI" && country != "Nod") CHECK(!boats_for_country.empty());
++    }
++    CHECK(countries >= 10);
++    CHECK(boats_seen >= 40);
++}
