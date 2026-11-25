@@ -40,6 +40,7 @@ reference (never a substitute for gamemd behaviour).
 | T2.5 chop-mode arithmetic: Verses/falloff, build time, ore growth reload, repair/refund, veterancy, power output, integer production charge, factory count from placement | `0180`, `0181` | (this PR) |
 | T2.3 ForceShield end-to-end (fire + house iron effect + sidebar) | `0252-force-shield` | (this PR) |
 | SW targeting cursors audit (arming exclusion, Esc cancel, neutral cursor) | `0253-superweapon-targeting-cursors` | (this PR) |
+| SW sounds/anims/radar audit (per-type EVA, sounds, own-SW charge anims) | `0254-superweapon-sights-sounds` | (this PR) |
 
 ---
 
