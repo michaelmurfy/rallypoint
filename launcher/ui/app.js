@@ -588,6 +588,7 @@ function openMapViewer(entries, start, onChange, from) {
   } });
   const listedRow = h("label", { class: "switch" }, listed, "Show in the game's map list");
   const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
+  const sendBtn = shareButton(() => entries[i].name, "Send to room");
 
   // The game (Zero Hour or a mod) the skirmish is played with. Changing it changes the generals on offer.
   const gameSel = h("select", { "aria-label": "Game", onchange: async () => {
@@ -686,7 +687,7 @@ function openMapViewer(entries, start, onChange, from) {
       h("div", { class: "wiz-body mapbody" },
         h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), h("div", { class: "mapnav" }, prev, position, next)),
         h("div", { class: "mapside" }, h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, h("div", { class: "playrow" }, cashPick, speedPick, aiSelect(), resPick, play))),
-      h("div", { class: "wiz-foot" }, listedRow, close)));
+      h("div", { class: "wiz-foot" }, listedRow, sendBtn, close)));
   const onKey = (e) => { if (e.target.tagName === "SELECT") return; if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") go(-1); else if (e.key === "ArrowRight") go(1); };
   let shrink = null;
   function finish() { document.removeEventListener("keydown", onKey); shrink ? shrink(() => overlay.remove()) : overlay.remove(); }
@@ -713,6 +714,8 @@ function openMapViewer(entries, start, onChange, from) {
     if (m.official && !m.games.includes(selectedGame().id)) { prefs.set({ game: m.games[0] }); notifyMods(); drawGames(); }
     listed.checked = m.enabled;
     listedRow.hidden = !!m.official;
+    sendBtn.hidden = !!m.official;
+    sendBtn.dataset.map = m.name;
     position.textContent = `${i + 1} of ${entries.length}`;
     title.textContent = m.name;
     prev.disabled = i === 0; next.disabled = i === entries.length - 1;
@@ -893,10 +896,11 @@ function mapOrganiser(onLoad) {
         catch (e) { box.checked = m.enabled; say(errText(e), "bad"); }
       } });
       const idx = v.indexOf(m);
-      const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") + (!m.official && store.cfg.editor_available ? " editable" : "") }, m.official ? h("span", {}) : box,
+      const row = h(m.official ? "div" : "label", { class: "maprow" + (m.official ? " official" : m.enabled ? " on" : "") + (!m.official && store.cfg.editor_available ? " editable" : "") + (m.official ? "" : " sharable") }, m.official ? h("span", {}) : box,
         h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name), m.official ? h("span", { class: "maptags" }, h("span", { class: "officialtag" }, "Official"), ...gameNames(m).map((g) => h("span", { class: "gametag" }, g))) : h("span", { class: "muted small mappack-tag" }, m.pack)), h("span", { class: "small mapplayers" }, playerText(players(m))), h("span", { class: "muted small mapsize" }, m.size_kb >= 1024 ? `${(m.size_kb / 1024).toFixed(1)} MB` : `${m.size_kb} KB`),
         m.official || !store.cfg.editor_available ? null : (() => { const b = h("button", { class: "btn small", "aria-label": `Edit ${m.name} in World Builder`, title: `Open ${m.name} in World Builder with ${editorGame().name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); launchEditor(m.name, [b]); } }, "Edit"); return b; })(),
-        h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }, e.currentTarget); } }, icon("play"), "Skirmish"));
+        h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }, e.currentTarget); } }, icon("play"), "Skirmish"),
+        m.official ? null : shareButton(m.name));
       hoverPreview(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
       return row;
     }));
@@ -1702,11 +1706,12 @@ function connectionCard() {
 /** The room's settings. The first player into a room is its master and picks the "Stronger AI" level every player's game
  *  starts with (for computer players in a multiplayer game); everyone else sees it and cannot change it. */
 function roomCard() {
-  const badge = h("span", {}), note = h("span", {}), fb = liveStatus(), level = h("span", { class: "pill" });
+  const badge = h("span", {}), note = h("span", {}), fb = liveStatus(), level = h("span", { class: "pill" }), auto = shareAutoAccept();
   const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: () => { fb.busy("Saving…"); setAiBoost(+sel.value); } },
     ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
   const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
-    h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-inline" }, fb.el, sel, level))));
+    h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-inline" }, fb.el, sel, level)),
+      setting("Maps from the room master", "Normally every map someone sends waits for your answer. Turn this on to take the master's maps straight away. A map with the name of one you have is always asked about.", auto.el)));
   function draw() {
     const d = net.last;
     card.hidden = !d || d.room_master == null;
@@ -1724,7 +1729,7 @@ function roomCard() {
   }
   window.addEventListener("net", draw);
   draw();
-  return { el: card, dispose: () => window.removeEventListener("net", draw) };
+  return { el: card, dispose: () => { window.removeEventListener("net", draw); auto.dispose(); } };
 }
 
 function onlinePage() {
@@ -2553,6 +2558,8 @@ function openRa2Skirmish(m, from) {
 
 /** Maps for Red Alert 2, laid out like the Generals page: search, player chips, sort, one row per map with Skirmish,
  *  then a "Get more maps" card. The list is read when the page opens and again whenever the window is focused again. */
+/** Maps that came out of the game's own archives (the extracted catalogue) are on everyone's computer: nothing to send. */
+const ra2Shareable = (m) => !/[\\/]maps-cache[\\/]/.test(String(m.path));
 function ra2MapsPage() {
   const LIMIT = 150;
   let maps = [], q = "", pf = "", sortBy = "name", shown = LIMIT, community = null;
@@ -2599,11 +2606,12 @@ function ra2MapsPage() {
     fill(empty, maps.length
       ? [h("strong", {}, "No maps match"), h("span", { class: "muted small" }, q ? `Nothing is called “${search.value.trim()}” with these filters.` : "No map fits these filters."), h("button", { class: "btn small", onclick: () => clear.click() }, "Clear filters")]
       : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install the community packs below, or put .map, .mpr and .yrm files in your map folder.")]);
-    fill(list, v.slice(0, shown).map((m) => h("div", { class: "maprow ra2" },
+    fill(list, v.slice(0, shown).map((m) => h("div", { class: "maprow ra2" + (ra2Shareable(m) ? " sharable" : "") },
       h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name)),
       h("span", { class: "small mapplayers" }, m.players >= 2 ? `${m.players} players` : "Solo"),
       h("span", { class: "muted small mapsize" }, sizeText(m.size_kb)),
-      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: (e) => openRa2Skirmish(m, e.currentTarget) }, icon("play"), "Skirmish") : h("span", {}))));
+      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: (e) => openRa2Skirmish(m, e.currentTarget) }, icon("play"), "Skirmish") : h("span", {}),
+      ra2Shareable(m) ? shareButton(fileOf(m.path)) : null)));
     more.hidden = v.length <= shown;
     more.textContent = `Show more (${v.length - shown} left)`;
   }
@@ -2617,6 +2625,7 @@ function ra2MapsPage() {
   // The folder can change while the launcher is in the background (a download, a copied map): look again on return.
   const onFocus = () => reload(false);
   window.addEventListener("focus", onFocus);
+  window.addEventListener("maps-changed", onFocus); // a map was sent to us
 
   const packStatus = h("p", { class: "muted small" });
   const installPacks = h("button", { class: "btn primary", onclick: async () => {
@@ -2650,7 +2659,7 @@ function ra2MapsPage() {
           list, empty),
         h("div", { class: "row center" }, more))),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packStatus, h("div", { class: "row" }, installPacks, h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder"))));
-  return { el, dispose: () => window.removeEventListener("focus", onFocus) };
+  return { el, dispose: () => { window.removeEventListener("focus", onFocus); window.removeEventListener("maps-changed", onFocus); } };
 }
 
 /** The online lobby: the host's map with its starts, who is in the room, their seats, the options, and Start. Shown
@@ -3332,6 +3341,8 @@ async function start() {
   store.ra2Games = await invoke("ra2_detect").catch(() => []);
   applyGameTheme();
   shell();
+  mountShareDock();
+  setInterval(pollShare, 700);
   await loadMods();
   if (!isRa2()) ensureIcons().catch((e) => { if (!wizardEl) toast(errText(e), "bad"); });
   if (isRa2()) ra2FlagArt(); // the game's own country flags, read from the player's files once

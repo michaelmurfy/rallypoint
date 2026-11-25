@@ -1,7 +1,7 @@
 // No console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use generals_core::{ra2, ra2flags, ra2launch, ra2lobby, ra2maps, generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapview, selfupdate, update};
+use generals_core::{ra2, ra2flags, ra2launch, ra2lobby, ra2maps, generals, bundle, agent::{Agent, Status}, assets::{self, AssetJob}, config::Config, diagnose, engine, graphics, syncdiff, icons, launch, maps, mods, steam, maporg, mapshare, mapview, selfupdate, update};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -1151,6 +1151,128 @@ fn launch_editor(app: tauri::AppHandle, running: tauri::State<Editor>, game_dir:
     Ok(())
 }
 
+// ---- sending maps to the room ----------------------------------------------------------------------
+
+/// Map sharing (see `mapshare`): the state machine and the clock it runs on (milliseconds since `.1`). A background thread
+/// (`map_share_pump`) moves messages between it and the agent; the commands below only change its state.
+struct MapShareState(Mutex<mapshare::MapShare>, std::time::Instant);
+impl Default for MapShareState {
+    fn default() -> Self {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos()) ^ std::process::id().rotate_left(16);
+        MapShareState(Mutex::new(mapshare::MapShare::new(seed)), std::time::Instant::now())
+    }
+}
+
+fn share_library(app: &tauri::AppHandle) -> Result<mapshare::DirLibrary, String> {
+    Ok(mapshare::DirLibrary { maps_dir: maps_dir(app)?, disabled_dir: map_library(app)?.join("disabled"), ra2_dir: ra2_maps_dir(app)? })
+}
+
+/// Every 40 ms: hand what the relay sent to the state machine, let it say what it wants to say, send that. Takes the relay
+/// lock first and the share lock second, everywhere.
+fn map_share_pump(app: tauri::AppHandle) {
+    let (mut cfg_at, mut name, mut game, mut auto) = (std::time::Instant::now() - std::time::Duration::from_secs(10), String::new(), generals_proto::MAP_GENERALS, false);
+    let mut lib: Option<mapshare::DirLibrary> = None;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        if cfg_at.elapsed() > std::time::Duration::from_secs(2) {
+            cfg_at = std::time::Instant::now();
+            if let Ok(c) = config_path(&app).map(|p| Config::load(&p)) {
+                (name, game, auto) = (c.lobby_name(), if c.is_ra2() { generals_proto::MAP_RA2 } else { generals_proto::MAP_GENERALS }, c.map_auto_accept_here());
+            }
+            lib = share_library(&app).ok();
+        }
+        let (relay, st) = (app.state::<Relay>(), app.state::<MapShareState>());
+        let guard = relay.0.lock().unwrap();
+        let vip = match guard.as_ref().map(|a| a.status()) {
+            Some(Status::Connected(v)) => Some(v),
+            _ => None,
+        };
+        let now = st.1.elapsed().as_millis() as u64;
+        let mut share = st.0.lock().unwrap();
+        share.set_self(now, vip, &name, game, auto);
+        let (Some(agent), Some(_)) = (guard.as_ref(), vip) else { continue };
+        let incoming = agent.take_map();
+        if let Some(lib) = &lib {
+            for (from, msg) in incoming {
+                share.receive(now, from, msg, lib);
+            }
+        }
+        share.tick(now);
+        for (to, msg) in share.drain() {
+            agent.send_map(to, msg);
+        }
+    }
+}
+
+/// What the page shows about map sharing: who is in the room, offers waiting for an answer, transfers going each way.
+#[tauri::command]
+fn map_share_view(share: tauri::State<MapShareState>) -> mapshare::ShareView {
+    share.0.lock().unwrap().view(share.1.elapsed().as_millis() as u64)
+}
+
+/// Send one of the player's maps to some of the players in the room (`to`: their addresses from `map_share_view`). For
+/// Generals `name` is the map's folder, for Red Alert 2 its file. Returns how many offers went out.
+#[tauri::command]
+async fn map_share_send(app: tauri::AppHandle, share: tauri::State<'_, MapShareState>, name: String, to: Vec<String>) -> Result<usize, String> {
+    let c = Config::load(&config_path(&app)?);
+    let vips: Vec<_> = to.iter().filter_map(|s| mapshare::MapShare::parse_vip(s)).collect();
+    if vips.is_empty() {
+        return Err("Choose at least one player.".into());
+    }
+    let prepared = if c.is_ra2() {
+        let app2 = app.clone();
+        let entry = tauri::async_runtime::spawn_blocking(move || ra2_find_map(&app2, &name)).await.map_err(|e| e.to_string())??;
+        if entry.path.starts_with(ra2_maps_cache(&app)?) {
+            return Err("This map comes with the game, so everyone already has it.".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || mapshare::prepare_ra2(&entry.path)).await.map_err(|e| e.to_string())??
+    } else {
+        if !maporg::is_safe_name(&name) {
+            return Err("That is not a map name.".into());
+        }
+        let (on, off) = (maps_dir(&app)?.join(&name), map_library(&app)?.join("disabled").join(&name));
+        let dir = [on, off].into_iter().find(|d| d.is_dir()).ok_or("That map isn't installed, so there is nothing to send. Maps that come with the game are on everyone's computer.")?;
+        tauri::async_runtime::spawn_blocking(move || mapshare::prepare_generals(&dir)).await.map_err(|e| e.to_string())??
+    };
+    let now = share.1.elapsed().as_millis() as u64;
+    let n = share.0.lock().unwrap().send(now, &vips, &prepared)?;
+    Ok(n)
+}
+
+/// Answer an incoming offer: accept, replace the map of the same name, decline, or decline and block that player.
+#[tauri::command]
+fn map_share_reply(share: tauri::State<MapShareState>, from: String, id: u32, reply: mapshare::Reply) -> Result<(), String> {
+    let from = mapshare::MapShare::parse_vip(&from).ok_or("not a player")?;
+    share.0.lock().unwrap().respond(share.1.elapsed().as_millis() as u64, from, id, reply);
+    Ok(())
+}
+
+/// Stop sending a map to one player.
+#[tauri::command]
+fn map_share_cancel(share: tauri::State<MapShareState>, to: String, id: u32) -> Result<(), String> {
+    let to = mapshare::MapShare::parse_vip(&to).ok_or("not a player")?;
+    share.0.lock().unwrap().cancel_out(share.1.elapsed().as_millis() as u64, to, id);
+    Ok(())
+}
+
+/// Take a finished entry off the list (`incoming`: a map someone sent us, otherwise one we sent).
+#[tauri::command]
+fn map_share_dismiss(share: tauri::State<MapShareState>, incoming: bool, who: String, id: u32) -> Result<(), String> {
+    let who = mapshare::MapShare::parse_vip(&who).ok_or("not a player")?;
+    let mut s = share.0.lock().unwrap();
+    if incoming { s.dismiss_in(who, id) } else { s.dismiss_out(who, id) }
+    Ok(())
+}
+
+/// Take maps from the room's master without asking, in the room the launcher is set to join. Off until the player turns it on.
+#[tauri::command]
+fn map_share_auto_accept(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.set_map_auto_accept_here(on);
+    c.save(&path).map_err(|e| e.to_string())
+}
+
 // ---- Red Alert 2 -----------------------------------------------------------------------------------
 
 /// The launcher's Red Alert 2 lobby (see `ra2lobby`), fed by `ra2_lobby_poll`; times are milliseconds since `.1`.
@@ -1473,6 +1595,8 @@ fn main() {
     tauri::Builder::default()
         // Each start: clear out what the updater downloaded or staged for the version that is now running.
         .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || map_share_pump(handle));
             if let Ok(data) = base(app.handle()) {
                 std::thread::spawn(move || {
                     update::cleanup(&data, update::current_version());
@@ -1488,12 +1612,14 @@ fn main() {
         .manage(Editor::default())
         .manage(MapJobs::default())
         .manage(Ra2Lobby::default())
+        .manage(MapShareState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
             get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_ra2_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
+            map_share_view, map_share_send, map_share_reply, map_share_cancel, map_share_dismiss, map_share_auto_accept,
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game, launch_editor,
