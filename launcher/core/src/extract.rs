@@ -153,7 +153,7 @@ fn list(tool: &Tool, archive: &Path) -> Result<Option<Vec<String>>, String> {
 /// The first entry of a verbose listing that is a symbolic or hard link, if any. Extracting a link and then a file
 /// "inside" it writes outside the destination before any check of the finished tree could notice, so links are
 /// refused up front. `kind` says which tool's listing format `text` is in.
-fn find_link(tool: &Tool, text: &str) -> Option<String> {
+fn find_link_in(tool: &Tool, text: &str) -> Option<String> {
     let unix_mode = |t: &str| t.len() >= 10 && t.is_char_boundary(10) && t[1..10].chars().all(|c| "rwxsStT-".contains(c));
     match tool {
         // `tar -tv`: `lrwxr-xr-x ... name -> target` for symlinks, `hrw-r--r-- ... link to ...` for hard links.
@@ -190,7 +190,14 @@ fn links_in(tool: &Tool, archive: &Path) -> Result<Option<String>, String> {
         Tool::Unrar => out(Command::new("unrar").arg("lt").arg(archive))?,
         Tool::Innoextract => return Ok(None),
     };
-    Ok(find_link(tool, &text))
+    Ok(find_link_in(tool, &text))
+}
+
+/// The first symbolic or hard link in a tar archive, if any. Nothing is unpacked: only the archive's listing is read.
+/// An update archive is checked with this before anything is written, because a link that is unpacked and then has a
+/// file "inside" it writes outside the destination before the finished tree could be checked.
+pub fn find_link(archive: &Path) -> Result<Option<String>, String> {
+    links_in(&Tool::Tar, archive)
 }
 
 fn run_extract(tool: &Tool, archive: &Path, dest: &Path) -> Result<(), String> {
@@ -331,17 +338,17 @@ pub(crate) mod tests {
     #[test]
     fn spots_links_in_each_tools_listing() {
         let tar = "-rw-r--r--  0 u g  5 Jan  1 00:00 a.txt\nlrwxr-xr-x  0 u g  0 Jan  1 00:00 link -> /Users/me\n";
-        assert!(find_link(&Tool::BsdTar, tar).unwrap().contains("link -> /Users/me"));
-        assert!(find_link(&Tool::Tar, "hrw-r--r-- 0 u/g 0 2026-01-01 00:00 b link to a\n").is_some());
-        assert!(find_link(&Tool::Tar, "-rw-r--r--  0 u g  5 Jan  1 00:00 a.txt\ndrwxr-xr-x  0 u g  0 Jan  1 00:00 dir/\n").is_none());
-        assert!(find_link(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\nlrwxr-xr-x  3.0 unx  8 bx stor 26-Jan-01 00:00 link\n").is_some());
-        assert!(find_link(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\n").is_none());
+        assert!(find_link_in(&Tool::BsdTar, tar).unwrap().contains("link -> /Users/me"));
+        assert!(find_link_in(&Tool::Tar, "hrw-r--r-- 0 u/g 0 2026-01-01 00:00 b link to a\n").is_some());
+        assert!(find_link_in(&Tool::Tar, "-rw-r--r--  0 u g  5 Jan  1 00:00 a.txt\ndrwxr-xr-x  0 u g  0 Jan  1 00:00 dir/\n").is_none());
+        assert!(find_link_in(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\nlrwxr-xr-x  3.0 unx  8 bx stor 26-Jan-01 00:00 link\n").is_some());
+        assert!(find_link_in(&Tool::Unzip, "Archive:  x.zip\n-rw-r--r--  3.0 unx  5 tx stor 26-Jan-01 00:00 a\n").is_none());
         let sz = std::path::PathBuf::from("7z");
-        assert_eq!(find_link(&Tool::SevenZip(sz.clone()), "Path = a\nAttributes = A_ -rw-r--r--\n\nPath = link\nAttributes = _ lrwxrwxrwx\n").as_deref(), Some("link"));
-        assert_eq!(find_link(&Tool::SevenZip(sz.clone()), "Path = x\nSymbolic Link = /etc\n").as_deref(), Some("x"));
-        assert!(find_link(&Tool::SevenZip(sz), "Path = a\nAttributes = A_ -rw-r--r--\nSymbolic Link = \n").is_none());
-        assert!(find_link(&Tool::Unrar, "Name: l\n Type: Unix symbolic link\n").is_some());
-        assert!(find_link(&Tool::Unrar, "Name: f\n Type: File\n").is_none());
+        assert_eq!(find_link_in(&Tool::SevenZip(sz.clone()), "Path = a\nAttributes = A_ -rw-r--r--\n\nPath = link\nAttributes = _ lrwxrwxrwx\n").as_deref(), Some("link"));
+        assert_eq!(find_link_in(&Tool::SevenZip(sz.clone()), "Path = x\nSymbolic Link = /etc\n").as_deref(), Some("x"));
+        assert!(find_link_in(&Tool::SevenZip(sz), "Path = a\nAttributes = A_ -rw-r--r--\nSymbolic Link = \n").is_none());
+        assert!(find_link_in(&Tool::Unrar, "Name: l\n Type: Unix symbolic link\n").is_some());
+        assert!(find_link_in(&Tool::Unrar, "Name: f\n Type: File\n").is_none());
     }
 
     /// A tar holding a symlink is refused before anything is written (the old order extracted it first).

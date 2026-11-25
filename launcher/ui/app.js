@@ -259,9 +259,9 @@ function showUpdateNotes(u, bad) {
   else invoke("open_release_page").catch((e) => bad(errText(e)));
 }
 
-/** Linux has no in-app installer (the packages are .deb, .rpm and .tar.gz): the release page is how it updates. */
-const pageButton = (u, bad) => !u.installer && store.cfg.os === "linux"
-  ? h("button", { class: "btn primary", onclick: () => invoke("open_release_page").catch((e) => bad(errText(e))) }, "Download page")
+/** A Linux install in ~/.local updates itself; a system package (.deb, .rpm) cannot, so the release page is how it updates. */
+const pageButton = (u, bad) => store.cfg.os === "linux"
+  ? h("button", { class: u.installer ? "btn" : "btn primary", onclick: () => invoke("open_release_page").catch((e) => bad(errText(e))) }, "Download page")
   : null;
 
 function renderUpdate() {
@@ -347,7 +347,10 @@ function updatesCard() {
   } });
   function report() {
     const u = store.update;
-    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${u.installer ? "" : store.cfg.os === "linux" ? ". Install the new .deb, .rpm or .tar.gz from the download page" : ". Its installer for this computer is not up yet"}` : "You have the latest version", "ok");
+    let extra = "";
+    if (u && !u.installer) extra = store.cfg.os === "linux" ? ". Install the new .deb, .rpm or .tar.gz from the download page" : ". Its installer for this computer is not up yet";
+    else if (u && store.cfg.os === "linux") extra = ". An install in ~/.local updates itself; a .deb or .rpm install needs the new package";
+    fb.set(u ? `${updateName(u)} is available${u.size_mb ? ` (${u.size_mb} MB)` : ""}${extra}` : "You have the latest version", "ok");
     fill(actions, u && u.installer ? install : null, u ? pageButton(u, fb.bad) : null, u ? notes : null);
   }
   if (store.update) report();
