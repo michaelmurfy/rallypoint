@@ -160,6 +160,44 @@ cases and cloaked-cell costs that need live skirmish proof on dense maps.
 | **Effort** | M |
 | **OpenRA** | Partial — path cost ideas only |
 
+### T1.7 Movement / pathfinding RE pass (2026-11-25): patches `0160`–`0163`
+
+Method: read github.com/YuriPlanet/vera20k (GPL-3, read only, no code copied)
+for the gamemd addresses and formulas, diffed against our movement code, and
+wrote the tests first where real data allowed (`ra2assets_tests` with
+`RA2_INSTALL_DIR` set, real `rulesmd.ini` and `mapsmd03`; `--probe-move` for
+group moves and the economy).
+
+**Landed**
+
+| Item | Patch | gamemd |
+|---|---|---|
+| Group move destinations: anchor nearest the 3-D centroid takes the click, others probe up to 6 cells along their own anchor-relative direction, same-source-cell units share a destination (was: rings of free cells) | `0160-group-destinations-like-megamission` | `FUN_0064CDA0` |
+| Harvester ore scan: own cell, then rings 1..range-1 in the retail walk order, best `Value x (density+1)` wins, first ring with a hit ends it (was: first cell in raster order of the nearest ring) | `0161-ore-scan-rings-by-value` | `FUN_004DD0A0`, `FUN_00485020` |
+| Miner "too far from refinery to radio it": Euclid to the foundation centre vs `HarvesterTooFarDistance*256` (was: Chebyshev to the footprint edge) | `0162-miner-too-far-from-refinery-euclid-to-centre` | `FUN_0073E5E0` state 2, `0x0073EBB1..0x0073EC19` |
+| `MovementZone=CrusherAll` (Battle Fortress) flattens every `Wall=yes` overlay, not only `Crushable=yes` ones | `0163-crusher-all-flattens-every-wall` | `Per_Cell_Process FUN_0073AFD4`, `0x0073B02D` |
+
+**Checked and already matching (do not re-derive)**: A* heuristic and tie-break
+(0095), straighten runs (0097), edge-cost multipliers (code 2 = 1/4/1000,
+parked friend, destroyable), terrain speed chain (land row clamp to 1.0, slope
+pair, exact-zero to 0.5, damaged x0.75, Drive/Ship only), no group speed
+matching (retail has none), crush predicate (Omni arm, `Crushable=`,
+deployed Guardian GI, Iron Curtain), crush on arrival with prescatter,
+infantry spots 2, 3, 4, `Scatter` replacing a held-up unit's destination.
+
+**Still open (found, not fixed)**
+
+| Gap | Where | Note |
+|---|---|---|
+| Path finishing corner pass `FUN_0042B210` (90-degree corner rewrite) | `pathfind.cpp` `straighten_runs` | 0097 ported only `FUN_0042B7F0`/`0042BE20` |
+| Search budgets: retail passes `0xFFF7` nodes to every search, we use 4000 (repath) and 20000 (first path) | `world.cpp` `kRepathBudget`, `kNearestPathBudget` | a long detour can fail a repath and leave the stale route; retail refuses a route found at exactly 10000 expansions (quirk, not ported) |
+| Real zone map (`FUN_0056D100` per-MovementZone ids with tube/bridge links) | `reach_mask`, `find_reachable_ore` | we flood on demand, and the ore scan floods only the scan box with 4-connectivity |
+| Group destination `height band` and `Can_Enter_Cell` codes are approximated (blocked / moving / free) | `World::group_move` | the retail call is `vt+0x1AC`; also the retail arrival scatter replaces our "nearest free cell" spill for vehicles |
+| `can_crush` ordinary arm refuses vehicles (`!v.is_vehicle`); retail asks only `Crushable=` | `combat.cpp` | no stock vehicle sets it |
+| Ore scan `Is_Cell_Harvestable` uses our passability, not the type's Can_Enter_Cell | `harvest.cpp` | |
+| Unit-by-unit `Mission_Harvest` state machine (dispatch rates, `Rate x 900` epilogue) | `harvest.cpp` | economy timing, not pathing |
+| Probe artefact: `--probe-move` spawns a whole group in one 3x3 blob, so a unit ringed in by friends is scattered by retail's own rule and ends near its start (`max_cheb_from_goal` of 28 in the 12-unit scenarios) | `movement_probe.inc` | spawn the group spread out before reading that column |
+
 ---
 
 ## Tier 2 — country / faction completeness
