@@ -378,12 +378,19 @@ fn run_app(ctx: &mut Ctx, exe: &Path, user: &str, app: u32, dir: &Path, password
         let _ = std::fs::create_dir_all(&ctx.home);
         cmd.env("XDG_DATA_HOME", &ctx.home);
     }
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Couldn't start Steam's downloader: {e}"))?;
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // ETXTBSY (26): a process another thread forked while the tool was being written still holds the file open for
+    // writing until it execs. It clears in milliseconds, so try again briefly.
+    let mut tries = 0;
+    let mut child = loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) && cfg!(unix) && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => break r.map_err(|e| format!("Couldn't start Steam's downloader: {e}"))?,
+        }
+    };
     let mut stdin = child.stdin.take();
     let (tx, rx) = mpsc::channel::<String>();
     for r in [Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>, Box::new(child.stderr.take().unwrap())] {
