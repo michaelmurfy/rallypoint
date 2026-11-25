@@ -36,6 +36,7 @@ reference (never a substitute for gamemd behaviour).
 | T3.3 turret AI + T3.1 damage fires + T3.2 fear gate | `0055-vehicle-turret-deploy-damage-fires` | (this PR) |
 | T2.2 country unique roster audit | `0052-country-unique-roster` | [#194](https://github.com/michaelmurfy/rallypoint/pull/194) |
 | T2.4 Magnetron drop Crush blast + Floating Disc live Disc-over-base | `0058-magnetron-toss-disc-over-base` | [#198](https://github.com/michaelmurfy/rallypoint/pull/198) |
+| T2.5 chop-mode arithmetic: Verses/falloff, build time, ore growth reload, repair/refund, veterancy, power output, integer production charge, factory count from placement | `0180`, `0181` | (this PR) |
 
 ---
 
@@ -451,6 +452,38 @@ Upstream known limitation.
 | **OpenRA** | Yes — map generator as inspiration only |
 
 ---
+
+## Simulation rules audit against vera20k (2026-11-25)
+
+Method: read vera20k's reverse-engineered notes (github.com/YuriPlanet/vera20k, GPL-3.0, read only,
+no code copied) next to our engine, one area at a time, and pinned each divergence with a test.
+**Main finding:** `WinMain` (`0x006BBFC1`) calls `_controlfp(_RC_CHOP, _MCW_RC)` (control word
+`0x0E7F`), so gamemd truncates every double multiply and divide, not just `_ftol`. Our `orig_math.hpp`
+assumed round-to-nearest. A product that should be an integer lands one ulp below it, and the
+`ftol` drops a unit. The native Verses reader in vera20k's oracle confirms it (`10%` reads as
+`0x3fb9999999999999`, nearest would be `...9a`). `engine/chop_math.hpp` is the fix (`chop::mul`, `div`,
+`add`, `sub`, `percent`, `to_f32`; exact, no `fma`).
+
+| Area | Result |
+|---|---|
+| Verses, falloff, `Apply_warhead_damage` `0x489180` | Fixed (0180): 100 damage at 30% is 29, M60 vs flak 15 x 80% is 11 |
+| Time_To_Build `Cost x BuildSpeed x 0.9` `0x00711EE0` | Fixed (0180): every time one frame lower (GAPOWR 503, not 504) |
+| FactoryClass 54-step charge | Fixed (0180): `Balance / StepsLeft` in whole credits, not fractional shares |
+| `GetFactoryCount` `0x00500910` (MultipleFactory) | Fixed (0180): counts from placement, build-up included |
+| Tiberium Growth reload `0x00722C9E` | Fixed (0180): `ftol(Growth x 0.3)` = 659 frames in skirmish (was 2200, so ore grew 3.3x too slowly); Spread stays raw |
+| Repair step cost, sell refund, veterancy (ROF, speed, combat, armor), house multipliers | Fixed (0180/0181): veteran ROF 20 -> 11 frames |
+| Power output of a damaged plant `0x0044E85F` | Fixed (0181): 80% of 200 is 159 |
+| Ore growth/spread batch size, airfield reload, garrison ROF/damage | Fixed (0181) |
+| Low-power speed (`1 - (1 - ratio) x penalty`, min/max clamps), `AIVirtualPurifiers`, Owner/Required/ForbiddenHouse, refund/Soylent rules | Matches vera20k |
+| Harvester unload and purifier payout | Same totals; ours pays fractional credits per bale, the game pays whole credits per slot (`0x004F9610`, `0x0073E42B`). Left alone |
+
+**Not done / next, in order of value**
+1. Ore growth is one global candidate list for Riparius. The game runs one growth and spread queue per tiberium type (priority heap keyed `Random(50) + frame`, `GrowthProcessor 0x00722F00`, `SpreadProcessor 0x00722440`, `TiberiumGrowthEnabled`). Gem fields never grow here.
+2. Money is `double`; gamemd keeps `int` credits and pays through `Add_Tiberium_Credits` (`ftol(Value x Income x amount + credits)`).
+3. Time_To_Build only applies `BuildTimeMultiplier` and the low-power divide as a running speed; the game applies country multiplier, `BuildTimeMultiplier`, power divide and one `x MultipleFactory` per extra factory as separate `ftol`s at start and on every power change (`0x006F47A0`).
+4. Production is continuous-time (`dt x 15`); gamemd steps whole frames.
+5. Still unaudited: superweapon charge (we keep seconds, the game frames), AI TeamTypes/TaskForces build orders, radar/gap/sensors, capture/engineer rules, the damage gates after the receiver (`ReceiveDamage` order, `MaxDamage`/`MinDamage`).
+6. Build times, damage and ore growth differ from older builds, and the RA2 net layer has no simulation version to refuse them, so players on different builds will desync.
 
 ## Suggested attack order
 

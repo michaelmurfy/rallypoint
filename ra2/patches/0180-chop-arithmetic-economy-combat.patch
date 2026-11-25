@@ -1,0 +1,778 @@
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -195,6 +195,7 @@
+ # Compiled into both this test binary and ra2engine from one source of truth
+ # (same pattern as combat.cpp above).
+ target_sources(ra2assets_tests PRIVATE tests/test_production.cpp engine/production.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_chop_math.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_world_power_w5.cpp)   # W5-E2 power-down
+ # sidebar.cpp is pure C++17 (no SDL): RA2 sidebar geometry + hit-testing
+ # (docs/re/construction.md §11). Compiled into both this test binary and ra2engine
+diff -ruN a/engine/chop_math.hpp b/engine/chop_math.hpp
+--- a/engine/chop_math.hpp
++++ b/engine/chop_math.hpp
+@@ -0,0 +1,49 @@
++#pragma once
++// gamemd runs with the x87 rounding mode set to CHOP (WinMain 0x006BBFC1
++// _controlfp(_RC_CHOP, _MCW_RC); control word 0x0E7F: 53-bit, toward zero), so
++// every double multiply/divide is truncated, not rounded to nearest. A product
++// that "should" be an integer, such as 2200 * 0.3 or 100 * (30 * 0.01), lands one
++// ulp BELOW it and _ftol then drops a whole unit (659, 29). These helpers give
++// the truncated result exactly (fma recovers the rounding error); results are
++// bit-identical on every platform. Cited from the reverse-engineered notes of
++// github.com/YuriPlanet/vera20k (ore_growth.rs, factory.rs, kernel.rs); no code copied.
++#include <cmath>
++
++namespace ra2engine {
++namespace chop {
++
++// Step a nearest-rounded result `r` toward zero when the exact value `err`
++// (exact - r) lies on the zero side of it.
++inline double toward_zero(double r, double err) {
++    if (err != 0.0 && ((err < 0.0) != (r < 0.0)) && r != 0.0) return std::nextafter(r, 0.0);
++    return r;
++}
++inline double mul(double a, double b) {
++    const double r = a * b;
++    if (!std::isfinite(r)) return r;
++    return toward_zero(r, std::fma(a, b, -r));
++}
++inline double div(double a, double b) {
++    const double r = a / b;
++    if (!std::isfinite(r) || r == 0.0) return r;
++    return toward_zero(r, std::fma(-r, b, a) / b);   // sign of (a - r*b) / b = sign of exact - r
++}
++inline double add(double a, double b) {
++    const double r = a + b;
++    if (!std::isfinite(r)) return r;
++    const double bb = r - a;
++    return toward_zero(r, (a - (r - bb)) + (b - bb));   // TwoSum error
++}
++inline double sub(double a, double b) { return add(a, -b); }
++// FSTP m32real under chop: the double truncated (not rounded) to a float.
++inline float to_f32(double x) {
++    float f = static_cast<float>(x);
++    if (std::isfinite(x) && std::isfinite(f) && std::fabs(static_cast<double>(f)) > std::fabs(x))
++        f = std::nextafter(f, 0.0f);
++    return f;
++}
++// "NN%" in rules: atoi(NN) * 0.01 under chop (WarheadType Verses reader 0x75DDCC).
++inline double percent(int pct) { return mul(static_cast<double>(pct), 0.01); }
++
++}  // namespace chop
++}  // namespace ra2engine
+diff -ruN a/engine/combat.cpp b/engine/combat.cpp
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1,4 +1,5 @@
+ #include "combat.hpp"
++#include "chop_math.hpp"
+ #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
+ 
+ #include <algorithm>
+@@ -456,8 +457,8 @@
+             frames = rng ? rng->random(3, 5) : 3;
+         } else {
+             const int j = rng ? rng->random(0, 2) : 0;
+-            frames = om::ftol(u.tg.rof_raw * u.tg.house_rof + j);
+-            if (u.tg.rof_vet != 1.0) frames = om::ftol(frames * u.tg.rof_vet);
++            frames = om::ftol(chop::add(chop::mul(u.tg.rof_raw, u.tg.house_rof), j));
++            if (u.tg.rof_vet != 1.0) frames = om::ftol(chop::mul(frames, u.tg.rof_vet));
+         }
+         bi %= burst;
+         return frames;
+@@ -723,19 +724,22 @@
+     if (damage == 0) return 0;
+     if (damage < 0) return distance < 8 ? damage : 0;   // healing: point-blank only
+     const float fd = static_cast<float>(damage);
+-    const float atmax = fd * static_cast<float>(percent_at_max);   // FMUL [wh+0x12C]
++    // FMUL [wh+0x12C], stored as a float: the store chops to 24 bits like everything else.
++    const float atmax = chop::to_f32(chop::mul(static_cast<double>(fd), static_cast<float>(percent_at_max)));
+     const int spread = ftol_i(static_cast<float>(cell_spread) * 256.0f);   // [wh+0x124]*256
+     int d = damage;
+     if (atmax != fd && spread != 0)
+-        d = ftol_i((static_cast<double>(fd) - atmax) * (spread - distance) / spread + atmax);
++        d = ftol_i(chop::add(chop::div(chop::mul(chop::sub(static_cast<double>(fd), atmax),
++                                                  static_cast<double>(spread - distance)),
++                                       static_cast<double>(spread)), atmax));
+     if (d <= 0) d = 0;
+     double v = 1.0;
+     if (!verses.empty()) {
+         int idx = armor_ix;
+         if (idx < 0 || idx >= static_cast<int>(verses.size())) idx = 0;
+-        v = verses[static_cast<std::size_t>(idx)] / 100.0;
++        v = chop::percent(verses[static_cast<std::size_t>(idx)]);
+     }
+-    int r = ftol_i(d * v);
++    int r = ftol_i(chop::mul(static_cast<double>(d), v));
+     if (r >= kMaxDamage) r = kMaxDamage;
+     return r;
+ }
+@@ -1122,7 +1126,10 @@
+     // truncates toward zero for non-negative operands (damage and percent
+     // are both always >= 0 here), which is exactly the `_ftol`-observed
+     // rounding convention -- no separate std::trunc call needed.
+-    const int d = damage * verses[idx] / 100;
++    // Verses is atoi(NN) * 0.01 and the damage multiply both run in chop mode
++    // (WarheadType 0x75DDCC, Apply_warhead_damage 0x489227): 100 damage at 30% is 29,
++    // not 30 (see chop_math.hpp).
++    const int d = om::ftol(chop::mul(static_cast<double>(damage), chop::percent(verses[idx])));
+     // Gap fix C (G-50) [RE: abilities.md §H -- TechnoClass::ReceiveDamage
+     // 0x700DA0 clamps a non-negative defended hit to at least 1 after the
+     // armor multiply; rulesmd [CombatDamage] MinDamage=1]: 3 dmg x 25 % deals
+diff -ruN a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -67,6 +67,7 @@
+ #include "audio_mixer.hpp"
+ #include "bridges.hpp"      // G16 (agent G): bridge overlay classes
+ #include "overlay_land.hpp"  // W8-03-02 / W8-03-01 (w8fix-place): overlay land + buildable grid
++#include "chop_math.hpp"
+ #include "orig_math.hpp"    // Net L0: the original FastMath for sim code living in main.cpp
+ #include "audio_sdl.hpp"
+ #include "music_stream.hpp"
+@@ -2569,8 +2570,12 @@
+     world.set_purifier_bonus(rules.general_double("PurifierBonus", 0.0));
+     // W2-SK-01: the original per-type growth/spread clocks ([Riparius]
+     // Growth=2200 / Spread=2200 frames), see OreField::set_original_timing.
+-    world.ore().set_original_timing(static_cast<int>(rules.section_double("Riparius", "Growth", 0.0)),
+-                                    static_cast<int>(rules.section_double("Riparius", "Spread", 0.0)));
++    // GrowthDriver_AllTypes 0x00722C9E: the timer reloads ftol(Growth * 0.3) while the
++    // TiberiumGrows scenario flag is set (forced on in every skirmish/multiplayer
++    // start): 659 frames for Growth=2200, not 2200. SpreadDriver reloads Spread as is.
++    world.ore().set_original_timing(
++        ra2engine::tiberium_growth_reload(rules.section_double("Riparius", "Growth", 0.0)),
++        static_cast<int>(rules.section_double("Riparius", "Spread", 0.0)));
+     // W2-SK-02: [General] TiberiumLongScan=48 / TiberiumShortScan=6 (cells).
+     world.set_harvest_scan(static_cast<int>(rules.general_double("TiberiumLongScan", 32.0)),
+                            static_cast<int>(rules.general_double("TiberiumShortScan", 6.0)));
+@@ -2774,9 +2779,9 @@
+     // NOTE [§Ground truth]: URepairStep / URepairPercent DO NOT EXIST in this
+     // build, and SurvivorRate is a dead key. Do not add reads for them.
+     ba.repair_sell.repair_step    = static_cast<int>(rules.general_double("RepairStep", 8.0));
+-    ba.repair_sell.repair_percent = rules.general_double("RepairPercent", 15.0) / 100.0;
++    ba.repair_sell.repair_percent = ra2engine::chop::mul(rules.general_double("RepairPercent", 15.0), 0.01);   // "15%" = atoi * 0.01, chopped
+     ba.repair_sell.repair_rate    = rules.general_double("RepairRate", 0.016);
+-    ba.repair_sell.refund_percent = rules.general_double("RefundPercent", 50.0) / 100.0;
++    ba.repair_sell.refund_percent = ra2engine::chop::mul(rules.general_double("RefundPercent", 50.0), 0.01);
+     ba.repair_sell.u_repair_rate  = rules.general_double("URepairRate", 0.016);   // W7-08-03
+     ba.repair_sell.allied_survivor_divisor =
+         static_cast<int>(rules.general_double("AlliedSurvivorDivisor", 500.0));
+@@ -5161,11 +5166,7 @@
+ // alive Idle owned factory multiplies build TIME by 0.8 (2->x0.8, 3->x0.64),
+ // so the tick SPEED multiplier is mf^-(n-1)]. n<=1 -> 1.0.
+ double factory_speedup(const ra2engine::World& world, const std::vector<int>& ftypes, double mf) {
+-    int n = 0;
+-    for (const ra2engine::Building& b : world.buildings()) {
+-        if (!b.alive || b.state != ra2engine::Building::State::Idle || b.house != 0) continue;
+-        for (int t : ftypes) if (b.type == t) { ++n; break; }
+-    }
++    const int n = ra2engine::count_factories(world.buildings(), 0, ftypes);
+     if (n <= 1 || mf <= 0.0) return 1.0;
+     return ra2engine::om::ipow(1.0 / mf, n - 1);   // Net L0: deterministic (no libm pow)
+ }
+diff -ruN a/engine/ore.cpp b/engine/ore.cpp
+--- a/engine/ore.cpp
++++ b/engine/ore.cpp
+@@ -1,4 +1,5 @@
+ #include "ore.hpp"
++#include "chop_math.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ 
+ #include <algorithm>
+@@ -129,6 +130,8 @@
+     return k;
+ }
+ 
++int tiberium_growth_reload(double growth) { return om::ftol(chop::mul(growth, 0.3)); }
++
+ void OreField::step_original(double dt, double growth_pct, double spread_pct,
+                              const std::vector<std::uint8_t>& passable, OreRng& rng,
+                              const Occupancy* occ) {
+diff -ruN a/engine/ore.hpp b/engine/ore.hpp
+--- a/engine/ore.hpp
++++ b/engine/ore.hpp
+@@ -74,6 +74,11 @@
+     int short_scan = 6;
+ };
+ 
++// GrowthDriver_AllTypes 0x00722C9E: with the TiberiumGrows scenario flag (forced on at every
++// skirmish and multiplayer start) a type's growth timer reloads ftol(Growth * 0.3) under chop
++// arithmetic: Growth=2200 gives 659 frames, not 2200. SpreadDriver reloads Spread unscaled.
++int tiberium_growth_reload(double growth);
++
+ class OreField {
+ public:
+     friend struct SaveAccess;  // P7 Save/Load (engine/save_fields.hpp)
+diff -ruN a/engine/production.cpp b/engine/production.cpp
+--- a/engine/production.cpp
++++ b/engine/production.cpp
+@@ -1,4 +1,5 @@
+ #include "production.hpp"
++#include "chop_math.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ #include <algorithm>
+ #include <cmath>
+@@ -10,7 +11,9 @@
+     // ftol(Cost * BuildSpeed * 0.9). Do NOT algebraically rearrange —
+     // /1000*900 rounds differently under IEEE 754 (503 vs 504 for GAPOWR:
+     // 800*0.7 = exactly 560.0, *0.9 = exactly 504.0).
+-    return om::ftol((cost * build_speed * 0.9));
++    // gamemd truncates every multiply (chop mode, see chop_math.hpp): 800 * 0.7 sits one
++    // ulp below 560, so GAPOWR takes 503 frames, not 504 (Time_To_Build 0x00711EE0).
++    return om::ftol(chop::mul(chop::mul(static_cast<double>(cost), build_speed), 0.9));
+ }
+ 
+ PowerTotals power_totals(const std::vector<Building>& buildings,
+@@ -39,6 +42,16 @@
+     return p;
+ }
+ 
++int count_factories(const std::vector<Building>& buildings, int house, const std::vector<int>& types) {
++    int n = 0;
++    for (const Building& b : buildings) {
++        if (!b.alive || b.state == Building::State::Dead || b.house != house) continue;
++        for (int t : types)
++            if (b.type == t) { ++n; break; }
++    }
++    return n;
++}
++
+ double build_speed_multiplier(const PowerTotals& p, double low_power_penalty_modifier) {
+     if (p.drain <= p.output) return 1.0;
+     // [RE-GATE: construction.md §8] f = output/drain; 1 - mod*(1-f), then
+@@ -114,7 +127,7 @@
+     // BuildTimeMultiplier) after the base (and the country multiplier, 1.0).
+     // A multiplier of exactly 1.0 keeps the old value bit-for-bit.
+     int t = build_frames(cost, build_speed);
+-    if (time_mult != 1.0) t = om::ftol(static_cast<double>(t) * time_mult);
++    if (time_mult != 1.0) t = om::ftol(chop::mul(static_cast<double>(t), time_mult));
+     ps.slot.total_frames = std::max(1, t);
+     // [RE-GATE: construction.md §10 FUN_004C9DC0] frames per production step.
+     ps.slot.step_ticks = std::clamp(ps.slot.total_frames / kProductionSteps, 1, 255);
+@@ -143,8 +156,10 @@
+         // [RE-GATE: construction.md §10; charge basis economy.md §6a]
+         // entering the next stage charges the remaining balance (against
+         // charge_basis, NOT raw cost) split over the remaining steps.
+-        double charge = ((double)ps.slot.charge_basis - ps.slot.spent) /
+-                        (kProductionSteps - ps.slot.stage);
++        // FactoryClass::AI 0x4C9... charges Balance / StepsLeft in INTEGER credits (the
++        // remainder rolls into later steps), not a fractional share.
++        const int balance = ps.slot.charge_basis - static_cast<int>(ps.slot.spent);
++        const double charge = static_cast<double>(balance / (kProductionSteps - ps.slot.stage));
+         if (ps.credits < charge) {
+             // Stall: no progress, no charge; retried next tick. Reset the
+             // accumulator so a funding gap never produces a catch-up burst.
+diff -ruN a/engine/production.hpp b/engine/production.hpp
+--- a/engine/production.hpp
++++ b/engine/production.hpp
+@@ -33,6 +33,12 @@
+ constexpr double kMaxLowPowerSpeed = 0.8;   // rulesmd MaxLowPowerProductionSpeed
+ double build_speed_multiplier(const PowerTotals& p, double low_power_penalty_modifier);
+ 
++// HouseClass::GetFactoryCount 0x00500910: a counter raised when the building is placed
++// (Add_Tracking, at Unlimbo) and lowered when it leaves the map, so a factory still in its
++// build-up counts the moment it is placed; only a destroyed one does not. Time_To_Build
++// (0x006F47A0) applies MultipleFactory once per factory beyond the first.
++int count_factories(const std::vector<Building>& buildings, int house, const std::vector<int>& types);
++
+ // One-slot BuildingType queue [RE-GATE APPLIED: construction.md §10 —
+ // FactoryClass's 54-step incremental economy]. Production advances in
+ // exactly kProductionSteps stages; each stage lasts `step_ticks` 15 Hz
+diff -ruN a/engine/repair_sell.cpp b/engine/repair_sell.cpp
+--- a/engine/repair_sell.cpp
++++ b/engine/repair_sell.cpp
+@@ -1,4 +1,5 @@
+ #include "repair_sell.hpp"
++#include "chop_math.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ 
+ #include <algorithm>
+@@ -26,7 +27,9 @@
+     //   CMP/JG -> clamp to >= 1
+     const int per = (repair_step != 0) ? strength / repair_step : 0;
+     const int n = (per != 0) ? cost / per : cost;
+-    const int c = om::ftol(static_cast<double>(n) * repair_percent);
++    // Chop mode again: RepairPercent=15% is atoi(15) * 0.01 truncated, just below .15, so
++    // shares of 20, 40 and 100 cost 2, 5 and 14 (TechnoType 0x007120D0), not 3, 6 and 15.
++    const int c = om::ftol(chop::mul(static_cast<double>(n), repair_percent));
+     return c > 1 ? c : 1;
+ }
+ 
+@@ -42,7 +45,7 @@
+     // RefundPercent is applied ONLY when the owning house is human-controlled
+     // (TEST AL,AL / JZ at 0x00711399). An AI house receives the UNSCALED value.
+     if (!owner_is_human) return v;
+-    return om::ftol(static_cast<double>(v) * refund_percent);
++    return om::ftol(chop::mul(static_cast<double>(v), refund_percent));
+ }
+ 
+ int survivor_divisor(const RepairSellRules& r, int side_ix) {
+diff -ruN a/engine/roster2.cpp b/engine/roster2.cpp
+--- a/engine/roster2.cpp
++++ b/engine/roster2.cpp
+@@ -1,4 +1,5 @@
+ #include "roster2.hpp"
++#include "chop_math.hpp"
+ #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
+ #include <algorithm>
+ #include <cmath>
+@@ -60,7 +61,7 @@
+ 
+ int wall_build_frames(int cost, double build_speed, double coefficient) {
+     // FUN_006F3D00: FILD the integer time, FMUL WallBuildSpeedCoefficient, ftol.
+-    return om::ftol(static_cast<double>(build_frames(cost, build_speed)) * coefficient);
++    return om::ftol(chop::mul(static_cast<double>(build_frames(cost, build_speed)), coefficient));
+ }
+ 
+ bool water_bound_ok(int cx, int cy, int fw, int fh, const std::vector<std::uint8_t>& water,
+diff -ruN a/engine/veterancy.cpp b/engine/veterancy.cpp
+--- a/engine/veterancy.cpp
++++ b/engine/veterancy.cpp
+@@ -1,3 +1,4 @@
++#include "chop_math.hpp"
+ #include "veterancy.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ 
+@@ -43,8 +44,8 @@
+ 
+ float veterancy_add(float v, int owner_cost, int victim_cost, const VeterancyRules& r) {
+     // [V2] FILD victim; FILD owner; FMUL Ratio; FDIVP; FADD (float)v.
+-    const double owner = static_cast<double>(owner_cost) * r.ratio;
+-    const double gain = static_cast<double>(victim_cost) / owner;   // owner 0 -> inf
++    const double owner = chop::mul(static_cast<double>(owner_cost), r.ratio);
++    const double gain = chop::div(static_cast<double>(victim_cost), owner);   // owner 0 -> inf
+     const double sum = gain + static_cast<double>(v);
+     // cap <= sum -> store (float)cap, else (float)sum (FCOMPP on the double).
+     if (r.cap <= sum) return static_cast<float>(r.cap);
+@@ -67,11 +68,11 @@
+ int fire_damage(int damage, double fp_mult, bool firepower, double vet_combat,
+                 double house_fp) {
+     // [V5] FLD houseFP (house+0x188); FMUL FirepowerMultiplier; FIMUL Damage; ftol.
+-    double t = house_fp * fp_mult;
+-    t = t * static_cast<double>(damage);
++    double t = chop::mul(house_fp, fp_mult);
++    t = chop::mul(t, static_cast<double>(damage));
+     int d = ftol(t);
+     if (firepower) {
+-        const double u = static_cast<double>(d) * vet_combat;
++        const double u = chop::mul(static_cast<double>(d), vet_combat);
+         d = ftol(u);
+     }
+     return d;
+@@ -79,11 +80,11 @@
+ 
+ int receive_damage(int d, double armor_mult, bool stronger, double vet_armor) {
+     // [V6] FILD d; ( FLD houseArmor(1.0); FMUL ArmorMultiplier ); FDIVR; ftol.
+-    const double div = 1.0 * armor_mult;
+-    const double q = static_cast<double>(d) / div;
++    const double div = armor_mult;
++    const double q = chop::div(static_cast<double>(d), div);
+     int out = ftol(q);
+     if (stronger) {
+-        const double q2 = static_cast<double>(out) / vet_armor;
++        const double q2 = chop::div(static_cast<double>(out), vet_armor);
+         out = ftol(q2);
+     }
+     if (out < 1) out = 1;
+@@ -92,10 +93,10 @@
+ 
+ int rof_frames(int rof, bool rof_ability, double vet_rof, double house_rof) {
+     // [V7] ftol(ROF * houseROF (house+0x1a8) [+ Random(0,2): NOT reproduced]).
+-    const double base = static_cast<double>(rof) * house_rof;
++    const double base = chop::mul(static_cast<double>(rof), house_rof);
+     int r = ftol(base);
+     if (rof_ability) {
+-        const double t = static_cast<double>(r) * vet_rof;
++        const double t = chop::mul(static_cast<double>(r), vet_rof);
+         r = ftol(t);
+     }
+     return r;
+@@ -103,27 +104,25 @@
+ 
+ int speed_value(int speed, double speed_mult, bool faster, double vet_speed) {
+     // [V8] FILD speed; FMUL houseSpeed(1.0); FMUL SpeedMultiplier; ftol.
+-    double t = static_cast<double>(speed) * 1.0;
+-    t = t * speed_mult;
++    double t = chop::mul(static_cast<double>(speed), speed_mult);
+     int s = ftol(t);
+     if (faster) {
+-        const double u = static_cast<double>(s) * vet_speed;
++        const double u = chop::mul(static_cast<double>(s), vet_speed);
+         s = ftol(u);
+     }
+     // * SpeedPercentage (1.0 -- no system lowers it in this engine)
+-    const double p = static_cast<double>(s) * 1.0;
+-    return ftol(p);
++    return s;   // x SpeedPercentage 1.0
+ }
+ 
+ int sight_value(int sight, bool sight_ability, double vet_sight) {
+     // [V9] guarded by VeteranSight != 0.0 (dead on this install).
+     if (!sight_ability || vet_sight == 0.0) return sight;
+-    const double t = static_cast<double>(sight) * vet_sight;
++    const double t = chop::mul(static_cast<double>(sight), vet_sight);
+     return ftol(t);
+ }
+ 
+ int self_heal_interval(double repair_rate) {
+-    const double t = repair_rate * 900.0;   // [V11] FLD RepairRate; FMUL 900.0; ftol
++    const double t = chop::mul(repair_rate, 900.0);   // [V11] FLD RepairRate; FMUL 900.0; ftol
+     return ftol(t);
+ }
+ 
+diff -ruN a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -4184,7 +4184,7 @@
+         if (cfg.multiple_factory > 0.0 && cfg.multiple_factory < 1.0) {
+             int ncy = 0, ninf = 0, nveh = 0;
+             for (const Building& b : buildings_) {
+-                if (!b.alive || b.state != Building::State::Idle || b.house != h || b.type < 0) continue;
++                if (!b.alive || b.state == Building::State::Dead || b.house != h || b.type < 0) continue;   // counted from placement (GetFactoryCount)
+                 if (b.type < (int)cfg.roster.size() && cfg.roster[b.type].conyard) ++ncy;
+                 for (int t : cfg.team.inf_factory_types) if (t == b.type) { ++ninf; break; }
+                 for (int t : cfg.team.veh_factory_types) if (t == b.type) { ++nveh; break; }
+diff -ruN a/engine/world_econ.cpp b/engine/world_econ.cpp
+--- a/engine/world_econ.cpp
++++ b/engine/world_econ.cpp
+@@ -125,12 +125,7 @@
+ // SPEED multiplier is mf^-(n-1)]. n <= 1 -> 1.0. (Was main.cpp
+ // factory_speedup, house 0.)
+ double World::econ_factory_speedup(int house, const std::vector<int>& ftypes, double mf) const {
+-    int n = 0;
+-    for (const Building& b : buildings_) {
+-        if (!b.alive || b.state != Building::State::Idle || b.house != house) continue;
+-        for (int t : ftypes)
+-            if (b.type == t) { ++n; break; }
+-    }
++    const int n = count_factories(buildings_, house, ftypes);
+     if (n <= 1 || mf <= 0.0) return 1.0;
+     return om::ipow(1.0 / mf, n - 1);   // Net L0: deterministic, no libm pow
+ }
+diff -ruN a/tests/test_chop_math.cpp b/tests/test_chop_math.cpp
+--- a/tests/test_chop_math.cpp
++++ b/tests/test_chop_math.cpp
+@@ -0,0 +1,37 @@
++// gamemd's chop-mode x87 arithmetic (engine/chop_math.hpp). Expected values were
++// computed with exact rational arithmetic, truncated toward zero to 53 bits.
++#include "doctest.h"
++#include "../engine/chop_math.hpp"
++#include "../engine/orig_math.hpp"
++#include <cstdint>
++#include <cstring>
++using namespace ra2engine;
++
++static std::uint64_t bits(double d) { std::uint64_t u; std::memcpy(&u, &d, 8); return u; }
++
++TEST_CASE("chop: products that nearest-rounding lands on an integer fall one ulp below") {
++    // Tiberium Growth reload 0x00722C9E: 2200 * 0.3 -> 659, 10000 * 0.3 -> 2999, 10 * 0.3 -> 2.
++    CHECK(om::ftol(chop::mul(2200.0, 0.3)) == 659);
++    CHECK(om::ftol(chop::mul(10000.0, 0.3)) == 2999);
++    CHECK(om::ftol(chop::mul(10.0, 0.3)) == 2);
++    CHECK(om::ftol(2200.0 * 0.3) == 660);   // what nearest rounding gave
++    CHECK(chop::mul(0.5, 4.0) == 2.0);      // exact products are untouched
++    CHECK(chop::mul(-3.0, 0.25) == -0.75);
++}
++
++TEST_CASE("chop: divide and add truncate too") {
++    CHECK(bits(chop::div(2.0, 3.0)) == 0x3FE5555555555555ull);   // nearest gives ...556
++    CHECK(bits(chop::div(1.0, 3.0)) == 0x3FD5555555555555ull);
++    CHECK(chop::div(8.0, 4.0) == 2.0);
++    CHECK(bits(chop::add(0.1, 0.2)) == 0x3FD3333333333333ull);   // nearest gives 0.30000000000000004
++    CHECK(chop::sub(1.0, 0.25) == 0.75);
++    CHECK(chop::div(-2.0, 3.0) == -chop::div(2.0, 3.0));
++}
++
++TEST_CASE("chop: Verses percent and the damage it gives (WarheadType 0x75DDCC, 0x489227)") {
++    struct Row { int dmg, pct, want; };
++    const Row rows[] = {{100, 30, 29}, {100, 29, 28}, {100, 35, 34}, {50, 60, 29}, {1000, 75, 750},
++                        {200, 45, 89}, {300, 15, 44},  {100, 100, 100}, {250, 7, 17}, {40, 90, 35}, {66, 50, 33}};
++    for (const Row& r : rows)
++        CHECK(om::ftol(chop::mul(static_cast<double>(r.dmg), chop::percent(r.pct))) == r.want);
++}
+diff -ruN a/tests/test_combat.cpp b/tests/test_combat.cpp
+--- a/tests/test_combat.cpp
++++ b/tests/test_combat.cpp
+@@ -76,7 +76,7 @@
+ TEST_CASE("damage_vs: hand-computed vectors from the real SA warhead") {
+     const std::vector<int> sa = {100, 80, 80, 50, 25, 25, 75, 50, 25, 100, 100};
+     CHECK(ra2engine::damage_vs(15, sa, 0) == 15);  // M1Carbine vs GI (none)
+-    CHECK(ra2engine::damage_vs(15, sa, 1) == 12);  // M60 vs Conscript (flak): 15*80/100
++    CHECK(ra2engine::damage_vs(15, sa, 1) == 11);  // M60 vs Conscript (flak): 80% is 0.7999999999999999 under chop, 15 x that truncates to 11 (was 12)
+     CHECK(ra2engine::damage_vs(15, sa, 6) == 11);  // 15*75/100 = 11.25 -> trunc (Task 1 confirms)
+     CHECK(ra2engine::damage_vs(15, {}, 1) == 15);  // absent verses -> 100% (defensive)
+ }
+@@ -99,9 +99,9 @@
+     double t = 0;
+     while (units[1].die_time < 0 && t < 30.0) { ra2engine::step_combat(test_world(), units, bs, occ, dt); t += dt; }
+     REQUIRE(units[1].die_time >= 0);          // died
+-    // 11th shot fires after 10 full cooldowns: t = 10 * (20/15) = 13.333s (+1 frame slop)
+-    CHECK(t >= 10.0 * (20.0 / 15.0) - 2 * dt);
+-    CHECK(t <= 10.0 * (20.0 / 15.0) + 2 * dt);
++    // 12th shot (M60 does 11 against flak under chop, 125 hp = 12 shots) after 11 cooldowns: 14.667s (+1 frame slop)
++    CHECK(t >= 11.0 * (20.0 / 15.0) - 2 * dt);
++    CHECK(t <= 11.0 * (20.0 / 15.0) + 2 * dt);
+     CHECK(units[1].hp <= 0);
+ }
+ 
+@@ -446,7 +446,17 @@
+     double t = 0;
+     while (units[1].die_time < 0 && t < 30.0) { ra2engine::step_combat(test_world(), units, bs, occ, dt); t += dt; }
+     REQUIRE(units[1].die_time >= 0);          // died
+-    CHECK(t >= 10.0 * (20.0 / 15.0) - 2 * dt);
+-    CHECK(t <= 10.0 * (20.0 / 15.0) + 2 * dt);
++    CHECK(t >= 11.0 * (20.0 / 15.0) - 2 * dt);
++    CHECK(t <= 11.0 * (20.0 / 15.0) + 2 * dt);
+     CHECK(units[1].hp <= 0);
+ }
++
++TEST_CASE("modify_damage: Verses and the falloff run in chop arithmetic [Apply_warhead_damage 0x489180]") {
++    std::vector<int> v(11, 100);
++    v[1] = 30;
++    CHECK(ra2engine::modify_damage(100, v, 0, 0.0, 1.0, 0) == 100);
++    CHECK(ra2engine::modify_damage(100, v, 1, 0.0, 1.0, 0) == 29);   // 30% of 100 is 29: 0.3 chops below
++    CHECK(ra2engine::modify_damage(100, v, 1, 0.0, 1.0, 0) == ra2engine::damage_vs(100, v, 1));
++    // Falloff: half-way across a 2-cell spread (512 leptons) at 50% at the edge.
++    CHECK(ra2engine::modify_damage(100, v, 0, 2.0, 0.5, 256) == 75);
++}
+diff -ruN a/tests/test_ore.cpp b/tests/test_ore.cpp
+--- a/tests/test_ore.cpp
++++ b/tests/test_ore.cpp
+@@ -122,3 +122,10 @@
+     OreRng rng;
+     CHECK(f.step_mines(500, pass, rng) == 0);
+ }
++
++TEST_CASE("ore: Growth timer reloads ftol(Growth * 0.3) under chop [0x00722C9E]") {
++    CHECK(tiberium_growth_reload(2200.0) == 659);    // stock Riparius, not 2200
++    CHECK(tiberium_growth_reload(10000.0) == 2999);
++    CHECK(tiberium_growth_reload(10.0) == 2);
++    CHECK(tiberium_growth_reload(0.0) == 0);          // 0 keeps the cadence fallback
++}
+diff -ruN a/tests/test_production.cpp b/tests/test_production.cpp
+--- a/tests/test_production.cpp
++++ b/tests/test_production.cpp
+@@ -21,13 +21,14 @@
+ 
+ TEST_CASE("build_frames: BuildSpeed formula [RE: construction.md §7]") {
+     // Pins recovered from the binary (FUN_00711280): ftol(Cost*BuildSpeed*0.9).
+-    // Operation-order sensitive: the algebraically equal /1000*900 rounds to
+-    // 503/1889 under IEEE 754 instead of the binary's 504/1890.
+-    CHECK(build_frames(1000, 0.7) == 630);   // 0.7 min * 900
+-    CHECK(build_frames(800, 0.7) == 504);    // GAPOWR pin (Task-1 hunt)
+-    CHECK(build_frames(500, 0.7) == 315);
+-    CHECK(build_frames(2000, 0.7) == 1260);
+-    CHECK(build_frames(3000, 0.7) == 1890);  // GACNST pin (Task-1 hunt)
++    // gamemd runs the x87 in chop mode (_controlfp(_RC_CHOP) at WinMain 0x006BBFC1), so each
++    // multiply truncates: 1000 * 0.7 sits one ulp below 700 and every time is one frame less
++    // than the nearest-rounded product (630 -> 629, GAPOWR 504 -> 503, GACNST 1890 -> 1889).
++    CHECK(build_frames(1000, 0.7) == 629);   // 0.7 min * 900
++    CHECK(build_frames(800, 0.7) == 503);    // GAPOWR
++    CHECK(build_frames(500, 0.7) == 314);
++    CHECK(build_frames(2000, 0.7) == 1259);
++    CHECK(build_frames(3000, 0.7) == 1889);  // GACNST
+ }
+ 
+ TEST_CASE("power_totals + build_speed_multiplier [RE-GATE: construction.md §8]") {
+@@ -98,13 +99,13 @@
+ TEST_CASE("tick: 54-step economy [RE-GATE: construction.md §10]") {
+     auto t = roster();
+     ProductionState ps; ps.credits = 10000;
+-    start(ps, 1, t, 0.7);                    // GAPOWR: 504 frames, 800 credits
+-    CHECK(ps.slot.total_frames == 504);
+-    CHECK(ps.slot.step_ticks == 9);          // trunc(504/54)
++    start(ps, 1, t, 0.7);                    // GAPOWR: 503 frames, 800 credits
++    CHECK(ps.slot.total_frames == 503);
++    CHECK(ps.slot.step_ticks == 9);          // trunc(503/54)
+     // 27 stages = half the steps = 27*9 = 243 frames = 16.2 s
+     tick(ps, 243.0 / 15.0, 1.0, t);
+     CHECK(ps.slot.stage == 27);
+-    CHECK(ps.credits == doctest::Approx(10000 - 400.0));   // equal cost/54 chunks
++    CHECK(ps.credits == doctest::Approx(10000 - 395.0));   // integer Balance/StepsLeft chunks (FactoryClass), not cost/54
+     CHECK_FALSE(ps.slot.ready);
+     tick(ps, 504.0, 1.0, t);                 // way past the end
+     CHECK(ps.slot.ready);
+@@ -113,13 +114,13 @@
+     placed(ps);
+     CHECK(ps.slot.type == -1);
+ 
+-    // stall: 100 credits fund 6 chunks of 800/54 (= 88.9); the 7th (14.8) is
+-    // unaffordable -> stalls with ~11.1 left, no progress past stage 6
++    // stall: the first chunks are 14 credits each (integer 800/54); 100 credits fund 7 of
++    // them and the 8th is unaffordable -> stalls with 2 left, no progress past stage 7
+     ps.credits = 100;
+     start(ps, 1, t, 0.7);
+     tick(ps, 1000.0, 1.0, t);
+-    CHECK(ps.slot.stage == 6);
+-    CHECK(ps.credits == doctest::Approx(100.0 - 800.0 * 6 / 54).epsilon(0.001));
++    CHECK(ps.slot.stage == 7);
++    CHECK(ps.credits == doctest::Approx(2.0));
+     CHECK_FALSE(ps.slot.ready);
+     ps.credits += 5000;                       // funds arrive -> resumes
+     tick(ps, 1000.0, 1.0, t);
+@@ -167,7 +168,7 @@
+ 
+     ProductionState ps; ps.credits = 10000;
+     start(ps, 0, t, 0.7);
+-    CHECK(ps.slot.total_frames == 1260);   // ftol(2000*0.7*0.9) -- raw cost, unaffected by charge
++    CHECK(ps.slot.total_frames == 1259);   // ftol(2000*0.7*0.9) -- raw cost, unaffected by charge
+     CHECK(ps.slot.step_ticks == 23);       // trunc(1260/54)
+     CHECK(ps.slot.charge_basis == 600);
+ 
+@@ -179,7 +180,7 @@
+ 
+     // Existing charge-unset roster types (GAPOWR etc.) are UNCHANGED: charge
+     // defaults to 0 -> start() falls back to cost, so every pre-existing pin
+-    // in this file (504/9 frames, 800 total spend) keeps passing unmodified.
++    // in this file (503/9 frames, 800 total spend) keeps passing unmodified.
+     auto t2 = roster();
+     ProductionState ps2; ps2.credits = 10000;
+     start(ps2, 1, t2, 0.7);                // GAPOWR: cost 800, charge unset
+@@ -222,7 +223,7 @@
+     c.credits = d.credits = 10000;
+     start(c, 0, refn, 0.7);
+     start(d, refn[0].cost, refn[0].charge, 0.7);
+-    CHECK(c.slot.total_frames == 1260);                    // raw cost 2000
++    CHECK(c.slot.total_frames == 1259);                    // raw cost 2000
+     CHECK(c.slot.charge_basis == 600);                     // FreeUnit-subtracted
+     CHECK(c.slot.total_frames == d.slot.total_frames);
+     CHECK(c.slot.charge_basis == d.slot.charge_basis);
+@@ -465,3 +466,18 @@
+     bs.back().alive = false;                         // destroyed: the limit frees up
+     CHECK(can_start(ps, 1, t, bs, 0, kGroups, true));
+ }
++
++TEST_CASE("count_factories: a factory counts from placement (build-up included), not when dead "
++          "[HouseClass::GetFactoryCount 0x00500910]") {
++    std::vector<Building> bs;
++    bs.push_back(live(2));                                       // idle barracks
++    Building up = live(2); up.state = Building::State::Buildup;   // second one still building up
++    bs.push_back(up);
++    Building dead = live(2); dead.state = Building::State::Dead; dead.alive = false;
++    bs.push_back(dead);
++    bs.push_back(live(2, 1));                                    // another house's
++    bs.push_back(live(1));                                       // a different type
++    CHECK(count_factories(bs, 0, {2}) == 2);
++    CHECK(count_factories(bs, 1, {2}) == 1);
++    CHECK(count_factories(bs, 0, {1, 2}) == 3);
++}
+diff -ruN a/tests/test_repair_sell.cpp b/tests/test_repair_sell.cpp
+--- a/tests/test_repair_sell.cpp
++++ b/tests/test_repair_sell.cpp
+@@ -1,5 +1,6 @@
+ #include "doctest.h"
+ #include "repair_sell.hpp"
++#include "../engine/chop_math.hpp"
+ using namespace ra2engine;
+ 
+ // Every pin below is a literal recovered from YR-1.001 gamemd.exe / this
+@@ -74,8 +75,8 @@
+     CHECK(94 * repair_step_cost(800, 750, 8, 0.15) == 94);
+     // max(1, .) clamp and the divide-by-zero guards.
+     CHECK(repair_step_cost(1, 1000, 8, 0.15) == 1);
+-    CHECK(repair_step_cost(500, 4, 8, 0.15) == 75);           // Strength < RepairStep -> per == 0
+-    CHECK(repair_step_cost(500, 1000, 0, 0.15) == 75);        // RepairStep == 0 -> per == 0
++    CHECK(repair_step_cost(500, 4, 8, 0.15) == 74);           // Strength < RepairStep -> per == 0
++    CHECK(repair_step_cost(500, 1000, 0, 0.15) == 74);        // RepairStep == 0 -> per == 0
+ }
+ 
+ TEST_CASE("sell: the refund is FLAT and Soylent bypasses RefundPercent [RE: §B1]") {
+@@ -205,3 +206,11 @@
+         CHECK(mirrored_buildup_frame(b, 0) == 0);
+     }
+ }
++
++TEST_CASE("repair_step_cost: 500 * .15 is 74 under chop (0.15 sits below 3/20) [0x007120D0]") {
++    const double pct = ra2engine::chop::percent(15);
++    // Strength 100 / RepairStep 10 = 10 steps; Cost / 10 is the per-step share.
++    CHECK(repair_step_cost(200, 100, 10, pct) == 2);    // share 20: 3.0 would be 3
++    CHECK(repair_step_cost(400, 100, 10, pct) == 5);    // share 40: 6
++    CHECK(repair_step_cost(1000, 100, 10, pct) == 14);  // share 100: 15
++}
+diff -ruN a/tests/test_roster2.cpp b/tests/test_roster2.cpp
+--- a/tests/test_roster2.cpp
++++ b/tests/test_roster2.cpp
+@@ -95,9 +95,9 @@
+ 
+ TEST_CASE("roster2 wall: build time x WallBuildSpeedCoefficient after the integer time [RE: TL;DR 5]") {
+     CHECK(kWallBuildSpeedCoefficient == 3.0);
+-    CHECK(build_frames(100, 0.7) == 63);
+-    CHECK(wall_build_frames(100, 0.7) == 189);
+-    CHECK(wall_build_frames(100, 0.7, 1.0) == 63);
++    CHECK(build_frames(100, 0.7) == 62);
++    CHECK(wall_build_frames(100, 0.7) == 186);
++    CHECK(wall_build_frames(100, 0.7, 1.0) == 62);
+ }
+ 
+ TEST_CASE("roster2 naval: WaterBound placement = every foundation cell water [RE: TL;DR 6]") {
+diff -ruN a/tests/test_veterancy.cpp b/tests/test_veterancy.cpp
+--- a/tests/test_veterancy.cpp
++++ b/tests/test_veterancy.cpp
+@@ -88,11 +88,11 @@
+     CHECK(receive_damage(15, 1.5, true, 1.5) == 6);    // ftol(ftol(10)/1.5)=6
+     CHECK(receive_damage(0, 1.0, false, 1.5) == 1);    // min-1 clamp
+     CHECK(receive_damage(1, 1.0, true, 1.5) == 1);
+-    // V7: ROF delay x0.6, truncated. 5*0.6 in IEEE double == 3.0 (PC_53), so 3.
+-    CHECK(rof_frames(20, true, 0.6) == 12);
+-    CHECK(rof_frames(5, true, 0.6) == 3);
++    // V7: ROF delay x0.6, truncated under chop: 0.6 is just below 3/5, so 5*0.6 is 2.99.. and gives 2.
++    CHECK(rof_frames(20, true, 0.6) == 11);
++    CHECK(rof_frames(5, true, 0.6) == 2);
+     CHECK(rof_frames(20, false, 0.6) == 20);
+-    CHECK(rof_frames(60, true, 0.6) == 36);
++    CHECK(rof_frames(60, true, 0.6) == 35);
+     // V8: E1 Speed 4 -> ftol(4.8) = 4; MTNK 7 -> 8; Speed crate 1.2 first.
+     CHECK(speed_value(4, 1.0, true, 1.2) == 4);
+     CHECK(speed_value(7, 1.0, true, 1.2) == 8);
+@@ -165,7 +165,7 @@
+     // [Easy] ROF=.8 (the class a Brutal AI runs on): 30-frame weapon -> 24.
+     CHECK(ra2engine::rof_frames(30, false, 0.75, 0.8) == 24);
+     CHECK(ra2engine::rof_frames(30, false, 0.75) == 30);         // humans: 1.0
+-    CHECK(ra2engine::rof_frames(30, false, 0.75, 1.2) == 36);    // [Difficult]
++    CHECK(ra2engine::rof_frames(30, false, 0.75, 1.2) == 35);    // [Difficult]
+     CHECK(ra2engine::fire_damage(100, 1.0, false, 1.1, 1.0) == 100);
+     CHECK(ra2engine::fire_damage(100, 1.0, false, 1.1, 1.5) == 150);
+ }
+diff -ruN a/tests/test_w6_missions.cpp b/tests/test_w6_missions.cpp
+--- a/tests/test_w6_missions.cpp
++++ b/tests/test_w6_missions.cpp
+@@ -66,7 +66,7 @@
+     CHECK(w.house_rof_mul(1) == 1.0);
+     CHECK(w.house_rof_frames(1, 80) == 80);
+     w.set_house_handicap(1, 1.0, 1.2);   // [Difficult] ROF=1.2
+-    CHECK(w.house_rof_frames(1, 80) == 96);
++    CHECK(w.house_rof_frames(1, 80) == 95);
+     w.set_house_handicap(0, 1.0, 0.8);   // [Easy] ROF=.8
+     CHECK(w.house_rof_frames(0, 60) == 48);
+     CHECK(w.house_rof_frames(2, 60) == 60);
+diff -ruN a/tests/test_w7_units.cpp b/tests/test_w7_units.cpp
+--- a/tests/test_w7_units.cpp
++++ b/tests/test_w7_units.cpp
+@@ -120,10 +120,10 @@
+ 
+ TEST_CASE("w7units W7-04-03: BuildTimeMultiplier scales the build frames after the base") {
+     ProductionState ps;
+-    start(ps, 900, 900, 0.7, 1.5);   // Rhino: 900 x .7 x .9 = 567 -> ftol(567 x 1.5) = 850
+-    CHECK(ps.slot.total_frames == 850);
++    start(ps, 900, 900, 0.7, 1.5);   // Rhino: 900 x .7 x .9 = 566 -> ftol(566 x 1.5) = 849
++    CHECK(ps.slot.total_frames == 849);
+     start(ps, 900, 900, 0.7);
+-    CHECK(ps.slot.total_frames == 567);
++    CHECK(ps.slot.total_frames == 566);
+ }
+ 
+ TEST_CASE("w7units W7-01-01/06: NeverUse is never chosen; an undeployed GGI has weapon 0 only") {
+diff -ruN a/tests/test_world_veterancy.cpp b/tests/test_world_veterancy.cpp
+--- a/tests/test_world_veterancy.cpp
++++ b/tests/test_world_veterancy.cpp
+@@ -162,7 +162,7 @@
+     const ra2engine::Unit& u = world.units()[k];
+     CHECK(ra2engine::vet_rank(u.vet.veterancy) == 1);
+     CHECK(u.w_damage == 16);   // ftol(15 * 1.1)
+-    CHECK(u.w_rof == 12);      // ftol(20 * 0.6)
++    CHECK(u.w_rof == 11);      // ftol(20 * 0.6)
+     const auto ev = world.take_vet_events();
+     REQUIRE(ev.size() == 1u);
+     CHECK(ev[0].unit == k);
