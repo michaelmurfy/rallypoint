@@ -606,7 +606,7 @@ two-house World).
 | `GateCloseDelay=` | `GAGATE_A` | Allied gate: the gate stays open this long after the mover has passed; our gate opens for allied movers on the path only | S |
 | `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
 | `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | S each |
-| `Immune=yes` | `CABHUT` | take no damage | S |
+| `Immune=yes` | `CABHUT` | take no damage | ~~S~~ done (0246) |
 | `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
 | `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
 
