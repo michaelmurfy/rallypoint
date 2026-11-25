@@ -251,16 +251,16 @@ Amer/Ally/Sov/Yuri para-drop infantry counts are wired. Spy Plane SW path
 landed in patch `0050-spy-plane-sw`
 ([#191](https://github.com/michaelmurfy/rallypoint/pull/191)) — grant from
 NARADR, Approach→Overfly camera reveal per `FUN_006CD66F` / `FUN_004155F0` /
-`FUN_004157C0`. Remaining feel polish (rules-driven Camera* keys into
-`SwParams`, snapshot SFX/art) is optional follow-up. Do not re-implement the
-Approach→Overfly core.
+`FUN_004157C0`. Camera* rules wiring landed in `0255-spy-camera-rules`
+(SpyCameraWeapon Damage/Range + SpyPlaneCameraFrames into `SwParams`).
+Do not re-implement the Approach→Overfly core.
 
 | | |
 |---|---|
 | **Files** | `engine/w2air_*.inc`, `engine/superweapon.*`, `engine/world_an.cpp`, `engine/world_sw.cpp`, `engine/realplay_economy.inc` |
 | **gamemd** | SW type table; SpyPlaneSpecial / AmericanParaDropSpecial |
 | **Rules** | `AmerParaDropInf`/`Num`, `AllyParaDrop*`, `SovParaDrop*`, `YuriParaDrop*`, `[SpyPlaneSpecial]`, `SpyPlaneCamera*` |
-| **Effort** | ~~M~~ Spy Plane core done (`0050`); Camera* rules wiring S |
+| **Effort** | ~~M~~ Spy Plane core done (`0050`); ~~Camera* rules wiring S~~ done (`0255`) |
 | **OpenRA** | Partial |
 
 ### T2.4 Yuri leftovers (from `ra2/README.md` Partial)
