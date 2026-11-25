@@ -36,6 +36,7 @@ reference (never a substitute for gamemd behaviour).
 | T3.3 turret AI + T3.1 damage fires + T3.2 fear gate | `0055-vehicle-turret-deploy-damage-fires` | (this PR) |
 | T2.2 country unique roster audit | `0052-country-unique-roster` | [#194](https://github.com/michaelmurfy/rallypoint/pull/194) |
 | T2.4 Magnetron drop Crush blast + Floating Disc live Disc-over-base | `0058-magnetron-toss-disc-over-base` | [#198](https://github.com/michaelmurfy/rallypoint/pull/198) |
+| T2.5 Industrial Plant `FactoryPlant=` cost bonuses | `0140-factory-plant-cost-bonuses` | (this PR) |
 
 ---
 
@@ -498,3 +499,47 @@ before starting another patch in T2.4 leftovers (Magnetron drag RE, Xvfb CI), T2
 Next priorities (open): T2.4 Xvfb CI / Magnetron drag RE;
 T1.3 RE leftovers; T2.2 roster; non-SCHP T3.3; T3.1/T3.2 leftovers;
 T3.4/T3.5 polish; T4 (naval AI, campaign Yuri, net).
+
+---
+
+## Units, infantry, vehicles, aircraft, ships and buildings: rules-key audit (2026-11-25)
+
+Method: every key that appears under a `[InfantryTypes]`, `[VehicleTypes]`, `[AircraftTypes]` or
+`[BuildingTypes]` section of the real `rulesmd.ini` (YR 1.001) was looked up in the engine sources
+(`"Key"` string, case-insensitive; computed keys such as `Weapon<N>` / `EliteWeapon<N>` / `Stage<N>`
+checked by hand). Reference for formulas and addresses: github.com/YuriPlanet/vera20k (GPL-3, read only,
+only addresses and formulas cited here, no code copied).
+
+**Read and used (no work left):** weapons, `EliteWeapon<N>`, `Secondary`, turrets, `Crushable`/`Crusher`,
+`Deployer`, `Passengers`, `Cloakable`, `Sensors*`, `Veteran*`/`Elite*` promotion, `SelfHealing`, `Powered`,
+`PowerUp*`, `Factory`/`Naval`, `Overpowerable`, `SpecialThreatValue`, `ImmuneToPsionics`, `IsGattling` stages,
+`DeployToLand`, `UnitRepair`, `Drainable`, `Enslaves`, `BuildLimit`.
+
+**Landed:** `FactoryPlant=` (patch 0140). Soviet Industrial Plant (`NAINDP`, `UnitsCostBonus=.75`) never
+made vehicles cheaper. gamemd keeps every owned plant in `House+140` (list changes on Unlimbo, ownership
+change and death, no health or power filter) and `CalculateCostMultipliers @ 0x0050BF60` stores the product per
+slot (Infantry, Units, Aircraft, Buildings, Defenses = `BuildCat=Combat`); `Cost_Of @ 0x00711F00` is
+`ftol(cost * plant * country)`. The engine now does the same when a build starts (`World::plant_cost`, used by
+the unit and building branches of `econ_produce`; build time follows the cheaper cost, like the country
+multipliers). Save format 67. Test: `tests/test_re_units_buildings.cpp` (real `rulesmd` values and a synthetic
+two-house World).
+
+**Found, not done (ranked by gameplay impact; every key below is used by retail units or buildings):**
+
+| Key(s) | Used by | gamemd / reference | Effort |
+|---|---|---|---|
+| `Bunker=yes` / `Bunkerable=no` (the Tank Bunker mechanic) | `NATBNK`; 17 vehicles opt out (`Bunkerable=no`: MCVs, miners, V3, Terror Drone...) | `+0x2E4` building<->unit link, `FUN_00459301` (already named in `world_w7.cpp`); the whole garrison-by-vehicle feature is missing | L |
+| `ExitCoord=` | `GAWEAP`/`NAWEAP`/`YAWEAP` (512,256,0), `GAPILE`/`YABRCK` (-64,64,0) | `factory.cpp` `exit_cell` drops it ("cell resolution"); retail spawns the unit at the exit coordinate and lets it drive out | M |
+| `CrateBeneath=` / `CrateBeneathIsMoney=` | 14 civilian buildings | `BuildingClass::AfterDestruction @ 0x00441F60`, crate tail `0x004421A4..0x0044222D`: `Place_Crate` at the origin cell, powerup Money or random, lobby Crates option not consulted. Our crate store only exists once `enable_crates` ran, so it needs that split first | M |
+| `TypeImmune=yes` | `YURI`, `DLPH` | Damage is ignored when the attacker has the same type AND the same owner (friendly splash only), see `Receive_Damage` gate list | S (five damage sites in `combat.cpp`) |
+| `HarvestRate=` on slaves | `SLAV` (150) | vera20k `infantry_mission_harvest` (`0x00522E70`): one level per `HarvestRate` frames. The engine digs one bale per second (`kGulpSecs`). Unit of "frames" and the payout per level need a binary check before changing the economy | S, risky |
+| `CloakingSpeed=` | `SUB`, `SQD`, `DLPH`, `BSUB` | Our cloak is a state flag with no fade; the key only changes the fade length and the re-cloak step | S |
+| `GateCloseDelay=` | `GAGATE_A` | Allied gate: the gate stays open this long after the mover has passed; our gate opens for allied movers on the path only | S |
+| `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
+| `RevealToAll=`, `RadarVisible=`, `DetectDisguiseRange=` | tech buildings, `NAPSIS` | reveal-on-capture, minimap visibility of neutral buildings, spy detection radius | S each |
+| `Immune=yes` | `CABHUT` | take no damage | S |
+| `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
+| `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
+
+Real-data suite (`RA2_INSTALL_DIR=/home/mmurphy/rp-steam/game/RA2 ra2assets_tests`): 1284 cases, 0 skipped, all
+pass with patch 0140.
