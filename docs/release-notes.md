@@ -1,3 +1,15 @@
+## Rallypoint 1.0.1
+
+**Red Alert 2 fixes and a smoother map dock.** Everyone in a room needs 1.0.1.
+
+- **Yuri Clone mind control without force-fire.** A selected Yuri Clone shows the Attack cursor on any capturable unit — including civilian cars — and captures it with a plain click.
+- **Smarter skirmish AI.** Computer players follow retail team admission and building cadence.
+- **Tank Bunker and a sharper Yuri roster.** Garrisoned Tank Bunkers, the audited Yuri roster, TypeImmune rules and Psychic Sensor disguise detection.
+- **Real sidebar names.** Cameo tooltips use the string-table names, and ships no longer wait for a War Factory.
+- **Menu slide.** Shell pages slide the way the original runs them, for skirmish, lobbies and movies.
+- **Compact map dock.** One panel, summed-up transfers, self-clearing results.
+- **Linux: Arch/CachyOS installer** and self-updating `~/.local` installs.
+
 ## Rallypoint 1.0.0
 
 **Red Alert 2 and Yuri's Revenge are in, and they play online.** Rallypoint now runs both games from one launcher, and 1.0.0 is the first stable release with Red Alert 2.
