@@ -1,0 +1,174 @@
+Immune= buildings (CABHUT) take no damage.
+
+BuildingTypeDef gains Immune= (rules loader, default no), honoured by every
+building damage path: direct fire (world_an/world_depth call sites), splash
+(damage_area), ability blasts (ability_damage_building), superweapon/shrapnel
+(an_damage_building); the AI will not pick them as a target
+(unit_can_damage_building). Save format 69. Test in test_gap_combat.cpp:
+ability path leaves the hut at full HP while a control takes damage, and a
+live tank firing on the hut for 120 frames never scratches it.
+
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -127,6 +127,7 @@
+     // civilian structures, lamps) never keeps a house alive either].
+     bool wall = false;              // Wall=
+     bool insignificant = false;     // Insignificant=
++    bool immune = false;            // Immune= (e.g. CABHUT takes no damage)
+     BldTypeW5 w5;                   // wave-5 abilities (abil_w5.hpp)
+     BldTypeW6 w6;                   // wave-6 #4 (unit_w6.hpp): wall damage levels
+     // Rallypoint: IsGattling (GTGCAN). Inert unless enabled.
+--- a/engine/combat.cpp
++++ b/engine/combat.cpp
+@@ -1076,6 +1076,7 @@
+     for (int bi = 0; bi < static_cast<int>(buildings.size()); ++bi) {
+         Building& b = buildings[static_cast<std::size_t>(bi)];
+         if (bi == src_building) continue;
++        if (world.building_immune(bi)) continue;   // Immune= takes no damage
+         if (b.type >= 0 && b.type < static_cast<int>(world.btypes().size()) &&
+             world.btypes()[static_cast<std::size_t>(b.type)].w6.wall_levels > 0) {   // W6-04-04
+             if (b.alive && b.state != Building::State::Dead && ring_index(b.cx - icx, b.cy - icy) >= 0)
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2917,6 +2917,7 @@
+         d.passengers       = (int)rules.section_double(id, "Passengers", 0.0);
+         d.wall             = rules.section_flag(id, "Wall", false);            // W6-03-01
+         d.insignificant    = rules.section_flag(id, "Insignificant", false);   // W6-03-01
++        d.immune           = rules.section_flag(id, "Immune", false);          // Immune= (CABHUT takes no damage)
+         // W2-SK-12/19/20: Capturable= / Spyable= / UnitRepair= (absent = no in
+         // rulesmd: GAPILL/TESLA/ATESLA/NAMISL/GACSPH/GAGAP say false, walls say
+         // nothing) and the factory category a spy's veterancy bonus follows.
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1163,6 +1163,7 @@
+     io(ar, v.w5);   // wave-5 abilities (agent C)
+     io(ar, v.wall);            // W6-03-01 (v25)
+     io(ar, v.insignificant);   // W6-03-01 (v25)
++    io(ar, v.immune);          // Immune= (v69)
+     io(ar, v.w6);   // v25: W6-04-04 wall damage levels
+     io(ar, v.gatt);                 // Rallypoint: IsGattling
+     io(ar, v.gatt_weapons);
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 68;   // 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 69;   // 69: Immune= (BuildingTypeDef::immune) on top of 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -5125,9 +5125,17 @@
+     commit_attack_target(unit_idx, /*target_unit=*/-1, b_idx);
+ }
+ 
++bool World::building_immune(int b_idx) const {
++    if (b_idx < 0 || b_idx >= static_cast<int>(buildings_.size())) return false;
++    const Building& b = buildings_[static_cast<std::size_t>(b_idx)];
++    if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) return false;
++    return btypes()[static_cast<std::size_t>(b.type)].immune;
++}
++
+ bool World::unit_can_damage_building(const Unit& u, int b_idx) const {
+     // Mirrors combat.cpp's attack-building drop test exactly (W9-02-03).
+     if (b_idx < 0 || b_idx >= static_cast<int>(buildings_.size())) return false;
++    if (building_immune(b_idx)) return false;
+     const Building& b = buildings_[static_cast<std::size_t>(b_idx)];
+     const int ws = unit_weapon_for_building(u, b.armor_ix, b.bomb_frame >= 0,
+                                             an_victim_naval_cell(b.cx + b.fw / 2, b.cy + b.fh / 2));
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -1277,6 +1277,10 @@
+     // yard; NumberImpassableRows not modelled). No-op when the water grid is
+     // empty. Called ONLY by --demo-roster2.
+     void block_water_footprint(int cx, int cy, int fw, int fh);
++    // Immune= buildings (e.g. CABHUT) take no damage: every damage path skips
++    // them and the AI never picks them as a target. Public so the free
++    // damage_area in combat.cpp can honour it.
++    bool building_immune(int b_idx) const;
+     bool walkable(int x, int y) const;
+     const Occupancy& occupancy() const { return occ_; }
+ 
+--- a/engine/world_abilities.cpp
++++ b/engine/world_abilities.cpp
+@@ -280,6 +280,7 @@
+ }
+ 
+ void World::ability_damage_building(int b_idx, int dmg) {
++    if (building_immune(b_idx)) return;   // Immune= takes no damage
+     Building& b = buildings_[b_idx];
+     if (!b.alive || b.state == Building::State::Dead) return;
+     if (b.iron_left_frames > 0.0) return;   // W2-AN-04 Iron Curtain
+--- a/engine/world_an.cpp
++++ b/engine/world_an.cpp
+@@ -924,7 +924,7 @@
+                             for (int k = 0; k < (strafe_shot ? 1 : std::max(1, u.w6.burst)); ++k) {
+                                 if (k > 0 && (!buildings_[tb].alive || buildings_[tb].hp <= 0)) break;
+                                 if (projectiles_enabled_ && u.w_proj.flies()) launch_projectile(i, -1, tb);
+-                                else if (buildings_[tb].iron_left_frames <= 0.0 &&
++                                else if (buildings_[tb].iron_left_frames <= 0.0 && !building_immune(tb) &&
+                                          !w6_wall_building_hit(*this, units_, buildings_, tb, u.w6.wall_flags, u.w_damage))   // W6-04-04
+                                     deliver_building_hit(units_, buildings_, i, tb);
+                             }
+--- a/engine/world_depth.cpp
++++ b/engine/world_depth.cpp
+@@ -1004,7 +1004,8 @@
+         const int bb = building_at_cell(x, y);
+         // W6-04-04/05: a wall (built or a map overlay) takes Reduce_Wall per
+         // the warhead's wall keys, not an HP hit.
+-        if (bb >= 0 && !w6_wall_building_hit(*this, units_, buildings_, bb, u.w6.wall_flags, u.w_damage))
++        if (bb >= 0 && !building_immune(bb) &&
++            !w6_wall_building_hit(*this, units_, buildings_, bb, u.w6.wall_flags, u.w_damage))
+             deliver_building_hit(units_, buildings_, i, bb);
+         w6_overlay_wall_hit(x, y, u.w6.wall_flags, u.w_damage);
+     }
+--- a/tests/test_gap_combat.cpp
++++ b/tests/test_gap_combat.cpp
+@@ -410,3 +410,44 @@
+     CHECK(du.w_verses == before);
+     CHECK(du.w_verses[5] == 0);
+ }
++
++TEST_CASE("immune buildings take no damage (CABHUT Immune=)") {
++    ra2assets::MapFile map;
++    World w(map);
++    BuildingTypeDef hut;
++    hut.id = "CABHUT";
++    hut.strength = 500;
++    hut.immune = true;
++    BuildingTypeDef pill;
++    pill.id = "GAPILL";
++    pill.strength = 400;
++    w.set_building_types({hut, pill});
++    const int hut_b = w.add_building(0, 2, 2, 1, 1, 1, 500, 0, 0.0, true);
++    const int pill_b = w.add_building(1, 6, 6, 1, 1, 1, 400, 0, 0.0, true);
++    REQUIRE(hut_b == 0);
++    REQUIRE(pill_b == 1);
++
++    // Ability path (Ivan / death-weapon blasts route through it).
++    w.campaign_damage_building(hut_b, 500);
++    CHECK(w.buildings()[0].hp == 500);
++    CHECK(w.buildings()[0].alive);
++    w.campaign_damage_building(pill_b, 100);
++    CHECK(w.buildings()[1].hp == 300);
++
++    // Live direct fire: an enemy tank ordered onto the hut shoots it every
++    // ROF tick but never scratches it (force-fire stays allowed, as retail).
++    UnitCombat tank;
++    tank.strength = 400;
++    tank.damage = 90;
++    tank.rof = 15;
++    tank.range = 5.0;
++    tank.verses = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
++    w.add_combat_unit(2, 3, 0, tank);
++    w.order_unit_attack_building(0, hut_b);
++    for (int f = 0; f < 120; ++f) w.step(1.0 / 15.0);
++    CHECK(w.buildings()[0].hp == 500);
++    CHECK(w.buildings()[0].alive);
++    bool fired = false;
++    for (const auto& ev : w.take_fire_events()) fired = fired || ev.target_building == hut_b;
++    CHECK(fired);   // the gun spoke; the hut ignored it
++}
