@@ -1,0 +1,88 @@
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 1ece51d..3950a74 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -8955,6 +8955,10 @@ std::unique_ptr<MenuAudio> load_menu_music(const std::string& dir) {
+         const std::string chk = rule("GUICheckboxSound", btn);
+         const std::string combo_open = rule("GUIComboOpenSound", "MenuACBOpen");
+         const std::string combo_close = rule("GUIComboCloseSound", "MenuACBClose");
++        // The page bands: GUIMoveOutSound plays as the page leaves, GUIMoveInSound
++        // as the next one arrives (MenuSlideOut = uslide2, MenuSlideIn = uslide1).
++        const std::string move_out = rule("GUIMoveOutSound", "MenuSlideOut");
++        const std::string move_in = rule("GUIMoveInSound", "MenuSlideIn");
+         MixFile language = MixFile::open_path(dir + "language.mix");
+         MixFile audio_mix = language.open_nested("audio.mix");
+         const MixEntry* ie = audio_mix.find("audio.idx");
+@@ -8965,7 +8969,8 @@ std::unique_ptr<MenuAudio> load_menu_music(const std::string& dir) {
+             const std::vector<uint8_t> bag = audio_mix.read(*be);
+             const std::pair<const char*, std::string> keys[] = {
+                 {"menu:click", btn}, {"menu:checkbox", chk},
+-                {"menu:comboopen", combo_open}, {"menu:comboclose", combo_close}};
++                {"menu:comboopen", combo_open}, {"menu:comboclose", combo_close},
++                {"menu:slideout", move_out}, {"menu:slidein", move_in}};
+             for (const auto& [k, ev] : keys) {
+                 ra2engine::MixerSound s = resolve_sound_event(ma->sys, sounds, idx, bag, ev);
+                 s.global = true;
+@@ -9683,6 +9688,11 @@ private:
+         if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer)
+             art_.audio->sys.mixer->play(open ? "menu:comboopen" : "menu:comboclose");
+     }
++    // [AudioVisual] GUIMoveOutSound / GUIMoveInSound: one per page band.
++    void play_slide(bool in) const {
++        if (art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer)
++            art_.audio->sys.mixer->play(in ? "menu:slidein" : "menu:slideout");
++    }
+     bool audio_live() const {
+         return art_.audio && art_.audio->sys.enabled && art_.audio->sys.mixer;
+     }
+@@ -9777,7 +9787,9 @@ private:
+         }
+         leave_next_ = s;
+         leave_t_ = 0.0;
++        play_slide(false);
+     }
++    bool entered_ = false;   // the page's enter band has started (its sound played)
+     bool transition_frames(int out[6]) const {
+         bool row_used[6] = {false, false, false, false, false, false};
+         for (const ShellButton& b : layout()) {
+@@ -9892,6 +9904,7 @@ using MainMenuScene = ShellScene;
+ // GameScene (this scene is destroyed -> nobody pumps -> the ~200ms SDL queue
+ // drains). [RE: mainmenu.md §4]
+ void MainMenuScene::update(double dt) {
++    if (!entered_ && !(g_pres_play_log && !g_play_leave_band)) { entered_ = true; play_slide(true); }
+     enter_t_ += dt;   // W2-UI-24
+     if (leave_t_ >= 0.0) {   // W5-E2 (R-143): the leave band, then the page switch
+         leave_t_ += dt;
+diff --git a/tests/test_sounds.cpp b/tests/test_sounds.cpp
+index e97ce53..89974ca 100644
+--- a/tests/test_sounds.cpp
++++ b/tests/test_sounds.cpp
+@@ -115,6 +115,28 @@ TEST_CASE("sounds: real soundmd.ini pins") {
+     CHECK(gis.volume == 85);
+ }
+ 
++// The shell page bands: rules [AudioVisual] names the sounds, soundmd.ini defines them.
++TEST_CASE("sounds: real menu slide sounds") {
++    if (!ra2fixture::assets_available()) { MESSAGE("skipped: RA2 install not found"); return; }
++    auto sb = ra2fixture::resolve_nested_bytes("soundmd.ini");
++    auto rb = ra2fixture::resolve_nested_bytes("rulesmd.ini");
++    REQUIRE_FALSE(sb.empty());
++    REQUIRE_FALSE(rb.empty());
++    Ini rules = Ini::parse(std::string(rb.begin(), rb.end()));
++    CHECK(rules.get("AudioVisual", "GUIMoveOutSound") == "MenuSlideOut");
++    CHECK(rules.get("AudioVisual", "GUIMoveInSound") == "MenuSlideIn");
++    Ini sini = Ini::parse(std::string(sb.begin(), sb.end()));   // Sounds borrows it
++    Sounds snd = Sounds::load(sini);
++    const SoundEntry out = snd.entry("MenuSlideOut");
++    REQUIRE(out.sounds.size() == 1);
++    CHECK(out.sounds[0] == "uslide2");
++    CHECK(out.volume == 60);
++    const SoundEntry in = snd.entry("MenuSlideIn");
++    REQUIRE(in.sounds.size() == 1);
++    CHECK(in.sounds[0] == "uslide1");
++    CHECK(in.volume == 65);
++}
++
+ // W5-E: Delay= min max (ms); one value = both.
+ TEST_CASE("sounds: Delay parses min/max milliseconds") {
+     Ini ini = Ini::parse("[SoundList]\n0=A\n1=B\n[A]\nSounds=x\nDelay= 500 3000\nControl=predelay\n"
