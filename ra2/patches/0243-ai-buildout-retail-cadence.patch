@@ -1,0 +1,106 @@
+diff --git a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -4314,11 +4314,21 @@ void World::step_ai_houses(double dt) {
+         // deterministic; matching the original's frame period is left to the
+         // AI calibration work (tools/simdiff build-order rung).
+         rec.state.build_clock += dt;
+-        if (rec.state.build_clock < rec.state.build_gate) continue;
+-        rec.state.build_clock = 0.0;
+-        rec.state.build_gate = std::max(
+-            (double)(0x69 + 1 + (int)(ai_rand(rec.state.rng) % 7)) / 15.0,
+-            cfg.mods.build_delay_min * 60.0);
++        // [RE: HouseClass::Update @ 0x004F9074, (Frame & 7) == 0 -> AI_Choose_Building
++        // 0x004FE3E0 and the unit choosers] the BUILDING choice runs every 8th frame, not
++        // on the ~7 s strategy tick: a finished building's successor started up to 7 s
++        // late (22 buildings at minute 12 = about 80 s of idle yard). Sell, power
++        // emergency, raise-money and superweapon work keeps the strategy tick.
++        const bool strategy_tick = rec.state.build_clock >= rec.state.build_gate;
++        if (strategy_tick) {
++            rec.state.build_clock = 0.0;
++            rec.state.build_gate = std::max(
++                (double)(0x69 + 1 + (int)(ai_rand(rec.state.rng) % 7)) / 15.0,
++                cfg.mods.build_delay_min * 60.0);
++        } else if ((repair_frame_ & 7u) != 0u) {
++            continue;
++        }
++        if (strategy_tick) {
+         // 6b) [G-65] AI sell [RE: FUN_00450620 -- money < [AI] CreditReserve,
+         //     health ratio < ConditionRed (Rules+0x1708) and rand(0,50) <
+         //     house+0x1d4 (the house TechLevel, ai-trigger.md; 10 in skirmish)
+@@ -4375,6 +4385,7 @@ void World::step_ai_houses(double dt) {
+         // 6c) [G-66] superweapon autofire on the house AI tick (FUN_004fd320 ->
+         //     FUN_00509710, IQ-gated; always on for skirmish AI).
+         if (cfg.fire_superweapons) ai_try_fire_superweapon(h, rec);   // W5-A IQ gate
++        }
+         if (!conyard) continue;  // no factory: nothing can start
+ 
+         // 7) Decide.
+@@ -5680,9 +5691,14 @@ void World::step_ai_teams(double dt) {
+             // standing for this house. Shared by autocreate and AI-3.
+             std::vector<char> unit_ok(tc.unit_roster.size(), 0);
+             for (int ut = 0; ut < (int)tc.unit_roster.size(); ++ut)
++                // [RE: HouseClass::Has_Factories_For_TeamType @ 0x00509610] a TaskForce
++                // entry is admitted by an ONLINE FACTORY for its type (FindFactory(1,1,0),
++                // vtable+0x94) with NO prerequisite/CanBuild test: a team forms as soon as
++                // the barracks / war factory stands and the unit chooser buys what it can.
++                // The old prerequisites_met gate held the Soviet base-guard team (4 FLAKT)
++                // back until the radar stood: the first team was minute 6.7, not 2.2.
+                 unit_ok[ut] = tc.unit_roster[ut].tech_level > 0 &&
+-                              prerequisites_met(tc.unit_roster[ut].prerequisite, buildings_,
+-                                                rec.cfg.roster, h, rec.cfg.groups);
++                              !factory_category_lost(unit_ft(ut), h);
+             // A type the house cannot build but already has standing idle
+             // counts too (recruit-idle-first, ai-team.md §2) [RE-FALLBACK].
+             for (const IdleUnitView& iv : ai_idle_units(h, rec))
+diff --git a/engine/ai_skirmish.inc b/engine/ai_skirmish.inc
+--- a/engine/ai_skirmish.inc
++++ b/engine/ai_skirmish.inc
+@@ -313,5 +313,8 @@ void arm_skirmish_ai(ra2engine::World& world, const ra2engine::SkirmishConfig& c
+                                                    ? ua.anims.at(d.combat.image)
+                                                    : ra2engine::default_anim());
+         world.enable_ai_house(i, std::move(acfg));
++        // [RE: HouseClass::SetDifficulty seeds the team timer with TeamDelays[d] + HouseArray
++        // index x 175] so two computer houses never run their team pass on the same frame.
++        world.set_ai_team_check_clock(i, -175.0 * (double)i);
+     }
+ }
+diff --git a/tests/test_world.cpp b/tests/test_world.cpp
+--- a/tests/test_world.cpp
++++ b/tests/test_world.cpp
+@@ -2258,6 +2258,35 @@ TEST_CASE("World: step_ai_teams firewall - team.enabled=false means no teams eve
+     CHECK(world.ai_unit_producing(1, 0) == -1);
+ }
+ 
++TEST_CASE("0243: a team forms once its factory stands, even when the unit's prerequisites are not met (0x00509610)") {
++    ra2assets::MapFile map;
++    if (!load_real_map_w(map)) { MESSAGE("skipped: real map assets not found"); return; }
++    ra2engine::World world(map);
++    const ra2assets::MapCell* c = ra2engine::pick_start_cell(map);
++    REQUIRE(c != nullptr);
++    world.add_building(0, c->x, c->y, 1, 1, /*house=*/1, 1000, 0, 0.0, true);       // conyard
++    world.add_building(1, c->x + 3, c->y, 1, 1, /*house=*/1, 500, 0, 0.0, true);    // barracks = the factory
++    ra2engine::AiHouseConfig cfg = ai2_cfg(/*teams_enabled=*/true);
++    cfg.team.unit_roster[0].prerequisite = {"NOSUCHBUILDING"};   // never buildable (like FLAKT without radar)
++    world.enable_ai_house(1, cfg);
++    for (int i = 0; i < 300; ++i) world.step(1.0 / 15.0);
++    REQUIRE(world.ai_team_state(1) != nullptr);
++    CHECK(world.ai_team_state(1)->teams_created >= 1);   // only a Has_Factories_For_TeamType gate
++}
++
++TEST_CASE("0243: no factory for the unit's category, no team") {
++    ra2assets::MapFile map;
++    if (!load_real_map_w(map)) { MESSAGE("skipped: real map assets not found"); return; }
++    ra2engine::World world(map);
++    const ra2assets::MapCell* c = ra2engine::pick_start_cell(map);
++    REQUIRE(c != nullptr);
++    world.add_building(0, c->x, c->y, 1, 1, /*house=*/1, 1000, 0, 0.0, true);       // conyard only
++    world.enable_ai_house(1, ai2_cfg(/*teams_enabled=*/true));
++    for (int i = 0; i < 300; ++i) world.step(1.0 / 15.0);
++    REQUIRE(world.ai_team_state(1) != nullptr);
++    CHECK(world.ai_team_state(1)->teams_created == 0);
++}
++
+ TEST_CASE("World: a team recruits an IDLE unit first and attacks the player") {
+     ra2assets::MapFile map;
+     if (!load_real_map_w(map)) { MESSAGE("skipped: real map assets not found"); return; }
