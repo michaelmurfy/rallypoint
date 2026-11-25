@@ -2883,6 +2883,41 @@ function ra2DisplayFields(fb) {
     setting("World zoom", "Automatic draws the map sharp, so a bigger screen shows more of it. Pick a bigger size if units look too small.", zoom));
 }
 
+const RA2_SCALE_FILTERS = [["", "Automatic"], ["sharp", "Sharp smooth"], ["bilinear", "Smooth"], ["nearest", "Hard pixels"], ["integer", "Whole sizes only"]];
+const RA2_SPRITE_UPSCALERS = [["", "Smoothed edges"], ["scale2x", "Scale2x"], ["off", "Original pixels"]];
+const RA2_LEVELS = [[0, "Off"], [1, "Subtle"], [2, "Strong"]];
+const RA2_GRADES = [["", "Standard"], ["warm", "Warm"], ["cool", "Cool"], ["vivid", "Vivid"]];
+
+/** Settings > Graphics: how the picture is scaled, sprite smoothing, zoom and the optional effects. Picture only. */
+function ra2GraphicsCard() {
+  const fb = liveStatus();
+  const g = store.cfg.ra2.gfx || (store.cfg.ra2.gfx = {});
+  const save = async (patch) => {
+    Object.assign(g, patch);
+    try {
+      await invoke("ra2_set_gfx", { gfx: {
+        scale: g.scale || "", smooth: g.smooth || 0, sprites: g.sprites || "", bloom: g.bloom || 0, vignette: g.vignette || 0,
+        grade: g.grade || "", zoom_smooth: !!g.zoom_smooth, zoom_wide: !!g.zoom_wide } });
+      fb.ok("Saved. Applies from the next game.");
+    } catch (e) { fb.bad(errText(e)); }
+  };
+  const sw = (key, label) => {
+    const box = h("input", { type: "checkbox", checked: !!g[key], "aria-label": label, onchange: () => save({ [key]: box.checked }) });
+    return h("label", { class: "switch" }, box);
+  };
+  const lvl = (key, label) => pick(label, RA2_LEVELS, g[key] || 0, (v) => save({ [key]: +v }));
+  return h("div", { class: "card" }, h("div", { class: "row between" }, h("h2", {}, "Graphics"), fb.el),
+    h("div", { class: "settings" },
+      setting("Scaling", "How the picture is stretched to your screen. Automatic keeps whole sizes crisp and smooths the rest.", pick("Scaling", RA2_SCALE_FILTERS, g.scale || "", (v) => save({ scale: v }))),
+      setting("Soften hard pixels", "Blends a little smoothing into Hard pixels and Whole sizes only.", lvl("smooth", "Soften hard pixels")),
+      setting("Sprite smoothing", "How units and buildings are smoothed. The game is flat 2D art, so there is no anti-aliasing or anisotropic filtering to switch on; this is its smoothing.", pick("Sprite smoothing", RA2_SPRITE_UPSCALERS, g.sprites || "", (v) => save({ sprites: v }))),
+      setting("Smooth zoom", "The mouse wheel glides to its zoom, around the pointer.", sw("zoom_smooth", "Smooth zoom")),
+      setting("Wider zoom range", "Zoom out further and in closer. Zooming far out draws more, so it can cost frame rate.", sw("zoom_wide", "Wider zoom range")),
+      setting("Glow", "Lasers, explosions and superweapons glow. Very bright terrain glows a little too.", lvl("bloom", "Glow")),
+      setting("Dark corners", "A soft shade towards the corners of the map view.", lvl("vignette", "Dark corners")),
+      setting("Colour look", "A tint over the map view. The sidebar keeps its own colours.", pick("Colour look", RA2_GRADES, g.grade || "", (v) => save({ grade: v })))));
+}
+
 /** Game sound on or off. */
 function ra2SoundCard() {
   const fb = liveStatus();
@@ -2923,15 +2958,16 @@ function nameSetting() {
 
 function ra2SettingsPage() {
   const files = gameFilesPanel(() => updateSidebar(), "ra2");
-  const tab = store.settingsTab === "rallypoint" ? "rallypoint" : "game";
+  const tab = ["rallypoint", "graphics"].includes(store.settingsTab) ? store.settingsTab : "game";
   const t = tabbed("Settings", [
     ["game", "Game", () => [h("div", { class: "card" }, h("h2", {}, "Game files"), files.el, forgetSteamRow()), ra2PlayerDefaultsCard(), ra2SoundCard()]],
+    ["graphics", "Graphics", () => [ra2GraphicsCard()]],
     ["rallypoint", "Rallypoint", () => [
       updatesCard(),
       h("div", { class: "card" }, h("h2", {}, "Troubleshooting"), firstRunSetupRow()),
       h("p", { class: "muted small about" }, `Rallypoint ${store.cfg.version} on ${store.cfg.os}. Launcher and server are MIT licensed. Not affiliated with or endorsed by Electronic Arts.`)]],
   ], tab, (id) => { store.settingsTab = id; });
-  const el = h("div", { class: "page" }, pageHead("Settings", "Game files, sound and updates for Red Alert 2."), t.bar, t.body);
+  const el = h("div", { class: "page" }, pageHead("Settings", "Game files, sound, graphics and updates for Red Alert 2."), t.bar, t.body);
   return { el, dispose: files.dispose };
 }
 

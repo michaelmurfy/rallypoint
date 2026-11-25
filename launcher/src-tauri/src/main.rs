@@ -1255,6 +1255,16 @@ fn ra2_set_settings(
     c.save(&path).map_err(|e| e.to_string())
 }
 
+/// The Red Alert 2 picture settings (Settings > Graphics).
+#[tauri::command(rename_all = "snake_case")]
+fn ra2_set_gfx(app: tauri::AppHandle, gfx: ra2::Ra2Gfx) -> Result<(), String> {
+    gfx.validate()?;
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.ra2.gfx = gfx;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
 /// The launcher's own Red Alert 2 map folder, `<app data>/GeneralsZH/RA2Maps` (made on first use); maps dropped there
 /// are listed beside the ones in the game folder.
 fn ra2_maps_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1497,7 +1507,7 @@ fn main() {
             relay_connect, relay_disconnect, room_password_save, room_passwords_saved, relay_connection, relay_forget_key, relay_status, relay_diagnostics, relay_set_ai,
             mods_list, mods_get, mods_poll, downloads_dir, mods_cancel_watch, mods_install, mods_remove, open_mods_folder, game_art, open_homepage, open_download_page, icons_install, set_control_bar,
             launch_game, launch_editor,
-            set_game, ra2_detect, ra2_country_flags, ra2_game_art, ra2_check_dir, ra2_set_settings, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
+            set_game, ra2_detect, ra2_country_flags, ra2_game_art, ra2_check_dir, ra2_set_settings, ra2_set_gfx, ra2_maps, ra2_map_view, ra2_open_maps_folder, ra2_community_packs, ra2_install_community_packs, ra2_launch, ra2_lobby_poll, ra2_lobby_seat, ra2_lobby_room, ra2_lobby_start
         ])
         .run(tauri::generate_context!())
         .expect("tauri");
