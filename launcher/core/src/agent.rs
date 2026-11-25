@@ -4,7 +4,7 @@
 //! Engine sockets register with `Bind{port}` (or by sending), keyed by logical port (8086 lobby, 8088 game).
 //! Red Alert 2 uses a second loopback socket that looks like a CnCNet tunnel to the game (see `from_spawner`).
 use generals_proto::secure::{self, ClientPending, Key, Session as Crypto};
-use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, room_verifier, Cookie, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_LOBBY_PAYLOAD};
+use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, room_verifier, Cookie, MapMsg, Packet, Reason, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_LOBBY_PAYLOAD};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -31,6 +31,11 @@ const SILENCE_LIMIT: Duration = Duration::from_secs(8);
 const LOBBY_QUEUE: usize = 256;
 /// Received lobby blobs: (last octet of the sender's virtual address, blob).
 type LobbyQueue = Arc<Mutex<VecDeque<(u8, Vec<u8>)>>>;
+/// Map-sharing messages kept until the launcher takes them (it does every few tens of milliseconds); the oldest go first,
+/// which a transfer survives (it repeats what was not acknowledged).
+const MAP_QUEUE: usize = 2048;
+/// Received map messages: (sender's virtual address, or all zeros for the server itself, message).
+type MapQueue = Arc<Mutex<VecDeque<(Vip, MapMsg)>>>;
 /// Every room's virtual addresses are `10.77.0.x`; a Red Alert 2 player's tunnel id is `x`.
 const VIP_PREFIX: [u8; 3] = [10, 77, 0];
 
@@ -279,6 +284,7 @@ pub struct Agent {
     /// This launch's Red Alert 2 token and the game endpoint that presented it (see `from_spawner`).
     tunnel_trust: Arc<Mutex<TunnelTrust>>,
     lobby: LobbyQueue,
+    maps: MapQueue,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -340,6 +346,7 @@ impl Agent {
         // nobody knows this one: nothing binds before `arm_tunnel`
         let tunnel_trust = Arc::new(Mutex::new(TunnelTrust { token: secure::random_token(), peer: None }));
         let lobby: LobbyQueue = Arc::default();
+        let maps: MapQueue = Arc::default();
 
         let status = Arc::new(Mutex::new(Status::Connecting));
         let progress: Arc<Mutex<Progress>> = Arc::new(Mutex::new(Progress { started: Some(Instant::now()), stage: "contacting the server", ..Default::default() }));
@@ -445,7 +452,7 @@ impl Agent {
         let r2l = {
             let (relay, status, stop, issued, health, bytes, server_key, learned, crypto, progress) =
                 (relay.try_clone()?, status.clone(), stop.clone(), issued.clone(), health.clone(), bytes.clone(), server_key.clone(), learned.clone(), crypto.clone(), progress.clone());
-            let (tunnel, tunnel_trust, lobby) = (tunnel, tunnel_trust.clone(), lobby.clone());
+            let (tunnel, tunnel_trust, lobby, maps) = (tunnel, tunnel_trust.clone(), lobby.clone(), maps.clone());
             std::thread::spawn(move || {
                 let mut serial = serial;
                 let mut cookie: Cookie = [0; 16];
@@ -585,6 +592,14 @@ impl Agent {
                                         }
                                         q.push_back((vip[3], payload));
                                     }
+                                    // Map sharing: from another player in the room, or the relay's own `Caps` (address all zeros).
+                                    Some(Packet::Map { vip, msg }) if vip[..3] == VIP_PREFIX || vip == [0; 4] => {
+                                        let mut q = maps.lock().unwrap();
+                                        if q.len() == MAP_QUEUE {
+                                            q.pop_front();
+                                        }
+                                        q.push_back((vip, msg));
+                                    }
                                     _ => {}
                                 }
                             }
@@ -658,7 +673,7 @@ impl Agent {
             })
         };
 
-        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, tunnel_port, tunnel_trust, lobby, stop, threads: vec![l2r, t2r, r2l] })
+        Ok(Agent { local: local_addr, health, status, progress, address, issued, server_key, learned, pinned: pinned.is_some(), token, engine_epoch, crypto, relay, tunnel_port, tunnel_trust, lobby, maps, stop, threads: vec![l2r, t2r, r2l] })
     }
 
     /// Where the connection is and what to check, for the Online page.
@@ -707,6 +722,17 @@ impl Agent {
     /// Lobby blobs received since the last call, oldest first, each with the last octet of its sender's virtual address.
     pub fn take_lobby(&self) -> Vec<(u8, Vec<u8>)> {
         self.lobby.lock().unwrap().drain(..).collect()
+    }
+
+    /// Say something about maps to one player (`to`), or to the whole room (all zeros, for `Hi`). False if not connected.
+    pub fn send_map(&self, to: Vip, msg: MapMsg) -> bool {
+        matches!(self.status(), Status::Connected(_)) && send_sealed(&self.relay, &self.crypto, &Packet::Map { vip: to, msg })
+    }
+
+    /// Map messages received since the last call, oldest first, each with the virtual address the relay says it came from
+    /// (all zeros: the relay itself).
+    pub fn take_map(&self) -> Vec<(Vip, MapMsg)> {
+        self.maps.lock().unwrap().drain(..).collect()
     }
 
     /// The token to give the engine (`GEN_RELAY_TOKEN`), in hex.

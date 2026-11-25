@@ -1,7 +1,7 @@
 //! Relay state machine. No sockets or clocks in here: `handle` takes the sender and the time and returns
 //! the datagrams to send, so it is testable without a network.
 use generals_proto::secure::{self, Key, Session as Crypto};
-use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, sha256, Cookie, Packet, Reason, ServerStats, SyncEntry, SyncVerdict, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAX_SYNC_PLAYERS};
+use generals_proto::{ct_eq, is_game_packet, is_ra2_game_packet, map_chunk_len, map_chunks, map_end, sha256, Cookie, MapMsg, Packet, Reason, ServerStats, SyncEntry, SyncVerdict, Verifier, Vip, Wire, GAME_PORTS, LOBBY_PORT, MAP_PROTO, MAX_MAP_BYTES, MAX_SYNC_PLAYERS};
 pub mod geo;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -29,6 +29,29 @@ pub const LOBBY_PER_SEC: u32 = 20;
 /// A Register retry from the same address within this window gets the same serial back (UDP loss).
 const REGISTER_DEDUP_SECS: u64 = 60;
 const VIP_PREFIX: [u8; 3] = [10, 77, 0];
+
+// Map sharing (see docs/send-map-threat-model.md). The relay only forwards what a transfer's two players have agreed to,
+// stores nothing, and bounds every step.
+/// Per session and second: offers, accepts, ends, cancels and presence (control), and chunks and acks (data). Data is also
+/// held to `SESSION_BYTES_PER_SEC`, so a session carries about 400 kB of map a second at most.
+pub const MAP_CTL_PER_SEC: u32 = 20;
+pub const MAP_DATA_PER_SEC: u32 = 450;
+/// A player's presence (`MapMsg::Hi`) is passed on at most this often (seconds).
+const MAP_HI_EVERY_SECS: u64 = 2;
+/// Open transfers one player may send, and one player may be offered, at a time; and one pair may have one.
+const MAP_OPEN_OUT: usize = 4;
+const MAP_OPEN_IN: usize = 4;
+/// An offer waits this long for a person to answer; a transfer that has started dies after this much silence; nothing lives longer than the cap.
+const MAP_OFFER_WAIT_SECS: u64 = 180;
+const MAP_IDLE_SECS: u64 = 30;
+const MAP_LIFETIME_SECS: u64 = 900;
+/// Map bytes offered per player (serial) and per room in an hour (counted when the offer is made), and relayed by the whole
+/// server per second (a bucket with a burst of two seconds).
+pub const MAP_BYTES_PER_HOUR_PLAYER: u64 = 64 << 20;
+pub const MAP_BYTES_PER_HOUR_ROOM: u64 = 192 << 20;
+pub const MAP_BYTES_PER_SEC_ALL: u64 = 4 << 20;
+/// Chunks are only sent once, plus what loss makes the sender repeat: a transfer may relay this much more than its size.
+const MAP_RESEND_ALLOWANCE: u64 = 64 << 10;
 
 /// Serial file: one `SERIAL [label]` per line; a leading `!` marks it revoked. `#` lines are comments.
 #[derive(Default, Clone)]
@@ -82,7 +105,26 @@ struct Session {
     lobby: u32,
     /// Order of joining (the room's master is its lowest).
     joined: u64,
+    /// Map messages in second `window`: control and data (see `MAP_CTL_PER_SEC`), and the second of the last `Hi` passed on.
+    map_ctl: u32,
+    map_data: u32,
+    map_hi: Option<u64>,
 }
+
+/// One map transfer the relay is refereeing. It is keyed by (room, sender, receiver, id) and only lives while both players'
+/// sessions (by serial) do.
+struct Xfer {
+    from_serial: String,
+    to_serial: String,
+    size: u32,
+    hash: [u8; 32],
+    accepted: bool,
+    /// Bytes of map forwarded so far.
+    relayed: u64,
+    created: u64,
+    last: u64,
+}
+type XferKey = (String, Vip, Vip, u32);
 
 /// Datagrams to send, already encrypted.
 type Out = Vec<(SocketAddr, Vec<u8>)>;
@@ -135,6 +177,11 @@ pub struct Server {
     all_signups: Vec<u64>,
     bad_serials: HashMap<IpAddr, (u64, u32)>,
     version: String,
+    map_xfers: HashMap<XferKey, Xfer>,
+    /// Map bytes offered: per serial and per room (hour start, bytes), and the server-wide relay bucket (second, bytes left).
+    map_player_bytes: HashMap<String, (u64, u64)>,
+    map_room_bytes: HashMap<String, (u64, u64)>,
+    map_bucket: (u64, u64),
     /// Relay load: totals for the second in progress (`sec`), and the last full second.
     sec: u64,
     sec_pkts: u32,
@@ -204,6 +251,10 @@ impl Server {
             all_signups: vec![],
             bad_serials: HashMap::new(),
             version: String::new(),
+            map_xfers: HashMap::new(),
+            map_player_bytes: HashMap::new(),
+            map_room_bytes: HashMap::new(),
+            map_bucket: (0, 2 * MAP_BYTES_PER_SEC_ALL),
             sec: 0,
             sec_pkts: 0,
             sec_bytes: 0,
@@ -294,6 +345,7 @@ impl Server {
             }
         }
         self.gc_rooms();
+        self.gc_maps(now);
         self.recent.retain(|_, (t, _)| now.saturating_sub(*t) < REGISTER_DEDUP_SECS);
         self.by_ip.retain(|_, h| {
             h.retain(|t| now.saturating_sub(*t) < 3600);
@@ -356,6 +408,8 @@ impl Server {
         self.sync.retain(|name, _| used.contains(name));
         self.room_vips.retain(|name, _| used.contains(name));
         self.room_ai.retain(|name, _| used.contains(name));
+        self.map_xfers.retain(|(room, ..), _| used.contains(room));
+        self.map_room_bytes.retain(|name, _| used.contains(name));
         for l in lines {
             self.note(l);
         }
@@ -442,7 +496,7 @@ impl Server {
             let tail = &j.serial[j.serial.len().saturating_sub(4)..];
             self.note(format!("join: {} (serial ...{tail}, {}) {} room '{}', {n} in it", fmt_vip(j.vip), from, if new_room { "opened" } else { "entered" }, j.room));
             self.join_seq += 1;
-            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0, lobby: 0, joined });
+            self.sessions.insert(from, Session { serial: j.serial, room: j.room, vip: j.vip, crypto, last_seen: now, window: now, pkts: 0, bytes: 0, lobby: 0, joined, map_ctl: 0, map_data: 0, map_hi: None });
         }
         let reply = Wire::Hs2 { msg: reply }.encode();
         if self.hs_cache.len() < HANDSHAKE_CACHE_MAX {
@@ -458,7 +512,7 @@ impl Server {
         };
         // Flood limit per session, before any decryption is spent on it; dropped packets do not keep it alive.
         if me.window != now {
-            (me.window, me.pkts, me.bytes, me.lobby) = (now, 0, 0, 0);
+            (me.window, me.pkts, me.bytes, me.lobby, me.map_ctl, me.map_data) = (now, 0, 0, 0, 0, 0);
         }
         let size = data.len() as u32;
         if me.pkts >= SESSION_PACKETS_PER_SEC || me.bytes.saturating_add(size) > SESSION_BYTES_PER_SEC {
@@ -474,6 +528,13 @@ impl Server {
         if lobby_ok {
             me.lobby += 1;
         }
+        // Map messages have their own caps: data (chunks, acks) and control (everything else) by the second, and presence by its own timer.
+        let map_ok = match &pkt {
+            Packet::Map { msg: MapMsg::Data { .. } | MapMsg::Ack { .. }, .. } => me.map_data < MAP_DATA_PER_SEC && { me.map_data += 1; true },
+            Packet::Map { msg: MapMsg::Hi { .. }, .. } => me.map_ctl < MAP_CTL_PER_SEC && me.map_hi.is_none_or(|t| now.saturating_sub(t) >= MAP_HI_EVERY_SECS) && { me.map_ctl += 1; me.map_hi = Some(now); true },
+            Packet::Map { .. } => me.map_ctl < MAP_CTL_PER_SEC && { me.map_ctl += 1; true },
+            _ => false,
+        };
         let (my_vip, room) = (me.vip, me.room.clone());
         let same_room = |s: &Session| s.room == room;
         // The tunnel is for the game only: its two UDP ports, and datagrams the engine itself made.
@@ -526,10 +587,15 @@ impl Server {
                 .filter(|(a, s)| **a != from && same_room(s))
                 .map(|(a, _)| (*a, Packet::Lobby { vip: my_vip, payload: payload.clone() }))
                 .collect(),
+            Packet::Map { vip, msg } if map_ok => self.map_msg(from, &room, my_vip, vip, msg, now),
             _ => vec![],
         };
         // Count what the relay actually forwarded (not pings and stats).
         for (_, p) in &replies {
+            if let Packet::Map { msg: MapMsg::Data { bytes, .. }, .. } = p {
+                self.sec_pkts = self.sec_pkts.saturating_add(1);
+                self.sec_bytes = self.sec_bytes.saturating_add(bytes.len() as u32 + 14);
+            }
             if let Packet::Bcast { payload, .. } | Packet::Data { payload, .. } | Packet::Tunnel { payload, .. } | Packet::Lobby { payload, .. } = p {
                 self.sec_pkts = self.sec_pkts.saturating_add(1);
                 self.sec_bytes = self.sec_bytes.saturating_add(payload.len() as u32 + 9);
@@ -540,6 +606,143 @@ impl Server {
             .into_iter()
             .filter_map(|(to, p)| self.sessions.get(&to).map(|s| (to, Wire::Transport { data: s.crypto.seal(&p) }.encode())))
             .collect()
+    }
+
+    /// Map sharing: what one player's message does to the transfers of its room. Returns who gets what. The sender is the
+    /// session the packet came in on (`my_vip`); `to` is the only thing the payload decides, and only inside the sender's room.
+    fn map_msg(&mut self, from: SocketAddr, room: &str, my_vip: Vip, to: Vip, msg: MapMsg, now: u64) -> Vec<(SocketAddr, Packet)> {
+        let Some(my_serial) = self.sessions.get(&from).map(|s| s.serial.clone()) else { return vec![] };
+        let others = |s: &Server| -> Vec<SocketAddr> { s.sessions.iter().filter(|(a, s)| **a != from && s.room == room).map(|(a, _)| *a).collect() };
+        // The other player, if they are in this room.
+        let peer: Option<(SocketAddr, String)> = self.sessions.iter().find(|(a, s)| **a != from && s.room == room && s.vip == to).map(|(a, s)| (*a, s.serial.clone()));
+        // An answer from the relay to the sender, in the voice of the player it was meant for.
+        let refuse = |id: u32, code: u8| vec![(from, Packet::Map { vip: to, msg: MapMsg::End { id, code } })];
+        match msg {
+            MapMsg::Hi { game, name, .. } => {
+                let master = self.is_master(room, from);
+                let mut out: Vec<(SocketAddr, Packet)> = others(self).into_iter().map(|a| (a, Packet::Map { vip: my_vip, msg: MapMsg::Hi { game, master, name: name.clone() } })).collect();
+                out.push((from, Packet::Map { vip: [0; 4], msg: MapMsg::Caps { proto: MAP_PROTO, max_bytes: MAX_MAP_BYTES } }));
+                out
+            }
+            MapMsg::Caps { .. } => vec![],
+            MapMsg::Offer { id, game, size, players, hash, name, .. } => {
+                let Some((peer_addr, peer_serial)) = peer else { return refuse(id, map_end::REFUSED) };
+                let key = (room.to_string(), my_vip, to, id);
+                let master = self.is_master(room, from);
+                let offer = Packet::Map { vip: my_vip, msg: MapMsg::Offer { id, game, master, size, players, hash, name: name.clone() } };
+                if let Some(x) = self.map_xfers.get_mut(&key) {
+                    // The sender repeating an offer that is still waiting (a lost datagram, or keeping it alive): the same one again.
+                    if !x.accepted && x.size == size && x.hash == hash && x.to_serial == peer_serial && x.from_serial == my_serial {
+                        x.last = now;
+                        return vec![(peer_addr, offer)];
+                    }
+                    return vec![];
+                }
+                let open = |f: &dyn Fn(&XferKey) -> bool, s: &Server| s.map_xfers.keys().filter(|k| &k.0 == room && f(k)).count();
+                if open(&|k| k.1 == my_vip, self) >= MAP_OPEN_OUT || open(&|k| k.2 == to, self) >= MAP_OPEN_IN || open(&|k| k.1 == my_vip && k.2 == to, self) >= 1 {
+                    return refuse(id, map_end::REFUSED);
+                }
+                // The offer counts against the hourly budgets of the sender and of the room, whatever the answer.
+                let hour = |t: &mut (u64, u64), cap: u64| {
+                    if now.saturating_sub(t.0) >= 3600 {
+                        *t = (now, 0);
+                    }
+                    let fits = t.1 + size as u64 <= cap;
+                    if fits {
+                        t.1 += size as u64;
+                    }
+                    fits
+                };
+                if !hour(self.map_player_bytes.entry(my_serial.clone()).or_insert((now, 0)), MAP_BYTES_PER_HOUR_PLAYER) || !hour(self.map_room_bytes.entry(room.to_string()).or_insert((now, 0)), MAP_BYTES_PER_HOUR_ROOM) {
+                    self.note(format!("map offer refused in room '{room}': {} is over the hourly map budget", fmt_vip(my_vip)));
+                    return refuse(id, map_end::REFUSED);
+                }
+                self.note(format!("map offer in room '{room}': {} -> {}, {} bytes", fmt_vip(my_vip), fmt_vip(to), size));
+                self.map_xfers.insert(key, Xfer { from_serial: my_serial, to_serial: peer_serial, size, hash, accepted: false, relayed: 0, created: now, last: now });
+                vec![(peer_addr, offer)]
+            }
+            // From here the message belongs to an open transfer. Receiver -> sender messages name the sender in `to`.
+            MapMsg::Accept { id } | MapMsg::End { id, .. } | MapMsg::Ack { id, .. } => {
+                let key = (room.to_string(), to, my_vip, id);
+                let Some((peer_addr, peer_serial)) = peer else {
+                    self.map_xfers.remove(&key);
+                    return vec![];
+                };
+                let Some(x) = self.map_xfers.get_mut(&key) else { return vec![] };
+                if x.to_serial != my_serial || x.from_serial != peer_serial {
+                    self.map_xfers.remove(&key); // the address now belongs to someone else
+                    return vec![];
+                }
+                x.last = now;
+                match msg {
+                    MapMsg::Accept { .. } if !x.accepted => x.accepted = true,
+                    MapMsg::Ack { next, .. } if x.accepted && next <= map_chunks(x.size) => {}
+                    MapMsg::End { .. } => {
+                        self.map_xfers.remove(&key);
+                    }
+                    _ => return vec![], // an accept twice, an ack before the accept or past the end
+                }
+                vec![(peer_addr, Packet::Map { vip: my_vip, msg })]
+            }
+            // Sender -> receiver messages.
+            MapMsg::Data { id, seq, bytes } => {
+                let key = (room.to_string(), my_vip, to, id);
+                let Some((peer_addr, peer_serial)) = peer else {
+                    self.map_xfers.remove(&key);
+                    return vec![];
+                };
+                let Some(x) = self.map_xfers.get_mut(&key) else { return vec![] };
+                if x.from_serial != my_serial || x.to_serial != peer_serial {
+                    self.map_xfers.remove(&key);
+                    return vec![];
+                }
+                // Only after the receiver said yes, only the chunks the offer's size has, each of its exact length, and no more
+                // than the size plus a little for repeats.
+                let n = bytes.len() as u64;
+                if !x.accepted || seq >= map_chunks(x.size) || bytes.len() != map_chunk_len(x.size, seq) || x.relayed + n > x.size as u64 + MAP_RESEND_ALLOWANCE + x.size as u64 {
+                    return vec![];
+                }
+                // The relay as a whole: a bucket refilled each second. Out of tokens, the chunk is dropped and the sender repeats it.
+                let (sec, tokens) = &mut self.map_bucket;
+                *tokens = (*tokens + now.saturating_sub(*sec) * MAP_BYTES_PER_SEC_ALL).min(2 * MAP_BYTES_PER_SEC_ALL);
+                *sec = now;
+                if *tokens < n {
+                    return vec![];
+                }
+                *tokens -= n;
+                x.relayed += n;
+                x.last = now;
+                vec![(peer_addr, Packet::Map { vip: my_vip, msg: MapMsg::Data { id, seq, bytes } })]
+            }
+            MapMsg::Cancel { id } => {
+                let key = (room.to_string(), my_vip, to, id);
+                match (self.map_xfers.get(&key).is_some_and(|x| x.from_serial == my_serial), peer) {
+                    (true, Some((peer_addr, _))) => {
+                        self.map_xfers.remove(&key);
+                        vec![(peer_addr, Packet::Map { vip: my_vip, msg: MapMsg::Cancel { id } })]
+                    }
+                    (true, None) => {
+                        self.map_xfers.remove(&key);
+                        vec![]
+                    }
+                    _ => vec![],
+                }
+            }
+        }
+    }
+
+    /// Drop transfers that went quiet, outlived their cap, or lost a player; and forget old hourly budgets.
+    fn gc_maps(&mut self, now: u64) {
+        let live: HashSet<(&str, Vip, &str)> = self.sessions.values().map(|s| (s.room.as_str(), s.vip, s.serial.as_str())).collect();
+        self.map_xfers.retain(|(room, from, to, _), x| {
+            let wait = if x.accepted { MAP_IDLE_SECS } else { MAP_OFFER_WAIT_SECS };
+            now.saturating_sub(x.last) < wait
+                && now.saturating_sub(x.created) < MAP_LIFETIME_SECS
+                && live.contains(&(room.as_str(), *from, x.from_serial.as_str()))
+                && live.contains(&(room.as_str(), *to, x.to_serial.as_str()))
+        });
+        self.map_player_bytes.retain(|_, (t, _)| now.saturating_sub(*t) < 3600);
+        self.map_room_bytes.retain(|_, (t, _)| now.saturating_sub(*t) < 3600);
     }
 
     /// One player's checksum for a frame. When every player in the room has reported that frame the checksums are
@@ -1060,7 +1263,7 @@ mod tests {
         let mut w = World::standard();
         w.quick(addr(1), "AAA", "r", 0);
         let vb = w.quick(addr(2), "BBB", "r", 0);
-        let mut ok = |w: &mut World, p: Packet| w.send(addr(1), p, 1).len();
+        let ok = |w: &mut World, p: Packet| w.send(addr(1), p, 1).len();
         // the engine's own datagrams on its two ports pass
         assert_eq!(ok(&mut w, data(vb, 8088, game_packet(b"hello"))), 1);
         assert_eq!(ok(&mut w, data(vb, 8086, game_packet(b"hello"))), 1);
@@ -1380,5 +1583,264 @@ mod tests {
         let out = w.send(guest, Packet::Crc { frame: 100, crc: 2, host: true }, 1);
         let Packet::Desync(v) = &out[0].1 else { panic!() };
         assert_eq!((v.certain, v.host), (false, None));
+    }
+
+    // ---- map sharing -----------------------------------------------------------------------------------------
+
+    fn map(vip: Vip, msg: MapMsg) -> Packet {
+        Packet::Map { vip, msg }
+    }
+    fn offer(id: u32, size: u32) -> MapMsg {
+        MapMsg::Offer { id, game: 0, master: true, size, players: 2, hash: [id as u8; 32], name: "Tournament Desert".into() }
+    }
+    fn chunk(id: u32, seq: u32, size: u32) -> MapMsg {
+        MapMsg::Data { id, seq, bytes: vec![seq as u8; generals_proto::map_chunk_len(size, seq)] }
+    }
+    /// A room of `n` players with serials AAA, BBB, DDD, EEE... on addresses 1..=n; returns their virtual addresses.
+    fn room_of(w: &mut World, name: &str, n: usize) -> Vec<Vip> {
+        ["AAA", "BBB", "DDD", "EEE", "FFF", "GGG"].iter().take(n).enumerate().map(|(i, s)| w.quick(addr(1 + i as u16), s, name, 0)).collect()
+    }
+    fn map_world(serials: &str) -> World {
+        World::new(serials)
+    }
+    const SERIALS: &str = "AAA\nBBB\nDDD\nEEE\nFFF\nGGG\nHHH\nIII\n";
+
+    #[test]
+    fn presence_reaches_the_room_with_the_servers_word_on_who_is_master_and_the_relay_says_it_can_share() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 3);
+        // B claims to be the master: the server's own knowledge replaces the claim
+        let got = w.send(addr(2), map([0; 4], MapMsg::Hi { game: 1, master: true, name: "Sam".into() }), 1);
+        let mut to_others: Vec<_> = got.iter().filter(|(a, _)| *a != addr(2)).cloned().collect();
+        to_others.sort_by_key(|o| o.0);
+        assert_eq!(to_others, vec![(addr(1), map(v[1], MapMsg::Hi { game: 1, master: false, name: "Sam".into() })), (addr(3), map(v[1], MapMsg::Hi { game: 1, master: false, name: "Sam".into() }))]);
+        assert!(got.contains(&(addr(2), map([0; 4], MapMsg::Caps { proto: MAP_PROTO, max_bytes: MAX_MAP_BYTES }))), "the sender learns this relay shares maps");
+        // the first player really is the master
+        let got = w.send(addr(1), map([0; 4], MapMsg::Hi { game: 0, master: false, name: "Dana".into() }), 1);
+        assert!(got.contains(&(addr(2), map(v[0], MapMsg::Hi { game: 0, master: true, name: "Dana".into() }))));
+        // presence is passed on at most every couple of seconds per player
+        assert!(w.send(addr(2), map([0; 4], MapMsg::Hi { game: 1, master: false, name: "Sam".into() }), 2).is_empty());
+        assert!(!w.send(addr(2), map([0; 4], MapMsg::Hi { game: 1, master: false, name: "Sam".into() }), 3).is_empty());
+        // a client cannot speak as the server
+        assert!(w.send(addr(2), map([0; 4], MapMsg::Caps { proto: 9, max_bytes: 1 }), 9).is_empty());
+    }
+
+    #[test]
+    fn a_transfer_goes_offer_accept_chunks_acks_end_and_nothing_flows_before_the_receiver_agreed() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 3);
+        let size = 2000; // three chunks: 900, 900, 200
+        // the offer reaches only the player it is for, and says who sent it and whether they are the master
+        let got = w.send(addr(1), map(v[1], offer(5, size)), 1);
+        assert_eq!(got, vec![(addr(2), map(v[0], offer(5, size)))]);
+        let got = w.send(addr(2), map(v[0], offer(6, size)), 1); // B is not the master but says so (offer() claims it)
+        assert_eq!(got, vec![(addr(1), map(v[1], MapMsg::Offer { id: 6, game: 0, master: false, size, players: 2, hash: [6; 32], name: "Tournament Desert".into() }))], "a lie about being master is overwritten");
+        assert!(w.send(addr(1), map(v[1], MapMsg::Cancel { id: 6 }), 2).is_empty(), "A cannot cancel B's transfer");
+        assert_eq!(w.send(addr(2), map(v[0], MapMsg::Cancel { id: 6 }), 2).len(), 1);
+        // data before the accept is dropped
+        assert!(w.send(addr(1), map(v[1], chunk(5, 0, size)), 2).is_empty());
+        // an accept from the wrong player does nothing; the right one reaches the sender
+        assert!(w.send(addr(3), map(v[0], MapMsg::Accept { id: 5 }), 2).is_empty());
+        assert_eq!(w.send(addr(2), map(v[0], MapMsg::Accept { id: 5 }), 2), vec![(addr(1), map(v[1], MapMsg::Accept { id: 5 }))]);
+        assert!(w.send(addr(2), map(v[0], MapMsg::Accept { id: 5 }), 2).is_empty(), "a second accept is not passed on");
+        for seq in 0..3 {
+            assert_eq!(w.send(addr(1), map(v[1], chunk(5, seq, size)), 3), vec![(addr(2), map(v[0], chunk(5, seq, size)))]);
+        }
+        assert_eq!(w.send(addr(2), map(v[0], MapMsg::Ack { id: 5, next: 3 }), 3), vec![(addr(1), map(v[1], MapMsg::Ack { id: 5, next: 3 }))]);
+        assert!(w.send(addr(2), map(v[0], MapMsg::Ack { id: 5, next: 4 }), 3).is_empty(), "an ack past the last chunk");
+        // a player who is not in the transfer cannot feed it, end it, or cancel it
+        assert!(w.send(addr(3), map(v[1], chunk(5, 0, size)), 3).is_empty());
+        assert!(w.send(addr(3), map(v[0], MapMsg::End { id: 5, code: 0 }), 3).is_empty());
+        assert!(w.send(addr(3), map(v[1], MapMsg::Cancel { id: 5 }), 3).is_empty());
+        assert_eq!(w.send(addr(2), map(v[0], MapMsg::End { id: 5, code: map_end::DELIVERED }), 4), vec![(addr(1), map(v[1], MapMsg::End { id: 5, code: map_end::DELIVERED }))]);
+        // finished: nothing more passes, and the id is free again
+        assert!(w.send(addr(1), map(v[1], chunk(5, 0, size)), 4).is_empty());
+        assert!(w.send(addr(2), map(v[0], MapMsg::Accept { id: 5 }), 4).is_empty());
+        assert_eq!(w.send(addr(1), map(v[1], offer(5, size)), 5).len(), 1);
+    }
+
+    #[test]
+    fn chunks_must_be_the_size_the_offer_promised() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 2);
+        w.send(addr(1), map(v[1], offer(1, 2000)), 1);
+        w.send(addr(2), map(v[0], MapMsg::Accept { id: 1 }), 1);
+        let d = |seq: u32, n: usize| map(v[1], MapMsg::Data { id: 1, seq, bytes: vec![0; n] });
+        assert!(w.send(addr(1), d(3, 200), 2).is_empty(), "past the last chunk");
+        assert!(w.send(addr(1), d(0, 899), 2).is_empty(), "short");
+        assert!(w.send(addr(1), d(2, 900), 2).is_empty(), "the last chunk is 200 bytes");
+        assert!(w.send(addr(1), d(0, generals_proto::MAP_CHUNK + 1), 2).is_empty(), "longer than a chunk");
+        assert!(w.send(addr(1), d(u32::MAX, 900), 2).is_empty());
+        assert_eq!(w.send(addr(1), d(2, 200), 2).len(), 1);
+        // a sender cannot make the relay carry far more than the map: repeats are allowed only up to a small allowance
+        let sent = (0..400).filter(|i| !w.send(addr(1), d(0, 900), 10 + i / 300).is_empty()).count();
+        assert!(sent > 50 && sent < 100, "{sent}");
+    }
+
+    #[test]
+    fn offers_that_are_too_big_or_for_nobody_are_refused_and_never_stored() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 2);
+        // over the cap: the packet does not even decode, so nobody hears anything
+        assert!(w.send(addr(1), map(v[1], offer(1, MAX_MAP_BYTES + 1)), 1).is_empty());
+        assert!(w.send(addr(1), map(v[1], offer(1, 0)), 1).is_empty());
+        // an address nobody has: the sender is told no, in the voice of that address
+        assert_eq!(w.send(addr(1), map([10, 77, 0, 77], offer(2, 1000)), 1), vec![(addr(1), map([10, 77, 0, 77], MapMsg::End { id: 2, code: map_end::REFUSED }))]);
+        // yourself
+        assert_eq!(w.send(addr(1), map(v[0], offer(3, 1000)), 1), vec![(addr(1), map(v[0], MapMsg::End { id: 3, code: map_end::REFUSED }))]);
+        // the biggest allowed one
+        assert_eq!(w.send(addr(1), map(v[1], offer(4, MAX_MAP_BYTES)), 1).len(), 1);
+    }
+
+    #[test]
+    fn rooms_are_isolated_even_when_their_virtual_addresses_are_the_same() {
+        let mut w = map_world(SERIALS);
+        let a = room_of(&mut w, "one", 2); // addresses 1, 2: vips .1 .2
+        let b: Vec<Vip> = [("DDD", 11u16), ("EEE", 12)].iter().map(|(s, p)| w.quick(addr(*p), s, "two", 0)).collect();
+        assert_eq!(a, b, "both rooms hand out .1 and .2");
+        // A (room one) offers to .2: only room one's player hears it
+        assert_eq!(w.recipients(addr(1), map(a[1], offer(1, 1000)), 1), vec![addr(2)]);
+        // room two's player at .2 cannot accept it, nor feed or end it
+        assert!(w.send(addr(12), map(a[0], MapMsg::Accept { id: 1 }), 2).is_empty());
+        assert!(w.send(addr(12), map(a[0], MapMsg::End { id: 1, code: 0 }), 2).is_empty());
+        w.send(addr(2), map(a[0], MapMsg::Accept { id: 1 }), 2);
+        assert!(w.send(addr(11), map(a[1], chunk(1, 0, 1000)), 3).is_empty(), "room two's .1 is not the sender");
+        assert_eq!(w.recipients(addr(1), map(a[1], chunk(1, 0, 1000)), 3), vec![addr(2)]);
+        // presence stays in the room
+        assert_eq!(w.recipients(addr(11), map([0; 4], MapMsg::Hi { game: 0, master: false, name: "x".into() }), 3).into_iter().filter(|a| *a != addr(11)).collect::<Vec<_>>(), vec![addr(12)]);
+    }
+
+    #[test]
+    fn the_number_of_open_transfers_is_capped_per_pair_sender_and_receiver() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 6);
+        // one open transfer per pair
+        assert_eq!(w.send(addr(1), map(v[1], offer(1, 1000)), 1).len(), 1);
+        assert_eq!(w.send(addr(1), map(v[1], offer(2, 1000)), 1), vec![(addr(1), map(v[1], MapMsg::End { id: 2, code: map_end::REFUSED }))]);
+        // four open from one sender, the fifth is refused
+        for (i, to) in [2usize, 3, 4].iter().enumerate() {
+            assert_eq!(w.send(addr(1), map(v[*to], offer(10 + i as u32, 1000)), 2).len(), 1);
+        }
+        assert_eq!(w.send(addr(1), map(v[5], offer(20, 1000)), 3)[0].1, map(v[5], MapMsg::End { id: 20, code: map_end::REFUSED }));
+        // four open at one receiver
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 6);
+        for i in 1..5 {
+            assert_eq!(w.send(addr(1 + i as u16), map(v[0], offer(1, 1000)), 1 + i as u64).len(), 1);
+        }
+        assert_eq!(w.send(addr(6), map(v[0], offer(1, 1000)), 9)[0].0, addr(6), "the fifth sender is told no");
+    }
+
+    #[test]
+    fn offers_are_budgeted_per_player_and_per_room_per_hour() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 5);
+        let per = (MAP_BYTES_PER_HOUR_PLAYER / MAX_MAP_BYTES as u64) as usize;
+        let mut now = 1;
+        let offer_and_decline = |w: &mut World, from: u16, id: u32, now: &mut u64| {
+            *now += 1;
+            let got = w.send(addr(from), map(v[4], offer(id, MAX_MAP_BYTES)), *now);
+            let passed = got.iter().any(|(a, _)| *a == addr(5));
+            if passed {
+                w.send(addr(5), map(v[from as usize - 1], MapMsg::End { id, code: map_end::DECLINED }), *now);
+            }
+            passed
+        };
+        for i in 0..per {
+            assert!(offer_and_decline(&mut w, 1, i as u32, &mut now), "offer {i}");
+        }
+        assert!(!offer_and_decline(&mut w, 1, 99, &mut now), "this player used their hour");
+        // others still have theirs, until the room's budget is gone
+        // others still have theirs, until the room's budget is gone
+        let players_in_room_budget = (MAP_BYTES_PER_HOUR_ROOM / MAP_BYTES_PER_HOUR_PLAYER) as u16; // 3, the first of them used up already
+        for p in 2..=players_in_room_budget {
+            for i in 0..per {
+                assert!(offer_and_decline(&mut w, p, i as u32, &mut now), "player {p} offer {i}");
+            }
+        }
+        assert!(!offer_and_decline(&mut w, players_in_room_budget + 1, 1, &mut now), "the room's budget is used up");
+        // an hour later the budgets are fresh
+        now += 3700;
+        for p in 1..=5 {
+            w.send(addr(p), Packet::Ping, now); // keep the sessions alive in the test's clock
+        }
+        w.s.expire(now);
+        assert!(offer_and_decline(&mut w, 1, 200, &mut now));
+    }
+
+    #[test]
+    fn a_transfer_ends_when_it_goes_quiet_or_a_player_leaves() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 3);
+        w.send(addr(1), map(v[1], offer(1, 1000)), 1);
+        w.send(addr(2), map(v[0], MapMsg::Accept { id: 1 }), 1);
+        assert_eq!(w.send(addr(1), map(v[1], chunk(1, 0, 1000)), 5).len(), 1);
+        w.send(addr(1), Packet::Ping, 34); // sessions stay up, the transfer was silent for 30 s
+        w.send(addr(2), Packet::Ping, 34);
+        w.send(addr(3), Packet::Ping, 34);
+        w.s.expire(36);
+        assert!(w.send(addr(1), map(v[1], chunk(1, 0, 1000)), 36).is_empty(), "idle transfers are forgotten");
+        // an unanswered offer is kept for a person to answer, but not for ever
+        w.send(addr(1), map(v[1], offer(2, 1000)), 40);
+        for a in 1..=3 {
+            w.send(addr(a), Packet::Ping, 100);
+        }
+        w.s.expire(100);
+        assert!(!w.send(addr(2), map(v[0], MapMsg::Accept { id: 2 }), 101).is_empty(), "still waiting after a minute");
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 3);
+        w.send(addr(1), map(v[1], offer(2, 1000)), 1);
+        for a in 1..=3 {
+            w.send(addr(a), Packet::Ping, 200);
+        }
+        w.s.expire(200);
+        assert!(w.send(addr(2), map(v[0], MapMsg::Accept { id: 2 }), 200).is_empty(), "an offer nobody answered for three minutes is gone");
+        // the receiver leaves: the sender's data stops, and the transfer is gone for good
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 3);
+        w.send(addr(1), map(v[1], offer(1, 1000)), 1);
+        w.send(addr(2), map(v[0], MapMsg::Accept { id: 1 }), 1);
+        w.send(addr(2), Packet::Leave, 2);
+        assert!(w.send(addr(1), map(v[1], chunk(1, 0, 1000)), 3).is_empty());
+        // someone else takes the same virtual address: they do not inherit the transfer
+        let v2 = w.quick(addr(9), "HHH", "r", 4);
+        assert_eq!(v2, v[1], "the freed address is handed out again");
+        assert!(w.send(addr(9), map(v[0], MapMsg::Accept { id: 1 }), 5).is_empty());
+        assert!(w.send(addr(1), map(v[1], chunk(1, 0, 1000)), 5).is_empty());
+    }
+
+    #[test]
+    fn the_whole_relay_has_a_map_byte_budget_per_second() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 2);
+        w.send(addr(1), map(v[1], offer(1, 4000)), 1);
+        w.send(addr(2), map(v[0], MapMsg::Accept { id: 1 }), 1);
+        w.s.map_bucket = (10, 1000); // nearly empty: one chunk's worth
+        assert_eq!(w.send(addr(1), map(v[1], chunk(1, 0, 4000)), 10).len(), 1);
+        assert!(w.send(addr(1), map(v[1], chunk(1, 1, 4000)), 10).is_empty(), "dropped: the sender repeats it later");
+        assert_eq!(w.send(addr(1), map(v[1], chunk(1, 1, 4000)), 11).len(), 1, "the bucket refills each second");
+    }
+
+    #[test]
+    fn map_messages_are_rate_capped_per_session_and_a_flood_does_not_hurt_the_game() {
+        let mut w = map_world(SERIALS);
+        let v = room_of(&mut w, "r", 2);
+        w.send(addr(1), map(v[1], offer(1, MAX_MAP_BYTES)), 1);
+        w.send(addr(2), map(v[0], MapMsg::Accept { id: 1 }), 1);
+        // control messages are capped per second: after MAP_CTL_PER_SEC the rest of that second is ignored
+        for i in 0..MAP_CTL_PER_SEC + 20 {
+            w.send(addr(1), map(v[1], MapMsg::Cancel { id: 1000 + i }), 5);
+        }
+        assert_eq!(w.s.sessions[&addr(1)].map_ctl, MAP_CTL_PER_SEC);
+        let v3 = w.quick(addr(3), "DDD", "r", 5);
+        assert!(w.send(addr(1), map(v3, offer(50, 1000)), 5).is_empty(), "over the cap this second");
+        assert_eq!(w.send(addr(1), map(v3, offer(50, 1000)), 6).len(), 1, "fine the next second");
+        // data has its own allowance, and the session's packet counters apply on top
+        let sent = (0..MAP_DATA_PER_SEC + 50).filter(|_| !w.send(addr(1), map(v[1], chunk(1, 0, MAX_MAP_BYTES)), 7).is_empty()).count();
+        assert!(sent as u32 <= MAP_DATA_PER_SEC && sent > 100, "{sent}");
+        // the game's own traffic is unaffected by the map flood (the room has two other players)
+        assert_eq!(w.send(addr(1), bcast(1), 7).len(), 2);
+        // anything the relay does not understand about maps stays silent
+        assert!(w.send(addr(1), map(v[1], MapMsg::Ack { id: 777, next: 1 }), 8).is_empty());
     }
 }
