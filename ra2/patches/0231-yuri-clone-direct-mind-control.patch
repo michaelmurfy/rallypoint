@@ -1,0 +1,258 @@
+diff --git a/engine/input.hpp b/engine/input.hpp
+index 670ca68..d575e5c 100644
+--- a/engine/input.hpp
++++ b/engine/input.hpp
+@@ -437,8 +437,13 @@ public:
+ 
+ private:
+     // G-05: the order half of a click (the legacy right-click body): rally,
+-    // attack (is_enemy), harvest/dock, enter, spy, engineer, move.
++    // attack (is_enemy, or a mind-control victim), harvest/dock, enter, spy,
++    // engineer, move.
+     void issue_order(int px, int py);
++    // Yuri mind control: a selected controller (primary warhead MindControl=)
++    // treats a capturable unit as an attack target without the force-fire key.
++    bool selection_has_controller() const;
++    bool mind_control_victim(int unit_idx) const;
+     void handle_original(const InputEvent& ev);   // Scheme::Original dispatch
+     void left_click_original(int px, int py, bool shift, uint32_t t_ms);
+     // Shared classifier behind action_at (selection/order decision).
+diff --git a/engine/input.cpp b/engine/input.cpp
+index b3c2113..0fe6267 100644
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -502,7 +502,8 @@ void Input::commit_double(int px, int py) {
+ 
+ // G-05: the order half of a click -- formerly the Legacy right-click body,
+ // now shared by Legacy right-down and Original left-up. G-06: the attack
+-// gates use World::is_enemy(0, house) (allies/neutrals are not attack targets).
++// gates use World::is_enemy(0, house) (allies/neutrals are not attack targets,
++// except a mind-control victim for a selected controller).
+ void Input::issue_order(int px, int py) {
+     // NET L1: each branch queues ONE command (MEGAMISSION / ARCHIVE) whose
+     // Whom is the selection; the World mutation happens at its apply. W4-SQ:
+@@ -556,7 +557,8 @@ void Input::issue_order(int px, int py) {
+     // unit is NOT an attack order and falls through to the
+     // ground-move branch below (RA2 behavior: there is no
+     // "attack own unit" order, so it's treated like clicking the
+-    // ground under that unit).
++    // ground under that unit). A mind-control victim IS an attack
++    // order when a controller is selected (no force-fire needed).
+     const int idx = unit_under(ev.x, ev.y);
+     // Attack requires BOTH a hostile under the cursor AND a live
+     // selection (spec gate); otherwise fall through to a ground move
+@@ -565,7 +567,11 @@ void Input::issue_order(int px, int py) {
+     for (int si : sel)
+         if (si < static_cast<int>(world_.units().size()) && world_.units()[si].alive &&
+             world_.units()[si].die_time < 0.0) { any_selected = true; break; }
+-    if (idx >= 0 && world_.is_enemy(world_.order_issuer(), world_.units()[idx].house) && any_selected) {
++    // Yuri mind control: a selected controller's victim is an attack target
++    // without the force-fire key (civilians/neutrals are never is_enemy).
++    if (idx >= 0 && any_selected &&
++        (world_.is_enemy(world_.order_issuer(), world_.units()[idx].house) ||
++         (mind_control_victim(idx) && selection_has_controller()))) {
+         // Capture actor BEFORE the order mutates any state.
+         const int actor = lowest_selected();
+         emit(make_mega(world_, sel, Mission::Attack, Target::unit(world_, idx), Target{}));
+diff --git a/engine/input_original.cpp b/engine/input_original.cpp
+index 8734119..b861f51 100644
+--- a/engine/input_original.cpp
++++ b/engine/input_original.cpp
+@@ -89,6 +89,45 @@ bool Input::any_own_selected() const {
+     return false;
+ }
+ 
++// Yuri mind control (Yuri Clone, Yuri Prime, ...): the primary warhead's
++// MindControl= arms a CaptureManager (UnitTypeW7::mind_control), and the sim
++// captures any live non-own non-aircraft unit that is not immune, curtained
++// or already controlled. is_enemy() is false for the neutral house, so
++// civilian cars etc. never pass the hostile branch -- without this the player
++// must hold the force-fire key to order a capture. Mirrors World::mc_capture's
++// refusals (units the player commands, aircraft, boarded/carried, the sim's
++// ImmuneToPsionics / Iron Curtain / already-controlled gates) plus the
++// CannotControlAnyMore capacity rule (a full Max>1 controller takes no more;
++// Max==1 swaps its victim, so it may always be ordered).
++bool Input::mind_control_victim(int vi) const {
++    const auto& us = world_.units();
++    if (vi < 0 || vi >= static_cast<int>(us.size())) return false;
++    const Unit& v = us[vi];
++    if (!v.alive || v.die_time >= 0.0 || v.cargo_of >= 0 || v.garrison_of >= 0) return false;
++    if (v.is_aircraft) return false;
++    if (world_.controllable(v.house)) return false;
++    if (!world_.psionic_target_ok(vi)) return false;
++    if (v.an.iron_left_frames > 0) return false;
++    if (v.w7.mc_controller >= 0) return false;
++    return true;
++}
++
++bool Input::selection_has_controller() const {
++    const auto& us = world_.units();
++    for (int si : sel_.ids()) {
++        if (si < 0 || si >= static_cast<int>(us.size())) continue;
++        const Unit& su = us[si];
++        if (!world_.controllable(su.house) || !su.alive || su.die_time >= 0.0 || su.cargo_of >= 0)
++            continue;
++        if (!su.w7.t.mind_control) continue;
++        const int cap = std::max(1, su.w7.t.mc_capacity);
++        if (!su.w7.t.mc_infinite && static_cast<int>(su.w7.mc_victims.size()) >= cap && cap != 1)
++            continue;
++        return true;
++    }
++    return false;
++}
++
+ bool Input::selected_building_valid() const {
+     const auto& b = world_.buildings();
+     return selected_building_ >= 0 && selected_building_ < static_cast<int>(b.size()) &&
+@@ -313,6 +352,11 @@ Input::Action Input::classify(int px, int py, bool shift, bool ctrl, bool alt) c
+             }
+             return Action::Attack;
+         }
++        // Yuri mind control: a selected controller's victim is an attack
++        // target without the force-fire key. is_enemy() is false for the
++        // neutral house, so civilian cars etc. never reach the branch above.
++        if (!sel_.has(idx) && mind_control_victim(idx) && selection_has_controller())
++            return Action::Attack;
+         // An ally / neutral unit: the click resolves to its ground cell.
+     }
+     bool harv = false;
+diff --git a/tests/test_input.cpp b/tests/test_input.cpp
+index e9d6220..ae76d72 100644
+--- a/tests/test_input.cpp
++++ b/tests/test_input.cpp
+@@ -237,6 +237,135 @@ TEST_CASE("Input: Ctrl over ground with a selected unit classifies force-fire")
+     CHECK(input.action_at(px, py) == Input::Action::Attack);
+ }
+ 
++// Yuri mind control: a selected controller (primary warhead MindControl=)
++// treats a capturable neutral as an attack target WITHOUT the force-fire key
++// (civilians are never is_enemy, so the hostile branch never fires for them).
++TEST_CASE("Input: Yuri Clone targets a neutral car without force-fire") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    World::HouseRec neutral;
++    neutral.combatant = false;   // civilian traffic: never an enemy of anyone
++    world.set_house(2, neutral);
++
++    ra2engine::UnitCombat yuri = gi_combat();
++    yuri.image = "YURI";
++    yuri.w7.mind_control = true;
++    yuri.w7.mc_capacity = 1;
++    world.add_combat_unit(10, 10, 0, yuri);        // 0: controller
++    ra2engine::UnitCombat car = gi_combat();
++    car.image = "CIVC";
++    car.is_vehicle = true;
++    world.add_combat_unit(14, 10, 2, car);         // 1: neutral car
++    world.add_combat_unit(10, 14, 0, gi_combat());  // 2: plain GI
++    REQUIRE(world.units().size() == 3);
++
++    Camera cam;
++    Input input(world, cam, 1280, 720);
++    int yx, yy, cx, cy, gx, gy;
++    ground_px_for_unit(world.units()[0], yx, yy);
++    ground_px_for_unit(world.units()[1], cx, cy);
++    ground_px_for_unit(world.units()[2], gx, gy);
++
++    // The controller sees the Attack cursor on the neutral, with no key held...
++    input.selection().set(0);
++    CHECK(input.action_at(cx, cy) == Input::Action::Attack);
++
++    // ... and a plain left-click orders the capture (no force-fire).
++    left_click(input, cx, cy, false, 1000);
++    CHECK(input.take_actions().attack_ordered);
++    CHECK(world.units()[0].target == 1);
++
++    // A GI selected instead gets no privileged cursor on the neutral.
++    input.selection().clear();
++    input.selection().set(2);
++    CHECK(input.action_at(cx, cy) != Input::Action::Attack);
++
++    // Own units and psi-immune targets are never victims.
++    input.selection().clear();
++    input.selection().set(0);
++    CHECK(input.action_at(yx, yy) == Input::Action::Select);
++    world.units()[1].tg.t.immune_psionics = true;
++    CHECK(input.action_at(cx, cy) != Input::Action::Attack);
++    world.units()[1].tg.t.immune_psionics = false;
++    CHECK(input.action_at(cx, cy) == Input::Action::Attack);
++}
++
++TEST_CASE("Input: a full Max>1 controller shows no Attack cursor; Max==1 may swap") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    World::HouseRec neutral;
++    neutral.combatant = false;
++    world.set_house(2, neutral);
++
++    ra2engine::UnitCombat yuri = gi_combat();
++    yuri.image = "YURI";
++    yuri.w7.mind_control = true;
++    yuri.w7.mc_capacity = 2;
++    world.add_combat_unit(10, 10, 0, yuri);        // 0: controller
++    ra2engine::UnitCombat car = gi_combat();
++    car.image = "CIVC";
++    car.is_vehicle = true;
++    world.add_combat_unit(14, 10, 2, car);         // 1: neutral car
++    world.add_combat_unit(20, 10, 1, gi_combat());  // 2: enemy GI
++    world.add_combat_unit(22, 10, 1, gi_combat());  // 3: enemy GI
++    REQUIRE(world.units().size() == 4);
++
++    Camera cam;
++    Input input(world, cam, 1280, 720);
++    int cx, cy;
++    ground_px_for_unit(world.units()[1], cx, cy);
++    input.selection().set(0);
++
++    // Two victims at capacity 2: full, so no cursor...
++    world.units()[0].w7.mc_victims.push_back(2);
++    world.units()[0].w7.mc_victims.push_back(3);
++    CHECK(input.action_at(cx, cy) != Input::Action::Attack);
++    // ... one fewer: room again...
++    world.units()[0].w7.mc_victims.pop_back();
++    CHECK(input.action_at(cx, cy) == Input::Action::Attack);
++    // ... and a full Max==1 controller may always swap.
++    world.units()[0].w7.t.mc_capacity = 1;
++    CHECK(input.action_at(cx, cy) == Input::Action::Attack);
++}
++
++TEST_CASE("Input Legacy: right-click orders a mind-control capture without force-fire") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    World::HouseRec neutral;
++    neutral.combatant = false;
++    world.set_house(2, neutral);
++
++    ra2engine::UnitCombat yuri = gi_combat();
++    yuri.image = "YURI";
++    yuri.w7.mind_control = true;
++    yuri.w7.mc_capacity = 1;
++    world.add_combat_unit(10, 10, 0, yuri);        // 0: controller
++    ra2engine::UnitCombat car = gi_combat();
++    car.image = "CIVC";
++    car.is_vehicle = true;
++    world.add_combat_unit(14, 10, 2, car);         // 1: neutral car
++    world.add_combat_unit(10, 14, 0, gi_combat());  // 2: plain GI
++    REQUIRE(world.units().size() == 3);
++
++    Camera cam;
++    Input input(world, cam, 1280, 720);
++    input.set_scheme(Input::Scheme::Legacy);
++    int cx, cy;
++    ground_px_for_unit(world.units()[1], cx, cy);
++
++    input.selection().set(0);
++    right_click(input, cx, cy, 1000);
++    CHECK(input.take_actions().attack_ordered);
++    CHECK(world.units()[0].target == 1);
++
++    // ... while a GI's right-click on the neutral is a move, not an attack.
++    input.selection().clear();
++    input.selection().set(2);
++    right_click(input, cx, cy, 2000);
++    CHECK_FALSE(input.take_actions().attack_ordered);
++    CHECK(world.units()[0].target == 1);   // the capture order stands
++}
++
+ TEST_CASE("Input: a parachuting unit is selectable and can deploy") {
+     const MapFile map = MapFile::blank(40, 40);
+     World world(map);
