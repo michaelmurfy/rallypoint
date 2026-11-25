@@ -155,7 +155,10 @@ pub fn installer_for(os: &str, arch: &str, assets: &[Asset]) -> Option<Asset> {
         ("macos", "aarch64") => pick(&|n| n.ends_with(".dmg") && (n.contains("aarch64") || n.contains("arm64"))),
         ("macos", "x86_64") => pick(&|n| n.ends_with(".dmg") && (n.contains("x64") || n.contains("x86_64"))),
         ("windows", _) => pick(&|n| n.ends_with("-setup.exe")),
-        ("linux", "x86_64") => pick(&|n| n.ends_with(".appimage") && (n.contains("amd64") || n.contains("x86_64"))),
+        // Linux ships an AppImage and the plain tarball (the deb's /usr tree). The tarball is what a CachyOS or Arch
+        // install in ~/.local can update itself from; the AppImage is the other option.
+        ("linux", "x86_64") => pick(&|n| n.ends_with(".appimage") && (n.contains("amd64") || n.contains("x86_64")))
+            .or_else(|| pick(&|n| n.starts_with("rallypoint-") && !n.starts_with("rallypoint-server-") && n.ends_with("-linux-x86_64.tar.gz"))),
         _ => None,
     }
 }
@@ -325,9 +328,19 @@ fn download_with(info: &UpdateInfo, dest_dir: &Path, public_hex: &str, proto: &s
 }
 
 /// `x.y.z` of an installer file as our releases name them (`Rallypoint_0.4.5_x64-setup.exe`, `Rallypoint_0.4.5_aarch64.dmg`,
-/// `Rallypoint-0.4.5-1.x86_64.rpm`, and a `.part` of any of them); `None` for any other file.
+/// `Rallypoint-0.4.5-1.x86_64.rpm`, the Linux tarball `rallypoint-0.4.5-linux-x86_64.tar.gz`, and a `.part` of any of
+/// them); `None` for any other file. The relay server's own tarball is not ours.
 pub fn installer_version(name: &str) -> Option<[u64; 3]> {
     let n = name.strip_suffix(".part").unwrap_or(name);
+    // the plain Linux tarball, which is the deb's /usr tree: rallypoint-1.0.0-beta.1-linux-x86_64.tar.gz
+    if n.starts_with("rallypoint-") {
+        if n.starts_with("rallypoint-server-") || !n.ends_with("-linux-x86_64.tar.gz") {
+            return None;
+        }
+        let rest = n.strip_prefix("rallypoint-")?;
+        let core: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        return parse_version(&core).map(|v| v.core);
+    }
     let rest = n.strip_prefix("Rallypoint")?.strip_prefix(['_', '-'])?;
     if !["-setup.exe", ".dmg", ".AppImage", ".deb", ".rpm"].iter().any(|e| n.ends_with(e)) {
         return None;
@@ -384,9 +397,19 @@ pub fn open_installer(file: &Downloaded) -> Result<String, String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        // a tarball is not something to run: it goes over the install's prefix, which needs root for a system install
+        let archive = path.to_string_lossy().ends_with(".tar.gz");
+        if !archive {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        }
         if let Some(dir) = path.parent() {
             let _ = Command::new("xdg-open").arg(dir).spawn();
+        }
+        if archive {
+            return Ok(format!(
+                "Saved {}. This is a tar archive, not a program to run: install your distribution's new package (the .deb or the .rpm), or unpack the archive over your prefix with scripts/install-arch.sh.",
+                path.display()
+            ));
         }
         Ok(format!("Saved {}. Quit Rallypoint and run the new file.", path.display()))
     }
@@ -432,8 +455,21 @@ mod tests {
     }
 
     #[test]
-    fn linux_packages_are_announced_with_the_release_page_but_not_installed_in_app() {
-        let names = ["Rallypoint_0.2.0_amd64.deb", "Rallypoint-0.2.0-1.x86_64.rpm", "rallypoint-0.2.0-linux-x86_64.tar.gz", "rallypoint-server-0.2.0-linux-x86_64.tar.gz", "SHA256SUMS", "SHA256SUMS.sig"];
+    fn the_linux_client_tarball_is_picked_but_not_the_server_one() {
+        let names = ["rallypoint-0.2.0-linux-x86_64.tar.gz", "rallypoint-server-0.2.0-linux-x86_64.tar.gz", "SHA256SUMS", "SHA256SUMS.sig"];
+        let a: Vec<Asset> = names.iter().map(|n| asset(n)).collect();
+        assert_eq!(installer_for("linux", "x86_64", &a).unwrap().name, "rallypoint-0.2.0-linux-x86_64.tar.gz");
+        // only the server's tarball: nothing of ours to install
+        let server: Vec<Asset> = names.iter().filter(|n| n.starts_with("rallypoint-server-")).map(|n| asset(n)).collect();
+        assert!(installer_for("linux", "x86_64", &server).is_none());
+        // an AppImage is preferred when the release has one
+        let both: Vec<Asset> = ["Rallypoint_0.2.0_amd64.AppImage", "rallypoint-0.2.0-linux-x86_64.tar.gz"].iter().map(|n| asset(n)).collect();
+        assert_eq!(installer_for("linux", "x86_64", &both).unwrap().name, "Rallypoint_0.2.0_amd64.AppImage");
+    }
+
+    #[test]
+    fn linux_system_packages_are_announced_with_the_release_page_but_not_installed_in_app() {
+        let names = ["Rallypoint_0.2.0_amd64.deb", "Rallypoint-0.2.0-1.x86_64.rpm", "rallypoint-server-0.2.0-linux-x86_64.tar.gz", "SHA256SUMS", "SHA256SUMS.sig"];
         let r = Release { tag_name: "v0.2.0".into(), html_url: format!("https://github.com/{REPO}/releases/tag/v0.2.0"), body: None, draft: false, prerelease: false, assets: names.iter().map(|n| asset(n)).collect() };
         assert!(installer_for("linux", "x86_64", &r.assets).is_none());
         let u = newer("0.1.0", &[r], "linux", "x86_64", false).expect("the update is still offered");
@@ -628,10 +664,10 @@ mod tests {
 
     #[test]
     fn installer_names_are_recognised_by_version() {
-        for (name, v) in [("Rallypoint_0.4.5_x64-setup.exe", [0, 4, 5]), ("Rallypoint_0.4.5_aarch64.dmg", [0, 4, 5]), ("Rallypoint_0.1.0_amd64.AppImage", [0, 1, 0]), ("Rallypoint-0.4.2-1.x86_64.rpm", [0, 4, 2]), ("Rallypoint_0.4.5_x64-setup.exe.part", [0, 4, 5]), ("Rallypoint_0.4.5_amd64.deb", [0, 4, 5])] {
+        for (name, v) in [("Rallypoint_0.4.5_x64-setup.exe", [0, 4, 5]), ("Rallypoint_0.4.5_aarch64.dmg", [0, 4, 5]), ("Rallypoint_0.1.0_amd64.AppImage", [0, 1, 0]), ("Rallypoint-0.4.2-1.x86_64.rpm", [0, 4, 2]), ("Rallypoint_0.4.5_x64-setup.exe.part", [0, 4, 5]), ("Rallypoint_0.4.5_amd64.deb", [0, 4, 5]), ("rallypoint-0.4.5-linux-x86_64.tar.gz", [0, 4, 5]), ("rallypoint-1.0.0-beta.1-linux-x86_64.tar.gz", [1, 0, 0]), ("rallypoint-0.4.5-linux-x86_64.tar.gz.part", [0, 4, 5])] {
             assert_eq!(installer_version(name), Some(v), "{name}");
         }
-        for other in ["Rallypoint.dmg", "Rallypoint_notes.txt", "Shockwave_1.0_x64-setup.exe", "rallypoint-server-0.4.5-linux-x86_64.tar.gz", "Rallypoint_0.4.5_x64.zip", "report.exe"] {
+        for other in ["Rallypoint.dmg", "Rallypoint_notes.txt", "Shockwave_1.0_x64-setup.exe", "rallypoint-server-0.4.5-linux-x86_64.tar.gz", "rallypoint-server-1.0.0-beta.1-linux-x86_64.tar.gz", "Rallypoint_0.4.5_x64.zip", "report.exe", "rallypoint-linux-x86_64.tar.gz"] {
             assert_eq!(installer_version(other), None, "{other}");
         }
     }

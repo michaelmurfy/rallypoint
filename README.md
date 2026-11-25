@@ -40,7 +40,20 @@ sudo apt install ./Rallypoint_<version>_amd64.deb
 sudo dnf install ./Rallypoint-*.x86_64.rpm
 ```
 
-**CachyOS and other Arch-based systems:** use the `.tar.gz`. It installs into your home folder, so no root is needed beyond the libraries.
+**CachyOS and other Arch-based systems:** install the libraries and Rallypoint in one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaelmurfy/rallypoint/main/scripts/install-arch.sh | sh
+```
+
+It installs the libraries with pacman and puts Rallypoint in `~/.local`, so no root is needed for the program itself. The script is `scripts/install-arch.sh` in the repository. It also installs a tarball you already downloaded, and removes the install again:
+
+```bash
+sh scripts/install-arch.sh path/to/rallypoint-<version>-linux-x86_64.tar.gz
+sh scripts/install-arch.sh --uninstall
+```
+
+To do it yourself instead:
 
 ```bash
 sudo pacman -S --needed webkit2gtk-4.1 gtk3 libx11 freetype2 vulkan-icd-loader alsa-lib
@@ -51,9 +64,11 @@ tar xzf rallypoint-<version>-linux-x86_64.tar.gz --strip-components=1 -C ~/.loca
 
 Add `vulkan-radeon` (AMD), `vulkan-intel` or `nvidia-utils` for your GPU if it isn't installed yet. After the first run Rallypoint is in your application menu.
 
+The menu entry inside the tarball starts the launcher by name, so it only works when `~/.local/bin` is on your PATH. The installer script rewrites that line to the full path, so the menu entry always works.
+
 The `.tar.gz` works on any other distribution too: install the same libraries under their names there. To remove it, delete `~/.local/bin/generals-launcher`, `~/.local/lib/Rallypoint`, `~/.local/share/applications/Rallypoint.desktop` and the Rallypoint icons under `~/.local/share/icons`.
 
-**Updates on Linux:** Rallypoint tells you when a new release is out and has a **Download page** button. It doesn't install updates itself (the other systems do). Install the new package the same way as the first one.
+**Updates on Linux:** a CachyOS or Arch install in `~/.local` updates itself and restarts from inside the app. A `.deb` or `.rpm` system install cannot, because those folders need root, so it offers a **Download page** button and you install the new package the same way as the first one.
 
 ## What works
 

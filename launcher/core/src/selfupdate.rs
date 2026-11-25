@@ -1,6 +1,7 @@
 //! Applying a downloaded update without the user doing anything: stage the new version, start a small detached
 //! helper that waits for this process to exit, swaps the new version in and starts it again. A marker file lets
 //! the new version show a "What's new" screen on its first start.
+#[cfg(any(target_os = "macos", test))]
 use crate::proc::quiet;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -78,10 +79,110 @@ pub fn win_script(pid: u32, setup: &Path, exe: &Path, log: &Path) -> String {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".rallypoint-write-test-{}", std::process::id()));
     std::fs::write(&probe, b"").map(|_| std::fs::remove_file(&probe)).is_ok()
+}
+
+/// The prefix a Linux install lives in: the launcher is at `<prefix>/bin/generals-launcher`, so the prefix is the
+/// folder above `bin` (`~/.local` for the CachyOS and Arch install, `/usr` for a `.deb` or `.rpm`).
+pub fn linux_prefix(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let prefix = bin.parent()?;
+    if prefix.as_os_str().is_empty() {
+        return None;
+    }
+    Some(prefix.to_path_buf())
+}
+
+/// Unpack the update into `work` and return the folder that holds `bin/`, `lib/` and `share/`.
+///
+/// The Linux tarball is the `.deb`'s `/usr` tree, and `scripts/package-linux.sh` packs it as
+/// `rallypoint-<version>/{bin,lib,share}`, so the folder with the launcher in it is the archive's top folder. A
+/// tarball that keeps the `usr` folder is found as well. An archive with a link or a path that escapes its folder is
+/// refused before anything is written.
+#[cfg(unix)]
+pub fn stage_linux(tarball: &Path, work: &Path) -> Result<PathBuf, String> {
+    if let Some(link) = crate::extract::find_link(tarball)? {
+        return Err(format!("the update contains a symbolic link ({link}), so it won't be installed"));
+    }
+    let stage = work.join("stage");
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    // the same unpacker the mods use: it refuses unsafe paths and links, and checks the finished tree
+    crate::extract::extract(tarball, &stage)?;
+    let mut found = None;
+    for e in std::fs::read_dir(&stage).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let dir = e.path();
+        for cand in [dir.join("usr"), dir] {
+            if cand.join("bin").join("generals-launcher").is_file() {
+                found = Some(cand);
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    found.ok_or_else(|| "the update has no launcher in it".to_string())
+}
+
+/// The script that swaps a Linux install over: it waits for the launcher to quit, puts the new files in place (the
+/// old ones aside, so a failure puts them back), and starts the new launcher.
+pub fn linux_script(pid: u32, staged_root: &Path, prefix: &Path, exe: &Path, log: &Path) -> String {
+    let q = |p: &Path| sh_quote(&p.to_string_lossy());
+    let launcher = format!("{}/bin/generals-launcher", prefix.to_string_lossy().trim_end_matches('/'));
+    // the path goes into a sed expression, where \ & and the delimiter mean something
+    let sed_exec = launcher.replace('\\', "\\\\").replace('&', "\\&").replace('|', "\\|");
+    format!(
+        "#!/bin/sh\n\
+         # Written by Rallypoint: wait for the app to quit, swap the new version in, start it again.\n\
+         LOG={log}\nSTAGED={staged}\nPREFIX={prefix}\nEXE={exe}\nSEDEXEC={sedexec}\n\
+         note() {{ printf '%s\\n' \"$1\" >>\"$LOG\" 2>/dev/null; }}\n\
+         fail() {{\n\
+         \x20 note \"failed: $1\"\n\
+         \x20 rm -rf \"$PREFIX/lib/Rallypoint.new\" \"$PREFIX/bin/generals-launcher.new\"\n\
+         \x20 if [ -e \"$PREFIX/lib/Rallypoint.old\" ]; then rm -rf \"$PREFIX/lib/Rallypoint\"; mv \"$PREFIX/lib/Rallypoint.old\" \"$PREFIX/lib/Rallypoint\"; fi\n\
+         \x20 if [ -e \"$PREFIX/bin/generals-launcher.old\" ]; then mv \"$PREFIX/bin/generals-launcher.old\" \"$PREFIX/bin/generals-launcher\"; fi\n\
+         \x20 exit 1\n\
+         }}\n\
+         while kill -0 {pid} 2>/dev/null; do sleep 0.2; done\n\
+         rm -rf \"$PREFIX/lib/Rallypoint.old\" \"$PREFIX/bin/generals-launcher.old\" \"$PREFIX/lib/Rallypoint.new\" \"$PREFIX/bin/generals-launcher.new\"\n\
+         mkdir -p \"$PREFIX/bin\" \"$PREFIX/lib\" || fail \"cannot write to $PREFIX\"\n\
+         if [ -d \"$STAGED/lib/Rallypoint\" ]; then\n\
+         \x20 if [ -e \"$PREFIX/lib/Rallypoint\" ]; then mv \"$PREFIX/lib/Rallypoint\" \"$PREFIX/lib/Rallypoint.old\" || fail \"cannot move the old engine aside\"; fi\n\
+         \x20 cp -a \"$STAGED/lib/Rallypoint\" \"$PREFIX/lib/Rallypoint.new\" || fail \"cannot copy the new engine\"\n\
+         \x20 mv \"$PREFIX/lib/Rallypoint.new\" \"$PREFIX/lib/Rallypoint\" || fail \"cannot install the new engine\"\n\
+         fi\n\
+         if [ -f \"$STAGED/bin/generals-launcher\" ]; then\n\
+         \x20 if [ -e \"$PREFIX/bin/generals-launcher\" ]; then mv \"$PREFIX/bin/generals-launcher\" \"$PREFIX/bin/generals-launcher.old\" || fail \"cannot move the old launcher aside\"; fi\n\
+         \x20 cp -a \"$STAGED/bin/generals-launcher\" \"$PREFIX/bin/generals-launcher.new\" || fail \"cannot copy the new launcher\"\n\
+         \x20 mv \"$PREFIX/bin/generals-launcher.new\" \"$PREFIX/bin/generals-launcher\" || fail \"cannot install the new launcher\"\n\
+         \x20 chmod 755 \"$PREFIX/bin/generals-launcher\" || fail \"cannot make the launcher runnable\"\n\
+         fi\n\
+         if [ -d \"$STAGED/share\" ]; then\n\
+         \x20 mkdir -p \"$PREFIX/share\" || fail \"cannot write to $PREFIX/share\"\n\
+         \x20 cp -R \"$STAGED/share/.\" \"$PREFIX/share/\" || fail \"cannot install the desktop files\"\n\
+         \x20 DESKTOP=\"$PREFIX/share/applications/Rallypoint.desktop\"\n\
+         \x20 if [ -f \"$DESKTOP\" ]; then sed \"s|^Exec=.*|Exec=$SEDEXEC|\" \"$DESKTOP\" > \"$DESKTOP.new\" && mv \"$DESKTOP.new\" \"$DESKTOP\"; fi\n\
+         fi\n\
+         rm -rf \"$PREFIX/lib/Rallypoint.old\" \"$PREFIX/bin/generals-launcher.old\" \"$STAGED\"\n\
+         note \"updated\"\n\
+         \"$EXE\" >/dev/null 2>&1 &\n",
+        log = q(log),
+        staged = q(staged_root),
+        prefix = q(prefix),
+        exe = q(exe),
+        sedexec = sh_quote(&sed_exec),
+    )
 }
 
 /// Copy the app out of the disk image into `work`, then eject the image.
@@ -176,6 +277,30 @@ pub fn apply(installer: &Path, work: &Path) -> Result<bool, String> {
         spawn_detached(c)?;
         return Ok(true);
     }
+    #[cfg(target_os = "linux")]
+    {
+        // a tarball over the prefix: the CachyOS and Arch install in ~/.local can do this itself, a system install
+        // (/usr) cannot, and says so instead of failing
+        if !installer.to_string_lossy().ends_with(".tar.gz") {
+            return Ok(false);
+        }
+        let Some(prefix) = linux_prefix(&exe) else { return Ok(false) };
+        if !writable(&prefix) || !writable(&prefix.join("bin")) {
+            return Ok(false);
+        }
+        let lib = prefix.join("lib");
+        if lib.exists() && !writable(&lib) {
+            return Ok(false);
+        }
+        let staged = stage_linux(installer, work)?;
+        let script = work.join("apply-update.sh");
+        let log = work.join("apply-update.log");
+        std::fs::write(&script, linux_script(pid, &staged, &prefix, &exe, &log)).map_err(|e| e.to_string())?;
+        let mut c = Command::new("/bin/sh");
+        c.arg(&script);
+        spawn_detached(c)?;
+        return Ok(true);
+    }
     #[allow(unreachable_code)]
     {
         let _ = (installer, pid, exe);
@@ -241,4 +366,196 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(ran, "the helper exited before the script ran");
     }
+
+    // ---- Linux ----
+
+    #[test]
+    fn finds_the_linux_prefix() {
+        assert_eq!(linux_prefix(Path::new("/home/u/.local/bin/generals-launcher")).unwrap(), Path::new("/home/u/.local"));
+        assert_eq!(linux_prefix(Path::new("/usr/bin/generals-launcher")).unwrap(), Path::new("/usr"));
+        assert!(linux_prefix(Path::new("/opt/rallypoint/generals-launcher")).is_none(), "not in a bin folder");
+        assert!(linux_prefix(Path::new("/generals-launcher")).is_none());
+    }
+
+    #[test]
+    fn the_linux_script_quotes_awkward_paths() {
+        let s = linux_script(42, Path::new("/t/stage it's"), Path::new("/home/o'brien/.local"), Path::new("/home/o'brien/.local/bin/generals-launcher"), Path::new("/t/log file"));
+        assert!(s.contains("kill -0 42"), "{s}");
+        assert!(s.contains("'/t/stage it'\\''s'"), "{s}");
+        assert!(s.contains("'/home/o'\\''brien/.local'"), "{s}");
+        assert!(s.contains("'/t/log file'"), "{s}");
+        assert!(s.contains("sed \"s|^Exec=.*|Exec=$SEDEXEC|\""), "the desktop file's Exec line is rewritten: {s}");
+    }
+
+    /// A folder under /tmp/opencode for the Linux tests.
+    #[cfg(unix)]
+    fn tmp(name: &str) -> PathBuf {
+        let d = Path::new("/tmp/opencode").join(format!("rallypoint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A tarball with the shape of ours: `rallypoint-<version>/{bin,lib,share}` (the deb's `/usr` tree, one level
+    /// up, which is what `scripts/package-linux.sh` packs). With `usr` the tree keeps the `usr` folder, which some
+    /// other packer would leave in.
+    #[cfg(unix)]
+    fn make_tarball(t: &Path, version: &str, launcher: &str, engine: &str, usr: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let src = t.join("src");
+        let root = src.join(format!("rallypoint-{version}"));
+        let root = if usr { root.join("usr") } else { root };
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("lib/Rallypoint/engine")).unwrap();
+        std::fs::create_dir_all(root.join("share/applications")).unwrap();
+        std::fs::create_dir_all(root.join("share/icons/hicolor/128x128/apps")).unwrap();
+        let bin = root.join("bin/generals-launcher");
+        std::fs::write(&bin, launcher).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(root.join("lib/Rallypoint/engine/generalszh"), engine).unwrap();
+        std::fs::write(
+            root.join("share/applications/Rallypoint.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Rallypoint\nExec=/usr/bin/generals-launcher\nIcon=Rallypoint\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("share/icons/hicolor/128x128/apps/Rallypoint.png"), "icon").unwrap();
+        let tar = t.join(format!("rallypoint-{version}-linux-x86_64.tar.gz"));
+        let ok = quiet(&mut Command::new("tar")).arg("-czf").arg(&tar).arg("-C").arg(&src).arg(format!("rallypoint-{version}")).status().unwrap().success();
+        assert!(ok, "couldn't make the test tarball");
+        tar
+    }
+
+    /// An installed prefix with an old launcher and an old engine in it.
+    #[cfg(unix)]
+    fn make_prefix(t: &Path) -> PathBuf {
+        let prefix = t.join("home/.local");
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::create_dir_all(prefix.join("lib/Rallypoint/engine")).unwrap();
+        std::fs::write(prefix.join("bin/generals-launcher"), "old launcher").unwrap();
+        std::fs::write(prefix.join("lib/Rallypoint/engine/generalszh"), "old engine").unwrap();
+        prefix
+    }
+
+    /// The script that swaps the install over: it waits for the launcher to quit, puts the new files in place and
+    /// starts the new launcher. It is run with a pid that is not there, so it does not wait.
+    #[cfg(unix)]
+    fn run_script(script: &Path) -> std::process::Output {
+        Command::new("/bin/sh").arg(script).output().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_script_quotes_and_swaps_and_rolls_back() {
+        let t = tmp("swap");
+        let prefix = make_prefix(&t);
+        let staged = t.join("stage/usr");
+        std::fs::create_dir_all(staged.join("bin")).unwrap();
+        std::fs::create_dir_all(staged.join("lib/Rallypoint/engine")).unwrap();
+        std::fs::write(staged.join("bin/generals-launcher"), "new launcher").unwrap();
+        std::fs::write(staged.join("lib/Rallypoint/engine/generalszh"), "new engine").unwrap();
+        let log = t.join("apply-update.log");
+        let script = t.join("apply-update.sh");
+        std::fs::write(&script, linux_script(u32::MAX, &staged, &prefix, &prefix.join("bin/generals-launcher"), &log)).unwrap();
+        let out = run_script(&script);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/generals-launcher")).unwrap(), "new launcher");
+        assert_eq!(std::fs::read_to_string(prefix.join("lib/Rallypoint/engine/generalszh")).unwrap(), "new engine");
+        assert!(!prefix.join("lib/Rallypoint.old").exists(), "the old engine is removed after a good update");
+        assert!(!prefix.join("bin/generals-launcher.old").exists());
+        assert!(std::fs::read_to_string(&log).unwrap().contains("updated"));
+
+        // now a failure: the launcher cannot be moved aside, so the engine has to go back
+        let t = tmp("rollback");
+        let prefix = make_prefix(&t);
+        let staged = t.join("stage/usr");
+        std::fs::create_dir_all(staged.join("bin")).unwrap();
+        std::fs::create_dir_all(staged.join("lib/Rallypoint/engine")).unwrap();
+        std::fs::write(staged.join("bin/generals-launcher"), "new launcher").unwrap();
+        std::fs::write(staged.join("lib/Rallypoint/engine/generalszh"), "new engine").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(prefix.join("bin"), std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::write(prefix.join("bin/probe"), "x").is_ok() {
+            // running as root: permissions do not stop it, so this failure cannot be arranged here
+            let _ = std::fs::remove_file(prefix.join("bin/probe"));
+            let _ = std::fs::remove_dir_all(&t);
+            return;
+        }
+        let log = t.join("apply-update.log");
+        let script = t.join("apply-update.sh");
+        std::fs::write(&script, linux_script(u32::MAX, &staged, &prefix, &prefix.join("bin/generals-launcher"), &log)).unwrap();
+        let out = run_script(&script);
+        assert!(!out.status.success(), "the failed update says so");
+        assert_eq!(std::fs::read_to_string(prefix.join("lib/Rallypoint/engine/generalszh")).unwrap(), "old engine", "the old engine is put back");
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/generals-launcher")).unwrap(), "old launcher");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("failed"));
+        std::fs::set_permissions(prefix.join("bin"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// The whole Linux update: the archive is unpacked, the script is written and run, and the new launcher, engine
+    /// and desktop file are in place with the app started again.
+    #[cfg(unix)]
+    #[test]
+    fn the_linux_update_is_staged_and_installed() {
+        let t = tmp("e2e");
+        let prefix = make_prefix(&t);
+        let marker = t.join("restarted");
+        let launcher = format!("#!/bin/sh\necho restarted > '{}'\n", marker.display());
+        let tar = make_tarball(&t, "1.0.0", &launcher, "new engine", false);
+        let work = t.join("work");
+        let staged = stage_linux(&tar, &work).expect("the update is unpacked");
+        assert!(staged.join("bin/generals-launcher").is_file(), "the folder with the launcher is found: {}", staged.display());
+        assert!(staged.join("lib/Rallypoint/engine/generalszh").is_file());
+        let script = work.join("apply-update.sh");
+        let log = work.join("apply-update.log");
+        std::fs::write(&script, linux_script(u32::MAX, &staged, &prefix, &prefix.join("bin/generals-launcher"), &log)).unwrap();
+        let out = run_script(&script);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(std::fs::read_to_string(prefix.join("bin/generals-launcher")).unwrap(), launcher, "the new launcher is in place");
+        assert_eq!(std::fs::read_to_string(prefix.join("lib/Rallypoint/engine/generalszh")).unwrap(), "new engine", "the new engine is in place");
+        let desktop = std::fs::read_to_string(prefix.join("share/applications/Rallypoint.desktop")).unwrap();
+        assert!(desktop.contains(&format!("Exec={}/bin/generals-launcher", prefix.display())), "{desktop}");
+        assert!(desktop.contains("[Desktop Entry]"), "the desktop file is still a desktop file: {desktop}");
+        assert!(prefix.join("share/icons/hicolor/128x128/apps/Rallypoint.png").is_file(), "the icons come too");
+        assert!(!staged.exists(), "the staged files are cleaned up");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("updated"));
+        let started = (0..50).any(|_| {
+            if marker.is_file() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(started, "the new launcher was not started again");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// A tarball that keeps the `usr` folder (some packers do) is found as well.
+    #[cfg(unix)]
+    #[test]
+    fn a_tarball_that_keeps_the_usr_folder_is_staged_as_well() {
+        let t = tmp("usr");
+        let tar = make_tarball(&t, "1.0.0", "launcher", "engine", true);
+        let staged = stage_linux(&tar, &t.join("work")).unwrap();
+        assert!(staged.join("bin/generals-launcher").is_file(), "{}", staged.display());
+        assert!(staged.join("lib/Rallypoint/engine/generalszh").is_file());
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// An archive with a link in it is refused before anything is unpacked.
+    #[cfg(unix)]
+    #[test]
+    fn an_update_with_a_link_in_it_is_refused() {
+        let t = tmp("link");
+        let src = t.join("src");
+        std::fs::create_dir_all(src.join("rallypoint-1.0.0/usr/bin")).unwrap();
+        std::os::unix::fs::symlink("/etc", src.join("rallypoint-1.0.0/usr/bin/escape")).unwrap();
+        let tar = t.join("rallypoint-1.0.0-linux-x86_64.tar.gz");
+        assert!(quiet(&mut Command::new("tar")).arg("-czf").arg(&tar).arg("-C").arg(&src).arg("rallypoint-1.0.0").status().unwrap().success());
+        let err = stage_linux(&tar, &t.join("work")).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+        assert!(!t.join("work/stage").exists() || std::fs::read_dir(t.join("work/stage")).unwrap().count() == 0, "nothing was unpacked");
+        let _ = std::fs::remove_dir_all(&t);
+    }
 }
+
