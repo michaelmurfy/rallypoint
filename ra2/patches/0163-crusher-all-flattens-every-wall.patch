@@ -1,0 +1,194 @@
+# 0163: a MovementZone=CrusherAll unit (the Battle Fortress) drives through every wall, not just the Crushable= ones.
+#
+# UnitClass Per_Cell_Process (FUN_0073AFD4) flattens an overlay whose type says Crushable=yes for any
+# Crusher, and also flattens Wall=yes overlays when the unit's MovementZone is CrusherAll (the test is
+# the zone id 0xC at 0x0073B02D; read from the reverse-engineered description in
+# github.com/YuriPlanet/vera20k, src/sim/movement/bump_crush.rs, read only; in stock rules the Battle
+# Fortress alone, which is also our OmniCrusher= unit). We only knew the Crushable= walls (patch P4),
+# so a Battle Fortress treated Allied/Soviet base walls as solid and went round them or shot them.
+# Cells with a wall that is not Crushable= are marked state 3 in World::crush_wall_ ("standing, CrusherAll
+# only"); crush_grid_of/crush_leak_of hand an OmniCrusher unit the grid that opens them, step_wall_crush
+# flattens them for it only, and repath uses the same grid. Plain Crushers keep the old grid. Not a World
+# member, so the save format is unchanged (the derived grid is a function-local cache).
+
+diff -ruN a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp	2026-11-25 06:21:23.462565264 +0000
++++ b/engine/main.cpp	2026-11-25 06:39:19.220288937 +0000
+@@ -7680,6 +7680,7 @@
+                 if (map_dressing_.is_wall(x, y)) world_.block_wall_cell(x, y);   // W5-A diagonal gaps
+                 else world_.block_cell(x, y);
+                 if (map_dressing_.is_crushable_wall(x, y)) world_.mark_crushable_wall(x, y);   // P4
++                else if (map_dressing_.is_wall(x, y)) world_.mark_crushable_wall(x, y, true);   // 0163: CrusherAll
+             }
+             // W2-SK-01: ore mines spawn ore (TerrainClass::AI, see ore.hpp).
+             map_dressing_.for_each_ore_mine([&](int x, int y, int half, int rate, double prob) {
+@@ -8057,6 +8058,7 @@
+                 if (map_dressing_.is_wall(bx, by)) world_.block_wall_cell(bx, by);
+                 else world_.block_cell(bx, by);
+                 if (map_dressing_.is_crushable_wall(bx, by)) world_.mark_crushable_wall(bx, by);   // P4
++                else if (map_dressing_.is_wall(bx, by)) world_.mark_crushable_wall(bx, by, true);   // 0163: CrusherAll
+             }
+             apply_save(sc);
+             // L2: the wallets / queues / backlog / hold came back with the
+diff -ruN a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp	2026-11-25 06:32:18.187320880 +0000
++++ b/engine/world.cpp	2026-11-25 06:40:53.875244419 +0000
+@@ -961,6 +961,26 @@
+     return &crush_leak_;
+ }
+ 
++const std::vector<std::uint8_t>& World::crush_grid_omni() const {
++    static std::vector<std::uint8_t> cache;   // derived per call, like crush_grid_ (not a World member: nothing to save)
++    cache = passable_;
++    const std::size_t n = std::min(cache.size(), crush_wall_.size());
++    for (std::size_t i = 0; i < n; ++i)
++        if (crush_wall_[i] == 1 || crush_wall_[i] == 3) cache[i] = 1;
++    return cache;
++}
++
++const std::vector<std::uint8_t>* World::crush_leak_omni() const {
++    const std::vector<std::uint8_t>* l = wall_leak();
++    if (!l) return nullptr;
++    static std::vector<std::uint8_t> cache;
++    cache = *l;
++    const std::size_t n = std::min(cache.size(), crush_wall_.size());
++    for (std::size_t i = 0; i < n; ++i)
++        if (crush_wall_[i] == 1 || crush_wall_[i] == 3) cache[i] = 0;
++    return &cache;
++}
++
+ // P4: a Crusher land vehicle about to drive into a standing crushable wall
+ // cell (its next path cell, adjacent) flattens it: the cell opens for every
+ // unit and leaves the leak mask; the renderer stops drawing the overlay.
+@@ -1106,7 +1126,7 @@
+         if (std::abs(n.x - u.cell_x) > 1 || std::abs(n.y - u.cell_y) > 1) continue;
+         if (n.x < 0 || n.y < 0 || n.x >= grid_w_ || n.y >= grid_h_) continue;
+         const std::size_t i = static_cast<std::size_t>(n.y) * grid_w_ + n.x;
+-        if (crush_wall_[i] != 1) continue;
++        if (crush_wall_[i] != 1 && !(crush_wall_[i] == 3 && u.w6.t.omni_crusher)) continue;
+         crush_wall_[i] = 2;
+         passable_[i] = 1;
+         if (i < wall_leak_.size()) wall_leak_[i] = 0;
+@@ -1672,9 +1692,9 @@
+     PathTerrain terr;
+     std::vector<int> gates;
+     const PathTerrain* tp = terrain_for(u, terr, gates);
+-    const std::vector<std::uint8_t>& grid = crush ? crush_grid() : grid_for(u.movement_domain);
++    const std::vector<std::uint8_t>& grid = crush ? crush_grid_of(u) : grid_for(u.movement_domain);
+     const std::vector<std::uint8_t>* leak =
+-        u.movement_domain == MovementDomain::Water ? nullptr : crush ? crush_leak() : wall_leak();
++        u.movement_domain == MovementDomain::Water ? nullptr : crush ? crush_leak_of(u) : wall_leak();
+     std::vector<Cellxy> path =
+         u.movement_domain == MovementDomain::Land
+             ? find_path_nearest_t(grid, grid_w_, grid_h_, start, {gx, gy}, kNearestPathBudget, leak, tp)
+diff -ruN a/engine/world.hpp b/engine/world.hpp
+--- a/engine/world.hpp	2026-11-25 06:21:23.446436893 +0000
++++ b/engine/world.hpp	2026-11-25 06:40:53.874010677 +0000
+@@ -1199,11 +1199,13 @@
+     // Crushable=yes (GASAND sandbags, CAFNCP/CAFNCB/CAFNCW fences, ...)]: a
+     // Crusher land vehicle paths through a standing crushable wall cell and
+     // flattens it when it drives in. 0 none / 1 standing / 2 crushed (saved).
+-    void mark_crushable_wall(int x, int y) {
++    // 0163 [RE: Per_Cell_Process FUN_0073AFD4 @0x73B02D]: a MovementZone=CrusherAll unit (the Battle Fortress, our
++    // OmniCrusher=) also flattens every Wall=yes overlay, Crushable= or not: `omni_only` marks those (state 3).
++    void mark_crushable_wall(int x, int y, bool omni_only = false) {
+         if (x < 0 || y < 0 || x >= grid_w_ || y >= grid_h_ || passable_.empty()) return;
+         if (crush_wall_.size() != passable_.size()) crush_wall_.assign(passable_.size(), 0);
+         std::uint8_t& c = crush_wall_[static_cast<std::size_t>(y) * grid_w_ + x];
+-        if (c == 0) c = 1;
++        if (c == 0) c = omni_only ? 3 : 1;
+     }
+     // W6-04-05 [RE: Reduce_Wall FUN_00480BC0]: a map wall overlay is shootable.
+     // main.cpp registers each wall cell's OverlayType (rules Strength=, art
+@@ -1228,6 +1230,15 @@
+     }
+     const std::vector<std::uint8_t>& crush_grid() const;           // passable_ + standing crushable walls
+     const std::vector<std::uint8_t>* crush_leak() const;           // wall_leak_ minus them
++    // 0163: the same for a CrusherAll unit (every standing wall overlay).
++    const std::vector<std::uint8_t>& crush_grid_omni() const;
++    const std::vector<std::uint8_t>* crush_leak_omni() const;
++    const std::vector<std::uint8_t>& crush_grid_of(const Unit& u) const {
++        return u.w6.t.omni_crusher ? crush_grid_omni() : crush_grid();
++    }
++    const std::vector<std::uint8_t>* crush_leak_of(const Unit& u) const {
++        return u.w6.t.omni_crusher ? crush_leak_omni() : crush_leak();
++    }
+     // CB-3 Naval [RE: naval.md §1]: the passability grid for a movement domain.
+     // Land (the DEFAULT -- every existing unit) returns the SAME passable_
+     // object every existing A* site already reads (byte-identical); Water
+@@ -3207,7 +3218,7 @@
+     std::vector<std::uint8_t> passable_;
+     std::vector<int> sw_quarry_;            // W5-A set_sw_quarry (transient)
+     std::vector<std::uint8_t> wall_leak_;   // W5-A: block_wall_cell cells (pathfind leak mask)
+-    std::vector<std::uint8_t> crush_wall_;  // P4: crushable wall cells 0/1 standing/2 crushed (save v23)
++    std::vector<std::uint8_t> crush_wall_;  // P4: crushable wall cells 0/1 standing/2 crushed/3 standing, CrusherAll only (save v23)
+     std::vector<std::uint8_t> wall_ov_type_;         // W6-04-05: 1-based WallOvType per cell (0 none)
+     std::vector<WallOvType> wall_ov_types_;          // W6-04-05: the registered wall OverlayTypes
+     mutable std::vector<std::uint8_t> wall_ov_stage_;   // W6-04-05: damage stage per cell (save v25)
+diff -ruN a/engine/world_loco.cpp b/engine/world_loco.cpp
+--- a/engine/world_loco.cpp	2026-11-25 06:32:18.185798080 +0000
++++ b/engine/world_loco.cpp	2026-11-25 06:39:12.847398879 +0000
+@@ -434,13 +434,14 @@
+     const std::vector<std::uint8_t>& g =
+         u.movement_domain == MovementDomain::Water ? e.water_passable
+         : (u.movement_domain == MovementDomain::Amphibious && e.amphib_passable) ? *e.amphib_passable
+-        : crush ? *e.crush_passable : e.passable;
++        : crush ? (e.sc.world && u.w6.t.omni_crusher ? e.sc.world->crush_grid_omni() : *e.crush_passable) : e.passable;
+     std::vector<std::uint16_t>& cost = occupancy_cost_scratch();   // W9-02-06: reused, reset incrementally
+     if (mode > 0) build_occupancy_cost(e.units, e.occ, e.w, e.h, self, mode == 2, e.sc.world, cost);
+     PathTerrain rt;
+     std::vector<Cellxy> np = find_path_bounded_t(
+         g, e.w, e.h, {u.cell_x, u.cell_y}, goal, mode == 0 ? kTerrainCheckBudget : kRepathBudget,
+-        u.movement_domain == MovementDomain::Water ? nullptr : crush ? e.crush_leak : e.wall_leak,
++        u.movement_domain == MovementDomain::Water ? nullptr
++        : crush ? (e.sc.world && u.w6.t.omni_crusher ? e.sc.world->crush_leak_omni() : e.crush_leak) : e.wall_leak,
+         e.terrain_of_unit(u, rt), mode > 0 ? &cost : nullptr);
+     if (np.size() > 1) {
+         u.path = std::move(np);
+diff -ruN a/engine/world_w7.cpp b/engine/world_w7.cpp
+--- a/engine/world_w7.cpp	2026-11-25 06:21:23.297407341 +0000
++++ b/engine/world_w7.cpp	2026-11-25 06:39:12.847289864 +0000
+@@ -362,7 +362,7 @@
+         if (c.x < 0 || c.y < 0 || c.x >= grid_w_ || c.y >= grid_h_) return false;
+         if (!cell_in_playfield(c.x, c.y)) return true;   // @0x56D16B
+         const bool crush = crush_paths(u);
+-        const int k = static_cast<int>(u.movement_domain) * 2 + (crush ? 1 : 0);
++        const int k = static_cast<int>(u.movement_domain) * 2 + (crush ? 1 : 0);   // (a CrusherAll unit shares the crusher zone: rare)
+         if (k < 0 || k >= 6) return false;
+         if (!zone_built[k]) {
+             PathTerrain terr;
+diff -ruN a/tests/test_w6_units.cpp b/tests/test_w6_units.cpp
+--- a/tests/test_w6_units.cpp	2026-11-25 06:21:04.257836184 +0000
++++ b/tests/test_w6_units.cpp	2026-11-25 06:42:43.499241701 +0000
+@@ -269,3 +269,31 @@
+     CHECK_FALSE(resolve_weapon_slot(ra2fixture::rulesmd(), "M60").bomb_disarm);
+     CHECK(resolve_type_weapons(ra2fixture::rulesmd(), "ENGINEER").slot[0].bomb_disarm);
+ }
++
++// 0163 [RE: Per_Cell_Process FUN_0073AFD4 @0x73B02D]: a MovementZone=CrusherAll unit (the Battle Fortress) flattens every
++// Wall=yes overlay; a plain Crusher only the Crushable= ones. Real rules, real map, a wall across an open field; the plain Crusher's grid keeps the wall closed (checked above).
++TEST_CASE("w6units 0163: a CrusherAll unit drives through a wall that is not Crushable") {
++    if (ra2fixture::rulesmd_bytes().empty() || !ra2fixture::mapsmd03_available()) { MESSAGE("no install"); return; }
++    World world(ra2fixture::mapsmd03_map());
++    int x0 = 0, y0 = 0;
++    REQUIRE(w6_open_rect(world, 12, 7, x0, y0));
++    const int wx = x0 + 6;
++    for (int y = y0; y < y0 + 7; ++y) {
++        world.block_wall_cell(wx, y);
++        world.mark_crushable_wall(wx, y, /*omni_only=*/true);
++    }
++    const std::vector<int> all100 = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
++    world.add_combat_unit(x0, y0 + 3, 0, w6mk("BFRT", 600, "heavy", 0, 60, 0.0, all100, true));
++    world.add_combat_unit(x0, y0 + 3 + 1, 0, w6mk("HTNK", 600, "heavy", 0, 60, 0.0, all100, true));
++    Unit& bf = world.units()[0];
++    Unit& rh = world.units()[1];
++    bf.crusher = rh.crusher = true;
++    bf.is_vehicle = rh.is_vehicle = true;
++    bf.w6.t.omni_crusher = true;
++    CHECK(world.crush_grid_of(bf)[static_cast<std::size_t>(y0 + 3) * world.grid_w() + wx] == 1);
++    CHECK(world.crush_grid_of(rh)[static_cast<std::size_t>(y0 + 3) * world.grid_w() + wx] == 0);
++    world.order_unit_move(0, x0 + 11, y0 + 3);
++    for (int k = 0; k < 15 * 60 && world.units()[0].moving(); ++k) world.step(1.0 / 15.0);
++    CHECK(world.units()[0].cell_x >= wx);   // through the wall
++    CHECK(world.wall_crushed(wx, y0 + 3));
++}
