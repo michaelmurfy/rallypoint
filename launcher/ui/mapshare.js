@@ -9,8 +9,9 @@
 //  - the conflict dialog: a map arrives with the name of one you have, so you decide: keep both, or replace yours.
 // Everything another player wrote (their name, the map's name) goes in as text, never as markup.
 
-const share = { view: null, sig: "", buttons: new Set(), listeners: new Set(), seen: new Set(), asked: new Set(), hidden: new Set(), dock: null, live: null, conflict: false, busy: false };
+const share = { view: null, sig: "", buttons: new Set(), listeners: new Set(), seen: new Set(), asked: new Set(), hidden: new Set(), dock: null, live: null, conflict: false, busy: false, outOpen: false, shown: new Set(), finishedAt: new Map(), clearTimer: 0 };
 const GAME_LABEL = { generals: "Zero Hour", ra2: "Red Alert 2" };
+function isTerminal(i) { return i.state !== "prompt" && i.state !== "receiving"; }
 const gameLabel = (g) => GAME_LABEL[g] || "another game";
 const shareKB = (bytes) => sizeText(Math.max(1, Math.ceil(bytes / 1024)));
 
@@ -68,15 +69,18 @@ function afterShare() {
   renderDock();
   share.listeners.forEach((f) => f());
   if (!v) return;
-  // a map arrived: the lists of maps are out of date
+  // a map arrived: the lists of maps are out of date; say what is new once per refresh, not once per map
+  const fresh = [], saved = [];
   for (const i of v.incoming) {
-    const k = `${i.from}/${i.id}`;
-    if (i.state === "done" && !share.seen.has("done" + k)) { share.seen.add("done" + k); notifyMaps(); window.dispatchEvent(new Event("maps-changed")); }
-    if (i.state === "prompt" && !share.seen.has(k)) {
-      share.seen.add(k);
-      if (share.live) share.live.textContent = `${i.from_name} wants to send you the map ${i.name}. Press Alt and M to answer.`;
-      if (i.conflict && !share.asked.has(k)) { share.asked.add(k); openConflictDialog(i); }
-    }
+    const key = `${i.from}/${i.id}`;
+    if (i.state === "done" && !share.seen.has("done" + key)) { share.seen.add("done" + key); saved.push(i); }
+    if (i.state === "prompt" && !share.seen.has(key)) { share.seen.add(key); fresh.push(i); if (i.conflict && !share.asked.has(key)) { share.asked.add(key); openConflictDialog(i); } }
+  }
+  if (saved.length) { notifyMaps(); window.dispatchEvent(new Event("maps-changed")); }
+  if (share.live && (fresh.length || saved.length)) {
+    share.live.textContent = fresh.length
+      ? (fresh.length === 1 ? `${fresh[0].from_name} wants to send you the map ${fresh[0].name}.` : `${plural(fresh.length, "map", "maps")} offered by other players.`) + " Press Alt and M to answer."
+      : `${plural(saved.length, "map", "maps")} saved.`;
   }
 }
 
@@ -92,36 +96,78 @@ function mountShareDock() {
   });
 }
 
-function dismissButton(incoming, who, id) {
-  return h("button", { class: "btn small ghost shareclose", "aria-label": "Dismiss", title: "Dismiss", onclick: () => { share.hidden.add(`${incoming ? "i" : "o"}${who}/${id}`); renderDock(); shareCall("map_share_dismiss", { incoming, who, id }); } }, "×");
+// ---- the dock: one panel, at most four slim parts (an offer, what is arriving, what arrived, what you are sending).
+// Many maps never mean many cards: offers queue behind the oldest, transfers and results are summed up, and finished
+// things go away by themselves a few seconds after the player last looked.
+const DONE_SHOW_MS = 12000;
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const k = (key, el) => { el.dataset.k = key; return el; };
+const shareErr = (e) => say(errText(e), "bad");
+
+/** Answer several offers or cancel several transfers with one refresh at the end. */
+async function replyAll(items, reply) {
+  for (const i of items) { try { await invoke("map_share_reply", { from: i.from, id: i.id, reply }); } catch (e) { shareErr(e); break; } }
+  await pollShare();
+}
+async function cancelOut(items) {
+  for (const o of items) { try { await invoke("map_share_cancel", { to: o.to, id: o.id }); } catch (e) { shareErr(e); break; } }
+  await pollShare();
+}
+async function dismissMany(incoming, items) {
+  for (const x of items) share.hidden.add(`${incoming ? "i" : "o"}${incoming ? x.from : x.to}/${x.id}`);
+  renderDock();
+  for (const x of items) { try { await invoke("map_share_dismiss", { incoming, who: incoming ? x.from : x.to, id: x.id }); } catch { /* it is hidden anyway */ } }
+  pollShare();
+}
+const meanPercent = (items) => Math.round(items.reduce((s, x) => s + (x.state === "done" ? 100 : x.percent || 0), 0) / Math.max(1, items.length));
+
+function offerPart(prompts) {
+  const i = prompts[0], who = i.from_name, more = prompts.length - 1;
+  const acceptable = prompts.filter((p) => !p.conflict);
+  const meta = [shareKB(i.size), i.players >= 2 ? `${i.players} players` : null].filter(Boolean).join(" · ");
+  return h("div", { class: "sharepart offer", role: "group", "aria-label": `Map offer from ${who}: ${i.name}` },
+    h("div", { class: "sharehead" }, h("span", {}, h("strong", {}, who), i.master ? h("span", { class: "muted" }, " (room master)") : null, " wants to send you a map")),
+    h("div", { class: "sharemap" }, h("span", { class: "mapname" }, i.name), h("span", { class: "sharemeta" }, h("span", { class: "gametag" }, gameLabel(i.game)), h("span", { class: "muted small" }, meta))),
+    i.conflict ? h("p", { class: "small sharewarn" }, "You already have a different map with this name.") : null,
+    h("div", { class: "row sharebtns" },
+      i.conflict
+        ? k("accept", h("button", { class: "btn primary small", onclick: () => openConflictDialog(i) }, "Choose what to do"))
+        : k("accept", h("button", { class: "btn primary small", onclick: () => replyAll([i], "accept") }, "Accept")),
+      k("decline", h("button", { class: "btn small", onclick: () => replyAll([i], "decline") }, "Decline")),
+      k("block", h("button", { class: "btn small ghost", title: `Decline, and ignore every map ${who} sends until you leave this room`, onclick: () => replyAll([i], "block") }, `Block ${who}`))),
+    more ? h("div", { class: "sharequeue" },
+      h("span", { class: "muted small" }, `+${more} waiting`),
+      h("span", { class: "row sharebtns" },
+        acceptable.length > 1 ? k("accept-all", h("button", { class: "btn small ghost", onclick: () => replyAll(acceptable, "accept") }, "Accept all")) : null,
+        k("decline-all", h("button", { class: "btn small ghost", onclick: () => replyAll(prompts, "decline") }, "Decline all")))) : null);
 }
 
-function incomingCard(i) {
-  const who = i.from_name;
-  const key = `i${i.from}/${i.id}`;
-  const head = h("div", { class: "sharehead" }, h("span", { class: "gametag" }, gameLabel(i.game)), h("span", {}, h("strong", {}, who), i.state === "prompt" || i.state === "receiving" ? " wants to send you a map" : " sent a map"), i.master && i.state === "prompt" ? h("span", { class: "pill" }, "Room master") : null);
-  const map = h("div", { class: "sharemap" }, h("span", { class: "mapname" }, i.name), h("span", { class: "muted small" }, [shareKB(i.size), i.players >= 2 ? `${i.players} players` : null].filter(Boolean).join(" · ")));
-  let body;
-  if (i.state === "prompt") {
-    body = [
-      i.conflict ? h("p", { class: "small sharewarn" }, "You already have a different map with this name.") : null,
-      h("div", { class: "row sharebtns" },
-        i.conflict
-          ? h("button", { class: "btn primary small", onclick: () => openConflictDialog(i) }, "Choose what to do")
-          : h("button", { class: "btn primary small", onclick: () => shareCall("map_share_reply", { from: i.from, id: i.id, reply: "accept" }) }, "Accept"),
-        h("button", { class: "btn small", onclick: () => shareCall("map_share_reply", { from: i.from, id: i.id, reply: "decline" }) }, "Decline"),
-        h("button", { class: "btn small ghost", title: `Decline, and ignore every map ${who} sends until you leave this room`, onclick: () => shareCall("map_share_reply", { from: i.from, id: i.id, reply: "block" }) }, `Block ${who}'s maps`)),
-    ];
-  } else if (i.state === "receiving") {
-    body = [h("div", { class: "shareprog" }, h("progress", { max: 100, value: i.percent, "aria-label": `Receiving ${i.name}` }), h("span", { class: "pct small" }, `${i.percent}%`), h("button", { class: "btn small", onclick: () => shareCall("map_share_reply", { from: i.from, id: i.id, reply: "decline" }) }, "Cancel"))];
-  } else if (i.state === "done") {
-    body = [h("p", { class: "small sharedone" }, i.note), h("div", { class: "row sharebtns" }, h("button", { class: "btn small", onclick: () => { share.hidden.add(key); go("maps"); renderDock(); shareCall("map_share_dismiss", { incoming: true, who: i.from, id: i.id }); } }, "Show in Maps"))];
-  } else {
-    body = [h("p", { class: "small " + (i.state === "have" ? "muted" : "sharewarn") }, i.note || (i.state === "have" ? "You already have this map" : "Not saved"))];
-  }
-  const card = h("div", { class: "sharecard " + i.state, role: "group", "aria-label": `Map from ${who}: ${i.name}` }, head, map, body);
-  if (i.state !== "prompt" && i.state !== "receiving") card.append(dismissButton(true, i.from, i.id));
-  return card;
+function progressPart(cls, text, pct, label, buttons) {
+  return h("div", { class: "sharepart " + cls },
+    h("div", { class: "sharetext" }, text),
+    h("div", { class: "shareline" }, h("span", { class: "shareprog" }, h("progress", { max: 100, value: pct, "aria-label": label }), h("span", { class: "pct small" }, `${pct}%`)), buttons));
+}
+
+function receivingPart(items) {
+  const pct = meanPercent(items);
+  const from = new Set(items.map((i) => i.from_name));
+  const text = items.length === 1 ? ["Receiving ", h("strong", {}, items[0].name)] : [`Receiving ${plural(items.length, "map", "maps")} from ${plural(from.size, "player", "players")}`];
+  return progressPart("receiving", text, pct, "Receiving maps", k("cancel-in", h("button", { class: "btn small", "aria-label": "Cancel receiving", onclick: () => replyAll(items, "decline") }, "Cancel")));
+}
+
+function finishedPart(items) {
+  const c = { done: 0, have: 0, failed: 0 };
+  for (const i of items) c[i.state] = (c[i.state] || 0) + 1;
+  const summary = [c.done && `${c.done} saved`, c.have && `${c.have} already had`, c.failed && `${c.failed} not saved`].filter(Boolean).join(", ");
+  const names = items.slice(0, 2).map((i) => i.name).join(", ") + (items.length > 2 ? ` +${items.length - 2} more` : "");
+  const bad = items.find((i) => i.state === "failed");
+  return h("div", { class: "sharepart finished", role: "group", "aria-label": items.length === 1 ? `Finished: ${items[0].name}` : `${items.length} finished map transfers` },
+    h("div", { class: "sharetext" }, h("strong", { class: c.failed ? "" : "sharedone" }, summary), h("span", { class: "muted small sharenames" }, names)),
+    bad ? h("p", { class: "small sharewarn" }, `${bad.name}: ${bad.note || "not saved"}`) : null,
+    h("div", { class: "row sharebtns" },
+      c.done ? k("show", h("button", { class: "btn small", onclick: async () => { await dismissMany(true, items); go("maps"); } }, "Show in Maps")) : null,
+      k("dismiss", h("button", { class: "btn small ghost", onclick: () => dismissMany(true, items) }, "Dismiss"))));
 }
 
 const OUT_PILL = { waiting: ["", "Waiting for an answer"], done: ["ok", "Delivered"], have: ["", "Already has it"], declined: ["warn", "Declined"], cancelled: ["", "Cancelled"], failed: ["bad", "Failed"] };
@@ -131,9 +177,55 @@ function outgoingRow(o) {
     ? h("span", { class: "shareprog" }, h("progress", { max: 100, value: o.percent, "aria-label": `Sending ${o.name} to ${o.to_name}` }), h("span", { class: "pct small" }, `${o.percent}%`))
     : h("span", { class: "pill " + OUT_PILL[o.state][0], title: o.note || undefined }, o.state === "failed" || o.state === "declined" || o.state === "have" ? (o.note || OUT_PILL[o.state][1]) : OUT_PILL[o.state][1]);
   const btn = live
-    ? h("button", { class: "btn small", "aria-label": `Cancel sending ${o.name} to ${o.to_name}`, onclick: () => shareCall("map_share_cancel", { to: o.to, id: o.id }) }, "Cancel")
-    : dismissButton(false, o.to, o.id);
+    ? h("button", { class: "btn small", "aria-label": `Cancel sending ${o.name} to ${o.to_name}`, onclick: () => cancelOut([o]) }, "Cancel")
+    : h("button", { class: "btn small ghost shareclose", "aria-label": `Dismiss ${o.name} to ${o.to_name}`, title: "Dismiss", onclick: () => dismissMany(false, [o]) }, "×");
   return h("div", { class: "shareout", role: "group", "aria-label": `${o.name} to ${o.to_name}` }, h("span", { class: "shareto" }, h("span", { class: "mapname" }, o.name), h("span", { class: "muted small" }, ` to ${o.to_name}`)), status, btn);
+}
+
+function sendingPart(out) {
+  const live = out.filter((o) => o.state === "waiting" || o.state === "sending");
+  const maps = new Set(out.map((o) => o.name)).size, players = new Set(out.map((o) => o.to)).size;
+  const counted = out.filter((o) => o.state === "waiting" || o.state === "sending" || o.state === "done");
+  const pct = meanPercent(counted);
+  const what = `${plural(maps, "map", "maps")} to ${plural(players, "player", "players")}`;
+  let head;
+  if (live.length) head = h("div", { class: "sharetext" }, h("strong", {}, "Sending "), `${what}${live.every((o) => o.state === "waiting") ? ", waiting for answers" : ""}`);
+  else {
+    const c = {};
+    for (const o of out) c[o.state] = (c[o.state] || 0) + 1;
+    const parts = [c.done && `${c.done} delivered`, c.have && `${c.have} already had it`, c.declined && `${c.declined} declined`, c.failed && `${c.failed} failed`, c.cancelled && `${c.cancelled} cancelled`].filter(Boolean);
+    head = h("div", { class: "sharetext" }, h("strong", { class: c.done && parts.length === 1 ? "sharedone" : "" }, `${what}: `), parts.join(", "));
+  }
+  const open = share.outOpen;
+  const toggle = k("details", h("button", { class: "btn small ghost", "aria-expanded": String(open), "aria-controls": "sharedetails", onclick: () => { share.outOpen = !share.outOpen; renderDock(); } }, open ? "Hide details" : "Details"));
+  const act = live.length
+    ? k("cancel-out", h("button", { class: "btn small", onclick: () => cancelOut(live) }, `Cancel${live.length > 1 ? " all" : ""}`))
+    : k("dismiss-out", h("button", { class: "btn small ghost", onclick: () => dismissMany(false, out) }, "Dismiss"));
+  return h("div", { class: "sharepart sending", role: "group", "aria-label": "Maps you are sending" },
+    head,
+    h("div", { class: "shareline" }, live.length ? h("span", { class: "shareprog" }, h("progress", { max: 100, value: pct, "aria-label": "Sending maps" }), h("span", { class: "pct small" }, `${pct}%`)) : null, toggle, act),
+    open ? h("div", { id: "sharedetails", class: "sharedetails" }, out.map(outgoingRow)) : null);
+}
+
+/** Leave finished things on screen for a while after the player last looked, then clear them. */
+function scheduleClear(finishedKeys) {
+  const now = Date.now();
+  for (const key of finishedKeys) if (!share.finishedAt.has(key)) share.finishedAt.set(key, now);
+  for (const key of [...share.finishedAt.keys()]) if (!finishedKeys.includes(key)) share.finishedAt.delete(key);
+  clearTimeout(share.clearTimer);
+  if (!share.finishedAt.size) return;
+  const wait = Math.max(500, Math.min(...share.finishedAt.values()) + DONE_SHOW_MS - now);
+  share.clearTimer = setTimeout(() => {
+    if (share.dock.matches(":hover, :focus-within")) { for (const key of share.finishedAt.keys()) share.finishedAt.set(key, Date.now() - DONE_SHOW_MS + 4000); return scheduleClear([...share.finishedAt.keys()]); }
+    const v = share.view; if (!v) return;
+    const old = (key) => share.finishedAt.has(key) && Date.now() - share.finishedAt.get(key) >= DONE_SHOW_MS - 50;
+    const inc = v.incoming.filter((i) => isTerminal(i) && old(`i${i.from}/${i.id}`));
+    const out = v.outgoing.filter((o) => o.state !== "waiting" && o.state !== "sending" && old(`o${o.to}/${o.id}`));
+    // an outgoing group goes only as a whole, so a result is never torn away from the rows beside it
+    if (inc.length) dismissMany(true, v.incoming.filter(isTerminal));
+    if (out.length && !v.outgoing.some((o) => o.state === "waiting" || o.state === "sending")) dismissMany(false, v.outgoing);
+    scheduleClear([...share.finishedAt.keys()]);
+  }, wait);
 }
 
 function renderDock() {
@@ -141,12 +233,25 @@ function renderDock() {
   const v = share.view;
   const inc = v ? v.incoming.filter((i) => !share.hidden.has(`i${i.from}/${i.id}`)) : [];
   const out = v ? v.outgoing.filter((o) => !share.hidden.has(`o${o.to}/${o.id}`)) : [];
-  share.dock.hidden = !inc.length && !out.length;
-  // keep the focused button focused across a redraw, unless its card is gone
-  const had = document.activeElement && share.dock.contains(document.activeElement) ? document.activeElement.textContent + "|" + (document.activeElement.getAttribute("aria-label") || "") : null;
-  fill(share.dock, inc.slice(0, 5).map(incomingCard), out.length ? h("div", { class: "sharesent" }, h("h3", {}, "Maps you are sending"), out.slice(0, 8).map(outgoingRow)) : null);
-  if (had) { const b = [...share.dock.querySelectorAll("button")].find((x) => x.textContent + "|" + (x.getAttribute("aria-label") || "") === had); if (b) b.focus(); }
+  const prompts = inc.filter((i) => i.state === "prompt"), receiving = inc.filter((i) => i.state === "receiving"), done = inc.filter(isTerminal);
+  const parts = [];
+  if (prompts.length) parts.push([`offer:${prompts[0].from}/${prompts[0].id}`, offerPart(prompts)]);
+  if (receiving.length) parts.push(["receiving", receivingPart(receiving)]);
+  if (done.length) parts.push(["finished", finishedPart(done)]);
+  if (out.length) parts.push(["sending", sendingPart(out)]);
+  if (!out.length) share.outOpen = false;
+  share.dock.hidden = !parts.length;
+  const focus = document.activeElement && share.dock.contains(document.activeElement) ? document.activeElement.dataset.k || null : null;
+  const wasInside = focus !== null || share.dock === document.activeElement;
+  // a part that was not there before slides in; one that is only updating does not replay it
+  const keys = new Set(parts.map((p) => p[0]));
+  for (const [key, el] of parts) if (!share.shown.has(key)) el.classList.add("enter");
+  share.shown = keys;
+  fill(share.dock, ...parts.map((p) => p[1]));
+  if (wasInside) { const b = focus && share.dock.querySelector(`[data-k="${focus}"]`); (b || share.dock).focus(); }
+  scheduleClear([...done.map((i) => `i${i.from}/${i.id}`), ...(out.length && !out.some((o) => o.state === "waiting" || o.state === "sending") ? out.map((o) => `o${o.to}/${o.id}`) : [])]);
 }
+
 
 // ---------------------------------------------------------------- modal plumbing
 
