@@ -1,0 +1,130 @@
+# 0161: the harvester's ore search is gamemd's FootClass::Scan_For_Tiberium (FUN_004DD0A0).
+#
+# Read from the reverse-engineered description in github.com/YuriPlanet/vera20k
+# (src/sim/miner/ore_scan.rs, read only): the miner's own cell when it holds tiberium; else rings
+# r = 1..range-1 around it (the bound itself is not scanned), each walked i = -r..r over (x+i,y-r),
+# (x+i,y+r), (x-r,y+i), (x+r,y+i). A cell with a strictly higher Get_Tiberium_Value (FUN_00485020:
+# the type's Value= times overlay data + 1) replaces the best, and the first ring with a hit ends
+# the scan. Ours took the first cell in raster order of the nearest Chebyshev ring and ignored what
+# was in it, so a gem cell or a thick patch next to a thin one lost to whichever came first.
+# find_reachable_ore keeps the zone flood, the occupant filter and the skip cell, and takes the
+# Value= pair (OreValues) from step_harvest. Slave miners use the default pair.
+# Real-data economy probe (PROBE_ECON, xmp31s2): unchanged within noise (1 HARV 4500 credits in 240 s,
+# 3 HARV 7500).
+
+diff -ruN a/engine/harvest.cpp b/engine/harvest.cpp
+--- a/engine/harvest.cpp	2026-11-25 06:21:04.310836738 +0000
++++ b/engine/harvest.cpp	2026-11-25 06:35:17.322759056 +0000
+@@ -182,7 +182,7 @@
+ 
+ bool find_reachable_ore(const OreField& ore, const std::vector<std::uint8_t>& passable, int gw,
+                         int gh, const Occupancy& occ, int self, int cx, int cy, int radius,
+-                        int skip_x, int skip_y, int& out_x, int& out_y) {
++                        int skip_x, int skip_y, int& out_x, int& out_y, const OreValues* values) {
+     const int x0 = std::max(0, cx - radius), x1 = std::min(std::min(ore.w(), gw) - 1, cx + radius);
+     const int y0 = std::max(0, cy - radius), y1 = std::min(std::min(ore.h(), gh) - 1, cy + radius);
+     if (x0 > x1 || y0 > y1) return false;
+@@ -209,22 +209,33 @@
+             stack.push_back(j);
+         }
+     }
++    // 0161 [RE: FootClass::Scan_For_Tiberium FUN_004DD0A0]: the miner's own cell when it holds ore; else
++    // rings r = 1..range-1 (the bound itself is not scanned), each walked i = -r..r over (x+i,y-r),
++    // (x+i,y+r), (x-r,y+i), (x+r,y+i); a candidate with a strictly higher Get_Tiberium_Value
++    // (Value= x (density + 1), FUN_00485020) replaces the best, and the first ring with a hit ends the scan.
++    // The old rule took the first cell in raster order of the nearest ring, so a gem cell or a thick
++    // patch beside a thin one was ignored.
++    const OreValues vals = values ? *values : OreValues{};
++    auto value_at = [&](int x, int y) -> int {
++        if (x < x0 || x > x1 || y < y0 || y > y1 || !ore.has_ore(x, y)) return -1;
++        if (!reach[(std::size_t)(y - y0) * bw + (x - x0)]) return -1;
++        if (x == skip_x && y == skip_y) return -1;
++        const int o = occ.at(x, y);
++        if (o != Occupancy::kEmpty && o != self) return -1;   // Cell_Techno() != NULL
++        return (ore.kind_at(x, y) == OreKind::Gems ? vals.gems : vals.ore) * (ore.density_at(x, y) + 1);
++    };
++    if (value_at(cx, cy) >= 0) { out_x = cx; out_y = cy; return true; }
++    int best_value = -1;
+     bool found = false;
+-    int best = INT_MAX;
+-    for (int y = y0; y <= y1; ++y)
+-        for (int x = x0; x <= x1; ++x) {
+-            if (!reach[(std::size_t)(y - y0) * bw + (x - x0)] || !ore.has_ore(x, y)) continue;
+-            if (x == skip_x && y == skip_y) continue;
+-            const int o = occ.at(x, y);
+-            if (o != Occupancy::kEmpty && o != self) continue;   // Cell_Techno() != NULL
+-            const int dist = std::max(std::abs(x - cx), std::abs(y - cy));
+-            if (dist < best) {
+-                best = dist;
+-                out_x = x;
+-                out_y = y;
+-                found = true;
++    for (int r = 1; r < radius && !found; ++r) {
++        for (int i = -r; i <= r; ++i) {
++            const int cand[4][2] = {{cx + i, cy - r}, {cx + i, cy + r}, {cx - r, cy + i}, {cx + r, cy + i}};
++            for (const auto& c : cand) {
++                const int v = value_at(c[0], c[1]);
++                if (v > best_value) { best_value = v; out_x = c[0]; out_y = c[1]; found = true; }
+             }
+         }
++    }
+     return found;
+ }
+ 
+@@ -319,9 +330,9 @@
+                 // filtered; the last cell a move to failed is skipped once.
+                 const bool got =
+                     find_reachable_ore(ore, passable, gw, gh, occ, idx, u.cell_x, u.cell_y,
+-                                       scan.short_scan, u.harv_skip_x, u.harv_skip_y, ox, oy) ||
++                                       scan.short_scan, u.harv_skip_x, u.harv_skip_y, ox, oy, &values) ||
+                     find_reachable_ore(ore, passable, gw, gh, occ, idx, u.cell_x, u.cell_y,
+-                                       scan.long_scan, u.harv_skip_x, u.harv_skip_y, ox, oy);
++                                       scan.long_scan, u.harv_skip_x, u.harv_skip_y, ox, oy, &values);
+                 u.harv_skip_x = u.harv_skip_y = -1;
+                 if (got) {
+                     u.harv_cell_x = ox;
+diff -ruN a/engine/harvest.hpp b/engine/harvest.hpp
+--- a/engine/harvest.hpp	2026-11-25 06:21:04.310836738 +0000
++++ b/engine/harvest.hpp	2026-11-25 06:35:07.253545093 +0000
+@@ -73,7 +73,8 @@
+ // and not (skip_x, skip_y). Exposed for tests.
+ bool find_reachable_ore(const OreField& ore, const std::vector<std::uint8_t>& passable, int gw,
+                         int gh, const Occupancy& occ, int self, int cx, int cy, int radius,
+-                        int skip_x, int skip_y, int& out_x, int& out_y);
++                        int skip_x, int skip_y, int& out_x, int& out_y,
++                        const OreValues* values = nullptr);
+ // Gap owner A: `house_credits` has `n_houses` entries (every skirmish house
+ // is paid, not just 0/1 -- house 2+ income used to land in house 0's pool).
+ // [RE: economy.md §2 CONFIRMED] each unloaded bale also pays
+diff -ruN a/tests/test_harvest.cpp b/tests/test_harvest.cpp
+--- a/tests/test_harvest.cpp	2026-11-25 06:21:04.246836069 +0000
++++ b/tests/test_harvest.cpp	2026-11-25 06:35:17.324759077 +0000
+@@ -746,3 +746,28 @@
+     r.step(0.1);
+     CHECK(r.units[0].harv == HarvState::ReturnToRef);
+ }
++
++// 0161 [RE: FootClass::Scan_For_Tiberium FUN_004DD0A0]: the nearest ring wins, and inside it the cell worth
++// most (Value x (density + 1)); a tie keeps the first cell of the ring walk; the own cell wins outright.
++TEST_CASE("harvest: the ore scan takes the richest cell of the nearest ring") {
++    OreField ore(30, 30);
++    std::vector<std::uint8_t> pass(900, 1);
++    Occupancy occ(30, 30);
++    int ox = -1, oy = -1;
++    ore.set(10, 8, OreKind::Ore, 2, 0);    // ring 2, first in raster order, thin
++    ore.set(14, 12, OreKind::Gems, 1, 0);  // ring 2, 50 x 2 = 100 beats 25 x 3 = 75
++    ore.set(14, 9, OreKind::Ore, 2, 0);    // ring 2, 75
++    ore.set(20, 20, OreKind::Gems, 11, 0); // far richer, but a farther ring
++    REQUIRE(find_reachable_ore(ore, pass, 30, 30, occ, 0, 12, 10, 48, -1, -1, ox, oy));
++    CHECK(ox == 14);
++    CHECK(oy == 12);
++    // The ring bound itself is not scanned: ore on ring 6 is out of a 6-ring range.
++    OreField far(30, 30);
++    far.set(18, 10, OreKind::Ore, 3, 0);
++    CHECK_FALSE(find_reachable_ore(far, pass, 30, 30, occ, 0, 12, 10, 6, -1, -1, ox, oy));
++    CHECK(find_reachable_ore(far, pass, 30, 30, occ, 0, 12, 10, 7, -1, -1, ox, oy));
++    // Standing on ore takes it without a scan.
++    far.set(12, 10, OreKind::Ore, 0, 0);
++    REQUIRE(find_reachable_ore(far, pass, 30, 30, occ, 0, 12, 10, 48, -1, -1, ox, oy));
++    CHECK((ox == 12 && oy == 10));
++}

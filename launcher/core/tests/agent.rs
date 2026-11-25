@@ -1,5 +1,6 @@
 //! Two agents against the real relay state machine over loopback UDP, with fake engine sockets.
 use generals_core::agent::{Agent, Status};
+use generals_core::mapshare::{self, DirLibrary, MapShare, Reply};
 use generals_core::ra2lobby::{Lobby, RoomSettings, Seat};
 use generals_proto::secure::{self, Key};
 use generals_proto::{game_packet, Packet, Reason};
@@ -579,5 +580,88 @@ fn red_alert_2_lobby_ready_start_then_tunnel_auth() {
     for_host.tunnel = Some(generals_core::ra2launch::Tunnel { port: host_agent.tunnel_port(), id: host_vip, token: ta });
     let ini = generals_core::ra2launch::launch_ini(&for_host, "xmp01t4.map", 0).unwrap();
     assert!(ini.contains("Mode=network") && ini.contains("Token=") && ini.contains(&format!("TunnelId={host_vip}")));
+    stop.store(true, Ordering::Relaxed);
+}
+
+/// One round of what the launcher's background thread does: hand received map messages to the state machine, let time pass,
+/// send what it wants to say.
+fn pump_maps(agent: &Agent, share: &mut MapShare, lib: &DirLibrary, started: Instant, name: &str, game: u8) {
+    let now = started.elapsed().as_millis() as u64;
+    let Status::Connected(vip) = agent.status() else { return };
+    share.set_self(now, Some(vip), name, game, false);
+    for (from, msg) in agent.take_map() {
+        share.receive(now, from, msg, lib);
+    }
+    share.tick(now);
+    for (to, msg) in share.drain() {
+        agent.send_map(to, msg);
+    }
+}
+
+fn tmp(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("rp-agent-maps-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn a_map_goes_through_the_real_relay_between_two_players_and_never_to_another_room() {
+    let (server, stop) = spawn_relay("AAA\nBBB\nDDD\n");
+    let a = Agent::start(&server, "AAA", "ra2:room", "pw", None).unwrap();
+    let b = Agent::start(&server, "BBB", "ra2:room", "pw", None).unwrap();
+    let c = Agent::start(&server, "DDD", "ra2:elsewhere", "pw", None).unwrap(); // the same virtual addresses, another room
+    for x in [&a, &b, &c] {
+        assert!(matches!(wait(x, |s| matches!(s, Status::Connected(_))), Status::Connected(_)));
+    }
+    let (ra, rb, rc) = (tmp("a"), tmp("b"), tmp("c"));
+    let lib = |r: &std::path::Path| DirLibrary { maps_dir: r.join("Maps"), disabled_dir: r.join("off"), ra2_dir: r.join("RA2Maps") };
+    let (la, lb, lc) = (lib(&ra), lib(&rb), lib(&rc));
+    // a map of about 400 kB that does not shrink
+    let mut text = String::from("[Basic]\nName=Dune Wars\n[Map]\nSize=0,0,50,50\nLocalSize=2,4,46,42\n[Waypoints]\n0=30040\n1=20010\n[Extra]\n");
+    let mut x = 12345u32;
+    while text.len() < 400_000 {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        text.push_str(&format!("{x:08x}{:08x}\n", x.rotate_left(13)));
+    }
+    std::fs::create_dir_all(&la.ra2_dir).unwrap();
+    std::fs::write(la.ra2_dir.join("dune.map"), &text).unwrap();
+    let prepared = mapshare::prepare_ra2(&la.ra2_dir.join("dune.map")).unwrap();
+    assert!(prepared.packed.len() > 200_000, "{}", prepared.packed.len());
+
+    let started = Instant::now();
+    let (mut sa, mut sb, mut sc) = (MapShare::new(7), MapShare::new(9), MapShare::new(11));
+    let ra2 = generals_proto::MAP_RA2;
+    let mut sent = false;
+    let mut answered = false;
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while Instant::now() < deadline {
+        pump_maps(&a, &mut sa, &la, started, "Dana", ra2);
+        pump_maps(&b, &mut sb, &lb, started, "Sam", ra2);
+        pump_maps(&c, &mut sc, &lc, started, "Eve", ra2);
+        let now = started.elapsed().as_millis() as u64;
+        if !sent && sa.view(now).supported == Some(true) && sa.view(now).peers.len() == 1 {
+            let peer = MapShare::parse_vip(&sa.view(now).peers[0].vip).unwrap();
+            assert_eq!(sa.view(now).peers[0].name, "Sam", "only the room's own players are listed");
+            assert_eq!(sa.send(now, &[peer], &prepared).unwrap(), 1);
+            sent = true;
+        }
+        if let (Some(i), false) = (sb.view(now).incoming.iter().find(|i| i.state == "prompt").cloned(), answered) {
+            assert_eq!((i.from_name.as_str(), i.name.as_str(), i.game), ("Dana", "dune.map", "ra2"));
+            assert!(!lb.ra2_dir.join("dune.map").exists(), "nothing before the answer");
+            sb.respond(now, MapShare::parse_vip(&i.from).unwrap(), i.id, Reply::Accept);
+            answered = true;
+        }
+        if sa.view(now).outgoing.first().is_some_and(|o| o.state == "done") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    let now = started.elapsed().as_millis() as u64;
+    assert_eq!(sa.view(now).outgoing[0].state, "done", "{:?}", sa.view(now).outgoing);
+    assert_eq!(std::fs::read(lb.ra2_dir.join("dune.map")).unwrap(), text.as_bytes());
+    // the player in the other room saw nothing, and has nothing
+    assert!(sc.view(now).incoming.is_empty() && sc.view(now).peers.is_empty());
+    assert!(!lc.ra2_dir.join("dune.map").exists());
     stop.store(true, Ordering::Relaxed);
 }

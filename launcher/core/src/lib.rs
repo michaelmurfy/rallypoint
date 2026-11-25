@@ -12,6 +12,7 @@ pub mod graphics;
 pub mod icons;
 pub mod launch;
 pub mod lzo;
+pub mod mapshare;
 pub mod maporg;
 pub mod mapview;
 pub mod maps;

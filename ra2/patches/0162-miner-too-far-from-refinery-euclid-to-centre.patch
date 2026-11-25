@@ -1,0 +1,77 @@
+# 0162: the miner's "too far from its refinery to radio it" test is gamemd's (Mission_Harvest FUN_0073E5E0).
+#
+# State 2 (going home) measures ftol(Sqrt_Approx(dz^2 + dy^2 + dx^2)) over the lepton difference
+# between the miner and the refinery's GetCoords (BuildingClass::GetCoords FUN_00447AC0: the
+# foundation CENTRE) and compares it with HarvesterTooFarDistance * 256 (0x0073EBB1..0x0073EC19; read
+# from the reverse-engineered description in github.com/YuriPlanet/vera20k, src/sim/miner/
+# miner_system.rs, read only). Ours used the Chebyshev gap to the footprint's edge, so for a 3x3 or
+# 4x3 refinery the miner radioed from two cells further out than in the original, which first drives
+# to the approach cell. Euclid, not Chebyshev: the diagonal counts too.
+
+diff -ruN a/engine/harvest.cpp b/engine/harvest.cpp
+--- a/engine/harvest.cpp	2026-11-25 06:35:17.322759056 +0000
++++ b/engine/harvest.cpp	2026-11-25 06:37:13.984369487 +0000
+@@ -61,6 +61,19 @@
+ // RE 0x73DB0E]: cells beyond which a returning miner does not radio its refinery.
+ constexpr int kHarvesterTooFarDistance = 5;
+ 
++// 0162 [RE: UnitClass::Mission_Harvest FUN_0073E5E0 state 2, 0x0073EBB1..0x0073EC19]: the miner is "too far"
++// from its refinery to radio it when ftol(Sqrt_Approx(dx^2 + dy^2 + dz^2)) over the lepton difference to the
++// building's GetCoords (the foundation centre, not its nearest edge) exceeds HarvesterTooFarDistance * 256.
++// The old rule took the Chebyshev gap to the footprint's edge, so a miner four or five cells out radioed in
++// ours and drove to the approach cell first in the original. Heights are equal on the ground, so dz is 0.
++}  // namespace
++bool harvester_too_far(int cell_x, int cell_y, const Building& rb) {
++    const long long dx = static_cast<long long>(cell_x) * 256 + 128 - (static_cast<long long>(rb.cx) * 256 + rb.fw * 128);
++    const long long dy = static_cast<long long>(cell_y) * 256 + 128 - (static_cast<long long>(rb.cy) * 256 + rb.fh * 128);
++    return om::ftol(om::sqrt(static_cast<double>(dx * dx + dy * dy))) > kHarvesterTooFarDistance * 256;
++}
++namespace {
++
+ // Teleport `u` (unit index `self`) to (tx, ty), reconciling occupancy
+ // (Task 6 review fix -- the pre-fix code only checked terrain passability
+ // and left `occ` untouched, so the pre-warp cell stayed claimed forever and
+@@ -460,9 +473,7 @@
+                 // -- a distant miner neither holds the dock nor queues.
+                 if (fresh_pick && ref >= 0 && !u.chrono_miner) {
+                     const Building& rb = buildings[(size_t)ref];
+-                    const int ddx = u.cell_x < rb.cx ? rb.cx - u.cell_x : (u.cell_x >= rb.cx + rb.fw ? u.cell_x - (rb.cx + rb.fw - 1) : 0);
+-                    const int ddy = u.cell_y < rb.cy ? rb.cy - u.cell_y : (u.cell_y >= rb.cy + rb.fh ? u.cell_y - (rb.cy + rb.fh - 1) : 0);
+-                    if (std::max(ddx, ddy) > kHarvesterTooFarDistance) {
++                    if (harvester_too_far(u.cell_x, u.cell_y, rb)) {
+                         u.dock_refinery = -1;
+                         const Cellxy ac = dock_approach_cell(rb, passable, gw, gh);
+                         if (!u.moving() || u.path.back().x != ac.x || u.path.back().y != ac.y)
+diff -ruN a/engine/harvest.hpp b/engine/harvest.hpp
+--- a/engine/harvest.hpp	2026-11-25 06:35:07.253545093 +0000
++++ b/engine/harvest.hpp	2026-11-25 06:37:13.984465662 +0000
+@@ -23,6 +23,9 @@
+ // Cruentus 50) [rulesmd]. PurifierBonus does NOT apply (no purifier built).
+ struct OreValues { int ore = 25; int gems = 50; };
+ 
++// 0162: Mission_Harvest's too-far-from-refinery test (Euclid to the foundation centre).
++bool harvester_too_far(int cell_x, int cell_y, const Building& refinery);
++
+ struct HarvestMove { int unit = -1; int gx = 0, gy = 0; };     // path request (W9-05: initialised)
+ struct HarvestEvent {                              // audio/render hooks
+     enum class Kind { ChronoOut, ChronoIn, UnloadStart, UnloadEnd };
+diff -ruN a/tests/test_harvest.cpp b/tests/test_harvest.cpp
+--- a/tests/test_harvest.cpp	2026-11-25 06:35:17.324759077 +0000
++++ b/tests/test_harvest.cpp	2026-11-25 06:37:13.985979177 +0000
+@@ -771,3 +771,16 @@
+     REQUIRE(find_reachable_ore(far, pass, 30, 30, occ, 0, 12, 10, 48, -1, -1, ox, oy));
+     CHECK((ox == 12 && oy == 10));
+ }
++
++// 0162 [RE: Mission_Harvest FUN_0073E5E0 0x0073EBB1..0x0073EC19]: too far = ftol(sqrt(d^2)) from the miner to the
++// refinery's footprint centre > HarvesterTooFarDistance (5) * 256 leptons.
++TEST_CASE("harvest: the too-far-from-refinery test measures to the foundation centre") {
++    Building b;
++    b.cx = 20; b.cy = 20; b.fw = 3; b.fh = 3;   // centre (21.5, 21.5) cells
++    CHECK_FALSE(ra2engine::harvester_too_far(21, 21, b));
++    CHECK_FALSE(ra2engine::harvester_too_far(21, 26, b));   // 5 cells south of the centre: 1280 leptons is "close"
++    CHECK(ra2engine::harvester_too_far(21, 27, b));
++    CHECK(ra2engine::harvester_too_far(21, 15, b));         // 6 cells north of the centre; the edge is 5 cells off
++    CHECK_FALSE(ra2engine::harvester_too_far(21, 16, b));
++    CHECK(ra2engine::harvester_too_far(26, 26, b));         // Euclid: the diagonal reaches further than 5 per axis
++}

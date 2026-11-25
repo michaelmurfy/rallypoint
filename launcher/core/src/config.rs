@@ -57,6 +57,10 @@ pub struct Config {
     /// The release the player chose "Skip this version" for; the start-up banner stays away until a newer one exists.
     #[serde(default)]
     pub skipped_update: String,
+    /// Rooms (server and name, as `room_key` writes them) in which maps from the room's master are accepted without asking.
+    /// Off for every room until the player turns it on. A map that would replace one the player has is always asked about.
+    #[serde(default)]
+    pub map_auto_accept: Vec<String>,
     /// Record the engine's per-frame sync logs, for finding out why a multiplayer game went out of sync.
     #[serde(default)]
     pub sync_logs: bool,
@@ -145,6 +149,20 @@ impl Config {
     fn room_key(&self, server: &str, room: &str) -> String {
         let prefix = if self.is_ra2() { RA2_ROOM_PREFIX } else { "" };
         format!("{}|{prefix}{}", server.trim().to_lowercase(), room.trim().to_lowercase())
+    }
+
+    /// Whether maps the room's master sends are taken without asking, in the room this config is set to join.
+    pub fn map_auto_accept_here(&self) -> bool {
+        let key = self.room_key(&self.server, &self.room);
+        self.map_auto_accept.contains(&key)
+    }
+
+    pub fn set_map_auto_accept_here(&mut self, on: bool) {
+        let key = self.room_key(&self.server, &self.room);
+        self.map_auto_accept.retain(|k| *k != key);
+        if on {
+            self.map_auto_accept.push(key);
+        }
     }
 
     /// The remembered password for this server and room, if the player saved one.
