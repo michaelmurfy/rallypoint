@@ -1,0 +1,224 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 625b289..14bc4b5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -60,6 +60,7 @@ target_sources(ra2assets_tests PRIVATE tests/test_oracle.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_lcw.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_mappack.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_lzo1x.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_re_units_buildings.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_ini.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_rules.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_roster.cpp)
+diff --git a/engine/building.hpp b/engine/building.hpp
+index 02e2329..ae11273 100644
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -44,6 +44,9 @@ struct BuildingTypeDef {
+     // Rallypoint: Floating Disc drain (rules Drainable= / ResourceDestination=).
+     bool drainable = false;
+     bool resource_destination = false;
++    // FactoryPlant= (Soviet Industrial Plant): the owner's cost bonuses, in the order
++    // Infantry, Units, Aircraft, Buildings, Defenses (rules *CostBonus=). Empty = not a plant.
++    std::vector<double> plant_bonus;
+     int adjacent = 2;
+     int tech_level = 0;
+     bool conyard = false;
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 1ece51d..35c974b 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2974,6 +2974,12 @@ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+         ra2engine::fill_building_weapons(rules, id, d);   // Gap fix C (G-40): defenses
+         // W6-04-04: a Wall=yes building takes damage stages (art DamageLevels=).
+         d.build_limit = static_cast<int>(rules.section_double(id, "BuildLimit", 0.0));
++        // FactoryPlant= [RE: House+140 list, CalculateCostMultipliers FUN_0050BF60]
++        if (rules.section_flag(id, "FactoryPlant", false)) {
++            static const char* const kBonus[5] = {"InfantryCostBonus", "UnitsCostBonus", "AircraftCostBonus",
++                                                  "BuildingsCostBonus", "DefensesCostBonus"};
++            for (const char* k : kBonus) d.plant_bonus.push_back(rules.section_double(id, k, 1.0));
++        }
+         d.w6.wall_levels = d.wall ? art.damage_levels(art_id) : 0;   // reuses W6-03-01 BuildingTypeDef::wall
+         d.w6.powers_unit = rules.image(rules.section_string(id, "PowersUnit", ""));   // W6-04-18
+         if (rules.section_string(id, "PowersUnit", "").empty()) d.w6.powers_unit.clear();
+diff --git a/engine/save_fields.hpp b/engine/save_fields.hpp
+index 5f8d245..2b5e37c 100644
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1103,6 +1103,7 @@ template <class Ar> void fields(Ar& ar, BuildingTypeDef& v) {
+     io(ar, v.strength);
+     io(ar, v.build_limit);   // v64: BuildLimit=
+     io(ar, v.mc_capacity); io(ar, v.mc_infinite);   // v65: Psychic Tower
++    io(ar, v.plant_bonus);   // v67: FactoryPlant= cost bonuses
+     io(ar, v.armor_ix);
+     io(ar, v.cost);
+     io(ar, v.charge);
+diff --git a/engine/savegame.hpp b/engine/savegame.hpp
+index c9d4262..bdef041 100644
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@ namespace save {
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 66;   // 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 67;   // 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+diff --git a/engine/world.hpp b/engine/world.hpp
+index 59d9f3f..df4808a 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -1625,6 +1625,9 @@ public:
+     PlacementCheck econ_placement(int house, int type, int cx, int cy) const;
+     // Buildability of `type` in `cat` right now (prereqs, tech, factory).
+     bool econ_can_build(int house, QueueCat cat, int type) const;
++    // Cost after the house's FactoryPlant buildings (Industrial Plant): ftol(cost x product of the
++    // plants' bonus for this queue). Plants count from placement to death, powered or not.
++    int plant_cost(int house, QueueCat cat, int cost) const;
+     // Current + queued copies of `type` in `cat`.
+     int econ_queued_count(int house, QueueCat cat, int type) const;
+     bool econ_held(int house, QueueCat cat) const;
+diff --git a/engine/world_econ.cpp b/engine/world_econ.cpp
+index 1e139cf..abf5449 100644
+--- a/engine/world_econ.cpp
++++ b/engine/world_econ.cpp
+@@ -344,13 +344,18 @@ ProdResult World::econ_produce(int house, QueueCat cat, int type) {
+             // Rallypoint: country Cost*/BuildTime* already baked into r.units[i].cost
+             // when make_econ_rules scaled them; still apply BuildTime= global via
+             // the type's own BuildTimeMultiplier path (w7) and house BuildTime*.
++            const UnitTypeDef& pu = r.units[static_cast<std::size_t>(type)];
++            const int pcost = plant_cost(house, cat, pu.cost);
+             if (const country::Bonuses* bon = house_country_bonuses(house)) {
+-                const UnitTypeDef& u = r.units[static_cast<std::size_t>(type)];
++                const UnitTypeDef& u = pu;
+                 const country::Kind ck = u.aircraft ? country::Kind::Aircraft
+                     : (u.is_vehicle ? country::Kind::Unit : country::Kind::Infantry);
+                 const double btm =
+                     country::build_time_mul(*bon, ck) * u.combat.w7.build_time_mult;
+-                start(e.queues.state(cat), u.cost, u.cost, r.build_speed, btm);
++                start(e.queues.state(cat), pcost, pcost, r.build_speed, btm);
++                e.queues.state(cat).slot.type = type;
++            } else if (pcost != pu.cost) {
++                start(e.queues.state(cat), pcost, pcost, r.build_speed, pu.combat.w7.build_time_mult);
+                 e.queues.state(cat).slot.type = type;
+             } else {
+                 e.queues.start_unit(cat, type, r.units, r.build_speed);
+@@ -394,10 +399,16 @@ ProdResult World::econ_produce(int house, QueueCat cat, int type) {
+         const bool is_def = cat == QueueCat::Defense;
+         const country::Kind ck =
+             is_def ? country::Kind::Defense : country::Kind::Building;
+-        const int sc = country::scale_cost(t.cost, *bon, ck);
+-        const int sch = t.charge > 0 ? country::scale_cost(t.charge, *bon, ck) : sc;
++        const int sc = country::scale_cost(plant_cost(house, cat, t.cost), *bon, ck);
++        const int sch = t.charge > 0 ? country::scale_cost(plant_cost(house, cat, t.charge), *bon, ck) : sc;
+         ra2engine::start(ps, sc, sch, r.build_speed, country::build_time_mul(*bon, ck));
+         ps.slot.type = type;
++    } else if (plant_cost(house, cat, btypes()[static_cast<std::size_t>(type)].cost) !=
++               btypes()[static_cast<std::size_t>(type)].cost) {
++        const BuildingTypeDef& t = btypes()[static_cast<std::size_t>(type)];
++        const int sc = plant_cost(house, cat, t.cost);
++        ra2engine::start(ps, sc, t.charge > 0 ? plant_cost(house, cat, t.charge) : sc, r.build_speed);
++        ps.slot.type = type;
+     } else {
+         ra2engine::start(ps, type, btypes(), r.build_speed);
+     }
+@@ -621,3 +632,18 @@ void World::resign_house(int h) {
+ }
+ 
+ }  // namespace ra2engine
++
++namespace ra2engine {
++int World::plant_cost(int house, QueueCat cat, int cost) const {
++    const int slot = cat == QueueCat::Infantry ? 0 : cat == QueueCat::Aircraft ? 2
++        : cat == QueueCat::Structure ? 3 : cat == QueueCat::Defense ? 4 : 1;
++    float f = 1.0f;
++    for (const Building& b : buildings_) {
++        if (!b.alive || b.state == Building::State::Dead || b.house != house) continue;
++        if (b.type < 0 || b.type >= static_cast<int>(btypes().size())) continue;
++        const std::vector<double>& pb = btypes()[static_cast<std::size_t>(b.type)].plant_bonus;
++        if (pb.size() == 5) f *= static_cast<float>(pb[static_cast<std::size_t>(slot)]);
++    }
++    return f == 1.0f ? cost : static_cast<int>(static_cast<float>(cost) * f);
++}
++}  // namespace ra2engine
+diff --git a/tests/test_re_units_buildings.cpp b/tests/test_re_units_buildings.cpp
+new file mode 100644
+index 0000000..5ffa756
+--- /dev/null
++++ b/tests/test_re_units_buildings.cpp
+@@ -0,0 +1,73 @@
++// Rallypoint: units / buildings vs retail rules (patches 0140+). Real-data cases need
++// RA2_INSTALL_DIR and fail (not skip) when it is set but the files are missing.
++#include "doctest.h"
++
++#include <cstdlib>
++#include <string>
++#include <vector>
++
++#include "asset_fixture.hpp"
++#include "../engine/world.hpp"
++#include "../engine/harvest.hpp"
++
++using ra2engine::ProdResult;
++using ra2engine::QueueCat;
++
++namespace {
++bool have_assets() {
++    if (ra2fixture::assets_available()) return true;
++    if (std::getenv("RA2_INSTALL_DIR")) FAIL("RA2_INSTALL_DIR set but real assets missing");
++    MESSAGE("skipped: real assets not found");
++    return false;
++}
++double num(const ra2assets::Ini& r, const char* sec, const char* key, double def) {
++    const std::string v = r.get(sec, key, "");
++    return v.empty() ? def : std::atof(v.c_str());
++}
++}  // namespace
++
++TEST_CASE("FactoryPlant: only the Soviet Industrial Plant has one, and it cheapens vehicles (real rules)") {
++    if (!have_assets()) return;
++    const ra2assets::Ini& r = ra2fixture::rulesmd_ini();
++    int plants = 0;
++    for (const auto& kv : r.section("BuildingTypes")) {
++        const std::string v = r.get(kv.second, "FactoryPlant", "no");
++        if (!v.empty() && (v[0] == 'y' || v[0] == 'Y' || v[0] == 't' || v[0] == '1')) {
++            ++plants;
++            CHECK(kv.second == "NAINDP");
++        }
++    }
++    CHECK(plants == 1);
++    CHECK(num(r, "NAINDP", "InfantryCostBonus", 1.0) == doctest::Approx(1.0));
++    CHECK(num(r, "NAINDP", "UnitsCostBonus", 1.0) == doctest::Approx(0.75));
++    CHECK(num(r, "NAINDP", "AircraftCostBonus", 1.0) == doctest::Approx(1.0));
++    CHECK(num(r, "NAINDP", "BuildingsCostBonus", 1.0) == doctest::Approx(1.0));
++    CHECK(num(r, "NAINDP", "DefensesCostBonus", 1.0) == doctest::Approx(1.0));
++}
++
++TEST_CASE("FactoryPlant: a house's plants scale the production cost of their queue only") {
++    if (!have_assets()) return;
++    ra2assets::MapFile map = ra2fixture::mapsmd03_map();
++    ra2engine::World w(map);
++    std::vector<ra2engine::BuildingTypeDef> t(2);
++    t[0].id = "GACNST"; t[0].conyard = true; t[0].cost = 3000; t[0].strength = 1000;
++    t[1].id = "NAINDP"; t[1].cost = 2500; t[1].strength = 600;
++    t[1].plant_bonus = {0.5, 0.75, 1.0, 1.0, 1.0};
++    w.set_economy(t, {}, ra2engine::OreValues{}, 600.0, 0.0, 0.0);
++    const ra2assets::MapCell* c = ra2engine::pick_start_cell(map);
++    REQUIRE(c != nullptr);
++    w.add_building(0, c->x, c->y, 1, 1, 0, 1000, 0, 0.0, true);
++    w.enable_player_economy(0, 5000.0);
++    w.enable_player_economy(1, 5000.0);
++    CHECK(w.plant_cost(0, QueueCat::Vehicle, 1000) == 1000);          // no plant yet
++    const int plant = w.add_building(1, c->x + 4, c->y, 1, 1, 0, 600, 0, 0.0, true);
++    REQUIRE(plant >= 0);
++    CHECK(w.plant_cost(0, QueueCat::Infantry, 200) == 100);
++    CHECK(w.plant_cost(0, QueueCat::Vehicle, 1000) == 750);
++    CHECK(w.plant_cost(0, QueueCat::Naval, 1000) == 750);             // ships are vehicles
++    CHECK(w.plant_cost(0, QueueCat::Aircraft, 1000) == 1000);
++    CHECK(w.plant_cost(0, QueueCat::Structure, 1000) == 1000);
++    CHECK(w.plant_cost(0, QueueCat::Defense, 1000) == 1000);
++    CHECK(w.plant_cost(1, QueueCat::Vehicle, 1000) == 1000);          // another house is not helped
++    CHECK(w.plant_cost(0, QueueCat::Vehicle, 999) == 749);            // ftol truncates
++}
