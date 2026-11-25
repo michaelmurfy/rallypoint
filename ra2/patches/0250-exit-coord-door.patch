@@ -1,0 +1,216 @@
+ExitCoord= leans the factory door (KickOutUnit FUN_00443BC0).
+
+BuildingTypeDef gains exit_x/exit_y parsed from the retail "x,y,z"
+leptons value (z ignored; malformed/absent stays 0,0). exit_cell anchors
+the ring walk at foundation-center-plus-lean floored to a cell: retail
+GAWEAP "512,256,0" lands exactly on a cell center one step off the SE
+corner (validated against real rulesmd/artmd: 5x3 foundation). Zero lean
+is byte-identical to the old anchor; GAPILE's quarter-cell lean is
+cell-neutral. Save format 72. Tests in test_factory.cpp (parser cases,
+real-GAWEAP door, neutral lean lock-in, boxed-in HOLD).
+
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -24,6 +24,7 @@
+ struct BuildingTypeDef {
+     std::string id;                  // "GAPOWR"
+     int fw = 1, fh = 1;              // Art Foundation=WxH
++    int exit_x = 0, exit_y = 0;      // ExitCoord= leptons x,y (z ignored); 0 = legacy anchor
+     int strength = 1;
+     int build_limit = 0;             // rules BuildLimit= (0 = none): at most this many owned per house
+     int armor_ix = 0;                // armor_index(Rules armor)
+--- a/engine/factory.hpp
++++ b/engine/factory.hpp
+@@ -20,9 +20,10 @@
+ // own foundation cells are never free, so the walk naturally lands just
+ // outside the door). It is NOT a fixed constant offset and NOT a per-unit
+ // exit list (a unit's Factory= key is the producer's AbstractType, not a
+-// coordinate). The BuildingType ExitCoord (+0xEC8) sub-cell lean rides on top
+-// of the chosen door cell; our cell-resolution grid drops the sub-cell
+-// fraction (divergence, noted in Task 9). Returns {-1, -1} when no ring cell
++// coordinate). The BuildingType ExitCoord (+0xEC8) lepton lean shifts the
++// anchor before the walk: foundation center in leptons plus the lean, floored
++// to a cell (retail GAWEAP "512,256,0" lands exactly on a cell center one
++// step off the SE corner). Returns {-1, -1} when no ring cell
+ // is free (caller HOLDs the ready slot).
+ // [RE-FALLBACK adjudicated: the game seeds the walk from a lockstep-RNG exit
+ // facing (production.md §1.3, PROBABLE); our single-machine engine uses a
+@@ -33,6 +34,13 @@
+ Cellxy exit_cell(const Building& factory, const BuildingTypeDef& def,
+                  const std::function<bool(int, int)>& free);
+ 
++// Parse an ExitCoord= "x,y,z" rules value into leptons x,y (z ignored).
++// Trims a trailing ';' comment, trims whitespace, and requires two or three
++// strict integers; anything else (absent, malformed) leaves x/y at 0 and
++// returns false. Retail values: GAWEAP/NAWEAP/YAWEAP "512,256,0",
++// GAPILE/YABRCK "-64,64,0" (leptons, 256/cell).
++bool parse_exit_coord(const std::string& s, int& x, int& y);
++
+ // Index of the factory a completed unit exits from: the alive, Idle, owned
+ // building whose type is in `factory_types` that is flagged `primary`; if none
+ // is flagged, the recovered default [RE-GATE APPLIED: production.md §1.2 —
+--- a/engine/factory.cpp
++++ b/engine/factory.cpp
+@@ -1,9 +1,53 @@
+ #include "factory.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ #include <algorithm>
++#include <cstdlib>
++#include <string>
+ 
+ namespace ra2engine {
+ 
++namespace {
++// Floor division for the ExitCoord anchor (anchor leptons can in theory go
++// negative; C++ truncation would round the wrong way there).
++int floor_div_256(int n) {
++    int q = n / 256, r = n % 256;
++    if (r != 0 && n < 0) --q;
++    return q;
++}
++// Strict whole-string integer (no trailing junk), like Art::docking_offset.
++bool strict_int(const std::string& f, int& v) {
++    if (f.empty()) return false;
++    char* end = nullptr;
++    const long r = std::strtol(f.c_str(), &end, 10);
++    if (end == f.c_str() || *end != '\0') return false;
++    v = static_cast<int>(r);
++    return true;
++}
++}  // namespace
++
++bool parse_exit_coord(const std::string& s, int& x, int& y) {
++    x = 0; y = 0;
++    std::string v = s;
++    const std::string::size_type semi = v.find(';');
++    if (semi != std::string::npos) v = v.substr(0, semi);
++    int vals[3]; int count = 0;
++    std::string::size_type pos = 0;
++    while (true) {
++        const std::string::size_type comma = v.find(',', pos);
++        std::string field = (comma == std::string::npos) ? v.substr(pos) : v.substr(pos, comma - pos);
++        const std::string::size_type b = field.find_first_not_of(" \t");
++        const std::string::size_type e = field.find_last_not_of(" \t");
++        field = (b == std::string::npos) ? std::string() : field.substr(b, e - b + 1);
++        if (count >= 3 || !strict_int(field, vals[count])) return false;
++        ++count;
++        if (comma == std::string::npos) break;
++        pos = comma + 1;
++    }
++    if (count < 2) return false;
++    x = vals[0]; y = vals[1];
++    return true;
++}
++
+ Cellxy exit_cell(const Building& factory, const BuildingTypeDef& def,
+                  const std::function<bool(int, int)>& free) {
+     // [RE-GATE APPLIED: production.md §1.3 — KickOutUnit FUN_00443BC0: a
+@@ -14,16 +58,19 @@
+     // axis/diagonal rays — a factory free only on a non-ray cell (e.g.
+     // (cx+fw, cy+fh) on a wide foundation) must still find its door, matching
+     // the original occupant-walk. The radius expands so wide foundations still
+-    // find a door. ExitCoord's sub-cell lean is dropped at cell resolution
+-    // (Task 9 divergence).]
++    // find a door. ExitCoord's sub-cell lean (BuildingType +0xEC8,
++    // KickOutUnit FUN_00443BC0) anchors the walk: foundation center in leptons
++    // plus the lean, floored to a cell — retail GAWEAP "512,256,0" lands
++    // exactly on a cell center one step off the SE corner. Zero lean is
++    // byte-identical to the old anchor.]
+     // [RE-FALLBACK adjudicated: the original seeds the walk facing from the
+     // lockstep RNG; we use a deterministic order — within each ring, cells are
+     // ordered SOUTH-first (dy descending), then column-centered (|dx|
+     // ascending), then west-before-east (dx ascending). At r=1 this makes the
+     // SOUTH door cell (cx+fw/2, cy+fh) the very first probe, preserving the
+     // door-free result; the same reachable set as the original, deterministic.]
+-    const int ax = factory.cx + def.fw / 2;   // anchor: foundation center cell
+-    const int ay = factory.cy + def.fh / 2;
++    const int ax = floor_div_256(factory.cx * 256 + def.fw * 128 + def.exit_x);
++    const int ay = floor_div_256(factory.cy * 256 + def.fh * 128 + def.exit_y);
+     const int max_r = std::max(def.fw, def.fh) + 1;
+     auto iabs = [](int v) { return v < 0 ? -v : v; };
+     for (int r = 1; r <= max_r; ++r) {
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2935,6 +2935,9 @@
+         // gF [RE: docs/re/mcv-deploy.md]: DeployFacing= is a 0..7 direction read
+         // as (default>>5) and stored <<5 (FUN_0045FE40 @0x460C5C); default 0x80.
+         d.deploy_facing    = ((int)rules.section_double(id, "DeployFacing", 4.0) & 7) << 5;
++        // ExitCoord= "x,y,z" leptons (KickOutUnit FUN_00443BC0); malformed or
++        // absent stays 0,0 (the legacy anchor).
++        ra2engine::parse_exit_coord(rules.section_string(id, "ExitCoord", ""), d.exit_x, d.exit_y);
+ 
+         BuildingArt slot;
+         try {
+--- a/engine/save_fields.hpp
++++ b/engine/save_fields.hpp
+@@ -1168,6 +1168,7 @@
+     io(ar, v.immune);          // Immune= (v69)
+     io(ar, v.reveal_to_all);   // RevealToAll= (v71)
+     io(ar, v.radar_visible);   // RadarVisible= (v71)
++    io(ar, v.exit_x); io(ar, v.exit_y);   // ExitCoord= (v72)
+     io(ar, v.w6);   // v25: W6-04-04 wall damage levels
+     io(ar, v.gatt);                 // Rallypoint: IsGattling
+     io(ar, v.gatt_weapons);
+--- a/engine/savegame.hpp
++++ b/engine/savegame.hpp
+@@ -39,7 +39,7 @@
+ // Bump on ANY change to what is serialized (a field added to a visitor, a
+ // section's layout). A save with a different version is listed but refused
+ // on load -- the original's FileEntryClass::IsWrongVersion.
+-constexpr std::uint32_t kFormatVersion = 71;   // 71: RevealToAll=/RadarVisible= (BuildingTypeDef::reveal_to_all/radar_visible) on top of 70: CloakingSpeed= (AnType::cloak_fade_frames, AnUnit::cloak_left_frames) on top of 69: Immune= (BuildingTypeDef::immune) on top of 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
++constexpr std::uint32_t kFormatVersion = 72;   // 72: ExitCoord= (BuildingTypeDef::exit_x/exit_y) on top of 71: RevealToAll=/RadarVisible= (BuildingTypeDef::reveal_to_all/radar_visible) on top of 70: CloakingSpeed= (AnType::cloak_fade_frames, AnUnit::cloak_left_frames) on top of 69: Immune= (BuildingTypeDef::immune) on top of 68: Tank Bunker (UnitW7 bunker_of/bunker_target/bunker_dmg/bunker_rof/bunker_range, UnitTypeW7::bunkerable, BldW7::bunker_unit, BuildingTypeDef::bunker, DepthRules bunker_*, UnitTypeW7::type_immune TypeImmune=, BuildingTypeDef::detect_disguise_range) on top of 67: FactoryPlant cost bonuses (BuildingTypeDef::plant_bonus); 66: Yuri specials (SwParams dominator/mutate/chaos/overload keys, UnitTypeW7::psychedelic, UnitW7 psy_shot/confused_until); 65: Psychic Tower (BuildingTypeDef mc_capacity/mc_infinite, Building::mc_victims) on top of 64: BuildingTypeDef build_limit (BuildLimit= for buildings) on top of 63: Floating Disc DrainTarget/DrainingMe (Unit drain_target replaces drain_frames, Building drained_by) + AbilityRules crush_warhead (Magnetron drop blast) on top of 62: Rallypoint 0057 UnitTgt::archive_self (call-for-help ArchiveTarget==self) on top of 61: UnitClass turret AI parity (Unit::turret_idle_frames, UnitTypeW7::turret_spins) on top of 60: AISlaveMinerNumber + SlaveMiner*Scan scoot (World scans, Unit/Building slave_guard_frames) on top of 59: undeployed SMIN SlaveManager on Unit (slave_master_is_unit + is_slave_master + spawn stamp fields; UnitTypeDef Enslaves=) on top of 58: World::house_country_bonuses_ (HouseType country bonuses) on top of 57: [RP-AI-BOOST] AIBoost= on SkirmishConfig + AiHouseConfig on top of 56: UseMinDefenseRule / MinimumAIDefensiveTeams on AiTeamConfig (stock base-guard trigger split) on top of 55: Rallypoint Grinder/Bio Reactor (BuildingTypeDef grinding/infantry_absorb/extra_power/passengers, UnitCombat/UnitVet soylent) on top of 54: Rallypoint --launch AutoRepair=/CrateMinimum= on SkirmishConfig on top of 53: AlliesAllowed= on top of 52: Rallypoint Magnetron save (AbilityRules mag_*, Unit/UnitCombat weight_milli, Unit magnet_*) on top of 51: Rallypoint Floating Disc DrainWeapon (WeaponSlot::drain_weapon, BuildingTypeDef drainable/resource_destination, Unit w_drain_weapon/drain_frames) on top of 50: Rallypoint IsGattling (Unit/UnitCombat/BuildingTypeDef gatt + weapons, Building::gatt_timer) on top of 49: skirmish/MP mind control -- UnitTypeW7::mind_control + UnitW7::mc_orig_house on top of 48: Rallypoint Slave Miner (Unit/Building/BuildingTypeDef Enslaves= fields, World slave_scan_/proto); 47: w9fix-menus SkirmishConfig::mode_rules (game type rules overlay) on top of 46; 46: w9fix-match -- World diplomacy rules (allies_allowed_/ally_change_allowed_), game_over_, observer_reveal_, victory_defeats_seen_ on top of 45; 45: w8fix-place -- World::build_static_ (placement BuildMask) on top of 44; 44: w8fix-save -- AnUnit para_passes/para_overfly/para_timer (paradrop Approach/Overfly) on top of 43; 43: w8fix-layer -- Occupancy deck plane (owner_d_/spots_d_) + per-unit layer lay_, on top of 42; 42: wave-8 fix (w8fix-misc: UnitW6::hover_spin, the Robot Tank power-off spin); 40: fv7c -- per-house masks 32-bit (Unit::seen_by_mask, AnUnit::detected_mask, World w5_hide_/w5_own_; were uint8_t, capped at 8 houses) + UnitW7::missile_holds removed (dead since the spawn-manager merge); 39 (+ w7fix-move: UnitCombat/Unit loco -- locomotor kind, acceleration keys, speed percentage, Drive/Ship track, hover ramp, blocked-move timers; World::loco_rules_; AnType jj_accel/strafe/fighter/slowdown_distance, AnUnit jj_speed/fly_throttle/strafe_left); 39: w7fix-combat mission model (UnitTgt mission/scan timer/override/home/attack-move/help/crush warn/ROF parts, UnitTypeTgt W7 keys, World combat-W7 rules + house IQ + hit log) on top of 38; 38: wave-7 presentation (InfAnimState erupt/air; World rad/nuke/storm_inf_death_ + frag_events_) on top of 37; 37: wave-7 AI (Unit::ai guard clock, AiHouseConfig auto_deploy_frames / roster_to_protect) on top of 36; 36: wave-7 units + air/naval merged (35 + AnType crash weapon / spawner range / sonic / DistributedFire / RadarInvisible / HoverAttack / AirportBound, AnUnit spawn-manager nodes + launch hold + loaner + crash_hp + naval_cell + shot list, AnWorld sonic waves, SwParams C4Warhead); 35: wave-7 fix (units) -- UnitTypeW7 / UnitW7 / BldW7 (unit_w7.hpp: role flags, Mirage blink, drone paralysis, deploy timers, depot timer, mind-control capacity); 34: Net L0 whole-frame int timers (Unit::rearm_frames, Building def/garrison_rearm_frames + iron_left_frames, AnUnit surface/iron/chrono_left_frames were double seconds) + World::session_seed_ / SkirmishConfig::session_seed (Net L0 session seed); 33: NET L1 -- Unit::selected removed (the selection is local UI state, commands carry unit ids); 32: L2 per-house economy (World::econ_ wallets + six queues + backlog/hold for player AND AI houses, human mask, latched outcomes, cheer flags; HouseAiRec loses credits/queues; wallet_hint_ removed; SceneSave loses the wallet/queues; the QBKL section is no longer written); 31: warhead BombDisarm= (WeaponSlot + UnitTypeW6 bomb_disarm, GetFireError gate); 30: R-210 bridges and cliffs (Unit::on_deck, BldTypeW6::gate, World deck grids); 29: W6 fix #2 (missions): Unit/UnitCombat tg (rules id, Insignificant/LegalTarget/ImmuneToPsionics/GuardRange, IsInPlayfield, area guard), Building tg, World playfield/usable area + per-house handicap; 28: wave-6 #4 units/weapons (WeaponSlot/WeaponStats/WeaponSpec Burst, UnitCombat/Unit/Building w6: burst index + type data); walls' damage stages, map wall overlays, warhead wall keys, IFV elite weapons) merged with 27; 27: W6-05-04 MapTriggerSystem::timer_text_ (action 103 TimerText label); 26: W6 skirmish AI (BuildingTypeDef wall/insignificant, HouseAiRec anger table + hate-delay clock, AiHouseConfig virtual purifiers) merged with 25; 25: W6-06-04 campaign trigger particle systems section PFX; 24: Unit::w_mind_control (campaign mind-control shot captures, no damage); 23: P4 building death weapons (BldTypeW5 explodes/delay_kill_eligible/death) + WeaponSpec delay kill; 22: W5-A campaign host state (building TurnOff/On, AI SW quarry, FireSale houses, teams that left the map, ResizeView area) + World wall leak mask / SW quarry + AiHouseConfig fire_superweapons; 21: W5-E2 Building::power_off; 20: W5-B infantry sub-cell spots (Occupancy spots_/inf_) + Unit spot/sub offset/speed/crush/is_infantry/land-speed loco + land speed/crush/elevation rules + AffectsAllies + projectile SubjectTo*; 19: W5-E audio section AUDI (music track / on); 18: wave-5 abilities (stolen tech, prism/tesla/gap, tech heal, OpenTopped, DeployTime, defuse, IFV swap, Boris, squid, ship C4, vet abilities; BldTypeW5/UnitTypeW5/BldW5/UnitW5/WorldW5 + WeaponSpec projectile); 17: W5-F build-queue backlog/hold section QBKL + load_world index range checks; 16: W4-SQ paradrop fall (AnUnit para_alt, SwParams parachute_fall) + team airdrop flag + player-order queue + passive houses; 15: W4 per-type rocket blocks/warheads + RocketLocomotion flight + homing projectiles; 14: W3-B infantry sequence/fear state + warhead InfDeath/ProneDamage; 13: W2-SK ore mines + harvester/AI/spy/depot/unit-special state; 12: w2fix-campaign PlayerControl/pair alliances/entered events/mind control; 11: W2-AR-20 CRC-32 trailer over the whole file; 10: W2-AN air/naval/SW state; 9: W2-GA-03 FogOfWar flag; 2: P10 campaign; 3: gap-A queues/roster flags; 4: gap-C weapon/defense; 5: gap-D AI; 6: gap-D AI + gF MCV deploy combined; 7: G16 garrison/bridge state; 8: skirmish-page game_speed/mcv_redeploys in the config
+ 
+ // --- archives ---------------------------------------------------------------
+ // BasicWriter<false> = Writer (the save file); BasicWriter<true> = SyncWriter,
+--- a/tests/test_factory.cpp
++++ b/tests/test_factory.cpp
+@@ -71,3 +71,49 @@
+     set_primary(bs, ftypes, /*b_idx=*/999);        // out of range -> no crash, no change
+     CHECK(bs[0].primary);
+ }
++
++TEST_CASE("factory: parse_exit_coord reads retail x,y,z leptons, strict") {
++    int x = -1, y = -1;
++    CHECK(parse_exit_coord("512,256,0", x, y));
++    CHECK(x == 512); CHECK(y == 256);
++    CHECK(parse_exit_coord("512,256,0 ;must be center of cell", x, y));   // retail YAWEAP comment
++    CHECK(x == 512); CHECK(y == 256);
++    CHECK(parse_exit_coord("-64,64,0", x, y));   // retail GAPILE/YABRCK lean
++    CHECK(x == -64); CHECK(y == 64);
++    CHECK(parse_exit_coord("1,2", x, y));         // z optional
++    CHECK(x == 1); CHECK(y == 2);
++    CHECK_FALSE(parse_exit_coord("", x, y));
++    CHECK(x == 0); CHECK(y == 0);
++    CHECK_FALSE(parse_exit_coord("abc,1,0", x, y));
++    CHECK_FALSE(parse_exit_coord("1", x, y));
++    CHECK_FALSE(parse_exit_coord("1,2,3,4", x, y));
++    CHECK_FALSE(parse_exit_coord("1.5,2,0", x, y));
++}
++
++TEST_CASE("factory: ExitCoord= leans the door anchor (retail GAWEAP check)") {
++    // Real GAWEAP: 5x3 foundation, ExitCoord=(512,256,0). Center leptons
++    // (cx*256+640, cy*256+384) + lean = cell-center (cx+4, cy+2), the SE
++    // corner foundation cell, so the walk exits just off the SE corner.
++    Building b = fac(0, 10, 20, 5, 3);
++    BuildingTypeDef d = def("GAWEAP", 5, 3);
++    d.exit_x = 512; d.exit_y = 256;
++    auto in_foundation = [](int x, int y) { return x >= 10 && x < 15 && y >= 20 && y < 23; };
++    Cellxy e = exit_cell(b, d, [&](int x, int y) { return !in_foundation(x, y); });
++    CHECK(e.x == 14);
++    CHECK(e.y == 23);
++    CHECK_FALSE(in_foundation(e.x, e.y));
++    // GAPILE's quarter-cell lean (-64,+64) is cell-neutral: same door as zero lean.
++    BuildingTypeDef g = def("GAPILE", 3, 2);
++    g.exit_x = -64; g.exit_y = 64;
++    Building bg = fac(1, 10, 20, 3, 2);
++    auto in_gap = [](int x, int y) { return x >= 10 && x < 13 && y >= 20 && y < 22; };
++    Cellxy e2 = exit_cell(bg, g, [&](int x, int y) { return !in_gap(x, y); });
++    BuildingTypeDef z = def("GAPILE", 3, 2);   // zero lean
++    Cellxy e3 = exit_cell(bg, z, [&](int x, int y) { return !in_gap(x, y); });
++    CHECK(e2.x == e3.x);
++    CHECK(e2.y == e3.y);
++    CHECK(e2.x == 11); CHECK(e2.y == 22);       // south door, unchanged
++    // Boxed-in still HOLDs, lean or not.
++    Cellxy e4 = exit_cell(b, d, [](int, int) { return false; });
++    CHECK(e4.x == -1); CHECK(e4.y == -1);
++}
