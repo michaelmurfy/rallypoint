@@ -2,6 +2,8 @@
 //   open scripts/ui-preview/index.html   (add #fresh for first run, #steam for a detected install,
 //   #ra2 for Red Alert 2 mode (#ra2nofiles no game files, #ra2noengine, #ra2nomaps, #ra2slow loading maps, #ra2maperr unreadable map), #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
 //   #ra2guestchanged: the host changes the speed 2.5 s in, #ra2guestready: a guest who is ready)
+//   Sending maps to the room: #share (connected, three other players), #sharepending (an offer waiting), #shareconflict (an offer with the
+//   name of a map you have), #sharenosupport (an old server), #shareempty (nobody else), #shareoffline; add #ra2 for Red Alert 2 (#ra2share)
 const hash = location.hash;
 const fakeMaps = () => {
   const names = ["! 1v1 ! super no money map v2", "!!! no money !!! lots of fun3", "!2v2 cxn", "Tournament Desert", "Twilight Flame", "Defcon 6", "Mountain Pass", "Arctic Convoy", "Bear Town", "Fallen Empire", "Winter Wolves", "Dust Bowl 2v2", "Golden Gate", "Oasis 3v3"];
@@ -44,6 +46,7 @@ const handlers = {
   ra2_detect: () => (hash.includes("steam") ? [{ dir: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Command & Conquer Red Alert II" }] : []),
   ra2_check_dir: ({ path }) => (/RA2|Red Alert/i.test(path) ? (state.cfg.ra2.game_dir = path.trim(), { ok: true, message: "Yuri's Revenge found" }) : path.trim() ? { ok: false, message: "That folder has no Red Alert 2 and Yuri's Revenge (ra2md.mix)" } : { ok: false, message: "Choose the folder that contains ra2md.mix" }),
   ra2_set_settings: (a) => { Object.assign(state.cfg.ra2, a); },
+  ra2_set_gfx: ({ gfx }) => { state.cfg.ra2.gfx = gfx; },
   ra2_maps: async () => (await new Promise((r) => setTimeout(r, hash.includes("slow") ? 60000 : 200)), hash.includes("nomaps") ? [] : ra2Maps),
   ra2_map_view: ({ file }) => {
     if (hash.includes("maperr")) throw new Error("the map file is truncated");
@@ -162,6 +165,47 @@ const handlers = {
   launch_game: (a) => { window.__lastLaunch = a; },
   launch_editor: (a) => { window.__lastEditor = a; },
 };
+
+// ---- sending maps to the room (mapshare.js). One fake room; offers advance with the clock, whatever the page does.
+const shareOn = hash.includes("share") && !hash.includes("shareoffline");
+const shareRa2 = hash.includes("ra2");
+const sh = { auto: false, id: 1, incoming: [], outgoing: [], peers: hash.includes("shareempty") ? [] : [
+  { vip: "10.77.0.1", name: "Sam", game: shareRa2 ? "ra2" : "generals", master: true },
+  { vip: "10.77.0.3", name: "Dana", game: shareRa2 ? "ra2" : "generals", master: false },
+  { vip: "10.77.0.4", name: "Kim", game: shareRa2 ? "generals" : "ra2", master: false }] };
+const shGame = shareRa2 ? "ra2" : "generals";
+if (hash.includes("sharepending") || hash.includes("shareconflict")) sh.incoming.push({ id: 41, from: "10.77.0.1", from_name: "Sam", name: shareRa2 ? "Dune Patrol.map" : "Tournament Desert", game: shGame, size: 2200000, players: 4, master: true, conflict: hash.includes("shareconflict"), state: "prompt", percent: 0, note: "", installed: null, seconds_left: 100, t: 0 });
+const shTick = () => {
+  const now = Date.now();
+  for (const o of sh.outgoing) {
+    if (o.state === "waiting" && now - o.t > 2500) { if (o.to === "10.77.0.3") { o.state = "declined"; o.note = "Declined"; } else { o.state = "sending"; o.t = now; } }
+    else if (o.state === "sending") { o.percent = Math.min(100, Math.round((now - o.t) / 60)); if (o.percent >= 100) { o.state = "done"; o.note = "Delivered"; } }
+  }
+  for (const i of sh.incoming) {
+    if (i.state === "receiving") { i.percent = Math.min(100, Math.round((now - i.t) / 50)); if (i.percent >= 100) { i.state = "done"; i.installed = i.installed || i.name; i.note = `Saved as ${i.installed}` + (i.how === "keep" ? ", because you have a different map with that name" : i.how === "replace" ? ", in place of your map of that name (the old one is kept in the backup folder)" : ""); } }
+  }
+};
+Object.assign(handlers, {
+  map_share_view: () => {
+    shTick();
+    if (!shareOn) return { supported: null, connected: false, game: shGame, auto_accept: false, peers: [], incoming: [], outgoing: [] };
+    return { supported: hash.includes("sharenosupport") ? false : true, connected: true, game: shGame, auto_accept: sh.auto, peers: sh.peers.map((p) => ({ ...p, can_receive: p.game === shGame })), incoming: sh.incoming.map(({ t, how, ...i }) => i), outgoing: sh.outgoing.map(({ t, ...o }) => o) };
+  },
+  map_share_send: async ({ name, to }) => {
+    if (hash.includes("sharenosupport")) throw new Error("This server does not support sending maps yet. Its owner needs to update it.");
+    for (const v of to) { const p = sh.peers.find((x) => x.vip === v); sh.outgoing.push({ id: sh.id++, to: v, to_name: p.name, name, game: shGame, state: "waiting", percent: 0, note: "", t: Date.now() }); }
+    return to.length;
+  },
+  map_share_reply: ({ from, id, reply }) => {
+    const i = sh.incoming.find((x) => x.from === from && x.id === id); if (!i) return;
+    if (reply === "decline" || reply === "block") { i.state = "failed"; i.note = reply === "block" ? "Declined, and you blocked this player's maps" : i.state === "receiving" ? "Cancelled" : "Declined"; return; }
+    i.state = "receiving"; i.t = Date.now(); i.how = i.conflict ? (reply === "replace" ? "replace" : "keep") : ""; i.installed = i.conflict && reply !== "replace" ? i.name + " (2)" : i.name;
+  },
+  map_share_cancel: ({ to, id }) => { const o = sh.outgoing.find((x) => x.to === to && x.id === id); if (o) { o.state = "cancelled"; o.note = "Cancelled"; } },
+  map_share_dismiss: ({ incoming, who, id }) => { const l = incoming ? sh.incoming : sh.outgoing; const k = l.findIndex((x) => (incoming ? x.from : x.to) === who && x.id === id); if (k >= 0) l.splice(k, 1); },
+  map_share_auto_accept: ({ on }) => { sh.auto = on; },
+});
+if (shareOn) { const base = handlers.relay_status; handlers.relay_status = () => "Connected as 10.77.0.2"; void base; const bd = handlers.relay_diagnostics; handlers.relay_diagnostics = () => ({ ...(hash.includes("online") ? bd() : { rtt_ms: 40, avg_ms: 45, jitter_ms: 5, loss_pct: 0, samples: 20, up_kbps: 30, down_kbps: 50, server_identity: "3F2A-91C0-77AB-0E15", identity_saved: true, ai_level: 0, desync: null, server: null }), room_master: false }); }
 window.__TAURI__ = {
   core: { invoke: async (cmd, args) => { if (!(cmd in handlers)) throw new Error("mock: no handler for " + cmd); return handlers[cmd](args || {}); } },
   webview: { getCurrentWebview: () => ({ onDragDropEvent: () => {} }) },

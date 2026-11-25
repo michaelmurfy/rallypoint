@@ -1,0 +1,830 @@
+Graphics settings (RA2_GFX), picture only.
+
+How the engine draws: a flat 2D isometric renderer on SDL_Renderer (GPU when SDL has one, software
+otherwise): SHP and terrain art blitted as textures, voxel units rasterised on the CPU into sprites,
+shroud as per-cell tiles, no geometry, no shaders. So MSAA and anisotropic filtering have nothing to
+act on and are not offered; sprite edges are smoothed by the 2x EPX upscaler of 0103.
+- Scale= nearest / integer / bilinear / sharp / auto and Smooth= for the canvas-to-window step.
+- Sprites= aa (default, 0103) / scale2x (classic EPX) / off.
+- Bloom=, Vignette=, Grade= on the world view only, from SDL blends (post_fx.cpp), no shaders.
+- ZoomSmooth= glides the wheel zoom to its target around the pointer; ZoomRange=wide widens the range.
+Defaults are the old picture exactly. Tests: test_gfx_settings.cpp, test_pixel_scale.cpp.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 625b289..14431d9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -345,7 +345,7 @@ target_sources(ra2assets_tests PRIVATE engine/ttfont.cpp tests/test_ttfont.cpp)
+ # OptionsClass defaults/clamps/save list, slider/trackbar math, the recovered
+ # edge-scroll table) [RE: docs/re/options.md]. SDL-free; main.cpp owns the UI.
+ target_sources(ra2assets_tests PRIVATE tests/test_settings.cpp engine/settings.cpp)
+-target_sources(ra2assets_tests PRIVATE tests/test_logical_canvas.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_logical_canvas.cpp tests/test_gfx_settings.cpp tests/test_pixel_scale.cpp engine/pixel_scale.cpp)
+ # G0 --play harness: the pure script parser / assertion evaluator / play_hash.
+ target_sources(ra2assets_tests PRIVATE tests/test_play_script.cpp engine/play_script.cpp)
+ # P7 Save/Load [RE: docs/re/saveload.md]: the archive core, field visitors,
+diff --git a/cmake/ra2_sources.cmake b/cmake/ra2_sources.cmake
+index 48d70c1..6e25bd6 100644
+--- a/cmake/ra2_sources.cmake
++++ b/cmake/ra2_sources.cmake
+@@ -95,6 +95,8 @@ set(RA2_ENGINE_SOURCES
+     ${RA2_ROOT}/engine/platform_os.cpp
+     ${RA2_ROOT}/engine/os_profiler.cpp
+     ${RA2_ROOT}/engine/texture_cache.cpp
++    ${RA2_ROOT}/engine/pixel_scale.cpp
++    ${RA2_ROOT}/engine/post_fx.cpp
+     ${RA2_ROOT}/engine/iso_project.cpp
+     ${RA2_ROOT}/engine/iso_renderer.cpp
+     ${RA2_ROOT}/engine/world.cpp
+diff --git a/engine/gfx_settings.hpp b/engine/gfx_settings.hpp
+new file mode 100644
+index 0000000..bc54f79
+--- /dev/null
++++ b/engine/gfx_settings.hpp
+@@ -0,0 +1,173 @@
++#pragma once
++// Presentation settings (launcher: Settings > Graphics for Red Alert 2). Picture only: nothing here
++// reaches the simulation, the commands or the saves. One environment variable carries them all:
++//   RA2_GFX="Scale=sharp;Smooth=1;Sprites=aa;Bloom=1;Vignette=1;Grade=warm;ZoomSmooth=1;ZoomRange=wide"
++// Keys are case-insensitive, unknown keys and bad values are ignored, an empty or absent variable is
++// the defaults, and the defaults are exactly the picture of builds before these settings existed.
++#include <algorithm>
++#include <cctype>
++#include <cmath>
++#include <cstdint>
++#include <cstdlib>
++#include <string>
++
++namespace ra2engine {
++
++// How the finished canvas reaches the window.
++enum class ScaleFilter {
++    Auto,       // whole scales go through SDL's integer scale, fractional ones are drawn by SDL (the old behaviour)
++    Nearest,    // hard pixels at any scale
++    Integer,    // the largest whole scale, black bars around it
++    Bilinear,   // plain linear filtering
++    Sharp,      // nearest up to the next whole scale, then linear: even pixels, one pixel of softening at edges
++};
++// Which pixel-art upscaler the unit, building and effect sprites go through (texture_cache.cpp).
++enum class SpriteUp {
++    Aa,         // 2x EPX with sub-pixel corner anti-aliasing (the old behaviour)
++    Scale2x,    // classic EPX / Scale2x: exact-colour corner rule, no new colours
++    Off,        // the art pixels as they are
++};
++enum class Grade { Standard, Warm, Cool, Vivid };
++
++struct GfxSettings {
++    ScaleFilter scale = ScaleFilter::Auto;
++    int smooth = 0;          // 0..2: a linear copy blended over the nearest/integer picture (post-scale softening)
++    SpriteUp sprites = SpriteUp::Aa;
++    int bloom = 0;           // 0 off, 1 subtle, 2 strong
++    int vignette = 0;        // 0 off, 1 subtle, 2 strong
++    Grade grade = Grade::Standard;
++    bool zoom_smooth = false;   // the wheel glides to its target instead of jumping in eighths
++    bool zoom_wide = false;     // zooms out to half the screen's own pixel density, in to 3 screen pixels per world pixel
++    bool world_fx() const { return bloom > 0 || vignette > 0 || grade != Grade::Standard; }
++};
++
++inline std::string gfx_lower(std::string s) {
++    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    return s;
++}
++inline int gfx_level(const std::string& v, int hi) {
++    if (v == "off" || v == "0" || v == "no") return 0;
++    if (v == "low" || v == "subtle" || v == "1") return 1;
++    if (v == "high" || v == "strong" || v == "2") return std::min(2, hi);
++    return -1;
++}
++inline bool gfx_on(const std::string& v, bool& out) {
++    if (v == "1" || v == "on" || v == "yes" || v == "true") { out = true; return true; }
++    if (v == "0" || v == "off" || v == "no" || v == "false") { out = false; return true; }
++    return false;
++}
++
++// Parses "Key=value;Key=value". Anything it does not understand keeps the default.
++inline GfxSettings parse_gfx(const char* text) {
++    GfxSettings g;
++    if (!text) return g;
++    const std::string all = text;
++    std::size_t at = 0;
++    while (at <= all.size()) {
++        std::size_t end = all.find(';', at);
++        if (end == std::string::npos) end = all.size();
++        const std::string item = all.substr(at, end - at);
++        at = end + 1;
++        const std::size_t eq = item.find('=');
++        if (eq == std::string::npos) continue;
++        auto trim = [](std::string s) {
++            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
++            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
++            return s;
++        };
++        const std::string k = gfx_lower(trim(item.substr(0, eq))), v = gfx_lower(trim(item.substr(eq + 1)));
++        bool b = false;
++        int n = 0;
++        if (k == "scale") {
++            if (v == "auto") g.scale = ScaleFilter::Auto;
++            else if (v == "nearest") g.scale = ScaleFilter::Nearest;
++            else if (v == "integer") g.scale = ScaleFilter::Integer;
++            else if (v == "bilinear") g.scale = ScaleFilter::Bilinear;
++            else if (v == "sharp") g.scale = ScaleFilter::Sharp;
++        } else if (k == "smooth") {
++            if ((n = gfx_level(v, 2)) >= 0) g.smooth = n;
++        } else if (k == "sprites") {
++            if (v == "aa" || v == "epx") g.sprites = SpriteUp::Aa;
++            else if (v == "scale2x") g.sprites = SpriteUp::Scale2x;
++            else if (v == "off" || v == "none") g.sprites = SpriteUp::Off;
++        } else if (k == "bloom") {
++            if ((n = gfx_level(v, 2)) >= 0) g.bloom = n;
++        } else if (k == "vignette") {
++            if ((n = gfx_level(v, 2)) >= 0) g.vignette = n;
++        } else if (k == "grade") {
++            if (v == "standard" || v == "off") g.grade = Grade::Standard;
++            else if (v == "warm") g.grade = Grade::Warm;
++            else if (v == "cool") g.grade = Grade::Cool;
++            else if (v == "vivid") g.grade = Grade::Vivid;
++        } else if (k == "zoomsmooth") {
++            if (gfx_on(v, b)) g.zoom_smooth = b;
++        } else if (k == "zoomrange") {
++            if (v == "wide") g.zoom_wide = true;
++            else if (v == "normal") g.zoom_wide = false;
++        }
++    }
++    return g;
++}
++
++// The process's settings, read once (RA2_GFX).
++inline const GfxSettings& gfx() {
++    static const GfxSettings g = parse_gfx(std::getenv("RA2_GFX"));
++    return g;
++}
++
++// Vignette: the darkening (0..255 alpha of black) at normalised position (u, v) in 0..1 of the view.
++// Zero inside an ellipse that touches the middle 60% of each side, rising smoothly to `corner` at the corners.
++inline int vignette_alpha(double u, double v, int level) {
++    if (level <= 0) return 0;
++    const double dx = (u - 0.5) * 2.0, dy = (v - 0.5) * 2.0;   // -1..1
++    const double r = std::sqrt(dx * dx + dy * dy) / std::sqrt(2.0);   // 0 centre .. 1 corner
++    const double t = std::max(0.0, (r - 0.45) / 0.55);
++    const double s = t * t * (3.0 - 2.0 * t);   // smoothstep
++    const double corner = level == 1 ? 80.0 : 150.0;
++    return static_cast<int>(std::lround(s * corner));
++}
++
++// Colour grade as a multiplier on the world picture (r, g, b in 0..255; never above 255, so a grade only
++// takes light away) and `gain`, the alpha of an additive copy of the picture on itself (0 = none).
++struct GradeParams { std::uint8_t r, g, b; std::uint8_t gain; };
++inline GradeParams grade_params(Grade g) {
++    switch (g) {
++        case Grade::Warm: return {255, 244, 222, 0};
++        case Grade::Cool: return {226, 240, 255, 0};
++        case Grade::Vivid: return {255, 255, 255, 40};
++        default: return {255, 255, 255, 0};
++    }
++}
++
++// Bloom strength: alpha of the additive glow, and how many times the bright pass squares the picture
++// (3 squares = 8th power, 4 = 16th: only things near white glow).
++struct BloomParams { std::uint8_t alpha; int squares; };
++inline BloomParams bloom_params(int level) {
++    return level >= 2 ? BloomParams{150, 3} : level == 1 ? BloomParams{120, 4} : BloomParams{0, 0};
++}
++
++// Zoom ranges on top of logical_canvas.hpp's: `wide` takes the minimum down to half the screen's pixel
++// density (a view with at most 4x the screen's pixels) and the maximum to 3 screen pixels per world pixel.
++inline double zoom_min_for(double screen_px_per_canvas_px, bool wide) {
++    const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
++    const double normal = std::max(0.25, std::min(0.75, 1.0 / s));
++    return wide ? std::max(0.15, std::min(normal, 0.5 / s)) : normal;
++}
++inline double zoom_max_for(double screen_px_per_canvas_px, bool wide) {
++    const double s = screen_px_per_canvas_px > 0.0 ? screen_px_per_canvas_px : 1.0;
++    return std::max(1.0, (wide ? 3.0 : 2.0) / s);
++}
++// A wheel notch in smooth mode: 18% either way (a geometric step feels the same near and far), clamped.
++inline double zoom_step_smooth(double target, int dir, double zmin, double zmax) {
++    const double z = dir > 0 ? target * 1.18 : target / 1.18;
++    return std::max(zmin, std::min(zmax, z));
++}
++// One frame of the glide towards the target: exponential, ~90% of the way in 150 ms, independent of the
++// frame rate; settles exactly on the target.
++inline double zoom_glide(double cur, double target, double dt) {
++    const double k = 1.0 - std::exp(-std::max(0.0, dt) * 15.0);
++    const double z = cur + (target - cur) * k;
++    return std::fabs(z - target) < std::max(0.002, target * 0.002) ? target : z;
++}
++
++}  // namespace ra2engine
+diff --git a/engine/main.cpp b/engine/main.cpp
+index 1ece51d..27a5efc 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -62,6 +62,8 @@ static char* ra2_cli_pref_path() {
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "gfx_settings.hpp"   // RA2_GFX presentation settings
++#include "post_fx.hpp"        // glow, vignette, grade on the world view
+ #include "logical_canvas.hpp"  // desktop canvas height (app_robust.inc, inside namespace {})
+ #include "ai_boost.hpp"     // [RP-AI-BOOST] used by ai_skirmish.inc (included inside namespace {})
+ #include "audio_mixer.hpp"
+@@ -7334,6 +7336,7 @@ public:
+     // One step of the former loop body: camera pan, edge-detects, world.step,
+     // production, exit handoff, free units, audio events, placement/SW confirm.
+     void update(double dt) override {
++        zoom_glide_tick(dt);
+         menu_.set_mp(net_ != nullptr, mp_can_observe());   // W9-05-06: the MP options / exit pages
+         tooltip_tick(dt);   // W2-UI-07 hover timer (game time)
+         touch_bar_tick(dt);   // W4-AM-05: the open touch column closes itself
+@@ -8307,10 +8310,21 @@ private:
+     int zx(int canvas_x) const { return ra2engine::zoom_to_view(canvas_x, zoom_); }
+     int zy(int canvas_y) const { return ra2engine::zoom_to_view(canvas_y, zoom_); }
+     double zoom_limit() const {
+-        return ra2engine::zoom_min(g_platform ? g_platform->present_fit() : 1.0);
++        return ra2engine::zoom_min_for(g_platform ? g_platform->present_fit() : 1.0, ra2engine::gfx().zoom_wide);
+     }
+     double zoom_top() const {
+-        return ra2engine::zoom_max(g_platform ? g_platform->present_fit() : 1.0);
++        return ra2engine::zoom_max_for(g_platform ? g_platform->present_fit() : 1.0, ra2engine::gfx().zoom_wide);
++    }
++    // RA2_GFX ZoomSmooth: the wheel moves a target and zoom_ glides to it, keeping the point under the pointer.
++    bool zoom_gliding_ = false;
++    double zoom_target_ = 1.0;
++    int zoom_gx_ = 0, zoom_gy_ = 0;
++    ra2engine::PostFx post_fx_;
++    void zoom_glide_tick(double dt) {
++        if (!zoom_gliding_) return;
++        const double t = std::max(zoom_limit(), std::min(zoom_top(), zoom_target_));
++        zoom_to(ra2engine::zoom_glide(zoom_, t, dt), zoom_gx_, zoom_gy_);
++        if (zoom_ == t || std::fabs(zoom_ - t) < 1e-9) zoom_gliding_ = false;
+     }
+     // Screen pixels per canvas pixel for the canvas as it is now (present_fit
+     // only updates at the first frame), and the zoom a new match / canvas starts
+@@ -8350,11 +8364,18 @@ private:
+         } else {
+             return false;
+         }
++        if (ra2engine::gfx().zoom_smooth) {
++            zoom_target_ = ra2engine::zoom_step_smooth(zoom_gliding_ ? zoom_target_ : zoom_, dir, zoom_limit(), zoom_top());
++            zoom_gx_ = ax;
++            zoom_gy_ = ay;
++            zoom_gliding_ = true;
++            return true;
++        }
+         zoom_to(ra2engine::zoom_step(zoom_, dir, zoom_limit(), zoom_top()), ax, ay);
+         return true;
+     }
+     bool zoom_begin(SDL_Renderer* ren) {
+-        if (zoom_ == 1.0) return false;
++        if (zoom_ == 1.0 && !ra2engine::gfx().world_fx()) return false;
+         const int tw = ra2engine::zoom_view(playfield_w_, zoom_), th = ra2engine::zoom_view(kWinH, zoom_);
+         if (!zoom_tex_ || zoom_tw_ != tw || zoom_th_ != th) {
+             if (zoom_tex_) SDL_DestroyTexture(zoom_tex_);
+@@ -8373,8 +8394,13 @@ private:
+         SDL_SetRenderTarget(ren, zoom_prev_);
+         // A whole number of screen pixels per world pixel stays sharp (nearest).
+         const double spw = zoom_ * (g_platform ? g_platform->present_fit() : 1.0);
+-        SDL_SetTextureScaleMode(zoom_tex_, std::fabs(spw - std::round(spw)) < 1e-6 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
++        const bool nearest = zoom_ == 1.0 || std::fabs(spw - std::round(spw)) < 1e-6;
++        SDL_SetTextureScaleMode(zoom_tex_, nearest ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+         const SDL_Rect dst{0, 0, playfield_w_, kWinH};
++        if (ra2engine::gfx().world_fx()) {
++            post_fx_.draw(ren, zoom_tex_, zoom_tw_, zoom_th_, dst, nearest, ra2engine::gfx());
++            return;
++        }
+         SDL_RenderCopy(ren, zoom_tex_, nullptr, &dst);
+     }
+     int logical_width() const override { return kWinW; }
+diff --git a/engine/pixel_scale.cpp b/engine/pixel_scale.cpp
+new file mode 100644
+index 0000000..1d17233
+--- /dev/null
++++ b/engine/pixel_scale.cpp
+@@ -0,0 +1,47 @@
++#include "pixel_scale.hpp"
++
++#include <algorithm>
++#include <cstring>
++
++namespace ra2engine {
++
++namespace {
++bool same(const std::uint8_t* a, const std::uint8_t* b) {
++    if (a[3] == 0 && b[3] == 0) return true;
++    return std::memcmp(a, b, 4) == 0;
++}
++}  // namespace
++
++std::vector<std::uint8_t> scale2x_rgba(const std::uint8_t* src, int w, int h) {
++    std::vector<std::uint8_t> out;
++    if (!src || w <= 0 || h <= 0) return out;
++    const int ow = w * 2;
++    out.assign(static_cast<std::size_t>(ow) * h * 2 * 4, 0);
++    auto at = [&](int x, int y) -> const std::uint8_t* {
++        x = std::max(0, std::min(w - 1, x));
++        y = std::max(0, std::min(h - 1, y));
++        return src + (static_cast<std::size_t>(y) * w + x) * 4;
++    };
++    for (int y = 0; y < h; ++y) {
++        for (int x = 0; x < w; ++x) {
++            const std::uint8_t* P = at(x, y);
++            const std::uint8_t* A = at(x, y - 1);   // up
++            const std::uint8_t* B = at(x + 1, y);   // right
++            const std::uint8_t* C = at(x - 1, y);   // left
++            const std::uint8_t* D = at(x, y + 1);   // down
++            const std::uint8_t* q[4] = {P, P, P, P};
++            if (same(C, A) && !same(C, D) && !same(A, B)) q[0] = A;
++            if (same(A, B) && !same(A, C) && !same(B, D)) q[1] = B;
++            if (same(D, C) && !same(D, B) && !same(C, A)) q[2] = C;
++            if (same(B, D) && !same(B, A) && !same(D, C)) q[3] = D;
++            std::uint8_t* p0 = out.data() + (static_cast<std::size_t>(2 * y) * ow + 2 * x) * 4;
++            std::memcpy(p0, q[0], 4);
++            std::memcpy(p0 + 4, q[1], 4);
++            std::memcpy(p0 + static_cast<std::size_t>(ow) * 4, q[2], 4);
++            std::memcpy(p0 + static_cast<std::size_t>(ow) * 4 + 4, q[3], 4);
++        }
++    }
++    return out;
++}
++
++}  // namespace ra2engine
+diff --git a/engine/pixel_scale.hpp b/engine/pixel_scale.hpp
+new file mode 100644
+index 0000000..080d0a3
+--- /dev/null
++++ b/engine/pixel_scale.hpp
+@@ -0,0 +1,13 @@
++#pragma once
++#include <cstdint>
++#include <vector>
++
++namespace ra2engine {
++
++// Classic EPX / Scale2x of an RGBA image (4 bytes a pixel, w x h): every pixel becomes 2x2. A quarter takes the
++// colour of the neighbour on its two sides only when those two agree with each other and not with the opposite
++// pair, so corners are cut and no new colour is ever made. Colours are compared exactly (all-transparent pixels
++// count as equal whatever their RGB), edges repeat. Output (2w) x (2h).
++std::vector<std::uint8_t> scale2x_rgba(const std::uint8_t* src, int w, int h);
++
++}  // namespace ra2engine
+diff --git a/engine/platform.cpp b/engine/platform.cpp
+index 29150a2..c8b64ca 100644
+--- a/engine/platform.cpp
++++ b/engine/platform.cpp
+@@ -2,6 +2,7 @@
+ #include <algorithm>
+ #include "touch_gestures.hpp"
+ #include "logical_canvas.hpp"
++#include "gfx_settings.hpp"
+ 
+ #include <SDL.h>
+ #include <cstdio>
+@@ -532,12 +533,15 @@ void Platform::begin_frame() {
+     SDL_GetRendererOutputSize(r, &ow, &oh);
+     const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
+     p_->fit = m.fit;
+-    const int want_int = (p_->hidden || m.exact) ? 1 : 0;
++    // RA2_GFX Scale=: anything but auto draws the frame into the canvas texture and picks the filter in present().
++    const ScaleFilter sf = p_->hidden ? ScaleFilter::Auto : gfx().scale;
++    const bool chosen = sf != ScaleFilter::Auto;
++    const int want_int = (p_->hidden || (chosen ? sf == ScaleFilter::Integer : m.exact)) ? 1 : 0;
+     if (want_int != p_->int_scale) {
+         SDL_RenderSetIntegerScale(r, want_int ? SDL_TRUE : SDL_FALSE);
+         p_->int_scale = want_int;
+     }
+-    const bool need_downscale_canvas = !want_int && (ow < p_->w || oh < p_->h);
++    const bool need_downscale_canvas = chosen || (!want_int && (ow < p_->w || oh < p_->h));
+     if (need_downscale_canvas && Impl::target(r, p_->canvas, p_->canvas_w, p_->canvas_h, p_->w, p_->h) &&
+         SDL_SetRenderTarget(r, p_->canvas) == 0)
+         p_->bound = true;
+@@ -555,7 +559,9 @@ void Platform::present() {
+         SDL_SetRenderTarget(r, nullptr);
+         SDL_GetRendererOutputSize(r, &ow, &oh);
+         const PresentMode m = present_mode(ow, oh, p_->w, p_->h);
+-        if (m.prescale > 1 &&
++        const ScaleFilter sf = p_->hidden ? ScaleFilter::Auto : gfx().scale;
++        const bool prescale = sf == ScaleFilter::Auto ? m.prescale > 1 : sf == ScaleFilter::Sharp && m.prescale > 1;
++        if (prescale &&
+             Impl::target(r, p_->pre, p_->pre_w, p_->pre_h, p_->w * m.prescale, p_->h * m.prescale) &&
+             SDL_SetRenderTarget(r, p_->pre) == 0) {
+             SDL_SetTextureScaleMode(p_->canvas, SDL_ScaleModeNearest);
+@@ -563,11 +569,22 @@ void Platform::present() {
+             SDL_SetRenderTarget(r, nullptr);
+             src = p_->pre;
+         }
+-        SDL_SetTextureScaleMode(src, SDL_ScaleModeLinear);
++        const bool softenable = sf == ScaleFilter::Nearest || sf == ScaleFilter::Integer;
++        const bool hard = softenable || (sf == ScaleFilter::Sharp && m.exact);   // a whole scale needs no filter
+         SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+         SDL_RenderClear(r);
+         const SDL_Rect dst{0, 0, p_->w, p_->h};   // logical: SDL letterboxes it
++        SDL_SetTextureScaleMode(src, hard ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+         SDL_RenderCopy(r, src, nullptr, &dst);
++        // Smooth=1..2 (hard pixels only): a linear copy over the nearest one softens the stair-steps.
++        if (softenable && gfx().smooth > 0) {
++            SDL_SetTextureScaleMode(src, SDL_ScaleModeLinear);
++            SDL_SetTextureBlendMode(src, SDL_BLENDMODE_BLEND);
++            SDL_SetTextureAlphaMod(src, gfx().smooth == 1 ? 90 : 180);
++            SDL_RenderCopy(r, src, nullptr, &dst);
++            SDL_SetTextureAlphaMod(src, 255);
++            SDL_SetTextureBlendMode(src, SDL_BLENDMODE_NONE);
++        }
+     }
+     SDL_RenderPresent(r);
+ }
+diff --git a/engine/post_fx.cpp b/engine/post_fx.cpp
+new file mode 100644
+index 0000000..35b070d
+--- /dev/null
++++ b/engine/post_fx.cpp
+@@ -0,0 +1,138 @@
++#include "post_fx.hpp"
++
++#include <algorithm>
++#include <vector>
++
++namespace ra2engine {
++
++namespace {
++SDL_Texture* make_target(SDL_Renderer* r, int w, int h) {
++    SDL_Texture* t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, std::max(1, w), std::max(1, h));
++    if (t) {
++        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
++        SDL_SetTextureScaleMode(t, SDL_ScaleModeLinear);
++    }
++    return t;
++}
++void kill(SDL_Texture*& t) {
++    if (t) SDL_DestroyTexture(t);
++    t = nullptr;
++}
++}  // namespace
++
++PostFx::~PostFx() { release(); }
++
++void PostFx::release() {
++    kill(half_);
++    kill(quarter_);
++    kill(bright_);
++    kill(eighth_);
++    kill(tmp_);
++    kill(vig_);
++    vw_ = vh_ = vig_level_ = 0;
++}
++
++bool PostFx::ensure_bloom(SDL_Renderer* r, int vw, int vh) {
++    if (half_ && vw_ == vw && vh_ == vh) return true;
++    kill(half_);
++    kill(quarter_);
++    kill(bright_);
++    kill(eighth_);
++    kill(tmp_);
++    vw_ = vw;
++    vh_ = vh;
++    half_ = make_target(r, (vw + 1) / 2, (vh + 1) / 2);
++    quarter_ = make_target(r, (vw + 3) / 4, (vh + 3) / 4);
++    bright_ = make_target(r, (vw + 3) / 4, (vh + 3) / 4);
++    eighth_ = make_target(r, (vw + 7) / 8, (vh + 7) / 8);
++    tmp_ = make_target(r, (vw + 3) / 4, (vh + 3) / 4);
++    if (!half_ || !quarter_ || !bright_ || !eighth_ || !tmp_) {
++        kill(half_);
++        kill(quarter_);
++        kill(bright_);
++        kill(eighth_);
++        kill(tmp_);
++        return false;
++    }
++    return true;
++}
++
++// Bright pass and blur with two or three small targets: world -> 1/2 -> 1/4 (linear: a box average each),
++// bright = quarter squared (multiply blend: only near-white survives), -> 1/8 (more blur), then the glow is
++// added back over the world at the destination size.
++void PostFx::bloom(SDL_Renderer* r, SDL_Texture* world, int vw, int vh, const SDL_Rect& dst, int level) {
++    const BloomParams bp = bloom_params(level);
++    if (bp.alpha == 0 || !ensure_bloom(r, vw, vh)) return;
++    SDL_Texture* prev = SDL_GetRenderTarget(r);
++    SDL_SetTextureScaleMode(world, SDL_ScaleModeLinear);
++    SDL_SetRenderTarget(r, half_);
++    SDL_RenderCopy(r, world, nullptr, nullptr);
++    SDL_SetRenderTarget(r, quarter_);
++    SDL_RenderCopy(r, half_, nullptr, nullptr);
++    SDL_SetRenderTarget(r, bright_);
++    SDL_SetTextureBlendMode(quarter_, SDL_BLENDMODE_NONE);
++    SDL_RenderCopy(r, quarter_, nullptr, nullptr);
++    // Square it `squares` times (x^2, x^4, x^8): a multiply blend cannot read its own target, so each round
++    // copies the current result to `tmp_` and multiplies it by that.
++    for (int i = 0; i < bp.squares; ++i) {
++        SDL_SetRenderTarget(r, tmp_);
++        SDL_SetTextureBlendMode(bright_, SDL_BLENDMODE_NONE);
++        SDL_RenderCopy(r, bright_, nullptr, nullptr);
++        SDL_SetRenderTarget(r, bright_);
++        SDL_SetTextureBlendMode(tmp_, SDL_BLENDMODE_MOD);
++        SDL_RenderCopy(r, tmp_, nullptr, nullptr);
++        SDL_SetTextureBlendMode(tmp_, SDL_BLENDMODE_NONE);
++    }
++    SDL_SetRenderTarget(r, eighth_);
++    SDL_RenderCopy(r, bright_, nullptr, nullptr);
++    SDL_SetRenderTarget(r, prev);
++    SDL_SetTextureBlendMode(eighth_, SDL_BLENDMODE_ADD);
++    SDL_SetTextureAlphaMod(eighth_, bp.alpha);
++    SDL_RenderCopy(r, eighth_, nullptr, &dst);
++    SDL_SetTextureBlendMode(bright_, SDL_BLENDMODE_ADD);
++    SDL_SetTextureAlphaMod(bright_, static_cast<Uint8>(bp.alpha / 2));
++    SDL_RenderCopy(r, bright_, nullptr, &dst);
++    SDL_SetTextureAlphaMod(eighth_, 255);
++    SDL_SetTextureAlphaMod(bright_, 255);
++    SDL_SetTextureBlendMode(eighth_, SDL_BLENDMODE_NONE);
++    SDL_SetTextureBlendMode(bright_, SDL_BLENDMODE_NONE);
++}
++
++void PostFx::vignette(SDL_Renderer* r, const SDL_Rect& dst, int level) {
++    if (level <= 0) return;
++    if (!vig_ || vig_level_ != level) {
++        kill(vig_);
++        constexpr int W = 128, H = 72;
++        std::vector<Uint32> px(static_cast<std::size_t>(W) * H);
++        for (int y = 0; y < H; ++y)
++            for (int x = 0; x < W; ++x)
++                px[static_cast<std::size_t>(y) * W + x] =
++                    static_cast<Uint32>(vignette_alpha((x + 0.5) / W, (y + 0.5) / H, level)) << 24;   // black, alpha only
++        vig_ = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, W, H);
++        if (!vig_) return;
++        SDL_UpdateTexture(vig_, nullptr, px.data(), W * 4);
++        SDL_SetTextureBlendMode(vig_, SDL_BLENDMODE_BLEND);
++        SDL_SetTextureScaleMode(vig_, SDL_ScaleModeLinear);
++        vig_level_ = level;
++    }
++    SDL_RenderCopy(r, vig_, nullptr, &dst);
++}
++
++void PostFx::draw(SDL_Renderer* r, SDL_Texture* world, int vw, int vh, const SDL_Rect& dst, bool nearest, const GfxSettings& g) {
++    const GradeParams gp = grade_params(g.grade);
++    SDL_SetTextureScaleMode(world, nearest ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
++    SDL_SetTextureColorMod(world, gp.r, gp.g, gp.b);
++    SDL_RenderCopy(r, world, nullptr, &dst);
++    if (gp.gain) {   // Vivid: the picture added onto itself, brights clip towards white and colours push apart
++        SDL_SetTextureBlendMode(world, SDL_BLENDMODE_ADD);
++        SDL_SetTextureAlphaMod(world, gp.gain);
++        SDL_RenderCopy(r, world, nullptr, &dst);
++        SDL_SetTextureAlphaMod(world, 255);
++        SDL_SetTextureBlendMode(world, SDL_BLENDMODE_NONE);
++    }
++    SDL_SetTextureColorMod(world, 255, 255, 255);
++    if (g.bloom > 0) bloom(r, world, vw, vh, dst, g.bloom);
++    vignette(r, dst, g.vignette);
++}
++
++}  // namespace ra2engine
+diff --git a/engine/post_fx.hpp b/engine/post_fx.hpp
+new file mode 100644
+index 0000000..866304f
+--- /dev/null
++++ b/engine/post_fx.hpp
+@@ -0,0 +1,33 @@
++#pragma once
++#include <SDL.h>
++
++#include "gfx_settings.hpp"
++
++namespace ra2engine {
++
++// Picture-only effects on the finished world view (RA2_GFX Bloom, Vignette, Grade), drawn with SDL's own
++// renderer: texture colour modulation, additive and multiplying blends and linear down/up-scaling, so they
++// run on the GPU where SDL has one and need no shader. The sidebar, text and cursor are drawn after this and
++// stay untouched. Nothing here reads or changes the game.
++class PostFx {
++public:
++    ~PostFx();
++    // Draws `world` (a render-target texture of vw x vh) into the current target at `dst` with the grade,
++    // the glow and the vignette of `g`. `nearest`: sample the world without filtering (whole scales).
++    void draw(SDL_Renderer* r, SDL_Texture* world, int vw, int vh, const SDL_Rect& dst, bool nearest, const GfxSettings& g);
++    void release();
++
++private:
++    SDL_Texture* half_ = nullptr;
++    SDL_Texture* quarter_ = nullptr;
++    SDL_Texture* bright_ = nullptr;
++    SDL_Texture* eighth_ = nullptr;
++    SDL_Texture* tmp_ = nullptr;
++    SDL_Texture* vig_ = nullptr;
++    int vw_ = 0, vh_ = 0, vig_level_ = 0;
++    bool ensure_bloom(SDL_Renderer* r, int vw, int vh);
++    void bloom(SDL_Renderer* r, SDL_Texture* world, int vw, int vh, const SDL_Rect& dst, int level);
++    void vignette(SDL_Renderer* r, const SDL_Rect& dst, int level);
++};
++
++}  // namespace ra2engine
+diff --git a/engine/texture_cache.cpp b/engine/texture_cache.cpp
+index eccfc3d..d2d14ad 100644
+--- a/engine/texture_cache.cpp
++++ b/engine/texture_cache.cpp
+@@ -1,4 +1,6 @@
+ #include "texture_cache.hpp"
++#include "gfx_settings.hpp"
++#include "pixel_scale.hpp"
+ 
+ #include <SDL.h>
+ #include <algorithm>
+@@ -18,6 +20,7 @@ static void texture_nearest_filter(SDL_Texture* tex) {
+ // effect, cameo and cursor sprites (terrain tiles with '#' in their key and
+ // pre-rasterized 'tt:' font runs stay 1:1).
+ static bool should_epx_aa(const std::string& key, int w, int h) {
++    if (gfx().sprites == SpriteUp::Off) return false;   // RA2_GFX Sprites=off: the art pixels as they are
+     if (w < 2 || h < 2 || w * h > 512 * 512) return false;
+     if (key.find('#') != std::string::npos) return false;
+     if (key.rfind("tt:", 0) == 0 || key.rfind("fnt", 0) == 0 || key.rfind("ug:", 0) == 0) return false;
+@@ -99,6 +102,10 @@ static std::vector<uint8_t> epx_aa_2x(const uint8_t* src, int w, int h) {
+     return out;
+ }
+ 
++static std::vector<uint8_t> sprite_up_2x(const uint8_t* src, int w, int h) {
++    return gfx().sprites == SpriteUp::Scale2x ? scale2x_rgba(src, w, h) : epx_aa_2x(src, w, h);
++}
++
+ TextureCache::TextureCache(void* sdl_renderer) : renderer_(sdl_renderer), id_(g_next_cache_id++) {}
+ 
+ TextureCache::~TextureCache() {
+@@ -220,7 +227,7 @@ void* TextureCache::get(const std::string& key, const uint8_t* indices, int w,
+     }
+ 
+     if (aa) {
+-        const std::vector<uint8_t> up = epx_aa_2x(reinterpret_cast<const uint8_t*>(rgba.data()), w, h);
++        const std::vector<uint8_t> up = sprite_up_2x(reinterpret_cast<const uint8_t*>(rgba.data()), w, h);
+         SDL_UpdateTexture(tex, nullptr, up.data(), tw * 4);
+         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+         SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+@@ -270,7 +277,7 @@ void* TextureCache::get_rgba(const std::string& key, const uint8_t* rgba, int w,
+     }
+ 
+     if (aa) {
+-        const std::vector<uint8_t> up = epx_aa_2x(rgba, w, h);
++        const std::vector<uint8_t> up = sprite_up_2x(rgba, w, h);
+         SDL_UpdateTexture(tex, nullptr, up.data(), tw * 4);
+         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+         SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+diff --git a/tests/test_gfx_settings.cpp b/tests/test_gfx_settings.cpp
+new file mode 100644
+index 0000000..6614735
+--- /dev/null
++++ b/tests/test_gfx_settings.cpp
+@@ -0,0 +1,108 @@
++#include "doctest.h"
++#include "../engine/gfx_settings.hpp"
++#include "../engine/logical_canvas.hpp"
++
++using namespace ra2engine;
++
++TEST_CASE("RA2_GFX: absent, empty and garbage are the defaults") {
++    for (const char* s : {static_cast<const char*>(nullptr), "", "nonsense", "Scale=wobbly;Bloom=9;=;;Grade=?"}) {
++        const GfxSettings g = parse_gfx(s);
++        CHECK(g.scale == ScaleFilter::Auto);
++        CHECK(g.sprites == SpriteUp::Aa);
++        CHECK(g.bloom == 0);
++        CHECK(g.vignette == 0);
++        CHECK(g.grade == Grade::Standard);
++        CHECK(!g.zoom_smooth);
++        CHECK(!g.zoom_wide);
++        CHECK(!g.world_fx());
++    }
++}
++
++TEST_CASE("RA2_GFX: every key") {
++    const GfxSettings g = parse_gfx(" Scale = Sharp ; smooth=2;Sprites=scale2x;BLOOM=strong;Vignette=1;Grade=warm;ZoomSmooth=on;ZoomRange=wide");
++    CHECK(g.scale == ScaleFilter::Sharp);
++    CHECK(g.smooth == 2);
++    CHECK(g.sprites == SpriteUp::Scale2x);
++    CHECK(g.bloom == 2);
++    CHECK(g.vignette == 1);
++    CHECK(g.grade == Grade::Warm);
++    CHECK(g.zoom_smooth);
++    CHECK(g.zoom_wide);
++    CHECK(g.world_fx());
++    CHECK(parse_gfx("Sprites=off").sprites == SpriteUp::Off);
++    CHECK(parse_gfx("Scale=integer").scale == ScaleFilter::Integer);
++}
++
++TEST_CASE("vignette: clear in the middle, darkest at the corners, smooth between") {
++    CHECK(vignette_alpha(0.5, 0.5, 2) == 0);
++    CHECK(vignette_alpha(0.0, 0.0, 2) == 150);
++    CHECK(vignette_alpha(1.0, 1.0, 1) == 80);
++    CHECK(vignette_alpha(0.0, 0.0, 0) == 0);
++    int last = -1;
++    for (int i = 0; i <= 10; ++i) {
++        const int a = vignette_alpha(0.5 - i * 0.05, 0.5 - i * 0.05, 2);
++        CHECK(a >= last);
++        last = a;
++    }
++    CHECK(vignette_alpha(0.1, 0.9, 2) == vignette_alpha(0.9, 0.1, 2));   // symmetric
++}
++
++TEST_CASE("grade only takes light away; vivid adds gain; bloom levels") {
++    for (Grade g : {Grade::Standard, Grade::Warm, Grade::Cool, Grade::Vivid}) {
++        const GradeParams p = grade_params(g);
++        CHECK(p.r <= 255);
++        CHECK(p.g >= 200);
++    }
++    CHECK(grade_params(Grade::Standard).gain == 0);
++    CHECK(grade_params(Grade::Vivid).gain > 0);
++    CHECK(bloom_params(0).alpha == 0);
++    CHECK(bloom_params(2).alpha > bloom_params(1).alpha);
++}
++
++TEST_CASE("wide zoom range reaches further both ways and never inverts") {
++    for (double s : {0.5, 1.0, 1.5, 2.0, 3.0}) {
++        CHECK(zoom_min_for(s, false) == doctest::Approx(zoom_min(s)));
++        CHECK(zoom_max_for(s, false) == doctest::Approx(zoom_max(s)));
++        CHECK(zoom_min_for(s, true) <= zoom_min_for(s, false));
++        CHECK(zoom_max_for(s, true) >= zoom_max_for(s, false));
++        CHECK(zoom_min_for(s, true) >= 0.15);
++        CHECK(zoom_min_for(s, true) < zoom_max_for(s, true));
++    }
++    // a Retina 2x screen: native is 0.5 canvas px per world px; wide goes to a half of that
++    CHECK(zoom_min_for(2.0, true) == doctest::Approx(0.25));
++}
++
++TEST_CASE("smooth zoom: geometric steps, clamped, glide settles on the target") {
++    CHECK(zoom_step_smooth(1.0, 1, 0.5, 2.0) == doctest::Approx(1.18));
++    CHECK(zoom_step_smooth(1.0, -1, 0.5, 2.0) == doctest::Approx(1.0 / 1.18));
++    CHECK(zoom_step_smooth(1.9, 1, 0.5, 2.0) == doctest::Approx(2.0));
++    CHECK(zoom_step_smooth(0.52, -1, 0.5, 2.0) == doctest::Approx(0.5));
++    // in then out returns to where it started
++    CHECK(zoom_step_smooth(zoom_step_smooth(1.0, 1, 0.1, 9.0), -1, 0.1, 9.0) == doctest::Approx(1.0));
++    double z = 1.0;
++    int frames = 0;
++    for (; z != 2.0 && frames < 600; ++frames) z = zoom_glide(z, 2.0, 1.0 / 60.0);
++    CHECK(z == 2.0);
++    CHECK(frames > 5);
++    CHECK(frames < 60);   // under a second at 60 fps
++    // same wall-clock time, different frame rates: nearly the same place
++    double a = 1.0, b = 1.0;
++    for (int i = 0; i < 6; ++i) a = zoom_glide(a, 2.0, 1.0 / 60.0);
++    for (int i = 0; i < 12; ++i) b = zoom_glide(b, 2.0, 1.0 / 120.0);
++    CHECK(a == doctest::Approx(b).epsilon(0.01));
++    CHECK(zoom_glide(1.0, 2.0, 0.0) == 1.0);
++}
++
++TEST_CASE("zooming on the pointer keeps the world point under it through a glide") {
++    double z = 1.0;
++    int cam = 100;
++    const int anchor = 300;
++    const int world = anchor - cam;   // the camera is the world origin's place on screen: world = pixel / zoom - cam
++    for (int i = 0; i < 40; ++i) {
++        const double n = zoom_glide(z, 2.0, 1.0 / 60.0);
++        cam = zoom_keep_point(cam, anchor, z, n);
++        z = n;
++    }
++    const double under = anchor / z - cam;
++    CHECK(under == doctest::Approx(world).epsilon(0.01));
++}
+diff --git a/tests/test_pixel_scale.cpp b/tests/test_pixel_scale.cpp
+new file mode 100644
+index 0000000..8da9cbe
+--- /dev/null
++++ b/tests/test_pixel_scale.cpp
+@@ -0,0 +1,45 @@
++#include "doctest.h"
++#include "../engine/pixel_scale.hpp"
++
++#include <cstring>
++
++using namespace ra2engine;
++
++static std::uint32_t px(const std::vector<std::uint8_t>& v, int w, int x, int y) {
++    std::uint32_t c;
++    std::memcpy(&c, &v[(static_cast<std::size_t>(y) * w + x) * 4], 4);
++    return c;
++}
++
++TEST_CASE("scale2x: a flat image is just doubled") {
++    std::vector<std::uint8_t> src(3 * 3 * 4, 0x7f);
++    const auto out = scale2x_rgba(src.data(), 3, 3);
++    REQUIRE(out.size() == 6u * 6u * 4u);
++    for (std::uint8_t b : out) CHECK(b == 0x7f);
++}
++
++TEST_CASE("scale2x: an L-shaped staircase gets its corner cut and nothing else") {
++    // 3x3, colours as one byte repeated: A above and C left of the middle pixel agree, the others differ.
++    const std::uint8_t W = 255, K = 10;
++    std::uint8_t m[3][3] = {{W, W, K}, {W, K, K}, {K, K, K}};
++    std::vector<std::uint8_t> src;
++    for (auto& row : m) for (std::uint8_t v : row) { src.push_back(v); src.push_back(v); src.push_back(v); src.push_back(255); }
++    const auto out = scale2x_rgba(src.data(), 3, 3);
++    const std::uint32_t white = 0xFFFFFFFFu, dark = 0xFF0A0A0Au;
++    // The middle pixel (1,1) is dark; up (1,0) is white, left (0,1) is white, right and down dark.
++    // C == A and C != D and A != B: the top-left quarter becomes white.
++    CHECK(px(out, 6, 2, 2) == white);
++    CHECK(px(out, 6, 3, 2) == dark);
++    CHECK(px(out, 6, 2, 3) == dark);
++    CHECK(px(out, 6, 3, 3) == dark);
++    // No colour that is not in the source.
++    for (int y = 0; y < 6; ++y) for (int x = 0; x < 6; ++x) { const auto c = px(out, 6, x, y); CHECK((c == white || c == dark)); }
++}
++
++TEST_CASE("scale2x: transparent pixels count as equal whatever their colour; bad input is empty") {
++    std::vector<std::uint8_t> src = {1, 2, 3, 0, 9, 9, 9, 0, 9, 9, 9, 0, 5, 5, 5, 255};   // 2x2
++    const auto out = scale2x_rgba(src.data(), 2, 2);
++    CHECK(out.size() == 4u * 4u * 4u);
++    CHECK(scale2x_rgba(nullptr, 2, 2).empty());
++    CHECK(scale2x_rgba(src.data(), 0, 2).empty());
++}

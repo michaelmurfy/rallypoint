@@ -1,0 +1,294 @@
+# 0160: group move destinations follow gamemd's MegaMission distribution (FUN_0064CDA0).
+#
+# Until now a group order took the nearest free cells to the click (rings out from the goal) and gave
+# each to the nearest unit. Retail does not spread a selection in rings. Per the reverse-engineered
+# description in github.com/YuriPlanet/vera20k (src/sim/movement/group_destination.rs, read only):
+#   - the unit nearest the group's 3-D centroid (lepton coordinates) is the anchor; a tie keeps the
+#     highest index (the loop scans down from the last member);
+#   - members are sorted by 3-D distance from the anchor; the nearest takes the clicked cell;
+#   - every other member probes up to six cells from the click centre along its own direction
+#     (its navigation cell minus the anchor's cell, normalised, float arithmetic, truncated to a
+#     cell): not in the playfield stops the probe, a cell outside the click's zone is "bad" and
+#     skipped, an already reserved cell becomes the fallback and the probe goes on, a height-band
+#     failure stops, Can_Enter_Cell >= 4 (except 6) is "bad", and the first usable cell is taken
+#     unless a bad cell was seen before it (then the saved fallback, the click cell or the last
+#     reserved one, is kept: retail runs a zone estimate there and ignores its result);
+#   - members standing in one cell share the destination of the first of them that was assigned
+#     (this is how a squad ends up sharing a cell: there is no "three infantry" rule).
+# A column therefore stays a column and a flank stays on its side, where the rings put the nearest
+# unit in whatever slot was left. Where retail's units sort a shared cell out on arrival (scatter),
+# vehicles here take the nearest free cell to the choice and infantry beyond the three spots of a
+# cell spill through assign_infantry_formation, so nobody is sent to a cell that cannot hold them.
+# Air groups keep the old spread.
+# Measured with `--probe-move` PROBE_SCEN=1 (xmp31s2, 12 Rhino): settled 561 -> 547 frames, blocked
+# unit frames 495 -> 458; 10 Apocalypse + 10 GI 1101 -> 1074 frames, 2979 -> 2854 blocked frames.
+# (The probe spawns every unit in one 3x3 blob, so a unit ringed in by its friends is scattered by
+# retail's own rule and ends near its start in either version.)
+
+diff -ruN a/engine/group_move.cpp b/engine/group_move.cpp
+--- a/engine/group_move.cpp	2026-11-25 06:33:25.967116940 +0000
++++ b/engine/group_move.cpp	2026-11-25 06:23:26.478265276 +0000
+@@ -1,6 +1,7 @@
+ #include "group_move.hpp"
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdlib>
+ 
+@@ -168,4 +169,76 @@
+     return targets;
+ }
+ 
++std::vector<Cellxy> distribute_group_destinations(
++    Cellxy clicked, const std::vector<GroupMember>& m,
++    const std::function<GroupCandidate(std::size_t, Cellxy)>& facts) {
++    const std::size_t n = m.size();
++    std::vector<Cellxy> dest(n, clicked);
++    if (n == 0) return dest;
++    auto dist3 = [](long long dx, long long dy, long long dz) {
++        return om::ftol(om::sqrt(static_cast<double>(dx * dx + dy * dy + dz * dz)));
++    };
++    long long sx = 0, sy = 0, sz = 0;
++    for (const GroupMember& g : m) { sx += g.x; sy += g.y; sz += g.z; }
++    const long long cx = sx / static_cast<long long>(n), cy = sy / static_cast<long long>(n),
++                    cz = sz / static_cast<long long>(n);
++    // Nearest the centroid; a tie keeps the highest index (the original scans down from the last).
++    std::size_t anchor = n - 1;
++    int best = dist3(m[anchor].x - cx, m[anchor].y - cy, m[anchor].z - cz);
++    for (std::size_t i = n - 1; i-- > 0;) {
++        const int d = dist3(m[i].x - cx, m[i].y - cy, m[i].z - cz);
++        if (d < best) { best = d; anchor = i; }
++    }
++    std::vector<int> dist(n);
++    for (std::size_t i = 0; i < n; ++i)
++        dist[i] = dist3(m[i].x - m[anchor].x, m[i].y - m[anchor].y, m[i].z - m[anchor].z);
++    std::vector<std::size_t> order(n);
++    for (std::size_t i = 0; i < n; ++i) order[i] = i;
++    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return dist[a] < dist[b]; });
++
++    std::vector<bool> done(n, false);
++    std::vector<Cellxy> reserved{clicked};
++    auto is_reserved = [&](Cellxy c) {
++        for (const Cellxy& r : reserved) if (r.x == c.x && r.y == c.y) return true;
++        return false;
++    };
++    done[order[0]] = true;
++    for (std::size_t p = 1; p < n; ++p) {
++        const std::size_t i = order[p];
++        if (done[i]) continue;
++        float dx = static_cast<float>(m[i].nav.x - m[anchor].cell.x);
++        float dy = static_cast<float>(m[i].nav.y - m[anchor].cell.y);
++        if (dx != 0.0f || dy != 0.0f) {
++            const float len = static_cast<float>(om::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy));
++            dx /= len;
++            dy /= len;
++        }
++        float fx = static_cast<float>(clicked.x) + 0.5f, fy = static_cast<float>(clicked.y) + 0.5f;
++        Cellxy chosen = clicked;
++        bool bad = false;
++        for (int k = 0; k < 6; ++k) {
++            fx += dx;
++            fy += dy;
++            const Cellxy c{static_cast<int>(fx), static_cast<int>(fy)};   // truncation, as _ftol
++            const GroupCandidate f = facts(i, c);
++            if (!f.in_playfield) break;
++            if (!f.same_zone) { bad = true; continue; }
++            if (is_reserved(c)) { chosen = c; continue; }   // keeps the last reserved cell as the fallback
++            if (!f.height_ok) break;
++            if (f.enter_code >= 4 && f.enter_code != 6) { bad = true; continue; }
++            if (bad) break;   // the original runs a zone estimate here and takes the saved fallback
++            chosen = c;
++            break;
++        }
++        dest[i] = chosen;
++        done[i] = true;
++        reserved.push_back(chosen);
++        for (std::size_t j = p + 1; j < n; ++j) {   // same source cell = same destination
++            const std::size_t o = order[j];
++            if (!done[o] && m[o].cell.x == m[i].cell.x && m[o].cell.y == m[i].cell.y) { dest[o] = chosen; done[o] = true; }
++        }
++    }
++    return dest;
++}
++
+ }  // namespace ra2engine
+diff -ruN a/engine/group_move.hpp b/engine/group_move.hpp
+--- a/engine/group_move.hpp	2026-11-23 10:51:52.000000000 +0000
++++ b/engine/group_move.hpp	2026-11-25 06:23:26.478156405 +0000
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <cstdint>
++#include <functional>
+ #include <vector>
+ 
+ #include "occupancy.hpp"
+@@ -39,4 +40,28 @@
+                                               const Occupancy& occ,
+                                               const std::vector<Cellxy>& blocked_cells);
+ 
++// 0160 [RE: gamemd MegaMission group destination FUN_0064CDA0; read from the
++// reverse-engineered description in vera20k, no code copied]. One move order
++// for a run of selected units: the unit nearest the group's 3-D centroid is the
++// anchor, units are sorted by 3-D distance from it, and the nearest one takes
++// the clicked cell. Every other unit probes up to six cells from the click
++// along its own anchor-relative direction (its cell minus the anchor's cell,
++// normalised, in float), so a column stays a column and a flank stays on its
++// side. Units standing in the same cell as an already-assigned unit share its
++// destination (that is how infantry end up sharing a cell).
++struct GroupMember {
++    int x = 0, y = 0, z = 0;   // lepton position
++    Cellxy cell{0, 0};         // source cell
++    Cellxy nav{0, 0};          // navigation cell (the cell it is heading to, else its own)
++};
++struct GroupCandidate {
++    bool in_playfield = false;
++    bool same_zone = false;
++    bool height_ok = false;
++    int enter_code = 0;        // Can_Enter_Cell: >= 4 and != 6 is blocked
++};
++std::vector<Cellxy> distribute_group_destinations(
++    Cellxy clicked, const std::vector<GroupMember>& members,
++    const std::function<GroupCandidate(std::size_t member, Cellxy cell)>& facts);
++
+ }  // namespace ra2engine
+diff -ruN a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp	2026-11-25 06:33:26.054477979 +0000
++++ b/engine/world.cpp	2026-11-25 06:32:18.187320880 +0000
+@@ -3,6 +3,7 @@
+ #include "orig_math.hpp"   // Net L0: the original's FastMath, never libm in the sim
+ #include "weapon_unit.hpp"  // Gap fix C
+ 
++#include <cstdlib>
+ #include <algorithm>
+ #include <cmath>
+ #include <map>
+@@ -1758,6 +1759,83 @@
+                 air_grid.assign(static_cast<std::size_t>(grid_w_) * grid_h_, 1);
+                 g = &air_grid;
+             }
++            if (dom <= 2 && !g->empty()) {
++                // 0160 [RE: FUN_0064CDA0]: the retail group destination (anchor, probes along each unit's own direction).
++                std::vector<GroupMember> gm;
++                for (std::size_t j = 0; j < ks.size(); ++j) {
++                    const Unit& u = units_[static_cast<std::size_t>(sel[ks[j]])];
++                    GroupMember m;
++                    m.x = unit_lept_x(u); m.y = unit_lept_y(u); m.z = unit_lept_z(u);
++                    m.cell = dcur[j];
++                    m.nav = u.moving() && u.path_idx < u.path.size() ? u.path[u.path_idx] : dcur[j];
++                    gm.push_back(m);
++                }
++                const Unit& ref = units_[static_cast<std::size_t>(sel[ks[0]])];
++                PathTerrain terr;
++                std::vector<int> gates;
++                const PathTerrain* tp = terrain_for(ref, terr, gates);
++                const std::vector<std::uint8_t>* leak =
++                    ref.movement_domain == MovementDomain::Water ? nullptr : wall_leak();
++                const std::vector<std::uint8_t> zone = reach_mask(*g, grid_w_, grid_h_, {{goal_x, goal_y}}, leak, tp);
++                auto facts = [&](std::size_t j, Cellxy c) {
++                    GroupCandidate f;
++                    f.in_playfield = c.x >= 0 && c.y >= 0 && c.x < grid_w_ && c.y < grid_h_ && cell_in_playfield(c.x, c.y);
++                    if (!f.in_playfield) return f;
++                    const std::size_t ci = static_cast<std::size_t>(c.y) * grid_w_ + c.x;
++                    f.same_zone = ci < zone.size() && zone[ci] != 0;
++                    f.height_ok = true;
++                    const int self = sel[ks[j]];
++                    if (!(*g)[ci]) f.enter_code = 7;
++                    else if (occ_.is_free(c.x, c.y) || occ_.can_enter(c.x, c.y, self)) f.enter_code = 0;
++                    else {
++                        const int o = occ_.at(c.x, c.y);
++                        f.enter_code = o >= 0 && o < static_cast<int>(units_.size()) &&
++                                               units_[static_cast<std::size_t>(o)].moving() ? 2 : 4;
++                    }
++                    return f;
++                };
++                const std::vector<Cellxy> t = distribute_group_destinations({goal_x, goal_y}, gm, facts);
++                for (std::size_t j = 0; j < ks.size(); ++j) targets[ks[j]] = t[j];
++                {
++                    // Where the original's probes end on a cell another unit already holds, its units sort it out on
++                    // arrival (scatter); here the later unit takes the nearest free cell to that choice instead.
++                    std::vector<Cellxy> taken;
++                    for (std::size_t j = 0; j < ks.size(); ++j) {
++                        if (occ_.subcells() && occ_.is_infantry(sel[ks[j]])) continue;
++                        Cellxy c = targets[ks[j]];
++                        auto has = [&](Cellxy q) { for (const Cellxy& r : taken) if (r.x == q.x && r.y == q.y) return true; return false; };
++                        if (has(c)) {
++                            const std::vector<Cellxy> cand = nearest_free_cells(c, static_cast<int>(taken.size()) + 2, *g, grid_w_, grid_h_, occ_);
++                            for (const Cellxy& q : cand) if (!has(q)) { c = q; break; }
++                            targets[ks[j]] = c;
++                        }
++                        taken.push_back(c);
++                    }
++                }
++                if (dom == 0 && occ_.subcells()) {
++                    // Infantry beyond a cell's three spots spill to the nearest free spots.
++                    std::vector<std::size_t> ik;
++                    std::vector<Cellxy> icur, full;
++                    std::vector<int> iid;
++                    std::vector<Cellxy> seen;
++                    std::vector<int> cnt;
++                    for (std::size_t j = 0; j < ks.size(); ++j) {
++                        const int ui = sel[ks[j]];
++                        if (!occ_.is_infantry(ui)) continue;
++                        std::size_t q = 0;
++                        while (q < seen.size() && !(seen[q].x == t[j].x && seen[q].y == t[j].y)) ++q;
++                        if (q == seen.size()) { seen.push_back(t[j]); cnt.push_back(0); }
++                        if (++cnt[q] > Occupancy::kSpots) { ik.push_back(ks[j]); icur.push_back(dcur[j]); iid.push_back(ui); }
++                    }
++                    if (!ik.empty()) {
++                        for (std::size_t j = 0; j < ks.size(); ++j) full.push_back(t[j]);
++                        const std::vector<Cellxy> it =
++                            assign_infantry_formation({goal_x, goal_y}, icur, iid, *g, grid_w_, grid_h_, occ_, full);
++                        for (std::size_t j = 0; j < ik.size(); ++j) targets[ik[j]] = it[j];
++                    }
++                }
++                continue;
++            }
+             if (dom == 0 && occ_.subcells() && !g->empty()) {
+                 // W5-B R-061: vehicles take whole cells first; the infantry then
+                 // pack three to a cell around the goal (sub-cell spots).
+diff -ruN a/tests/test_group_move.cpp b/tests/test_group_move.cpp
+--- a/tests/test_group_move.cpp	2026-11-25 06:33:25.967116940 +0000
++++ b/tests/test_group_move.cpp	2026-11-25 06:32:27.123979035 +0000
+@@ -117,3 +117,41 @@
+     REQUIRE(s.size() == 12);
+     for (auto c : s) CHECK(c.x < 10);
+ }
++
++// 0160: retail group destination (gamemd FUN_0064CDA0).
++namespace {
++ra2engine::GroupMember gmem(int cx, int cy) {
++    ra2engine::GroupMember m;
++    m.x = cx * 256 + 128; m.y = cy * 256 + 128; m.z = 0;
++    m.cell = {cx, cy}; m.nav = {cx, cy};
++    return m;
++}
++ra2engine::GroupCandidate clear_cell(std::size_t, Cellxy) { return {true, true, true, 0}; }
++}  // namespace
++
++TEST_CASE("distribute_group_destinations: the unit nearest the centroid takes the click, the others keep their side") {
++    std::vector<ra2engine::GroupMember> m{gmem(10, 10), gmem(12, 10), gmem(10, 12)};
++    const auto d = ra2engine::distribute_group_destinations({20, 20}, m, clear_cell);
++    CHECK((d[0].x == 20 && d[0].y == 20));   // anchor
++    CHECK((d[1].x == 21 && d[1].y == 20));   // east of the anchor stays east of the click
++    CHECK((d[2].x == 20 && d[2].y == 21));   // south stays south
++}
++
++TEST_CASE("distribute_group_destinations: a blocked probe followed by a clear one falls back to the click") {
++    std::vector<ra2engine::GroupMember> m{gmem(10, 10), gmem(12, 10)};
++    auto facts = [](std::size_t, Cellxy c) {
++        return ra2engine::GroupCandidate{true, true, true, c.x == 21 ? 4 : 0};
++    };
++    const auto d = ra2engine::distribute_group_destinations({20, 20}, m, facts);
++    CHECK((d[1].x == 20 && d[1].y == 20));   // saw a bad cell, then a good one: takes the saved fallback
++}
++
++TEST_CASE("distribute_group_destinations: units standing in one cell share a destination; probes stop at the map edge") {
++    std::vector<ra2engine::GroupMember> m{gmem(10, 10), gmem(12, 10), gmem(12, 10), gmem(12, 10)};
++    const auto d = ra2engine::distribute_group_destinations({20, 20}, m, clear_cell);
++    CHECK((d[1].x == d[2].x && d[1].y == d[2].y && d[2].x == d[3].x));
++    auto edge = [](std::size_t, Cellxy) { return ra2engine::GroupCandidate{}; };   // off the playfield
++    const auto e = ra2engine::distribute_group_destinations({20, 20}, m, edge);
++    for (const Cellxy& c : e) CHECK((c.x == 20 && c.y == 20));
++    CHECK(ra2engine::distribute_group_destinations({1, 1}, {}, clear_cell).empty());
++}
