@@ -1,0 +1,116 @@
+GateCloseDelay= for GAGATE_A (visual close timer).
+
+Retail rulesmd.ini documents GateCloseDelay= as "time, in minutes, to delay
+before closing a gate after it has opened"; GAGATE_A sets .2 (12 s = 180
+logic ticks at 15/s). The sim already holds allied gate cells passable for
+allied movers (open_gates_for), so the only place the missing delay shows is
+the presentation gate, which closed 15 ticks after the last friendly unit
+left. BldRules now carries the parsed delay and the gate block uses it;
+absent/unparseable keeps the historical 15-tick close. Pure; no save change.
+
+--- a/engine/building.cpp
++++ b/engine/building.cpp
+@@ -2,6 +2,8 @@
+ #include "ore.hpp"   // W8-03-01 BuildMask live ore test
+ #include "orig_math.hpp"   // Net L0: om::ftol (_ftol 0x7C4D00) for double->int
+ #include <algorithm>
++#include <cmath>
++#include <cstdlib>
+ 
+ namespace ra2engine {
+ 
+@@ -146,6 +148,20 @@
+     return building_frame(b, shp_frames, condition_yellow);
+ }
+ 
++long gate_close_delay_ticks(const std::string& gate_close_delay) {
++    // GateCloseDelay= is in minutes (retail .2 on GAGATE_A); the gate tick in
++    // pres_bldanim.inc runs once per logic tick (15/s). The untraced
++    // open/close mission is not modelled: this only stretches the historical
++    // 15-tick close to the rules value.
++    if (gate_close_delay.empty()) return 15;
++    char* end = nullptr;
++    const double minutes = std::strtod(gate_close_delay.c_str(), &end);
++    if (end == gate_close_delay.c_str() || !(minutes >= 0.0)) return 15;   // unparseable/negative
++    long long ticks = std::llround(minutes * 900.0);   // minutes * 60 * 15
++    if (ticks > 1000000000LL) ticks = 1000000000LL;    // saturate, never overflow long
++    return static_cast<long>(ticks);
++}
++
+ bool building_damage_fires_on(int hp, int max_hp, bool can_be_occupied, double yellow, double red) {
+     return max_hp > 0 && hp <= (can_be_occupied ? red : yellow) * max_hp;
+ }
+--- a/engine/building.hpp
++++ b/engine/building.hpp
+@@ -360,6 +360,12 @@
+ int building_main_frame(const Building& b, int shp_frames, double condition_yellow, const BuildingFrameArt& a,
+                         int gate_stage, int stage);
+ 
++// Gate=yes close delay: GateCloseDelay= is in minutes (retail .2 on GAGATE_A);
++// the presentation holds the last open stage that long after the last friendly
++// unit left the gate, where it used to close 15 logic ticks after. Negative
++// (key absent) or unparseable keeps the historical 15-tick close. Pure.
++long gate_close_delay_ticks(const std::string& gate_close_delay);
++
+ // Building damage fires [RE: damage-state update FUN_0043fb4a @0x43FC39..
+ // 0x43FCBE; create FUN_0043c0d0]. They spring up once health <= ConditionYellow
+ // (Rules+0x1700), or ConditionRed (+0x1708) for CanBeOccupied (type +0x157B),
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -269,8 +269,9 @@
+             st.unloading = dumping;
+         }
+         // Gate=yes: open while a friendly unit stands at it [RE-FALLBACK: the
+-        // gate's own open/close mission and GateCloseDelay were not traced;
+-        // one stage per logic tick, closing 15 ticks after the last unit].
++        // gate's own open/close mission was not traced; GateCloseDelay=
++        // (minutes, GAGATE_A .2) holds the last open stage that long after the
++        // last unit, where it used to close 15 ticks after].
+         if (r.gate && a.gate_stages > 0) {
+             for (const ra2engine::Unit& u : us) {
+                 if (!u.alive || u.die_time >= 0.0 || u.cargo_of >= 0 || !w.are_allied(u.house, b.house)) continue;
+@@ -279,7 +280,7 @@
+                     break;
+                 }
+             }
+-            const bool open = now - st.gate_near < 15;
++            const bool open = now - st.gate_near < r.gate_close_ticks;
+             if (open && st.gate_stage < a.gate_stages) ++st.gate_stage;
+             else if (!open && st.gate_stage > 0) --st.gate_stage;
+         }
+--- a/engine/pres_fx.inc
++++ b/engine/pres_fx.inc
+@@ -664,6 +664,7 @@
+         bool refinery = false, unit_repair = false, cons_yard = false, occupiable = false, gate = false;
+         bool leave_rubble = false, naval = false;
+         int storage = 0;
++        long gate_close_ticks = 15;   // GateCloseDelay= in logic ticks (Gate=yes close delay)
+         std::string destroy_anim;
+     };
+     const BldRules& building_rules(const std::string& id) {
+@@ -682,6 +683,7 @@
+         r.leave_rubble = yes("LeaveRubble");
+         r.naval = pres_lower(rget(id, "Factory")) == "unittype" && yes("Naval");
+         r.storage = std::atoi(rget(id, "Storage").c_str());
++        r.gate_close_ticks = ra2engine::gate_close_delay_ticks(rget(id, "GateCloseDelay"));
+         r.destroy_anim = rget(id, "DestroyAnim");
+         return bld_rules_.emplace(id, r).first->second;
+     }
+--- a/tests/test_building.cpp
++++ b/tests/test_building.cpp
+@@ -191,3 +191,15 @@
+     std::vector<Building> both = {yard, wall};
+     CHECK(placement_check(8, 2, 2, 2, 0, 2, pass, 30, 30, occ, both, false, &base_normal).ok);
+ }
++
++TEST_CASE("gate_close_delay_ticks: GateCloseDelay= minutes -> logic ticks") {
++    // Retail GAGATE_A GateCloseDelay=.2 (minutes, "time, in minutes, to delay
++    // before closing a gate after it has opened"); the pres gate holds its
++    // stage that long, where it used to close 15 ticks after the last unit.
++    CHECK(gate_close_delay_ticks("") == 15);       // absent: historical close
++    CHECK(gate_close_delay_ticks("abc") == 15);    // unparseable: historical close
++    CHECK(gate_close_delay_ticks("-1") == 15);     // negative: historical close
++    CHECK(gate_close_delay_ticks("0") == 0);
++    CHECK(gate_close_delay_ticks(".2") == 180);    // retail GAGATE_A: 0.2 min = 12 s
++    CHECK(gate_close_delay_ticks("1") == 900);     // 1 min = 900 logic ticks (15/s)
++}
