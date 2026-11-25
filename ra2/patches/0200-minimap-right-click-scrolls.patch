@@ -1,0 +1,86 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+index a9dd32c..2c44fa3 100644
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -548,31 +548,28 @@
+         return true;
+     }
+     bool radar_drag_ = false;
+-    // Right click on the radar: the order a main-view click gives when something is
+-    // selected and no mode is armed; otherwise it cancels as on the map.
++    // Right click on the radar only scrolls the view (retail RadarClass); an armed mode is cancelled as on the map.
+     bool radar_right_click(const ra2engine::InputEvent& ev) {
+         int cx = 0, cy = 0;
+         const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
+-        const bool have = !input_.selection().ids().empty() || input_.selected_building() >= 0;
+-        if (armed || !have) { input_.handle(ev); return true; }
+-        if (radar_active() && radar_cell_at(ev.x, ev.y, cx, cy)) input_.radar_order(cx, cy, ev);
+-        return true;
++        const ra2engine::RadarClickAction a = ra2engine::radar_click_action(true, armed, radar_active(), false);
++        if (a == ra2engine::RadarClickAction::Cancel) input_.handle(ev);
++        else if (a == ra2engine::RadarClickAction::Centre && radar_cell_at(ev.x, ev.y, cx, cy)) input_.center_on_cell(cx, cy);
+         return true;
+     }
+     bool radar_click(const ra2engine::InputEvent& ev) {
+         if (!lay_.radar.contains(ev.x, ev.y)) return false;
+         int cx = 0, cy = 0;
+         if (!radar_active() || !radar_cell_at(ev.x, ev.y, cx, cy)) return true;   // consumed, inert
+-        bool any = false;
++        bool any = input_.selected_building() >= 0;
+         for (const ra2engine::Unit& u : world_.units())
+             if (usel(u) && world_.controllable(u.house) && u.alive && u.die_time < 0.0) { any = true; break; }
+         // W6-01-08 [engine deviation, touch]: a phone player looks around with
+         // the radar, so a finger tap always centres the view; a radar MOVE
+         // order by touch needs [MOVE] armed in the command column (one-shot).
+-        // A mouse keeps the original rule (selection -> move, else centre).
+-        // An armed superweapon / repair / sell mode takes the click as on the map.
++        // A mouse: left orders the selection, else centres (drag keeps scrolling).
+         const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
+-        const bool order = armed || (any && (!ev.touch || touch_move_));
++        const bool order = ra2engine::radar_click_action(false, armed, true, any && (!ev.touch || touch_move_)) == ra2engine::RadarClickAction::Order;
+         if (ev.touch && touch_move_) touch_move_ = false;
+         if (order) input_.radar_order(cx, cy, ev);   // NET L1: MEGAMISSION through the sink
+         else { input_.center_on_cell(cx, cy); radar_drag_ = !ev.touch; }   // hold + drag keeps scrolling
+diff --git a/engine/radar_map.hpp b/engine/radar_map.hpp
+index b5137a1..31126ca 100644
+--- a/engine/radar_map.hpp
++++ b/engine/radar_map.hpp
+@@ -28,4 +28,14 @@ struct RadarMap {
+     }
+ };
+ 
++// What a mouse press on the sidebar radar does [RE: RadarClass::Action 0x006539D0, via vera20k's reading:
++// left starts the context order or, with nothing to order, centres the view; right only centres it].
++// An armed mode (superweapon, repair, sell, placement) takes a left click as on the map and a right click cancels it.
++enum class RadarClickAction { Inert, Order, Centre, Cancel };
++inline RadarClickAction radar_click_action(bool right, bool armed, bool radar_active, bool have_order_actor) {
++    if (right) return armed ? RadarClickAction::Cancel : (radar_active ? RadarClickAction::Centre : RadarClickAction::Inert);
++    if (!radar_active) return RadarClickAction::Inert;
++    return (armed || have_order_actor) ? RadarClickAction::Order : RadarClickAction::Centre;
++}
++
+ }  // namespace ra2engine
+diff --git a/tests/test_radar_map.cpp b/tests/test_radar_map.cpp
+index da670c8..03884c9 100644
+--- a/tests/test_radar_map.cpp
++++ b/tests/test_radar_map.cpp
+@@ -92,3 +92,19 @@ TEST_CASE("radar map: real maps in the real radar box click back onto the cell t
+         radar_roundtrip(n, map, 336, 220);
+     }
+ }
++
++TEST_CASE("radar click: left orders a selection, right only centres, offline radar is inert") {
++    using ra2engine::RadarClickAction;
++    using ra2engine::radar_click_action;
++    // left: order with units or an armed mode, centre with nothing, inert when the radar is off
++    CHECK(radar_click_action(false, false, true, true) == RadarClickAction::Order);
++    CHECK(radar_click_action(false, true, true, false) == RadarClickAction::Order);
++    CHECK(radar_click_action(false, false, true, false) == RadarClickAction::Centre);
++    CHECK(radar_click_action(false, false, false, true) == RadarClickAction::Inert);
++    // right: never an order, whatever is selected; cancels an armed mode; inert when the radar is off
++    for (bool have : {false, true}) {
++        CHECK(radar_click_action(true, false, true, have) == RadarClickAction::Centre);
++        CHECK(radar_click_action(true, true, true, have) == RadarClickAction::Cancel);
++        CHECK(radar_click_action(true, false, false, have) == RadarClickAction::Inert);
++    }
++}
