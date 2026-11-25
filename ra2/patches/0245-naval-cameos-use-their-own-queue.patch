@@ -1,0 +1,92 @@
+Naval cameos are judged against the Naval queue and the Naval Yard.
+
+Tab 3 lists Vehicle, Naval and Aircraft items but draw_sidebar greyed each cameo with the
+queue state and factory of ONE category (the first busy one, else Vehicle), so every ship
+was dark until a War Factory stood (and a tank in production darkened them). Each cameo
+now uses its own category queue and factory, and its production clock too.
+rulesmd: ships need only their yard chain (GAYARD/NAYARD/YAYARD + TECH/RADAR), never a War Factory.
+
+diff --git a/engine/main.cpp b/engine/main.cpp
+index ec4df93..fa7bca8 100644
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -4921,11 +4921,13 @@ ra2engine::Camera centered_camera(const MapFile& map, int view_w, int view_h) {
+ // Sidebar helpers (defined below, before run_interactive) used by both the
+ // screenshot HUD and the interactive loop.
+ std::vector<int> sidebar_buildable(const BuildingAssets& ba);
++ra2engine::QueueCat rp_unit_cat(const ra2engine::UnitTypeDef& d);   // realplay_economy.inc
+ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const BuildingAssets& ba,
+                   const ra2engine::SidebarLayout& lay, const ra2engine::ProductionState& ps,
+                   const ra2engine::World& world, int credits_shown, double t_now, int active_tab,
+                   const UnitRoster* ur = nullptr, bool unit_factory_alive = true,
+-                  int armed_mode = 0);   // 0 none, 1 repair, 2 sell [repair-sell.md §C1]
++                  int armed_mode = 0,
++                  const ra2engine::ProductionQueues* queues = nullptr, const bool* cat_alive = nullptr);   // 0 none, 1 repair, 2 sell [repair-sell.md §C1]
+ 
+ int run_screenshot(const std::string& out_path) {
+     const int W = 1280, H = 720;
+@@ -5658,7 +5660,8 @@ void draw_radar_minimap(SDL_Renderer* ren, const ra2engine::SbRect& radar_rect,
+ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const BuildingAssets& ba,
+                   const ra2engine::SidebarLayout& lay, const ra2engine::ProductionState& ps,
+                   const ra2engine::World& world, int credits_shown, double t_now, int active_tab,
+-                  const UnitRoster* ur, bool unit_factory_alive, int armed_mode) {
++                  const UnitRoster* ur, bool unit_factory_alive, int armed_mode,
++                  const ra2engine::ProductionQueues* queues, const bool* cat_alive) {
+     // Opaque backdrop behind any gaps (missing optional chrome), then the
+     // recovered top-to-bottom stack.
+     shade_rect(ren, lay.bar, 255, 24, 24, 28);
+@@ -5839,10 +5842,20 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
+         // building-tabs-only). Unit cameo availability reuses can_start_unit
+         // against the SAME predicate; building cameos keep can_start. Render-only;
+         // no gate renders an interactive unit tab (spec §8).
++        // Tab 3 lists Vehicle, Naval and Aircraft items: each is judged against
++        // its OWN queue and factory (a Destroyer needs a Naval Yard, not a War
++        // Factory), not the queue the strip happens to draw a clock for.
++        const ra2engine::ProductionState* cps = &ps;
++        bool cfac = unit_factory_alive;
++        if (unit_tab && queues && cat_alive) {
++            const ra2engine::QueueCat uc = rp_unit_cat(ur->defs[type]);
++            cps = &queues->state(uc);
++            cfac = cat_alive[static_cast<int>(uc)];
++        }
+         bool can;
+         if (unit_tab)
+-            can = ra2engine::can_start_unit(ps, type, ur->defs, world.buildings(), ba.roster, 0,
+-                                            ba.groups, unit_factory_alive);
++            can = ra2engine::can_start_unit(*cps, type, ur->defs, world.buildings(), ba.roster, 0,
++                                            ba.groups, cfac);
+         else
+             can = ra2engine::can_start(ps, type, ba.roster, world.buildings(), 0, ba.groups,
+                                        conyard_alive(world, ba, g_local_house));
+@@ -5850,10 +5863,11 @@ void draw_sidebar(SDL_Renderer* ren, ra2engine::TextureCache& tc, const Building
+         // the item cannot be built; while in production GCLOCK2 frame stage+1
+         // TRANSLUCENT (0x404 = 50 %) with no shade under it; a ready item shows
+         // only its "Ready" text (draw_queue_badges).
+-        if (ps.slot.type == type && ps.slot.ready) {
++        const ra2engine::ProductionState& cs = unit_tab ? *cps : ps;
++        if (cs.slot.type == type && cs.slot.ready) {
+             // Ready: no clock (text drawn by GameScene::draw_queue_badges).
+-        } else if (ps.slot.type == type) {
+-            int gframe = 1 + ps.slot.stage;
++        } else if (cs.slot.type == type) {
++            int gframe = 1 + cs.slot.stage;
+             if (gframe >= ba.sb_gclock.count()) gframe = ba.sb_gclock.count() - 1;
+             blit_shp_alpha(ren, tc, "sb:gclk" + std::to_string(gframe), ba.sb_gclock, gframe, ba.sb_pal,
+                            c.rect.x, c.rect.y, 128);
+@@ -7826,11 +7840,15 @@ public:
+                 (active_tab_ >= 2) ? !world_.factory_category_lost(rp_ft_of(vis_cat), local_house_)
+                                    : true;
+             const ra2engine::Input::BaseMode bm = input_.base_mode();
++            bool cat_alive[ra2engine::kQueueCats];
++            for (int c = 0; c < ra2engine::kQueueCats; ++c)
++                cat_alive[c] = !world_.factory_category_lost(rp_ft_of(static_cast<ra2engine::QueueCat>(c)), local_house_);
+             draw_sidebar(ren, tc, ba_, lay_, lq().state(vis_cat), world_,
+                          static_cast<int>(std::llround(credits_shown_)), now_ / 1000.0,
+                          active_tab_, &ur_, unit_fac_alive,
+                          bm == ra2engine::Input::BaseMode::Repair ? 1
+-                         : bm == ra2engine::Input::BaseMode::Sell ? 2 : 0);
++                         : bm == ra2engine::Input::BaseMode::Sell ? 2 : 0,
++                         &lq(), cat_alive);
+         }
+         draw_queue_badges(ren, tc);    // G-07 / W2-UI-03/04
+         draw_tooltip(ren, tc);         // W2-UI-07
