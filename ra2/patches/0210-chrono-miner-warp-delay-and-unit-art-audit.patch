@@ -1,0 +1,212 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -511,3 +511,4 @@
+ endif()
+ target_sources(ra2assets_tests PRIVATE tests/test_building_frames.cpp)
+ target_sources(ra2assets_tests PRIVATE tests/test_slot_anim_range.cpp)
++target_sources(ra2assets_tests PRIVATE tests/test_unit_art_audit.cpp)
+diff --git a/engine/harvest.cpp b/engine/harvest.cpp
+--- a/engine/harvest.cpp
++++ b/engine/harvest.cpp
+@@ -286,6 +286,7 @@
+             u.is_aircraft)
+             continue;  // carried harvester: mission FSM parks (CB-1); CB-2: an
+                        // aircraft is never a harvester (data-unreachable, guarded)
++        if (u.chrono_miner && u.frozen) continue;   // still warping in at the dock
+ 
+         // Auto-resume after a manual move order [RE-GATE APPLIED §1 PROBABLE:
+         // "was harvesting" flag restores the mission once the ordered move
+@@ -480,16 +481,15 @@
+                     // kChronoWarpSecs.] harv_timer == 0.0 exactly on the
+                     // first tick of this warp (every transition INTO
+                     // ReturnToRef resets it), so ChronoOut fires once.
+-                    if (u.harv_timer == 0.0) {
+-                        events.push_back({HarvestEvent::Kind::ChronoOut, idx});
+-                    }
+-                    u.harv_timer += dt;
+-                    if (u.harv_timer >= kChronoWarpSecs) {
+-                        teleport_unit(u, idx, dcx, dcy, passable, gw, gh, occ);
+-                        events.push_back({HarvestEvent::Kind::ChronoIn, idx});
+-                        u.harv = HarvState::WaitDock;
+-                        u.harv_timer = 0.0;
+-                    }
++                    // Retail relocates at once and freezes the miner at the
++                    // dock for the distance-based delay (World sets that
++                    // from the event's origin); it does not sit at the field.
++                    events.push_back({HarvestEvent::Kind::ChronoOut, idx});
++                    const int ox = u.cell_x, oy = u.cell_y;
++                    teleport_unit(u, idx, dcx, dcy, passable, gw, gh, occ);
++                    events.push_back({HarvestEvent::Kind::ChronoIn, idx, ox, oy});
++                    u.harv = HarvState::WaitDock;
++                    u.harv_timer = 0.0;
+                 } else {
+                     bool at_dock = (u.cell_x == dcx && u.cell_y == dcy && !u.moving());
+                     // W2-SK-03 dock queue [RE-FALLBACK: artmd QueueingCell=4,1
+diff --git a/engine/harvest.hpp b/engine/harvest.hpp
+--- a/engine/harvest.hpp
++++ b/engine/harvest.hpp
+@@ -27,6 +27,7 @@
+ struct HarvestEvent {                              // audio/render hooks
+     enum class Kind { ChronoOut, ChronoIn, UnloadStart, UnloadEnd };
+     Kind kind = Kind::ChronoOut; int unit = -1;
++    int from_x = -1, from_y = -1;   // ChronoIn: the cell the warp left
+ };
+ 
+ // The refinery dock cell [RE-GATE APPLIED: economy.md §2 — the binary
+diff --git a/engine/pres_audio_events.inc b/engine/pres_audio_events.inc
+--- a/engine/pres_audio_events.inc
++++ b/engine/pres_audio_events.inc
+@@ -669,9 +669,12 @@
+             w6_play(w6_type_or_av(pres_type_id(u), out ? "ChronoOutSound" : "ChronoInSound"), x, y,
+                     out ? "chrono out" : "chrono in");
+             // The warp home the miner just made: the warp anims and the
+-            // sparkles it never had (the sim does not freeze it, so it has no
+-            // warp window of its own).
+-            if (!out) pres_chrono_warp_begin(w, e.unit, pres_warp_display_frames(0));
++            // sparkles it never had (its freeze is the dock delay).
++            if (!out)
++                pres_chrono_warp_begin(w, e.unit, pres_warp_display_frames(
++                                                      u.warp_until > static_cast<std::int64_t>(w.ability_frame())
++                                                          ? static_cast<long>(u.warp_until - static_cast<std::int64_t>(w.ability_frame()))
++                                                          : 0));
+         }
+     }
+ 
+diff --git a/engine/world.cpp b/engine/world.cpp
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -6488,8 +6488,19 @@
+         // Path each requested move the same way step_combat's MoveRequests
+         // are executed above (order_unit_move mirrors that pattern).
+         for (const HarvestMove& m : h_moves) order_unit_move(m.unit, m.gx, m.gy);
+-        for (const HarvestEvent& e : h_events)
++        for (const HarvestEvent& e : h_events) {
+             harvest_events_.push_back({static_cast<int>(e.kind), e.unit});
++            // The Chrono Miner's warp home is the teleport locomotor's: frozen
++            // at the dock for max(dist / ChronoDistanceFactor, ChronoMinimumDelay).
++            if (e.kind == HarvestEvent::Kind::ChronoIn && e.from_x >= 0 && abilities_any_) {   // the unfreeze runs in step_abilities
++                Unit& cu = units_[static_cast<std::size_t>(e.unit)];
++                const double dx = (cu.cell_x - e.from_x) * kAbilityLeptonsPerCell;
++                const double dy = (cu.cell_y - e.from_y) * kAbilityLeptonsPerCell;
++                const int delay = teleport_delay_frames(ability_ftol(om::sqrt(dx * dx + dy * dy)), ability_rules_);
++                cu.warp_until = static_cast<std::int64_t>(ability_frame_) + delay;
++                cu.frozen = true;
++            }
++        }
+ 
+         // Rallypoint: Yuri Slave Miner (Enslaves=) — spawn + gather + deliver.
+         std::vector<SlaveSpawn> s_spawns;
+diff --git a/tests/test_harvest.cpp b/tests/test_harvest.cpp
+--- a/tests/test_harvest.cpp
++++ b/tests/test_harvest.cpp
+@@ -246,15 +246,12 @@
+     REQUIRE(r.units[0].harv_cell_x == 2);
+     REQUIRE(r.units[0].harv_cell_y == 2);
+ 
+-    // Outbound warp: ChronoOut on the first transit tick...
+-    r.step(kChronoWarpSecs / 2);
++    // Outbound warp: relocates at once (ChronoOut + ChronoIn together; the
++    // distance-based freeze at the dock is World's), landing ON the dock cell.
++    r.step(0.01);
+     CHECK(count_events(r.events, HarvestEvent::Kind::ChronoOut, 0) == 1);
+-    CHECK(count_events(r.events, HarvestEvent::Kind::ChronoIn, 0) == 0);
+-    CHECK(r.units[0].harv == HarvState::ReturnToRef);   // still in transit
+-    // ...ChronoIn a full kChronoWarpSecs later, landing ON the dock cell.
+-    r.step(kChronoWarpSecs / 2);
+-    CHECK(count_events(r.events, HarvestEvent::Kind::ChronoOut, 0) == 0);
+     CHECK(count_events(r.events, HarvestEvent::Kind::ChronoIn, 0) == 1);
++    CHECK(r.events.back().from_x == 2);
+     CHECK(r.units[0].cell_x == 10);
+     CHECK(r.units[0].cell_y == 11);
+     REQUIRE(r.units[0].harv == HarvState::WaitDock);
+diff --git a/tests/test_unit_art_audit.cpp b/tests/test_unit_art_audit.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/test_unit_art_audit.cpp
+@@ -0,0 +1,85 @@
++// Real-data audit of unit art against retail artmd.ini / rulesmd.ini / SHP
++// frame counts (patch 0210). Skips without RA2_INSTALL_DIR.
++#include "doctest.h"
++#include "asset_fixture.hpp"
++#include "ra2assets/ini.hpp"
++#include "ra2assets/shp.hpp"
++#include <algorithm>
++#include <cstdio>
++#include <sstream>
++
++namespace {
++std::string lc(std::string s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); return s; }
++std::string clean(std::string v) {
++    const auto sc = v.find(';');
++    if (sc != std::string::npos) v.erase(sc);
++    while (!v.empty() && std::isspace((unsigned char)v.back())) v.pop_back();
++    while (!v.empty() && std::isspace((unsigned char)v.front())) v.erase(v.begin());
++    return v;
++}
++std::vector<uint8_t> find_shp(const std::string& image) {
++    const std::string n = lc(image) + ".shp";
++    std::vector<uint8_t> b = ra2fixture::resolve_nested_bytes(n);
++    if (!b.empty()) return b;
++    for (const char* mx : {"conqmd.mix", "conquer.mix"}) {
++        try {
++            const auto& top = ra2fixture::top_mix();
++            ra2assets::MixFile m = top.open_nested(mx);
++            if (const auto* e = m.find(ra2assets::mix_id(n))) return m.read(*e);
++        } catch (const std::exception&) {}
++    }
++    try {
++        const auto& r = ra2fixture::ra2_mix();
++        ra2assets::MixFile m = r.open_nested("conquer.mix");
++        if (const auto* e = m.find(ra2assets::mix_id(n))) return m.read(*e);
++    } catch (const std::exception&) {}
++    return {};
++}
++}  // namespace
++
++TEST_CASE("unit art audit: every infantry sequence frame exists in its SHP") {
++    if (!ra2fixture::assets_available() || ra2fixture::artmd_bytes().empty() || ra2fixture::rulesmd_bytes().empty()) {
++        MESSAGE("skipped: no install"); return;
++    }
++    const ra2assets::Ini& rules = ra2fixture::rulesmd_ini();
++    const ra2assets::Ini& art = ra2fixture::artmd_ini();
++    static const char* names[] = {"Ready","Guard","Prone","Walk","FireUp","Down","Crawl","Up","FireProne","Idle1","Idle2",
++        "Die1","Die2","Die3","Die4","Die5","Tread","Swim","WetIdle1","WetIdle2","WetDie1","WetDie2","WetAttack","Hover",
++        "Fly","Tumble","FireFly","Deploy","Deployed","DeployedFire","DeployedIdle","Undeploy","Cheer","Paradrop",
++        "AirDeathStart","AirDeathFalling","AirDeathFinish","Panic","Shovel","Carry","SecondaryFire","SecondaryProne"};
++    int checked = 0, bad = 0;
++    for (const auto& kv : rules.section("InfantryTypes")) {
++        const std::string id = clean(kv.second);
++        if (id.empty()) continue;
++        std::string image = clean(rules.get(id, "Image")); if (image.empty()) image = id;
++        const std::string seq = clean(art.get(image, "Sequence"));
++        if (seq.empty()) continue;
++        const std::vector<uint8_t> raw = find_shp(image);
++        if (raw.empty()) { std::printf("[audit] %s: no SHP\n", image.c_str()); continue; }
++        const int n = ra2assets::ShpFile::load(raw).count();
++        for (const char* nm : names) {
++            const std::string v = clean(art.get(seq, nm));
++            if (v.empty()) continue;
++            int f[3] = {0, 1, 0}; int k = 0; std::stringstream ss(v); std::string tok;
++            while (k < 3 && std::getline(ss, tok, ',')) f[k++] = std::atoi(tok.c_str());
++            const int last = f[0] + (f[2] > 0 ? 7 * f[2] : 0) + std::max(f[1], 1) - 1;
++            ++checked;
++            if (last >= n) { ++bad; std::printf("[audit] %s %s %s=%s needs frame %d, SHP has %d\n", id.c_str(), seq.c_str(), nm, v.c_str(), last, n); }
++        }
++    }
++    std::printf("[audit] infantry sequences checked=%d out-of-range=%d\n", checked, bad);
++    CHECK(checked > 100);
++    CHECK(bad == 0);
++}
++
++TEST_CASE("unit art audit: SHP vehicles (DRON, SQD, DLPH) frame layout") {
++    if (!ra2fixture::assets_available() || ra2fixture::artmd_bytes().empty()) { MESSAGE("skipped: no install"); return; }
++    const ra2assets::Ini& art = ra2fixture::artmd_ini();
++    for (const char* id : {"DRON", "SQD", "DLPH"}) {
++        const auto raw = find_shp(id);
++        if (raw.empty()) { std::printf("[audit] %s no shp\n", id); continue; }
++        const int n = ra2assets::ShpFile::load(raw).count();
++        const int w = art.get_int(id, "WalkFrames", 12), f = art.get_int(id, "FiringFrames", 0), st = art.get_int(id, "StandingFrames", f > 0 ? 1 : 0);
++        std::printf("[audit] %s shp=%d walk=%d fire=%d stand=%d -> 8*(w+f+st)=%d\n", id, n, w, f, st, 8 * (w + f + st));
++    }
++}
