@@ -3,7 +3,8 @@
 //   #ra2 for Red Alert 2 mode (#ra2nofiles no game files, #ra2noengine, #ra2nomaps, #ra2slow loading maps, #ra2maperr unreadable map), #ra2fresh for its first run, #ra2online / #ra2guest for the lobby as host / guest,
 //   #ra2guestchanged: the host changes the speed 2.5 s in, #ra2guestready: a guest who is ready)
 //   Sending maps to the room: #share (connected, three other players), #sharepending (an offer waiting), #shareconflict (an offer with the
-//   name of a map you have), #sharenosupport (an old server), #shareempty (nobody else), #shareoffline; add #ra2 for Red Alert 2 (#ra2share)
+//   name of a map you have), #sharestack (several offers and finished transfers at once), #sharenosupport (an old server), #shareempty (nobody else),
+//   #shareoffline; add #ra2 for Red Alert 2 (#ra2share)
 const hash = location.hash;
 const fakeMaps = () => {
   const names = ["! 1v1 ! super no money map v2", "!!! no money !!! lots of fun3", "!2v2 cxn", "Tournament Desert", "Twilight Flame", "Defcon 6", "Mountain Pass", "Arctic Convoy", "Bear Town", "Fallen Empire", "Winter Wolves", "Dust Bowl 2v2", "Golden Gate", "Oasis 3v3"];
@@ -175,7 +176,24 @@ const sh = { auto: false, id: 1, incoming: [], outgoing: [], peers: hash.include
   { vip: "10.77.0.4", name: "Kim", game: shareRa2 ? "generals" : "ra2", master: false }] };
 const shGame = shareRa2 ? "ra2" : "generals";
 if (hash.includes("sharepending") || hash.includes("shareconflict")) sh.incoming.push({ id: 41, from: "10.77.0.1", from_name: "Sam", name: shareRa2 ? "Dune Patrol.map" : "Tournament Desert", game: shGame, size: 2200000, players: 4, master: true, conflict: hash.includes("shareconflict"), state: "prompt", percent: 0, note: "", installed: null, seconds_left: 100, t: 0 });
+if (hash.includes("sharestack")) {
+  sh.incoming.push(
+    { id: 41, from: "10.77.0.1", from_name: "Sam", name: shareRa2 ? "Dune Patrol.map" : "Tournament Desert", game: shGame, size: 2200000, players: 4, master: true, conflict: false, state: "prompt", percent: 0, note: "", installed: null, seconds_left: 100, t: 0 },
+    { id: 42, from: "10.77.0.3", from_name: "Dana", name: shareRa2 ? "Golden State Fwy.map" : "Twilight Flame", game: shGame, size: 1800000, players: 8, master: false, conflict: false, state: "prompt", percent: 0, note: "", installed: null, seconds_left: 100, t: 0 },
+    { id: 43, from: "10.77.0.4", from_name: "Kim", name: shareRa2 ? "Heck Freezes Over.map" : "Defcon 6", game: shGame, size: 900000, players: 6, master: false, conflict: false, state: "done", percent: 100, note: "Saved as Defcon 6", installed: "Defcon 6", seconds_left: 0, t: 0 },
+    { id: 44, from: "10.77.0.4", from_name: "Kim", name: shareRa2 ? "Isle of War.map" : "Mountain Pass", game: shGame, size: 1200000, players: 2, master: false, conflict: false, state: "done", percent: 100, note: "Saved as Mountain Pass", installed: "Mountain Pass", seconds_left: 0, t: 0 },
+    { id: 45, from: "10.77.0.1", from_name: "Sam", name: shareRa2 ? "Kill Bill.map" : "Winter Wolves", game: shGame, size: 1500000, players: 2, master: false, conflict: false, state: "failed", percent: 0, note: "Declined", installed: null, seconds_left: 0, t: 0 }
+  );
+}
+// #sharemany: eight offers, one with a clashing name; #shareout: three maps to two players, mixed; #sharedone: mixed results; #sharefreeze keeps everything as it is
+const mk = (id, from, who, name, extra = {}) => ({ id, from, from_name: who, name, game: shGame, size: 1500000 + id * 90000, players: 2 + (id % 4) * 2, master: false, conflict: false, state: "prompt", percent: 0, note: "", installed: null, seconds_left: 100, t: 0, ...extra });
+if (hash.includes("sharemany")) sh.incoming.push(mk(51, "10.77.0.1", "Sam", "Tournament Desert", { master: true }), mk(52, "10.77.0.1", "Sam", "Twilight Flame"), mk(53, "10.77.0.3", "Dana", "Defcon 6", { conflict: hash.includes("manyconflict") }), mk(54, "10.77.0.3", "Dana", "Mountain Pass"), mk(55, "10.77.0.4", "Kim", "Winter Wolves"), mk(56, "10.77.0.4", "Kim", "Silent River"), mk(57, "10.77.0.4", "Kim", "Lone Eagle"), mk(58, "10.77.0.1", "Sam", "Scorched Earth"));
+if (hash.includes("sharereceiving")) sh.incoming.push(mk(61, "10.77.0.1", "Sam", "Tournament Desert", { state: "receiving", percent: 42 }), mk(62, "10.77.0.3", "Dana", "Twilight Flame", { state: "receiving", percent: 70 }), mk(63, "10.77.0.3", "Dana", "Defcon 6"));
+if (hash.includes("sharedone")) sh.incoming.push(mk(71, "10.77.0.1", "Sam", "Tournament Desert", { state: "done", percent: 100, note: "Saved as Tournament Desert" }), mk(72, "10.77.0.3", "Dana", "Twilight Flame", { state: "done", percent: 100, note: "Saved" }), mk(73, "10.77.0.4", "Kim", "Defcon 6", { state: "have", percent: 100, note: "You already have this map" }), mk(74, "10.77.0.4", "Kim", "Winter Wolves", { state: "failed", note: "You did not answer in time" }));
+if (hash.includes("shareout") && !hash.includes("shareoutdone")) { const o = (id, to, name, state, percent, note = "") => ({ id, to, to_name: sh.peers.find((x) => x.vip === to).name, name, game: shGame, state, percent, note, t: Date.now() }); sh.outgoing.push(o(81, "10.77.0.1", "Tournament Desert", "sending", 80), o(82, "10.77.0.3", "Tournament Desert", "sending", 55), o(83, "10.77.0.1", "Twilight Flame", "sending", 60), o(84, "10.77.0.3", "Twilight Flame", "waiting", 0), o(85, "10.77.0.1", "Defcon 6", "done", 100, "Delivered"), o(86, "10.77.0.3", "Defcon 6", "declined", 0, "Declined")); }
+if (hash.includes("shareoutdone")) { const o = (id, to, name, state, note) => ({ id, to, to_name: sh.peers.find((x) => x.vip === to).name, name, game: shGame, state, percent: 100, note, t: Date.now() }); sh.outgoing.push(o(91, "10.77.0.1", "Tournament Desert", "done", "Delivered"), o(92, "10.77.0.3", "Tournament Desert", "declined", "Declined"), o(93, "10.77.0.1", "Defcon 6", "have", "Already has it"), o(94, "10.77.0.3", "Defcon 6", "failed", "Connection dropped")); }
 const shTick = () => {
+  if (hash.includes("sharefreeze")) return;
   const now = Date.now();
   for (const o of sh.outgoing) {
     if (o.state === "waiting" && now - o.t > 2500) { if (o.to === "10.77.0.3") { o.state = "declined"; o.note = "Declined"; } else { o.state = "sending"; o.t = now; } }
@@ -222,3 +240,5 @@ if (hash.includes("hostchange")) setTimeout(() => { if (lobby.settings) { lobby.
   // #switchdemo: presses the other game 1.2 s in, to watch the switch animation
   if (hash.includes("switchdemo")) setTimeout(() => { const b = document.querySelector('.gseg[aria-pressed="false"]'); b && b.click(); }, 1200);
 }
+
+if (hash.includes("sharedetails")) { let n = 0; const t = setInterval(() => { const b = document.querySelector("[data-k=details]"); if (b && b.getAttribute("aria-expanded") === "false") { b.click(); clearInterval(t); } else if (++n > 40) clearInterval(t); }, 150); }
