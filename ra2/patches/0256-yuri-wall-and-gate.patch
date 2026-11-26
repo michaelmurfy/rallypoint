@@ -1,0 +1,105 @@
+Roster the Yuri wall (GAFWLL) and the Allied gate (GAGATE_A).
+
+GAFWLL is retail's temp Yuri wall (YAWALL never shipped):
+Prerequisite=YABRCK, AIBasePlanningSide=2, art ggfwll.shp. Rostering
+it lets the Yuri AI's ConcreteWalls pick resolve (was -1: Yuri built
+no walls) and shows it on a Yuri sidebar behind its prerequisite.
+GAGATE_A (TechLevel=-1, art gtgate_a.shp, 9 gate stages) is map-only:
+pre-placed map gates now load as real buildings with the gate
+open/close behavior instead of static dressing. Append-only roster
+growth (41->43); no save-format change. Tests: synthetic AI
+ConcreteWalls pick per side, real-artmd pins for both types.
+
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -2671,7 +2671,7 @@
+ }
+ 
+ // `rules_ini` (real play only; every gate passes none): append the third
+-// side's structures after the curated RA2 roster, so the indices of the 41
++// side's structures after the curated RA2 roster, so the indices of the 43
+ // curated ones -- and every gate -- are unchanged.
+ BuildingAssets load_building_assets(const ra2assets::MixFile& ra2,
+                                     const ra2assets::MixFile& language, const Rules& rules,
+@@ -2725,7 +2725,7 @@
+     // it is excluded from every buildable/sidebar closure. Art [RE-FALLBACK]: if
+     // the CAOILD SHP is absent it stays in ba.roster with art.ok=false +
+     // placeholder (buildings are never dropped on art failure).
+-    static const char* kRoster[41] = {"GACNST", "GAPOWR", "GAPILE", "GAWEAP",
++    static const char* kRoster[43] = {"GACNST", "GAPOWR", "GAPILE", "GAWEAP",
+                                        "NACNST", "NAPOWR", "NAHAND", "NAWEAP",
+                                        "GAREFN", "NAREFN", "GAPILL", "GATOW",
+                                        "NALASR", "NABNKR", "TESLA",  "NAFLAK",
+@@ -2764,7 +2764,18 @@
+                                        // genermd.mix / snowmd.mix; [GAROBO]
+                                        // Prerequisite=GAWEAP,GACNST TechLevel=10
+                                        // PowersUnit=ROBO). Only the roster= WITNESS grows.
+-                                       "GAROBO"};
++                                       "GAROBO",
++                                       // Rallypoint APPEND-ONLY at indices 41-42:
++                                       // GAFWLL (the Yuri Citadel Wall, retail's temp
++                                       // stand-in for YAWALL: Prerequisite=YABRCK,
++                                       // AIBasePlanningSide=2, art ggfwll.shp) so the
++                                       // Yuri AI's ConcreteWalls pick resolves, and
++                                       // GAGATE_A (the Allied guard gate, TechLevel=-1:
++                                       // map-only, never in a sidebar) so pre-placed
++                                       // map gates load as real buildings with the
++                                       // gate open/close behavior. Prior indices
++                                       // unchanged; only the roster= WITNESS grows.
++                                       "GAFWLL", "GAGATE_A"};
+     constexpr int kRoster2First = 24;   // first P6-appended index
+     // rulesmd [General] BuildupTime=.06 (minutes) [RE: building-render.md §5].
+     const double build_time_min = rules.general_double("BuildupTime", 0.06);
+--- a/tests/test_ai_base.cpp
++++ b/tests/test_ai_base.cpp
+@@ -9,6 +9,9 @@
+ #include <fstream>
+ #include <string>
+ #include <vector>
++#include "../engine/yuri_side.hpp"
++using namespace ra2assets;   // ai_side_catalog.inc takes bare Rules (main.cpp's pattern)
++#include "../engine/ai_side_catalog.inc"
+ using namespace ra2engine;
+ 
+ TEST_CASE("ai_base: ai_rand is deterministic xorshift32") {
+@@ -596,3 +599,25 @@
+     CHECK(w.type == -1);
+     CHECK(w.wait);
+ }
++
++TEST_CASE("ai catalog: ConcreteWalls pick is side-correct incl. Yuri GAFWLL [0256]") {
++    // Retail [AI] list order with per-side AIBasePlanningSide (ok_index stubbed:
++    // the routing, not the roster, is under test here).
++    ra2assets::Ini ini = ra2assets::Ini::parse(
++        "[AI]\nConcreteWalls=GAWALL,NAWALL,GAFWLL\n"
++        "[GAWALL]\nAIBasePlanningSide=0\nOwner=Americans,Russians,YuriCountry\n"
++        "[NAWALL]\nAIBasePlanningSide=1\nOwner=Americans,Russians,YuriCountry\n"
++        "[GAFWLL]\nAIBasePlanningSide=2\nOwner=Americans,Russians,YuriCountry\n");
++    ra2assets::Rules rules = ra2assets::Rules::load(ini);
++    auto ok_index = [](const char* id) -> int {
++        const std::string s = id;
++        if (s == "GAWALL") return 10;
++        if (s == "NAWALL") return 11;
++        if (s == "GAFWLL") return 12;
++        return -1;
++    };
++    using Side = ra2engine::World::Side;
++    CHECK(aiside::pick_from_list(rules, "AI", "ConcreteWalls", Side::Allied, "Americans", ok_index) == 10);
++    CHECK(aiside::pick_from_list(rules, "AI", "ConcreteWalls", Side::Soviet, "Russians", ok_index) == 11);
++    CHECK(aiside::pick_from_list(rules, "AI", "ConcreteWalls", Side::Yuri, "YuriCountry", ok_index) == 12);
++}
+--- a/tests/test_art.cpp
++++ b/tests/test_art.cpp
+@@ -170,4 +170,12 @@
+     CHECK(art.cameo("GACNST") == "");
+ 
+     CHECK(art.new_theater("GACNST"));
++
++    // 0256: Yuri wall + Allied gate art sections.
++    REQUIRE(art.foundation("GAFWLL", fw, fh));
++    CHECK(fw == 1); CHECK(fh == 1);
++    CHECK(art.cameo("GAFWLL") == "CITWICON");
++    REQUIRE(art.foundation("GAGATE_A", fw, fh));
++    CHECK(fw == 3); CHECK(fh == 1);
++    CHECK(art.cameo("GAGATE_A") == "GATEICON");
+ }

@@ -1,0 +1,316 @@
+Superweapon sounds, animations and radar events audit+fix.
+
+Per-type audit across all 12 superweapons against evamd/rulesmd/artmd:
+charge anims follow each building's OWN superweapon instead of the house's
+first record; missing EVA lines (Dominator/Mutator Detected+Ready+Activated,
+ForceShield/PsychicReveal Ready); missing sounds (NukeLaunch+DigSound,
+IronCurtainBlast, ChronosphereMove, WeatherIntro, Dominator/Mutator/Reveal
+activates, ForceShieldStarting); missing anims (PDFXCLD/PDFXLOC, FORCSHLD);
+radar event 13 on offensive fires and impacts. No save-format change.
+Tests in test_superweapon.cpp (Type= mapping, dominator events).
+
+--- a/engine/superweapon.hpp	2026-11-25 20:15:00.212746060 +0000
++++ b/engine/superweapon.hpp	2026-11-25 20:08:31.989080036 +0000
+@@ -6,7 +6,9 @@
+ // The struct methods are header-inline (small scalar math -- the Unit::moving()
+ // precedent) so any including TU gets them with no link dependency on the .cpp;
+ // superweapon.cpp holds the enum<->id mapping helpers.
++#include <cctype>
+ #include <cstdint>
++#include <string>
+ 
+ namespace ra2engine {
+ 
+@@ -123,6 +125,28 @@
+ // SuperweaponType [RE-GATE APPLIED: superweapon.md §4]. Unknown/absent ids -> None.
+ SuperweaponType superweapon_type_from_id(int id);
+ 
++// Map a [<Special>] Type= name (what a building's SuperWeapon= section holds:
++// MultiMissile, IronCurtain, ..., PsychicReveal) to a SuperweaponType.
++// Case-insensitive; unknown/empty names -> None. Pure (no World/RNG).
++inline SuperweaponType superweapon_type_from_type_name(const std::string& name) {
++    std::string u;
++    u.reserve(name.size());
++    for (char c : name) u.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
++    if (u == "MULTIMISSILE") return SuperweaponType::Nuke;
++    if (u == "IRONCURTAIN") return SuperweaponType::IronCurtain;
++    if (u == "LIGHTNINGSTORM") return SuperweaponType::LightningStorm;
++    if (u == "CHRONOSPHERE") return SuperweaponType::ChronoSphere;
++    if (u == "CHRONOWARP") return SuperweaponType::ChronoWarp;
++    if (u == "PARADROP") return SuperweaponType::ParaDrop;
++    if (u == "AMERPARADROP") return SuperweaponType::AmerParaDrop;
++    if (u == "PSYCHICDOMINATOR") return SuperweaponType::PsychicDominator;
++    if (u == "SPYPLANE") return SuperweaponType::SpyPlane;
++    if (u == "GENETICCONVERTER") return SuperweaponType::GeneticConverter;
++    if (u == "FORCESHIELD") return SuperweaponType::ForceShield;
++    if (u == "PSYCHICREVEAL") return SuperweaponType::PsychicReveal;
++    return SuperweaponType::None;
++}
++
+ // MouseCursorType descriptor from the 86-entry table at gamemd.exe 0x0082D028
+ // (stride 28: {start, count, rate, mini_start, mini_count, hotX, hotY}).
+ // Hotspot codes: 0 = left/top, 12345 = centre, 54321 = right/bottom.
+--- a/engine/world_yuri.cpp	2026-11-25 20:15:00.206751369 +0000
++++ b/engine/world_yuri.cpp	2026-11-25 20:08:46.738230076 +0000
+@@ -99,6 +99,9 @@
+ // ride in s.recent and revert after that delay.
+ void World::an_dominator_fire(SwStrike& s) {
+     const SwParams& P = an_.sw;
++    // The effect moment (DominatorFireAtPercentage into the head anim): the
++    // presentation's cue for the DominatorSecondAnim ground ring.
++    an_event(SwEvent::Detonated, s.house, SuperweaponType::PsychicDominator, s.x, s.y);
+     an_area_damage(s.house, s.x, s.y, P.dominator_damage, P.dominator_spread, P.dominator_pmax,
+                    P.dominator_verses, /*hit_air=*/false, /*spare_house=*/false, 0.0, 0, -1);
+     const int r_cells = std::clamp(P.dominator_capture_range, 0, 10);
+--- a/engine/pres_game.inc	2026-11-25 20:15:00.284183831 +0000
++++ b/engine/pres_game.inc	2026-11-25 20:09:35.928730481 +0000
+@@ -495,18 +495,35 @@
+     // G-83 / W2-AN-05/20 superweapon visuals + EVA, driven by the World's SW
+     // event feed (World::sw_events, read by sequence number) so an AI launch
+     // shows and sounds like the player's.
+-    //  * Launched: [General] NukeTakeOff=NUKETO at the silo; EVA
+-    //    EVA_NuclearMissileLaunched for EVERY player [RE: presentation.md §1,
+-    //    FUN_006cba10 @6cd208 -- no local-player check].
+-    //  * Detonated: [NUKE] AnimList=NUKEANIM at the target + its Report=.
+-    //  * Activated: IronCurtainInvokeAnim=IRONBLST / ChronoBlast=CHRONOFD +
+-    //    ChronoBlastDest=CHRONOTG / the storm clouds; EVA *Activated /
+-    //    LightningStormCreated for every player.
++    //  * Launched (nuke): [General] NukeTakeOff=NUKETO at the silo + its
++    //    StartSound (NukeLaunch) + [AudioVisual] DigSound (the NukeSiren hack);
++    //    EVA EVA_NuclearMissileLaunched for EVERY player [RE:
++    //    presentation.md §1, FUN_006cba10 @6cd208 -- no local-player check].
++    //    No radar event at launch (Launch case 0 has none); the impact pings.
++    //  * Detonated: nuke -> [NUKE] AnimList=NUKEANIM at the target + its
++    //    Report= + radar event 13; dominator effect -> DominatorSecondAnim
++    //    (the PDFXLOC ground ring).
++    //  * Activated: IronCurtainInvokeAnim=IRONBLST + its Report
++    //    (IronCurtainBlast) / ChronoBlast=CHRONOFD + ChronoBlastDest=CHRONOTG
++    //    + its StartSound (ChronosphereMove) / the storm clouds + StormSound
++    //    (WeatherIntro) / DominatorFirstAnim (PDFXCLD) +
++    //    PsychicDominatorActivateSound / GeneticMutatorActivateSound /
++    //    PsychicRevealActivateSound / ForceShieldInvokeAnim (FORCSHLD) +
++    //    [ForceShieldSpecial] StartSound (ForceShieldStarting); EVA *Activated
++    //    / LightningStormCreated for every player; radar event 13 at the
++    //    target (Launch cases 1/2/9; the pattern every offensive fire
++    //    follows). Paradrop / spy plane / reveal create no radar event
++    //    (their Launch cases have none); reveal has no EVA line either
++    //    (evamd has only EVA_PsychicRevealReady).
+     //  * Granted to an enemy house: EVA_NuclearSiloDetected /
+     //    IronCurtainDetected / ChronosphereDetected / WeatherDeviceReady [RE:
+     //    FUN_00445ee0 -- played only when the placing house is not the player
+-    //    and not allied; SW types 0..3 only].
+-    //  * Ready (own): EVA_*Ready.
++    //    and not allied] + EVA_PsychicDominatorDetected /
++    //    EVA_GeneticMutatorDetected (evamd 416/419; no Detected lines exist
++    //    for the other types).
++    //  * Ready (own): EVA_*Ready, incl. EVA_PsychicDominatorReady (418),
++    //    EVA_GeneticMutatorReady (421), EVA_ForceShieldReady (423),
++    //    EVA_PsychicRevealReady (707).
+     //  * Bolt: WeatherConBolts=WCLBOLT1 + WeatherConBoltExplosion + LightningSounds.
+     int sw_seen_ = 0;
+     long last_dropped_eva_ = -1;   // frame of the last "reinforcements have arrived"
+@@ -532,6 +549,8 @@
+                     else if (t == T::IronCurtain) snd_.eva("EVA_IronCurtainDetected");
+                     else if (t == T::ChronoSphere) snd_.eva("EVA_ChronosphereDetected");
+                     else if (t == T::LightningStorm) snd_.eva("EVA_WeatherDeviceReady");
++                    else if (t == T::PsychicDominator) snd_.eva("EVA_PsychicDominatorDetected");
++                    else if (t == T::GeneticConverter) snd_.eva("EVA_GeneticMutatorDetected");
+                     break;
+                 case E::Ready:
+                     if (!own) break;
+@@ -541,13 +560,27 @@
+                     else if (t == T::LightningStorm) snd_.eva("EVA_LightningStormReady");
+                     else if (t == T::ParaDrop || t == T::AmerParaDrop) snd_.eva("EVA_ReinforcementsReady");
+                     else if (t == T::SpyPlane) snd_.eva("EVA_SpyPlaneReady");
++                    else if (t == T::PsychicDominator) snd_.eva("EVA_PsychicDominatorReady");
++                    else if (t == T::GeneticConverter) snd_.eva("EVA_GeneticMutatorReady");
++                    else if (t == T::ForceShield) snd_.eva("EVA_ForceShieldReady");
++                    else if (t == T::PsychicReveal) snd_.eva("EVA_PsychicRevealReady");
+                     break;
+                 case E::Launched:
+-                    fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0);
++                    if (const FxAnimType* ft =
++                            fx_.spawn(gen_s("NukeTakeOff"), e.x2, e.y2, level_at(w, e.x2, e.y2), 20.0))
++                        snd_.play_at(ft->report, e.x2, e.y2, "nuke launch");
++                    snd_.play_at(gen_s("DigSound"), e.x2, e.y2, "nuke siren");
+                     snd_.eva("EVA_NuclearMissileLaunched");
+                     pres_log(frame_, "fx superweapon launch");
+                     break;
+                 case E::Detonated: {
++                    if (t == T::PsychicDominator) {
++                        if (const FxAnimType* ft =
++                                fx_.spawn(gen_s("DominatorSecondAnim"), e.x, e.y, level_at(w, e.x, e.y), 0.0))
++                            snd_.play_at(ft->report, e.x, e.y, "dominator effect");
++                        pres_log(frame_, "fx superweapon dominator effect");
++                        break;
++                    }
+                     std::string wh = gen_s("NukeWarhead");
+                     if (wh.empty()) wh = "NUKE";
+                     std::string list = pres_clean(rules_ini_->get(pres_upper(wh), "AnimList"));
+@@ -555,22 +588,58 @@
+                     if (comma != std::string::npos) list = pres_clean(list.substr(0, comma));
+                     if (const FxAnimType* ft = fx_.spawn(list, e.x, e.y, level_at(w, e.x, e.y), 0.0))
+                         snd_.play_at(ft->report, e.x, e.y, "nuke detonation");
++                    radar_event(13, e.x, e.y);
+                     pres_log(frame_, "fx superweapon " + list);
+                     break;
+                 }
+                 case E::Activated:
+                     if (t == T::IronCurtain) {
+-                        fx_.spawn(gen_s("IronCurtainInvokeAnim"), e.x, e.y, level_at(w, e.x, e.y), 0.0);
++                        if (const FxAnimType* ft =
++                                fx_.spawn(gen_s("IronCurtainInvokeAnim"), e.x, e.y, level_at(w, e.x, e.y), 0.0))
++                            snd_.play_at(ft->report, e.x, e.y, "iron curtain");
+                         snd_.eva("EVA_IronCurtainActivated");
++                        radar_event(13, e.x, e.y);
+                     } else if (t == T::ChronoSphere || t == T::ChronoWarp) {
+                         fx_.spawn(gen_s("ChronoBlast"), e.x, e.y, level_at(w, e.x, e.y), 0.0);
+-                        fx_.spawn(gen_s("ChronoBlastDest"), e.x2, e.y2, level_at(w, e.x2, e.y2), 0.0);
++                        if (const FxAnimType* ft =
++                                fx_.spawn(gen_s("ChronoBlastDest"), e.x2, e.y2, level_at(w, e.x2, e.y2), 0.0))
++                            snd_.play_at(ft->report, e.x2, e.y2, "chronosphere");
+                         snd_.eva("EVA_ChronosphereActivated");
++                        radar_event(13, e.x2, e.y2);
+                     } else if (t == T::SpyPlane) {
+                         if (own) snd_.eva("EVA_SpyPlaneEnRoute");
+                     } else if (t == T::LightningStorm) {
+                         fx_.spawn(gen_s("WeatherConClouds"), e.x, e.y, level_at(w, e.x, e.y), 60.0);
++                        snd_.play_at(gen_s("StormSound"), e.x, e.y, "storm");
+                         snd_.eva("EVA_LightningStormCreated");
++                        radar_event(13, e.x, e.y);
++                    } else if (t == T::PsychicDominator) {
++                        if (const FxAnimType* ft =
++                                fx_.spawn(gen_s("DominatorFirstAnim"), e.x, e.y, level_at(w, e.x, e.y), 0.0))
++                            snd_.play_at(ft->report, e.x, e.y, "dominator");
++                        snd_.play_at(gen_s("PsychicDominatorActivateSound"), e.x, e.y, "dominator");
++                        snd_.eva("EVA_PsychicDominatorActivated");
++                        radar_event(13, e.x, e.y);
++                    } else if (t == T::GeneticConverter) {
++                        // No invoke anim: retail's is the IonBlast ripple, which
++                        // the engine has no equivalent of (follow-up).
++                        snd_.play_at(gen_s("GeneticMutatorActivateSound"), e.x, e.y, "mutator");
++                        snd_.eva("EVA_GeneticMutatorActivated");
++                        radar_event(13, e.x, e.y);
++                    } else if (t == T::PsychicReveal) {
++                        snd_.play_at(gen_s("PsychicRevealActivateSound"), e.x, e.y, "reveal");
++                    } else if (t == T::ForceShield) {
++                        // The World wires the fire itself (0252: iron on
++                        // every alive house building); here the invoke anim
++                        // + StartSound + EVA, no radar event (Launch case
++                        // 10 documents none).
++                        if (const FxAnimType* ft =
++                                fx_.spawn(gen_s("ForceShieldInvokeAnim"), e.x, e.y, level_at(w, e.x, e.y), 0.0))
++                            snd_.play_at(ft->report, e.x, e.y, "force shield");
++                        if (rules_ini_)
++                            snd_.play_at(pres_clean(rules_ini_->get("ForceShieldSpecial", "StartSound")), e.x, e.y,
++                                         "force shield");
++                        snd_.eva("EVA_ForceShieldActivated");
+                     }
+                     pres_log(frame_, std::string("fx superweapon activated ") + ra2engine::superweapon_type_name(t));
+                     break;
+@@ -1797,18 +1866,30 @@
+             return ba.roster[static_cast<std::size_t>(b.type)].id;
+         };
+         const int n = w.house_count();
+-        if (static_cast<int>(sw_anim_prev_.size()) < n) sw_anim_prev_.resize(static_cast<std::size_t>(n), 0);
+         for (int h = 0; h < n; ++h) {
+-            const ra2engine::Superweapon* sw = w.sw_state(h);
+-            const bool have = sw && sw->type != ra2engine::SuperweaponType::None;
+-            const bool ready = have && sw->ready;
+-            const int st = !have ? 0 : (ready ? 2 : 1);
+-            int& prev = sw_anim_prev_[static_cast<std::size_t>(h)];
+-            const double remain = have && sw->recharge_secs > sw->timer ? sw->recharge_secs - sw->timer : 0.0;
+             for (const ra2engine::Building& b : bs) {
+                 if (!b.alive || b.house != h) continue;
+                 const std::string img = image_of(b);
+                 if (img.empty() || !fx_.building(img).slot[kBsSuper].t) continue;
++                // The charge this building shows is its OWN superweapon's
++                // (its SuperWeapon= special's Type=): a house holding several
++                // (Soviet Nuke + Iron Curtain) animated every SW building
++                // from the house's first record before.
++                ra2engine::SuperweaponType bt = ra2engine::SuperweaponType::None;
++                if (rules_ini_) {
++                    const std::string special = rules_ini_->get(rules_id(b), "SuperWeapon", "");
++                    if (!special.empty())
++                        bt = ra2engine::superweapon_type_from_type_name(
++                            rules_ini_->get(special, "Type", ""));
++                }
++                const ra2engine::Superweapon* sw =
++                    bt == ra2engine::SuperweaponType::None ? nullptr : w.sw_state(h, bt);
++                const bool have = sw && sw->type != ra2engine::SuperweaponType::None;
++                const bool ready = have && sw->ready;
++                const int st = !have ? 0 : (ready ? 2 : 1);
++                int& prev = sw_anim_prev_[{h, static_cast<int>(bt)}];
++                const double remain =
++                    have && sw->recharge_secs > sw->timer ? sw->recharge_secs - sw->timer : 0.0;
+                 BldEventState& e = g_bld_events[bld_event_key(b)];
+                 double charged = 0.0;
+                 if (rules_ini_) {
+@@ -1826,8 +1907,8 @@
+                     e.super_phase = next;
+                     e.super_start = g_pres_tick;
+                 }
++                prev = st;
+             }
+-            prev = st;
+         }
+     }
+     // W3-FX AmbientSound: one looping positional voice per live object whose
+@@ -1895,7 +1976,7 @@
+     std::size_t ambient_live() const { return amb_.size(); }
+ private:
+     std::size_t units_seen_ = 0;
+-    std::vector<int> sw_anim_prev_;
++    std::map<std::pair<int, int>, int> sw_anim_prev_;   // (house, SW type) -> charge state
+     struct SwSeen { ra2engine::SuperweaponType type = ra2engine::SuperweaponType::None; bool ready = false; };
+     std::vector<SwSeen> sw_prev_;
+ 
+--- a/tests/test_superweapon.cpp	2026-11-25 20:15:00.212746060 +0000
++++ b/tests/test_superweapon.cpp	2026-11-25 20:09:56.568940450 +0000
+@@ -123,6 +123,46 @@
+     CHECK(std::string(superweapon_type_name(SuperweaponType::SpyPlane)) == "SpyPlane");
+ }
+ 
++TEST_CASE("superweapon: [<Special>] Type= names map to all 12 types") {
++    CHECK(superweapon_type_from_type_name("MultiMissile") == SuperweaponType::Nuke);
++    CHECK(superweapon_type_from_type_name("IronCurtain") == SuperweaponType::IronCurtain);
++    CHECK(superweapon_type_from_type_name("LightningStorm") == SuperweaponType::LightningStorm);
++    CHECK(superweapon_type_from_type_name("ChronoSphere") == SuperweaponType::ChronoSphere);
++    CHECK(superweapon_type_from_type_name("ChronoWarp") == SuperweaponType::ChronoWarp);
++    CHECK(superweapon_type_from_type_name("ParaDrop") == SuperweaponType::ParaDrop);
++    CHECK(superweapon_type_from_type_name("AmerParaDrop") == SuperweaponType::AmerParaDrop);
++    CHECK(superweapon_type_from_type_name("PsychicDominator") == SuperweaponType::PsychicDominator);
++    CHECK(superweapon_type_from_type_name("SpyPlane") == SuperweaponType::SpyPlane);
++    CHECK(superweapon_type_from_type_name("GeneticConverter") == SuperweaponType::GeneticConverter);
++    CHECK(superweapon_type_from_type_name("ForceShield") == SuperweaponType::ForceShield);
++    CHECK(superweapon_type_from_type_name("PsychicReveal") == SuperweaponType::PsychicReveal);
++    CHECK(superweapon_type_from_type_name("psychicdominator") == SuperweaponType::PsychicDominator);
++    CHECK(superweapon_type_from_type_name("MULTIMISSILE") == SuperweaponType::Nuke);
++    CHECK(superweapon_type_from_type_name("") == SuperweaponType::None);
++    CHECK(superweapon_type_from_type_name("IonCannon") == SuperweaponType::None);
++}
++
++TEST_CASE("superweapon: dominator fire posts Activated, its effect posts Detonated") {
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    w.grant_superweapon_type(0, SuperweaponType::PsychicDominator, /*recharge_secs=*/0.5,
++                             /*is_powered=*/false, 0, 0.0, 1.0, {});
++    for (int i = 0; i < 15 && !w.sw_ready(0, SuperweaponType::PsychicDominator); ++i)
++        w.step(1.0 / 15.0);
++    REQUIRE(w.sw_ready(0, SuperweaponType::PsychicDominator));
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::PsychicDominator, 10, 10));
++    // Retail default: 90-frame head anim, the effect 20% in (frame 18).
++    for (int i = 0; i < 30; ++i) w.step(1.0 / 15.0);
++    bool activated = false, detonated = false;
++    for (const SwEvent& e : w.sw_events()) {
++        if (e.type != static_cast<int>(SuperweaponType::PsychicDominator)) continue;
++        if (e.kind == SwEvent::Activated && e.x == 10 && e.y == 10) activated = true;
++        if (e.kind == SwEvent::Detonated && e.x == 10 && e.y == 10) detonated = true;
++    }
++    CHECK(activated);
++    CHECK(detonated);
++}
++
+ TEST_CASE("superweapon: Spy Plane fire reveals shroud (camera sweep fallback)") {
+     // [RE: FUN_006CD66F]: without a registered SPYP type the fire path still
+     // clears a Camera Damage= disc at the target so the SW is not a no-op.

@@ -38,6 +38,10 @@ reference (never a substitute for gamemd behaviour).
 | T2.4 Magnetron drop Crush blast + Floating Disc live Disc-over-base | `0058-magnetron-toss-disc-over-base` | [#198](https://github.com/michaelmurfy/rallypoint/pull/198) |
 | T2.5 Industrial Plant `FactoryPlant=` cost bonuses | `0140-factory-plant-cost-bonuses` | (this PR) |
 | T2.5 chop-mode arithmetic: Verses/falloff, build time, ore growth reload, repair/refund, veterancy, power output, integer production charge, factory count from placement | `0180`, `0181` | (this PR) |
+| Yuri wall + Allied gate rostered (Yuri AI ConcreteWalls pick, pre-placed map gates) | `0256-yuri-wall-and-gate` | (this PR) |
+| T2.3 ForceShield end-to-end (fire + house iron effect + sidebar) | `0252-force-shield` | (this PR) |
+| SW targeting cursors audit (arming exclusion, Esc cancel, neutral cursor) | `0253-superweapon-targeting-cursors` | (this PR) |
+| SW sounds/anims/radar audit (per-type EVA, sounds, own-SW charge anims) | `0254-superweapon-sights-sounds` | (this PR) |
 
 ---
 
@@ -248,16 +252,16 @@ Amer/Ally/Sov/Yuri para-drop infantry counts are wired. Spy Plane SW path
 landed in patch `0050-spy-plane-sw`
 ([#191](https://github.com/michaelmurfy/rallypoint/pull/191)) — grant from
 NARADR, Approach→Overfly camera reveal per `FUN_006CD66F` / `FUN_004155F0` /
-`FUN_004157C0`. Remaining feel polish (rules-driven Camera* keys into
-`SwParams`, snapshot SFX/art) is optional follow-up. Do not re-implement the
-Approach→Overfly core.
+`FUN_004157C0`. Camera* rules wiring landed in `0255-spy-camera-rules`
+(SpyCameraWeapon Damage/Range + SpyPlaneCameraFrames into `SwParams`).
+Do not re-implement the Approach→Overfly core.
 
 | | |
 |---|---|
 | **Files** | `engine/w2air_*.inc`, `engine/superweapon.*`, `engine/world_an.cpp`, `engine/world_sw.cpp`, `engine/realplay_economy.inc` |
 | **gamemd** | SW type table; SpyPlaneSpecial / AmericanParaDropSpecial |
 | **Rules** | `AmerParaDropInf`/`Num`, `AllyParaDrop*`, `SovParaDrop*`, `YuriParaDrop*`, `[SpyPlaneSpecial]`, `SpyPlaneCamera*` |
-| **Effort** | ~~M~~ Spy Plane core done (`0050`); Camera* rules wiring S |
+| **Effort** | ~~M~~ Spy Plane core done (`0050`); ~~Camera* rules wiring S~~ done (`0255`) |
 | **OpenRA** | Partial |
 
 ### T2.4 Yuri leftovers (from `ra2/README.md` Partial)
@@ -600,14 +604,14 @@ two-house World).
 | Key(s) | Used by | gamemd / reference | Effort |
 |---|---|---|---|
 | `ExitCoord=` | `GAWEAP`/`NAWEAP`/`YAWEAP` (512,256,0), `GAPILE`/`YABRCK` (-64,64,0) | `factory.cpp` `exit_cell` drops it ("cell resolution"); retail spawns the unit at the exit coordinate and lets it drive out | ~~M~~ done (0250; center-anchored lean, validated against real rulesmd) |
-| `CrateBeneath=` / `CrateBeneathIsMoney=` | 14 civilian buildings | `BuildingClass::AfterDestruction @ 0x00441F60`, crate tail `0x004421A4..0x0044222D`: `Place_Crate` at the origin cell, powerup Money or random, lobby Crates option not consulted. Our crate store only exists once `enable_crates` ran, so it needs that split first | M |
+| `CrateBeneath=` / `CrateBeneathIsMoney=` | 14 civilian buildings | `BuildingClass::AfterDestruction @ 0x00441F60`, crate tail `0x004421A4..0x0044222D`: `Place_Crate` at the origin cell, powerup Money or random, lobby Crates option not consulted. Our crate store only exists once `enable_crates` ran, so it needs that split first | ~~M~~ done (0251; tombstone-time drop on the crate-system switch, sold excluded) |
 | `HarvestRate=` on slaves | `SLAV` (150) | vera20k `infantry_mission_harvest` (`0x00522E70`): one level per `HarvestRate` frames. The engine digs one bale per second (`kGulpSecs`). Unit of "frames" and the payout per level need a binary check before changing the economy | S, risky |
 | `CloakingSpeed=` | `SUB`, `SQD`, `DLPH`, `BSUB` | Our cloak is a state flag with no fade; the key only changes the fade length and the re-cloak step | ~~S~~ done (0247) |
 | `GateCloseDelay=` | `GAGATE_A` | Allied gate: the gate stays open this long after the mover has passed; our gate opens for allied movers on the path only | ~~S~~ done (0248, visual close timer; untraced open/close mission stays RE-FALLBACK) |
 | `ImmuneToPoison=` / `Poison=` warhead | `VIRUS`; one warhead | poison damage over time is not modelled | M |
 | `RevealToAll=`, `RadarVisible=` | tech buildings, `YAGNTC`, `YAPPET` | reveal-on-capture, minimap visibility of neutral buildings, a superweapon building seen through shroud by every house | ~~S each~~ done (0249; radar event type 5 inferred, not binary-recovered) |
 | `Immune=yes` | `CABHUT` | take no damage | ~~S~~ done (0246) |
-| `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | S, cosmetic |
+| `Selectable=no`, `Repairable=no`, `TogglePower=no` | lamps, fences, walls, civilian art; power buildings | `pick_building` selects any building; repair/power-down only act on consumers anyway | ~~S, cosmetic~~ `Selectable` done (0257); `Repairable`/`TogglePower` open (need binary confirmation of what they gate beyond ClickRepairable) |
 | `Points`, `Nominal`, `Assaulter`, `CloseRange`, `ThreatAvoidanceCoefficient`, `StupidHunt`, `Bombable`, `IsTilter`, `TooBigToFitUnderBridge`, `ZFudge*`, `PitchAngle`/`PitchSpeed`/`FireAngle`, `DebrisAnim`, `DamageSound`, `Bib`, `AlphaImage` | many | AI hints, score points, presentation | not worth a patch yet |
 
 Real-data suite (`RA2_INSTALL_DIR=/home/mmurphy/rp-steam/game/RA2 ra2assets_tests`): 1284 cases, 0 skipped, all

@@ -1,0 +1,199 @@
+Superweapon targeting cursors: arming exclusion, Esc cancel, neutral no-type cursor.
+
+Audit of the SW arming flow vs retail (all 12 ConvertAction cursor ids were
+already correct and tested): three gaps fixed, no save-format change.
+
+- arm_superweapon(type,phase) is refused while a placement is pending and
+  reports success (placement wins, the set_mode_ rule); begin_placement
+  disarms SW targeting, so a map click can no longer fire an SW while a
+  placement ghost is up. w2_arm_sw latches nothing and stays silent when
+  refused.
+- Esc/F10 in game runs the cancel chain first: an armed SW (or other mode)
+  is disarmed, dropping the latched type and any Chronosphere source pick
+  (w2_disarm_sw); the options menu opens only when nothing was pending.
+  Before, Esc left the SW armed behind the menu.
+- superweapon_cursor(None) is the neutral Default cursor, not Nuke.
+
+Right-click cancel, the Chronosphere two-click destination phase, the
+radar_order/minimap commit path and Action::SuperWeapon in action_at were
+audited and behave per retail; they are locked in by the new tests.
+Tests: 4 asset-free cases in test_input.cpp (arm/type/phase/action,
+exclusion both ways, right-click + Esc-chain cancel without firing,
+radar_order commit) + the None cursor id in test_superweapon.cpp.
+
+--- a/engine/input.hpp
++++ b/engine/input.hpp
+@@ -267,7 +267,15 @@
+     void arm_superweapon() { sw_targeting_ = true; }
+     // W2-AN-04: which SW type the armed targeting is for (SuperweaponType as
+     // int; the cursor shape) and the Chronosphere's second (destination) click.
+-    void arm_superweapon(int type, int phase) { sw_targeting_ = true; sw_type_ = type; sw_phase_ = phase; }
++    // 0253: PLACEMENT WINS (the set_mode_ rule): refused while a placement is
++    // pending, so the two cursor modes can never both be armed. True on success.
++    bool arm_superweapon(int type, int phase) {
++        if (placement_active()) return false;
++        sw_targeting_ = true;
++        sw_type_ = type;
++        sw_phase_ = phase;
++        return true;
++    }
+     int sw_armed_type() const { return sw_type_; }
+     int sw_armed_phase() const { return sw_phase_; }
+     void cancel_superweapon() { sw_targeting_ = false; }
+--- a/engine/input.cpp
++++ b/engine/input.cpp
+@@ -237,6 +237,9 @@
+     place_type_ = roster_type;
+     place_fw_ = fw > 0 ? fw : 1;
+     place_fh_ = fh > 0 ? fh : 1;
++    // 0253: placement wins the exclusion set the other way too -- starting a
++    // placement disarms SW targeting (a map click must place, not fire).
++    sw_targeting_ = false;
+     // Any in-flight left gesture is abandoned when placement begins.
+     l_down_ = false;
+     dragging_ = false;
+--- a/engine/superweapon.hpp
++++ b/engine/superweapon.hpp
+@@ -243,6 +243,9 @@
+         case SuperweaponType::GeneticConverter: return 0x51;
+         case SuperweaponType::ForceShield:      return 0x4F;
+         case SuperweaponType::PsychicReveal:    return 0x54;
++        // 0253: armed with no type (the no-arg test seam) shows the neutral
++        // cursor, not the Nuke one.
++        case SuperweaponType::None:             return 0x00;
+         default:                                return 0x35;
+     }
+ }
+--- a/engine/w2air_play.inc
++++ b/engine/w2air_play.inc
+@@ -362,11 +362,19 @@
+ 
+     // Sidebar SW slot clicked (READY): arm that SW's targeting.
+     void w2_arm_sw(ra2engine::SuperweaponType t) {
++        // 0253: placement wins -- a refused arm latches nothing and stays silent.
++        if (!input_.arm_superweapon(static_cast<int>(t), 0)) return;
+         w2_armed_ = static_cast<int>(t);
+         w2_chrono_x_ = w2_chrono_y_ = -1;
+-        input_.arm_superweapon(w2_armed_, 0);
+         pres_.note_eva("EVA_SelectTarget");   // W5-E [RE: FUN_006AA390 @6AA632]
+     }
++    // 0253: drop the latched SW type and any Chronosphere source pick with the
++    // Input-side disarm (the Esc cancel chain, not a fire).
++    void w2_disarm_sw() {
++        input_.cancel_superweapon();
++        w2_armed_ = 0;
++        w2_chrono_x_ = w2_chrono_y_ = -1;
++    }
+     // A committed SW target cell. The Chronosphere takes two picks [rules
+     // [ChronoSphereSpecial] PreClick=yes, [ChronoWarpSpecial] PostClick=yes]:
+     // the source area, then the destination.
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -8335,6 +8335,13 @@
+         const bool open_btn = ev.kind == ra2engine::InputEvent::PointerDown &&
+                               ev.button == ra2engine::InputEvent::Left && options_button_at(ev.x, ev.y);
+         if (open_key || open_btn) {
++            // 0253: Esc/F10 runs the cancel chain first -- an armed mode (an
++            // SW targeting cursor above all) is disarmed instead of being left
++            // armed behind the menu. The menu opens when nothing was pending.
++            if (open_key && input_.cancel_one_mode()) {
++                if (!input_.sw_targeting()) w2_disarm_sw();
++                return true;
++            }
+             menu_.open();
+             return true;
+         }
+--- a/tests/test_input.cpp
++++ b/tests/test_input.cpp
+@@ -1551,6 +1551,81 @@
+     CHECK_FALSE(in.cancel_one_mode());            // nothing left
+ }
+ 
++// ---- 0253: the superweapon arming flow (asset-free: a blank map is enough --
++// arming, action_at and cancel never touch art or rules) ----
++
++TEST_CASE("input: arm_superweapon(type,phase) records the type, classifies SuperWeapon, and is one-shot [0253]") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    Camera cam;
++    Input in(world, cam, 1280, 720);
++    CHECK(in.arm_superweapon(1, 0));   // 1 = Nuke (SuperweaponType)
++    CHECK(in.sw_targeting());
++    CHECK(in.sw_armed_type() == 1);
++    CHECK(in.sw_armed_phase() == 0);
++    int px = 0, py = 0;
++    px_for_cell(20, 20, px, py);
++    CHECK(in.action_at(px, py) == Input::Action::SuperWeapon);
++    left_click(in, px, py, false, 1000);
++    const ra2engine::InputActions a = in.take_actions();
++    CHECK(a.sw_fire_confirmed);
++    CHECK(a.sw_cx == 20);
++    CHECK(a.sw_cy == 20);
++    CHECK_FALSE(in.sw_targeting());   // one-shot: the click disarms
++}
++
++TEST_CASE("input: SW targeting and placement are mutually exclusive, placement wins [0253]") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    Camera cam;
++    Input in(world, cam, 1280, 720);
++    CHECK(in.arm_superweapon(1, 0));
++    in.begin_placement(0, 2, 2);          // starting a placement disarms the SW
++    CHECK_FALSE(in.sw_targeting());
++    CHECK(in.placement_active());
++    CHECK_FALSE(in.arm_superweapon(1, 0));   // arming is refused while placing
++    CHECK_FALSE(in.sw_targeting());
++    CHECK(in.cancel_one_mode());          // the Esc chain drops the placement...
++    CHECK(in.arm_superweapon(1, 0));      // ...and arming works again after it
++    CHECK(in.sw_targeting());
++}
++
++TEST_CASE("input: right-click and the Esc chain cancel SW targeting without firing [0253]") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    Camera cam;
++    Input in(world, cam, 1280, 720);
++    int px = 0, py = 0;
++    px_for_cell(20, 20, px, py);
++    CHECK(in.arm_superweapon(1, 0));
++    right_click(in, px, py, 1000);        // right-click-up cancels the armed mode
++    CHECK_FALSE(in.sw_targeting());
++    const ra2engine::InputActions a = in.take_actions();
++    CHECK_FALSE(a.sw_fire_confirmed);     // a cancel never fires
++    CHECK(in.arm_superweapon(4, 1));      // 4 = ChronoSphere, destination phase...
++    CHECK(in.sw_armed_phase() == 1);
++    CHECK(in.action_at(px, py) == Input::Action::SuperWeapon);
++    CHECK(in.cancel_one_mode());          // ...cancelled by the Esc chain
++    CHECK_FALSE(in.sw_targeting());
++}
++
++TEST_CASE("input: a minimap (radar_order) click commits an armed SW target [0253]") {
++    const MapFile map = MapFile::blank(40, 40);
++    World world(map);
++    Camera cam;
++    Input in(world, cam, 1280, 720);
++    CHECK(in.arm_superweapon(1, 0));
++    InputEvent ev;                        // the radar's left press (button forced Left)
++    ev.kind = InputEvent::PointerDown;
++    ev.button = InputEvent::Left;
++    in.radar_order(20, 20, ev);
++    const ra2engine::InputActions a = in.take_actions();
++    CHECK(a.sw_fire_confirmed);
++    CHECK(a.sw_cx == 20);
++    CHECK(a.sw_cy == 20);
++    CHECK_FALSE(in.sw_targeting());
++}
++
+ TEST_CASE("input: a mode click reports OWN buildings only, and stays armed [RE: repair-sell.md §C1]") {
+     MapFile map;
+     if (!load_real_map(map)) { MESSAGE("skipped: no install"); return; }
+--- a/tests/test_superweapon.cpp
++++ b/tests/test_superweapon.cpp
+@@ -162,6 +162,7 @@
+     CHECK(superweapon_cursor(SuperweaponType::GeneticConverter) == 0x51);
+     CHECK(superweapon_cursor(SuperweaponType::ForceShield) == 0x4F);
+     CHECK(superweapon_cursor(SuperweaponType::PsychicReveal) == 0x54);
++    CHECK(superweapon_cursor(SuperweaponType::None) == 0x00);   // 0253: no type, neutral cursor
+ 
+     // Spot-check frame ranges against the 0x0082D028 dump.
+     CHECK(mouse_cursor_desc(0x2F).start == 259);
