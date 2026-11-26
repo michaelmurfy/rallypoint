@@ -599,7 +599,7 @@ two-house World).
 
 | Key(s) | Used by | gamemd / reference | Effort |
 |---|---|---|---|
-| `ExitCoord=` | `GAWEAP`/`NAWEAP`/`YAWEAP` (512,256,0), `GAPILE`/`YABRCK` (-64,64,0) | `factory.cpp` `exit_cell` drops it ("cell resolution"); retail spawns the unit at the exit coordinate and lets it drive out | M |
+| `ExitCoord=` | `GAWEAP`/`NAWEAP`/`YAWEAP` (512,256,0), `GAPILE`/`YABRCK` (-64,64,0) | `factory.cpp` `exit_cell` drops it ("cell resolution"); retail spawns the unit at the exit coordinate and lets it drive out | ~~M~~ done (0250; center-anchored lean, validated against real rulesmd) |
 | `CrateBeneath=` / `CrateBeneathIsMoney=` | 14 civilian buildings | `BuildingClass::AfterDestruction @ 0x00441F60`, crate tail `0x004421A4..0x0044222D`: `Place_Crate` at the origin cell, powerup Money or random, lobby Crates option not consulted. Our crate store only exists once `enable_crates` ran, so it needs that split first | M |
 | `HarvestRate=` on slaves | `SLAV` (150) | vera20k `infantry_mission_harvest` (`0x00522E70`): one level per `HarvestRate` frames. The engine digs one bale per second (`kGulpSecs`). Unit of "frames" and the payout per level need a binary check before changing the economy | S, risky |
 | `CloakingSpeed=` | `SUB`, `SQD`, `DLPH`, `BSUB` | Our cloak is a state flag with no fade; the key only changes the fade length and the re-cloak step | ~~S~~ done (0247) |
