@@ -189,13 +189,13 @@ sold exclusion).
 +    w.campaign_damage_building(r, 5000);
 +    w.campaign_damage_building(p, 5000);
 +    for (int f = 0; f < 30; ++f) w.step(1.0 / 15.0);   // past the 1s death anim
-+    auto near = [&](int x0, int y0, int powerup) {
++    auto nearby = [&](int x0, int y0, int powerup) {
 +        for (const auto& c : w.crates())
 +            if (c.x >= 0 && std::abs(c.x - x0) <= 2 && std::abs(c.y - y0) <= 2 && c.powerup == powerup) return true;
 +        return false;
 +    };
-+    CHECK(near(10, 10, static_cast<int>(ra2engine::Powerup::Money)));
-+    CHECK(near(14, 14, -1));
++    CHECK(nearby(10, 10, static_cast<int>(ra2engine::Powerup::Money)));
++    CHECK(nearby(14, 14, -1));
 +    int n = 0;
 +    for (const auto& c : w.crates()) if (c.x >= 0) ++n;
 +    CHECK(n == 2);   // control pill drops nothing
