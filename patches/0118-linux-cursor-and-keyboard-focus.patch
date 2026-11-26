@@ -1,0 +1,553 @@
+Linux: the mouse cursor (the game's .ANI cursors as X cursors through libXcursor, opened at run time; before, SetCursor and LoadCursorFromFile were empty) and keyboard focus (WM input hint, focus taken on map, click and FocusIn, held keys released on FocusOut).
+
+--- a/cmake/dx8_stub/linux_window.cpp
++++ b/cmake/dx8_stub/linux_window.cpp
+@@ -5,8 +5,10 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <deque>
++#include <vector>
+ #include <string>
+ 
++#include <algorithm>
+ #include <dlfcn.h>
+ #include <cstdlib>
+ #include <X11/Xlib.h>
+@@ -33,9 +35,12 @@
+     long fsMonitors[4] = { -1, -1, -1, -1 }; // top, bottom, left, right monitor for _NET_WM_FULLSCREEN_MONITORS
+     Atom wmDelete = 0;
+     bool caps = false;
++    bool focused = false;
+     bool borderless = false;
+ };
+ 
++std::vector<int> g_down; // keys the game believes are held, released when focus is lost
++
+ struct MouseEv { int type, x, y, delta; };
+ struct KeyEv { int code, down; };
+ 
+@@ -140,6 +145,7 @@
+             g_mouse.push_back({1, e.xmotion.x, e.xmotion.y, 0});
+         } else if (e.type == ButtonPress || e.type == ButtonRelease) {
+             int down = e.type == ButtonPress;
++            if (down && !g->focused) XSetInputFocus(g->dpy, g->win, RevertToParent, CurrentTime);
+             int x = e.xbutton.x, y = e.xbutton.y;
+             if (e.xbutton.button == Button4 || e.xbutton.button == Button5) {
+                 if (down) g_mouse.push_back({9, x, y, e.xbutton.button == Button4 ? 120 : -120});
+@@ -156,12 +162,26 @@
+             int code = macKey(k);
+             int down = e.type == KeyPress;
+             if (code == kVK_CapsLock && down) g->caps = !g->caps;
+-            if (code >= 0) g_keys.push_back({code, down});
++            if (code >= 0) {
++                g_keys.push_back({code, down});
++                auto it = std::find(g_down.begin(), g_down.end(), code);
++                if (down && it == g_down.end()) g_down.push_back(code);
++                else if (!down && it != g_down.end()) g_down.erase(it);
++            }
+             if (down) {
+                 char buf[8] = {};
+                 int n = XLookupString(&e.xkey, buf, sizeof(buf), nullptr, nullptr);
+                 if (n == 1 && buf[0] >= 32 && buf[0] != 127) g_chars.push_back((unsigned char)buf[0]);
+             }
++        } else if (e.type == FocusIn) {
++            g->focused = true;
++            XSetInputFocus(g->dpy, g->win, RevertToParent, CurrentTime); // some window managers leave the keyboard elsewhere
++        } else if (e.type == FocusOut) {
++            if (e.xfocus.mode == NotifyGrab || e.xfocus.mode == NotifyUngrab) continue;
++            g->focused = false;
++            // The key releases go to the window that has the focus now, so the game would keep these held.
++            for (int code : g_down) g_keys.push_back({code, 0});
++            g_down.clear();
+         } else if (e.type == ConfigureNotify) {
+             // A late configure for the original 800x600 must not undo fullscreen.
+             if (!g->borderless || (e.xconfigure.width >= g->screenW - 2 && e.xconfigure.height >= g->screenH - 2)) {
+@@ -175,6 +195,9 @@
+     }
+ }
+ 
++extern "C" void* LinuxWindow_Display() { return g ? g->dpy : nullptr; }
++extern "C" unsigned long LinuxWindow_Win() { return g ? (unsigned long)g->win : 0; }
++
+ Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
+ 
+ // GNOME and other desktops present several monitors as one big X screen, so DisplayWidth() is all of them
+@@ -345,9 +368,14 @@
+     if (title) XStoreName(g->dpy, g->win, title);
+     g->wmDelete = XInternAtom(g->dpy, "WM_DELETE_WINDOW", 0);
+     XSetWMProtocols(g->dpy, g->win, &g->wmDelete, 1);
++    XWMHints wmh{};
++    wmh.flags = InputHint; // the window wants the keyboard focus (without this some window managers never give it)
++    wmh.input = 1;
++    XSetWMHints(g->dpy, g->win, &wmh);
+     applyBorderless(g);
+     XSelectInput(g->dpy, g->win, KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask | FocusChangeMask);
+     XMapWindow(g->dpy, g->win);
++    XSetInputFocus(g->dpy, g->win, RevertToParent, CurrentTime);
+     XFlush(g->dpy);
+     std::fprintf(stderr, "[linux] window %dx%d on %dx%d%s\n", w, h, g->screenW, g->screenH, g->borderless ? " borderless" : "");
+     return g;
+--- /dev/null
++++ b/cmake/dx8_stub/linux_cursor.cpp
+@@ -0,0 +1,436 @@
++/*
++**  Linux .ANI cursor loader: the Win32 LoadCursorFromFile / SetCursor shims call these.
++**  The RIFF/ACON and .CUR decoding is the macOS loader's (apple_ani_cursor.mm, minus its PNG
++**  frames); frames become X cursors (Xcursor, opened at run time, so no new dependency) and
++**  animate through the X server. Without libXcursor the window keeps the default cursor.
++*/
++#if defined(__linux__)
++
++#include <dlfcn.h>
++#include <unistd.h>
++#include <X11/Xlib.h>
++#include <dirent.h>
++#include <strings.h>
++#include <X11/Xutil.h>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++extern "C" void* LinuxWindow_Display();       // linux_window.cpp
++extern "C" unsigned long LinuxWindow_Win();
++
++namespace {
++
++inline uint16_t rd_u16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
++inline uint32_t rd_u32(const uint8_t* p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++inline int32_t  rd_s32(const uint8_t* p) { return (int32_t)rd_u32(p); }
++
++// Compare a 4-byte FourCC at p with a literal string. Avoids needing
++// memcmp at every chunk while staying readable.
++inline bool fourcc(const uint8_t* p, const char* s) {
++    return p[0] == (uint8_t)s[0] && p[1] == (uint8_t)s[1]
++        && p[2] == (uint8_t)s[2] && p[3] == (uint8_t)s[3];
++}
++
++// ============================================================
++// Parsed frame: pixels (RGBA8, top-down) + hotspot + size.
++// ============================================================
++struct AniFrame {
++    int width = 0;
++    int height = 0;
++    int hotspotX = 0;
++    int hotspotY = 0;
++    std::vector<uint8_t> rgba;   // size = width*height*4
++};
++
++// Read entire file at path into a vector. Returns empty on failure.
++std::vector<uint8_t> read_file(const std::string& path) {
++    std::vector<uint8_t> data;
++    FILE* f = ::fopen(path.c_str(), "rb");
++    if (!f) return data;
++    ::fseek(f, 0, SEEK_END);
++    long n = ::ftell(f);
++    if (n > 0 && n < (long)(64 * 1024 * 1024)) {   // sanity cap 64 MB
++        data.resize((size_t)n);
++        ::fseek(f, 0, SEEK_SET);
++        size_t got = ::fread(data.data(), 1, (size_t)n, f);
++        if (got != (size_t)n) data.clear();
++    }
++    ::fclose(f);
++    return data;
++}
++
++// Decode a single embedded .CUR file (one ICONDIR + ICONDIRENTRY + BMP)
++// into RGBA pixels. Handles 32-bit BGRA, 24-bit BGR + 1-bit AND mask,
++// and 8-bit indexed with palette + 1-bit AND mask. Returns false on
++// any parse error.
++bool decode_cur_frame(const uint8_t* data, size_t size, AniFrame& out) {
++    if (size < 6) return false;
++
++    // ICONDIR
++    uint16_t reserved = rd_u16(data + 0);
++    uint16_t type     = rd_u16(data + 2);  // 1 = icon, 2 = cursor
++    uint16_t count    = rd_u16(data + 4);
++    if (reserved != 0 || (type != 1 && type != 2) || count == 0) return false;
++    if (size < 6u + 16u * count) return false;
++
++    // First ICONDIRENTRY
++    const uint8_t* e = data + 6;
++    uint16_t hotspotX = (type == 2) ? rd_u16(e + 4) : 0;
++    uint16_t hotspotY = (type == 2) ? rd_u16(e + 6) : 0;
++    uint32_t bytesInRes = rd_u32(e + 8);
++    uint32_t imageOffset = rd_u32(e + 12);
++    if (imageOffset + bytesInRes > size) return false;
++
++    const uint8_t* img = data + imageOffset;
++
++    // Otherwise it's a BITMAPINFOHEADER + pixels + (1-bit AND mask).
++    if (bytesInRes < 40) return false;
++    uint32_t hdrSize = rd_u32(img + 0);
++    int32_t  bmpW   = rd_s32(img + 4);
++    int32_t  bmpH   = rd_s32(img + 8);     // 2x actual height
++    uint16_t planes = rd_u16(img + 12);
++    uint16_t bpp    = rd_u16(img + 14);
++    uint32_t compr  = rd_u32(img + 16);
++    if (hdrSize < 40 || planes != 1) return false;
++    if (compr != 0 /*BI_RGB*/ && compr != 3 /*BI_BITFIELDS*/) return false;
++
++    int w = bmpW;
++    int h = bmpH / 2;
++    if (w <= 0 || h <= 0 || w > 256 || h > 256) return false;
++
++    // The XOR image data starts after the header (+ optional palette
++    // for low-bpp modes + optional BI_BITFIELDS masks).
++    size_t xorOffset = hdrSize;
++    if (compr == 3) xorOffset += 12;     // 3x RGB bitfield DWORDs
++
++    // Palette for indexed modes.
++    const uint8_t* palette = nullptr;
++    if (bpp <= 8) {
++        uint32_t paletteEntries = rd_u32(img + 32);  // biClrUsed
++        if (paletteEntries == 0) paletteEntries = (1u << bpp);
++        palette = img + xorOffset;
++        xorOffset += paletteEntries * 4;             // BGRA0
++    }
++
++    // XOR scanline stride padded to 4 bytes; AND scanline stride is
++    // ceil(w/8) bytes also padded to 4.
++    int xorStride = ((w * bpp + 31) / 32) * 4;
++    int andStride = ((w + 31) / 32) * 4;
++    size_t xorBytes = (size_t)xorStride * h;
++    size_t andBytes = (size_t)andStride * h;
++    if (xorOffset + xorBytes + andBytes > bytesInRes) {
++        // Some files omit AND mask when 32-bit alpha is present.
++        if (bpp != 32 || xorOffset + xorBytes > bytesInRes) return false;
++    }
++
++    const uint8_t* xorPix = img + xorOffset;
++    const uint8_t* andPix = img + xorOffset + xorBytes;
++    const bool hasAnd = (xorOffset + xorBytes + andBytes <= bytesInRes);
++
++    out.width = w;
++    out.height = h;
++    out.hotspotX = hotspotX;
++    out.hotspotY = hotspotY;
++    out.rgba.assign((size_t)w * h * 4, 0);
++
++    // Decode bottom-up rows into top-down RGBA.
++    for (int y = 0; y < h; ++y) {
++        const uint8_t* xrow = xorPix + (size_t)(h - 1 - y) * xorStride;
++        const uint8_t* arow = hasAnd ? (andPix + (size_t)(h - 1 - y) * andStride) : nullptr;
++        uint8_t* dst = out.rgba.data() + (size_t)y * w * 4;
++
++        for (int x = 0; x < w; ++x) {
++            uint8_t r = 0, g = 0, b = 0, a = 255;
++
++            switch (bpp) {
++                case 32: {
++                    b = xrow[x * 4 + 0];
++                    g = xrow[x * 4 + 1];
++                    r = xrow[x * 4 + 2];
++                    a = xrow[x * 4 + 3];
++                    // Some encoders leave alpha as 0 for fully-opaque
++                    // 32-bit cursors. If the whole frame's alpha is
++                    // zero (we'll detect after the loop), the AND mask
++                    // is the actual transparency source — handled in a
++                    // second pass below.
++                } break;
++
++                case 24: {
++                    b = xrow[x * 3 + 0];
++                    g = xrow[x * 3 + 1];
++                    r = xrow[x * 3 + 2];
++                    a = 255;
++                } break;
++
++                case 8: {
++                    uint8_t idx = xrow[x];
++                    if (palette) {
++                        b = palette[idx * 4 + 0];
++                        g = palette[idx * 4 + 1];
++                        r = palette[idx * 4 + 2];
++                    }
++                    a = 255;
++                } break;
++
++                case 4: {
++                    uint8_t pack = xrow[x / 2];
++                    uint8_t idx = (x & 1) ? (pack & 0x0F) : (pack >> 4);
++                    if (palette) {
++                        b = palette[idx * 4 + 0];
++                        g = palette[idx * 4 + 1];
++                        r = palette[idx * 4 + 2];
++                    }
++                    a = 255;
++                } break;
++
++                case 1: {
++                    uint8_t pack = xrow[x / 8];
++                    uint8_t bit = (pack >> (7 - (x & 7))) & 1;
++                    if (palette) {
++                        b = palette[bit * 4 + 0];
++                        g = palette[bit * 4 + 1];
++                        r = palette[bit * 4 + 2];
++                    } else {
++                        b = g = r = bit ? 255 : 0;
++                    }
++                    a = 255;
++                } break;
++
++                default: return false;
++            }
++
++            // AND mask: 1 = transparent (cut hole), 0 = opaque.
++            // Only applies when XOR data didn't already carry alpha.
++            if (arow && bpp != 32) {
++                uint8_t pack = arow[x / 8];
++                uint8_t bit = (pack >> (7 - (x & 7))) & 1;
++                if (bit) a = 0;
++            }
++
++            dst[x * 4 + 0] = r;
++            dst[x * 4 + 1] = g;
++            dst[x * 4 + 2] = b;
++            dst[x * 4 + 3] = a;
++        }
++    }
++
++    // 32-bit-with-zero-alpha rescue: if every alpha is 0, treat AND
++    // mask as the authoritative transparency (Win32 cursors authored
++    // before the 32-bit-alpha convention took hold often did this).
++    if (bpp == 32 && hasAnd) {
++        bool allZero = true;
++        for (size_t i = 3; i < out.rgba.size(); i += 4) {
++            if (out.rgba[i] != 0) { allZero = false; break; }
++        }
++        if (allZero) {
++            for (int y = 0; y < h; ++y) {
++                const uint8_t* arow = andPix + (size_t)(h - 1 - y) * andStride;
++                uint8_t* dst = out.rgba.data() + (size_t)y * w * 4;
++                for (int x = 0; x < w; ++x) {
++                    uint8_t pack = arow[x / 8];
++                    uint8_t bit = (pack >> (7 - (x & 7))) & 1;
++                    dst[x * 4 + 3] = bit ? 0 : 255;
++                }
++            }
++        }
++    }
++
++    return true;
++}
++
++struct AniCursor {
++    int numFrames = 0;
++    int numSteps = 0;
++    uint32_t defaultJiffies = 6;
++    std::vector<AniFrame> frames;
++    std::vector<int> seq;
++    std::vector<uint32_t> rates;
++    unsigned long xcursor = 0;
++};
++
++struct XcImage { uint32_t version, size, width, height, xhot, yhot, delay; uint32_t* pixels; };
++struct XcImages { int nimage; XcImage** images; char* name; };
++
++std::unordered_map<std::string, AniCursor*>& g_cache() { static std::unordered_map<std::string, AniCursor*> m; return m; }
++
++void build_xcursor(AniCursor* c, Display* dpy)
++{
++    static void* lib = dlopen("libXcursor.so.1", RTLD_NOW);
++    if (!lib || !dpy) return;
++    using Create = XcImages* (*)(int, int);
++    using ImgCreate = XcImage* (*)(int, int);
++    using Load = unsigned long (*)(Display*, const XcImages*);
++    using Destroy = void (*)(XcImages*);
++    auto create = reinterpret_cast<Create>(dlsym(lib, "XcursorImagesCreate"));
++    auto imgCreate = reinterpret_cast<ImgCreate>(dlsym(lib, "XcursorImageCreate"));
++    auto load = reinterpret_cast<Load>(dlsym(lib, "XcursorImagesLoadCursor"));
++    auto destroy = reinterpret_cast<Destroy>(dlsym(lib, "XcursorImagesDestroy"));
++    if (!create || !imgCreate || !load || !destroy || c->seq.empty()) return;
++    XcImages* set = create((int)c->seq.size(), 0);
++    if (!set) return;
++    for (size_t s = 0; s < c->seq.size(); ++s) {
++        const AniFrame& f = c->frames[(size_t)c->seq[s] % c->frames.size()];
++        XcImage* im = imgCreate(f.width, f.height);
++        if (!im) continue;
++        im->xhot = (uint32_t)f.hotspotX; im->yhot = (uint32_t)f.hotspotY;
++        uint32_t jiffies = s < c->rates.size() ? c->rates[s] : c->defaultJiffies;
++        im->delay = jiffies * 1000 / 60; // ms
++        for (int i = 0; i < f.width * f.height; ++i) { // premultiplied ARGB
++            const uint8_t* p = &f.rgba[(size_t)i * 4];
++            uint32_t a = p[3];
++            im->pixels[i] = (a << 24) | ((p[0] * a / 255) << 16) | ((p[1] * a / 255) << 8) | (p[2] * a / 255);
++        }
++        set->images[set->nimage++] = im;
++    }
++    if (set->nimage > 0) c->xcursor = load(dpy, set);
++    destroy(set);
++}
++
++AniCursor* parse_ani(const std::vector<uint8_t>& buf) {
++    if (buf.size() < 12) return nullptr;
++    const uint8_t* p = buf.data();
++    if (!fourcc(p, "RIFF")) return nullptr;
++    uint32_t riffSize = rd_u32(p + 4);
++    if ((size_t)riffSize + 8 > buf.size()) riffSize = (uint32_t)(buf.size() - 8);
++    if (!fourcc(p + 8, "ACON")) return nullptr;
++
++    AniCursor* c = new AniCursor;
++    size_t off = 12;
++    size_t end = 8 + riffSize;
++
++    while (off + 8 <= end) {
++        const uint8_t* ch = p + off;
++        uint32_t chSize = rd_u32(ch + 4);
++        size_t dataOff = off + 8;
++        if (dataOff + chSize > end) break;
++        const uint8_t* data = p + dataOff;
++
++        if (fourcc(ch, "anih") && chSize >= 36) {
++            c->numFrames     = (int)rd_u32(data + 4);
++            c->numSteps      = (int)rd_u32(data + 8);
++            c->defaultJiffies = rd_u32(data + 28);
++            if (c->defaultJiffies == 0) c->defaultJiffies = 6;
++        } else if (fourcc(ch, "LIST") && chSize >= 4 && fourcc(data, "fram")) {
++            // Walk subchunks looking for 'icon'.
++            size_t subOff = 4;     // skip 'fram'
++            while (subOff + 8 <= chSize) {
++                const uint8_t* sub = data + subOff;
++                uint32_t subSize = rd_u32(sub + 4);
++                if (subOff + 8 + subSize > chSize) break;
++                if (fourcc(sub, "icon")) {
++                    AniFrame f;
++                    if (decode_cur_frame(sub + 8, subSize, f)) {
++                        c->frames.push_back(std::move(f));
++                    }
++                }
++                subOff += 8 + subSize;
++                if (subSize & 1) ++subOff;  // RIFF pad
++            }
++        } else if (fourcc(ch, "rate") && chSize >= 4) {
++            int n = (int)(chSize / 4);
++            c->rates.resize(n);
++            for (int i = 0; i < n; ++i) c->rates[i] = rd_u32(data + i * 4);
++        } else if (fourcc(ch, "seq ") && chSize >= 4) {
++            int n = (int)(chSize / 4);
++            c->seq.resize(n);
++            for (int i = 0; i < n; ++i) c->seq[i] = (int)rd_u32(data + i * 4);
++        }
++
++        off = dataOff + chSize;
++        if (chSize & 1) ++off;  // pad to even
++    }
++
++    if (c->frames.empty()) { delete c; return nullptr; }
++
++    // Sanity defaults: if seq/rates absent, walk frames 0..n-1 once
++    // per cycle, defaultJiffies each.
++    if (c->seq.empty()) {
++        int n = c->numSteps > 0 ? c->numSteps : (int)c->frames.size();
++        c->seq.resize(n);
++        for (int i = 0; i < n; ++i) c->seq[i] = i % (int)c->frames.size();
++    }
++    if (c->rates.empty()) {
++        c->rates.assign(c->seq.size(), c->defaultJiffies);
++    }
++
++    return c;
++}
++
++} // namespace
++
++// "data\\cursors\\Foo.ANI" from the engine, on a case-sensitive file system: fix the slashes and match each part ignoring case.
++static std::string resolve(const char* path)
++{
++    std::string rel(path);
++    for (char& ch : rel) if (ch == '\\') ch = '/';
++    std::string cur = rel.size() && rel[0] == '/' ? "/" : ".";
++    size_t pos = 0;
++    while (pos < rel.size()) {
++        size_t e = rel.find('/', pos);
++        if (e == std::string::npos) e = rel.size();
++        std::string part = rel.substr(pos, e - pos);
++        pos = e + 1;
++        if (part.empty() || part == ".") continue;
++        std::string next = cur + "/" + part;
++        if (access(next.c_str(), F_OK) != 0) {
++            DIR* d = opendir(cur.c_str());
++            if (!d) return rel;
++            while (dirent* ent = readdir(d))
++                if (strcasecmp(ent->d_name, part.c_str()) == 0) { next = cur + "/" + ent->d_name; break; }
++            closedir(d);
++        }
++        cur = next;
++    }
++    return cur;
++}
++
++extern "C" void* LinuxCursor_Load(const char* path)
++{
++    if (!path || !*path) return nullptr;
++    auto& cache = g_cache();
++    std::string key(path);
++    auto it = cache.find(key);
++    if (it != cache.end()) return it->second;
++    std::vector<uint8_t> buf = read_file(resolve(path));
++    AniCursor* c = buf.empty() ? nullptr : parse_ani(buf);
++    cache[key] = c;
++    return c;
++}
++
++// SetCursor: a loaded cursor, or null / 0x1 for "the engine draws its own", which hides the system one.
++extern "C" void LinuxCursor_Set(void* h)
++{
++    Display* dpy = static_cast<Display*>(LinuxWindow_Display());
++    ::Window win = LinuxWindow_Win();
++    if (!dpy || !win) return;
++    static void* last = reinterpret_cast<void*>(~uintptr_t(0));
++    if (h == last) return;
++    last = h;
++    static unsigned long blank = 0;
++    unsigned long cur = 0;
++    if (h && (uintptr_t)h != 1) {
++        AniCursor* c = static_cast<AniCursor*>(h);
++        if (!c->xcursor) build_xcursor(c, dpy);
++        cur = c->xcursor;
++    }
++    if (!cur) {
++        if (!blank) {
++            char zero = 0;
++            Pixmap pm = XCreateBitmapFromData(dpy, win, &zero, 1, 1);
++            XColor black{};
++            blank = XCreatePixmapCursor(dpy, pm, pm, &black, &black, 0, 0);
++            XFreePixmap(dpy, pm);
++        }
++        cur = blank;
++    }
++    XDefineCursor(dpy, win, cur);
++    XFlush(dpy);
++}
++
++#endif
+--- a/cmake/dx8.cmake
++++ b/cmake/dx8.cmake
+@@ -118,6 +118,7 @@
+     add_library(d3d8 STATIC
+         ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/dx8_stub.cpp
+         ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/linux_window.cpp
++        ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/linux_cursor.cpp
+         ${CMAKE_CURRENT_LIST_DIR}/dx8_stub/gdi_text_linux.cpp
+     )
+     find_package(Freetype REQUIRED)
+--- a/Dependencies/Utility/osdep_compat/win32_api.h
++++ b/Dependencies/Utility/osdep_compat/win32_api.h
+@@ -1592,6 +1592,12 @@
+     // recognises 0x1 and treats it as "no cursor".
+     return h ? (HCURSOR)h : (HCURSOR)0x1;
+ }
++#elif defined(__linux__)
++extern "C" void* LinuxCursor_Load(const char* path);
++extern "C" void  LinuxCursor_Set(void* handle);
++inline HCURSOR SetCursor(HCURSOR c) { LinuxCursor_Set((void*)c); return nullptr; }
++inline int     ShowCursor(BOOL) { return 0; }
++inline HCURSOR LoadCursorFromFile(const char *path) { void* h = LinuxCursor_Load(path); return h ? (HCURSOR)h : (HCURSOR)(uintptr_t)1; }
+ #else
+ inline HCURSOR SetCursor(HCURSOR) { return nullptr; }
+ inline int     ShowCursor(BOOL) { return 0; }

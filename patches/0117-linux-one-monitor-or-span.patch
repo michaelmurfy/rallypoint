@@ -1,0 +1,127 @@
+Linux: fullscreen uses one monitor (the one under the mouse, else the primary) instead of every monitor of the X screen; GEN_SPAN_MONITORS=1 spans them all (surround).
+
+--- a/cmake/dx8_stub/linux_window.cpp
++++ b/cmake/dx8_stub/linux_window.cpp
+@@ -7,6 +7,8 @@
+ #include <deque>
+ #include <string>
+ 
++#include <dlfcn.h>
++#include <cstdlib>
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
+ #include <X11/Xatom.h>
+@@ -27,6 +29,8 @@
+     int height = 600;
+     int screenW = 1920;
+     int screenH = 1080;
++    int screenX = 0, screenY = 0; // top left of the monitor the game uses (0,0 and the whole desktop when spanning)
++    long fsMonitors[4] = { -1, -1, -1, -1 }; // top, bottom, left, right monitor for _NET_WM_FULLSCREEN_MONITORS
+     Atom wmDelete = 0;
+     bool caps = false;
+     bool borderless = false;
+@@ -173,6 +177,50 @@
+ 
+ Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
+ 
++// GNOME and other desktops present several monitors as one big X screen, so DisplayWidth() is all of them
++// together. Ask XRandR (opened at run time, so it is no new dependency) for the monitors and use the one
++// under the mouse, else the primary. GEN_SPAN_MONITORS=1 keeps the whole desktop (surround).
++void pickMonitor(Win* w)
++{
++    struct Mon { unsigned long name; int primary, automatic, noutput, x, y, width, height, mwidth, mheight; unsigned long* outputs; };
++    void* lib = dlopen("libXrandr.so.2", RTLD_NOW);
++    if (!lib) return;
++    using Get = Mon* (*)(Display*, ::Window, int, int*);
++    using Free = void (*)(Mon*);
++    auto get = reinterpret_cast<Get>(dlsym(lib, "XRRGetMonitors"));
++    auto release = reinterpret_cast<Free>(dlsym(lib, "XRRFreeMonitors"));
++    int n = 0;
++    Mon* m = get && release ? get(w->dpy, DefaultRootWindow(w->dpy), 1, &n) : nullptr;
++    if (!m || n <= 0) { if (m) release(m); return; }
++    bool span = std::getenv("GEN_SPAN_MONITORS") && std::getenv("GEN_SPAN_MONITORS")[0] == '1';
++    ::Window rootRet, childRet; int rx = 0, ry = 0, wx, wy; unsigned mask;
++    XQueryPointer(w->dpy, DefaultRootWindow(w->dpy), &rootRet, &childRet, &rx, &ry, &wx, &wy, &mask);
++    int pick = 0, found = -1;
++    for (int i = 0; i < n; i++) {
++        if (m[i].primary) pick = i;
++        if (found < 0 && rx >= m[i].x && rx < m[i].x + m[i].width && ry >= m[i].y && ry < m[i].y + m[i].height) found = i;
++    }
++    if (found >= 0) pick = found;
++    if (span && n > 1) {
++        int t = 0, b = 0, l = 0, r = 0;
++        for (int i = 1; i < n; i++) {
++            if (m[i].y < m[t].y) t = i;
++            if (m[i].y + m[i].height > m[b].y + m[b].height) b = i;
++            if (m[i].x < m[l].x) l = i;
++            if (m[i].x + m[i].width > m[r].x + m[r].width) r = i;
++        }
++        w->fsMonitors[0] = t; w->fsMonitors[1] = b; w->fsMonitors[2] = l; w->fsMonitors[3] = r;
++        w->screenX = m[l].x; w->screenY = m[t].y;
++        w->screenW = m[r].x + m[r].width - m[l].x;
++        w->screenH = m[b].y + m[b].height - m[t].y;
++    } else {
++        for (int k = 0; k < 4; k++) w->fsMonitors[k] = pick;
++        w->screenX = m[pick].x; w->screenY = m[pick].y; w->screenW = m[pick].width; w->screenH = m[pick].height;
++    }
++    std::fprintf(stderr, "[linux] %d monitor(s), using %s %d,%d %dx%d\n", n, span && n > 1 ? "all (span)" : "one", w->screenX, w->screenY, w->screenW, w->screenH);
++    release(m);
++}
++
+ // A fullscreen game window is WS_POPUP without a caption. XFCE still draws a
+ // title bar unless the motif hints say there are no decorations, and it keeps
+ // the panel on top unless the window is the screen and asks to be fullscreen.
+@@ -181,11 +229,11 @@
+     if (!w || !w->dpy || !w->win || !w->borderless) return;
+     XSizeHints size{};
+     size.flags = PPosition | PSize | PMinSize | PMaxSize;
+-    size.x = 0; size.y = 0;
++    size.x = w->screenX; size.y = w->screenY;
+     size.width = size.min_width = size.max_width = w->screenW;
+     size.height = size.min_height = size.max_height = w->screenH;
+     XSetWMNormalHints(w->dpy, w->win, &size);
+-    XMoveResizeWindow(w->dpy, w->win, 0, 0, (unsigned)w->screenW, (unsigned)w->screenH);
++    XMoveResizeWindow(w->dpy, w->win, w->screenX, w->screenY, (unsigned)w->screenW, (unsigned)w->screenH);
+     w->width = w->screenW;
+     w->height = w->screenH;
+     Atom motif = XInternAtom(w->dpy, "_MOTIF_WM_HINTS", 0);
+@@ -204,6 +252,16 @@
+     ev.xclient.data.l[1] = static_cast<long>(full);
+     ev.xclient.data.l[3] = 1; // application
+     XSendEvent(w->dpy, DefaultRootWindow(w->dpy), 0, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
++    if (w->fsMonitors[0] >= 0) { // which monitors "fullscreen" covers
++        XEvent me{};
++        me.type = ClientMessage;
++        me.xclient.window = w->win;
++        me.xclient.message_type = XInternAtom(w->dpy, "_NET_WM_FULLSCREEN_MONITORS", 0);
++        me.xclient.format = 32;
++        for (int k = 0; k < 4; k++) me.xclient.data.l[k] = w->fsMonitors[k];
++        me.xclient.data.l[4] = 1;
++        XSendEvent(w->dpy, DefaultRootWindow(w->dpy), 0, SubstructureRedirectMask | SubstructureNotifyMask, &me);
++    }
+     std::fprintf(stderr, "[linux] fullscreen %dx%d\n", w->screenW, w->screenH);
+ }
+ 
+@@ -273,11 +331,12 @@
+         }
+         g->screenW = DisplayWidth(g->dpy, DefaultScreen(g->dpy));
+         g->screenH = DisplayHeight(g->dpy, DefaultScreen(g->dpy));
++        pickMonitor(g);
+     }
+     if (w <= 0) w = 800;
+     if (h <= 0) h = 600;
+     g->borderless = (style & WS_POPUP) && !(style & WS_CAPTION);
+-    if (g->borderless) { x = 0; y = 0; w = g->screenW; h = g->screenH; }
++    if (g->borderless) { x = g->screenX; y = g->screenY; w = g->screenW; h = g->screenH; }
+     g->width = w;
+     g->height = h;
+     int scr = DefaultScreen(g->dpy);
+@@ -326,7 +385,7 @@
+ {
+     Win* win = asWin(h);
+     if (!win || !win->dpy || !win->win) return TRUE;
+-    if (win->borderless) { x = 0; y = 0; w = win->screenW; hgt = win->screenH; flags &= ~0x0001u; }
++    if (win->borderless) { x = win->screenX; y = win->screenY; w = win->screenW; hgt = win->screenH; flags &= ~0x0001u; }
+     if (!(flags & 0x0001)) { // SWP_NOSIZE
+         win->width = w;
+         win->height = hgt;

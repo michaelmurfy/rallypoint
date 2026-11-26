@@ -2027,6 +2027,13 @@ function graphicsCards() {
       fb.ok("Saved. It applies the next time you start the game.");
     } catch (e) { fb.bad(errText(e)); }
   } }, [["x64", "64-bit (default)"], ["x86", "32-bit (the older build)"]].map(([v, label]) => h("option", { value: v, selected: v === (store.cfg.engine_arch || "x64") }, label)));
+  const span = h("input", { type: "checkbox", "aria-label": "Span all monitors", checked: !!store.cfg.span_monitors, onchange: async () => {
+    try {
+      await invoke("set_span_monitors", { on: span.checked });
+      store.cfg.span_monitors = span.checked;
+      fb.ok("Saved. It applies the next time you start the game. Set the resolution to your combined screen size.");
+    } catch (e) { span.checked = !!store.cfg.span_monitors; fb.bad(errText(e)); }
+  } });
   const bar = commandBarSelect(fb);
 
   // Renderer: two tiles to choose between, each saying what you get.
@@ -2061,6 +2068,7 @@ function graphicsCards() {
         setting("Command bar", "Control Bar Pro redraws the bar and its menus for big screens. It is drawn for one resolution, picked from the one set on the Play page: choose it again after changing that. If it looks wrong with a mod, switch back.", bar),
         setting("Camera distance", "How far out you can zoom. The original game stops at 300.", camera),
         setting("High-quality settings", "Shadows, soft water edges, trees, heat effects, extra animations and 5000 particles. Volumes and controls are not changed.", apply),
+        store.cfg.os === "linux" ? setting("Span all monitors", "Fullscreen uses the monitor under your mouse. Tick this to stretch the game over every monitor instead (surround). Pick your combined screen size on the Play page.", span) : null,
         store.cfg.engines_bundled ? setting("Game engine", "The 64-bit engine is new. If a game misbehaves, switch to the 32-bit one and tell us what happened.", arch) : null),
       fb.el),
   ];
@@ -3145,7 +3153,7 @@ function openWizard() {
     if (step === 1) {
       const panel = gameFilesPanel((ok) => { w.filesOk = ok; nav(); });
       w.dispose = panel.dispose;
-      return h("div", { class: "stack" }, h("h2", {}, "Your game files"), h("p", { class: "muted" }, "Rallypoint needs your own copy of Zero Hour (the folder with INIZH.big). If you have it on Steam on Windows it's found automatically; otherwise point to it or download it below."), panel.el);
+      return h("div", { class: "stack" }, h("h2", {}, "Your game files"), h("p", { class: "muted" }, "Rallypoint needs your own copy of Zero Hour (the folder with INIZH.big). If you have it on Steam it's found automatically; otherwise point to it or download it below."), panel.el);
     }
     if (step === 2) {
       const nat = nativeRes(), p = prefs.get();
