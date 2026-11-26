@@ -1,3 +1,16 @@
+## Rallypoint 1.0.3
+
+**Nine more retail rules ported for Red Alert 2.** Everyone in a room needs 1.0.3.
+
+- **ExitCoord factory doors.** Units roll out of the factory door instead of the building center.
+- **CrateBeneath death drops.** Destroyed city and tech buildings drop a crate where they fell.
+- **ForceShield end-to-end.** The Force Shield superweapon goes live with proper targeting feedback.
+- **Superweapon cursors, sounds and radar.** Targeting cursors, firing sounds, animations and radar pings audited against retail.
+- **Spy camera.** The spy plane's camera flash honors its weapon Damage/Range and frame count.
+- **Yuri wall and Allied gate.** Both rosters build their wall and gate the way retail does.
+- **Selectable buildings.** Buildings flagged `Selectable=no` can no longer be picked up by clicks or boxes.
+- **Movement hardening.** Regression cover for ramp data and terror-drone re-attacks, plus a live pixel check that tanks pitch on slopes.
+
 ## Rallypoint 1.0.2
 
 **Four more retail rules ported for Red Alert 2.** Everyone in a room needs 1.0.2.
