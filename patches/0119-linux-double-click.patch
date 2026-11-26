@@ -1,0 +1,23 @@
+Linux: a second left press within 500 ms and 4 pixels is sent as a double click (type 4, WM_LBUTTONDBLCLK), which selects every unit of the same type. X has no double-click event, so nothing arrived before.
+
+--- a/cmake/dx8_stub/linux_window.cpp
++++ b/cmake/dx8_stub/linux_window.cpp
+@@ -152,7 +152,17 @@
+                 continue;
+             }
+             int type = 0;
+-            if (e.xbutton.button == Button1) type = down ? 2 : 3;
++            if (e.xbutton.button == Button1) {
++                type = down ? 2 : 3;
++                // X sends no double-click event; Windows' defaults are 500 ms and 4 pixels. The second press
++                // replaces the plain one (type 4), like WM_LBUTTONDBLCLK, and a third press starts again.
++                static Time lastTime = 0; static int lastX = 0, lastY = 0; static bool lastWasFirst = false;
++                if (down) {
++                    bool dbl = lastWasFirst && e.xbutton.time - lastTime <= 500 && std::abs(x - lastX) <= 4 && std::abs(y - lastY) <= 4;
++                    if (dbl) type = 4;
++                    lastWasFirst = !dbl; lastTime = e.xbutton.time; lastX = x; lastY = y;
++                }
++            }
+             else if (e.xbutton.button == Button3) type = down ? 5 : 6;
+             else if (e.xbutton.button == Button2) type = down ? 7 : 8;
+             if (type) g_mouse.push_back({type, x, y, 0});

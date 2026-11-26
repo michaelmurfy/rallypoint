@@ -214,6 +214,7 @@ struct ConfigView {
     control_bar: String,
     /// "x64" or "x86", and whether both Windows engines are bundled (otherwise the choice is not shown).
     engine_arch: String,
+    span_monitors: bool,
     engines_bundled: bool,
     /// The map editor is bundled (Windows).
     editor_available: bool,
@@ -255,6 +256,7 @@ fn get_config(app: tauri::AppHandle) -> Result<ConfigView, String> {
         camera_height,
         control_bar: if c.control_bar == "pro" { "pro".into() } else { "hd".into() },
         engine_arch: if c.engine_arch == "x86" { "x86".into() } else { "x64".into() },
+        span_monitors: c.span_monitors,
         engines_bundled: engine::both_bundled(app.path().resource_dir().ok().as_deref()),
         editor_available: engine::editor(app.path().resource_dir().ok().as_deref()).is_some(),
         renderer_available: graphics::renderer_available(std::env::consts::OS, engine::both_bundled(app.path().resource_dir().ok().as_deref())),
@@ -409,6 +411,14 @@ fn set_engine_arch(app: tauri::AppHandle, arch: String) -> Result<(), String> {
 }
 
 /// Classic (Direct3D 8) or Enhanced (the native Vulkan renderer with the new effects); it applies the next time the game starts.
+#[tauri::command]
+fn set_span_monitors(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let path = config_path(&app)?;
+    let mut c = Config::load(&path);
+    c.span_monitors = on;
+    c.save(&path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn set_renderer(app: tauri::AppHandle, renderer: String) -> Result<(), String> {
     let path = config_path(&app)?;
@@ -1073,6 +1083,9 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
             env.push(graphics::camera_env(Config::load(&config_path(&app)?).camera()));
             {
                 let c = Config::load(&config_path(&app)?);
+                if c.span_monitors {
+                    env.push(("GEN_SPAN_MONITORS".to_string(), "1".to_string())); // read by the Linux engine only
+                }
                 if let Some(r) = graphics::renderer_env(&c.renderer, &exe, std::env::consts::OS) {
                     env.push(r);
                     env.extend(graphics::effects_env(&c.effects));
@@ -1626,7 +1639,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             detect_games, check_game_dir, diagnose, open_game_data_folder, assets_start, assets_status, assets_submit, assets_use_code, assets_cancel, steam_forget_login,
-            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_ra2_setup_done, set_check_updates, set_beta_updates, update_skip,
+            get_config, save_config, set_player_name, set_camera_height, set_engine_arch, set_span_monitors, set_renderer, set_effect, set_effect_preset, graphics_apply_high, set_sync_logs, open_sync_logs_folder, make_debug_bundle, sync_compare, save_game_dir, set_setup_done, set_ra2_setup_done, set_check_updates, set_beta_updates, update_skip,
             update_check, update_install, update_progress, whats_new_take, changelog, open_release_page,
             maps_info, maps_install_pack, maps_status, maps_cancel, maps_install_path, maps_organiser, maps_official, official_map_view, maps_players, skirmish_generals, skirmish_ai_names, map_view, maps_set_enabled, maps_delete, maps_open_pack_page,
             map_share_view, map_share_send, map_share_reply, map_share_cancel, map_share_dismiss, map_share_auto_accept,

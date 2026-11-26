@@ -800,3 +800,5 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .conflictlist { margin: 8px 0; padding-left: 18px; display: grid; gap: 6px; }
 @media (max-height: 700px) { .sharenames { display: none; } }
 @media (max-width: 760px) { .sharedock { left: 80px; width: calc(100vw - 96px); } }
+
+.stack > .btn { height: auto; min-height: 36px; padding: 8px 14px; white-space: normal; overflow-wrap: anywhere; text-align: left; justify-content: flex-start; }

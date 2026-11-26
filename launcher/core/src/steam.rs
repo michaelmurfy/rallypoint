@@ -84,7 +84,14 @@ pub fn base_game_for(detected: &[GameInstall], downloaded: &Path) -> Option<Path
 }
 
 pub fn detect() -> Vec<GameInstall> {
-    steam_roots().iter().flat_map(|r| library_dirs(r)).flat_map(|l| find_in_library(&l)).collect()
+    let mut seen = std::collections::HashSet::new();
+    // `~/.steam/steam` is a symlink to `~/.local/share/Steam`, and a library list repeats its root.
+    steam_roots()
+        .iter()
+        .flat_map(|r| library_dirs(r))
+        .flat_map(|l| find_in_library(&l))
+        .filter(|g| seen.insert(std::fs::canonicalize(&g.dir).unwrap_or_else(|_| g.dir.clone())))
+        .collect()
 }
 
 #[cfg(test)]

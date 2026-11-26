@@ -73,6 +73,9 @@ pub struct Config {
     /// Which Windows engine to run: empty or "x64" is the 64-bit one, "x86" the 32-bit one. Ignored where only one is bundled.
     #[serde(default)]
     pub engine_arch: String,
+    /// Linux: stretch the fullscreen game over every monitor (surround) instead of the one under the mouse.
+    #[serde(default)]
+    pub span_monitors: bool,
     /// "enhanced" for the native Vulkan renderer and its effects (64-bit Windows engine only); empty is Classic.
     #[serde(default)]
     pub renderer: String,
