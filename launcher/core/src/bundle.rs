@@ -190,15 +190,18 @@ pub fn stage(s: &Sources, stage: &Path, now: u64) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Zip `stage` into `out`. macOS and Windows ship a `tar` that writes zips; elsewhere `zip` is used.
+/// Zip `stage` into `out`. macOS and Windows ship a `tar` that writes zips; elsewhere `zip` is used (GNU tar, the
+/// Linux one, ignores the `.zip` name and writes a plain tar that nothing opens as a zip).
 fn archive(stage: &Path, out: &Path) -> Result<(), String> {
     let _ = std::fs::remove_file(out);
-    let tar = quiet(Command::new("tar").args(["-a", "-c", "-f"]).arg(out).arg("-C").arg(stage).arg(".")).output();
-    if tar.as_ref().map(|o| o.status.success()).unwrap_or(false) && out.is_file() {
-        return Ok(());
+    if !cfg!(target_os = "linux") {
+        let tar = quiet(Command::new("tar").args(["-a", "-c", "-f"]).arg(out).arg("-C").arg(stage).arg(".")).output();
+        if tar.as_ref().map(|o| o.status.success()).unwrap_or(false) && out.is_file() {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(out);
     }
-    let _ = std::fs::remove_file(out);
-    let zip = quiet(Command::new("zip").args(["-r", "-q"]).arg(out).arg(".").current_dir(stage)).output().map_err(|e| format!("no tool to make a zip: {e}"))?;
+    let zip = quiet(Command::new("zip").args(["-r", "-q"]).arg(out).arg(".").current_dir(stage)).output().map_err(|e| format!("no tool to make a zip ({e}). On Linux install the zip package."))?;
     if zip.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&zip.stderr).trim().to_string()) }
 }
 
@@ -296,6 +299,7 @@ mod tests {
         // The zip itself needs the system's tar or zip, which a bare build machine may lack.
         if let Ok(z) = create(&s, &t.join("out")) {
             assert!(z.metadata().unwrap().len() > 100 && z.to_string_lossy().ends_with(".zip"));
+            assert_eq!(&std::fs::read(&z).unwrap()[..2], b"PK", "a real zip, not a tar with a .zip name");
             assert!(!base.join("tmp/debug-bundle").exists());
         }
         let _ = std::fs::remove_dir_all(t);
