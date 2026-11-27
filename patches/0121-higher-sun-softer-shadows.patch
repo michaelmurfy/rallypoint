@@ -1,0 +1,29 @@
+Enhanced renderer (Vulkan): the random sun is 50 to 68 degrees high (was 35 to 62) and the object shadow strength is 0.45 (was 0.58), so a low sun no longer throws long shadows over an ultra wide view. Picture only.
+
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vulkan.cpp
+@@ -2373,11 +2373,11 @@
+ 	if (!g_sh.haveSun)
+ 	{
+ 		// One fixed sun for the whole session: azimuth from the map's light the first time, elevation fixed. GENERALS_SUN="azimuth,elevation" (degrees) overrides.
+-		// random sun for every launch: any direction, 35 to 62 degrees high
++		// random sun for every launch: any direction, 50 to 68 degrees high (Rallypoint: was 35 to 62, and a low sun threw skyscraper shadows over a third of an ultra wide screen)
+ 		// A local generator: the C library's rand() state is left alone (nothing that touches the game may depend on the renderer).
+ 		unsigned seed = (unsigned)GetTickCount() ^ (unsigned)GetCurrentProcessId() * 2654435761u;
+ 		auto next = [&seed]() { seed = seed * 1664525u + 1013904223u; return (int)(seed >> 8); };
+-		float az = (float)(next() % 3600) * 0.1f * 3.14159265f / 180.0f, el = (35.0f + (float)(next() % 270) * 0.1f) * 3.14159265f / 180.0f;
++		float az = (float)(next() % 3600) * 0.1f * 3.14159265f / 180.0f, el = (50.0f + (float)(next() % 180) * 0.1f) * 3.14159265f / 180.0f;
+ 		(void)sunX; (void)sunY;
+ 		if (g_cfg.sunAzimuth >= 0.0f) { az = g_cfg.sunAzimuth * 3.14159265f / 180.0f; if (g_cfg.sunElevation >= 0.0f) el = g_cfg.sunElevation * 3.14159265f / 180.0f; }
+ 		if (const char* e = getenv("GENERALS_SUN")) { float a = 0, b = 0; if (sscanf(e, "%f,%f", &a, &b) == 2) { az = a * 3.14159265f / 180.0f; el = b * 3.14159265f / 180.0f; } }
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vk_post.inl
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vk_post.inl
+@@ -67,7 +67,7 @@
+ 	GpuTexture* lmap = nullptr;			// shadow map of the strongest dynamic light
+ 	GpuTexture* vis = nullptr;
+ 	uint32_t mapSize = 4096;
+-	float lightSize = 0.050f, strength = 0.58f;
++	float lightSize = 0.050f, strength = 0.45f;
+ } g_sh;
+ 
+ 

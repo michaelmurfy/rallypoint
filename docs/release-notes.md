@@ -1,9 +1,10 @@
 ## Rallypoint 1.0.6
 
-**Cloud shadows are softer.** On Linux and Windows 64-bit with the Enhanced renderer, a thick cloud no longer turns the ground nearly black.
+**Shadows are softer.** On Linux and Windows 64-bit with the Enhanced renderer, neither a thick cloud nor a low sun turns the ground nearly black.
 
 - **Softer by default.** The shadow keeps most of the light, so a cloud reads as shade, not a hole.
 - **Your call.** Settings > Graphics > Enhanced effects has a new **Cloud shadow strength**: subtle, normal or strong.
+- **Gentler sun shadows.** The random sun now stays higher and its shadows are a little lighter, so buildings no longer throw long dark stripes over an ultra wide screen.
 - **Linux debug bundle is a real zip.** It was a plain tar with a .zip name that nothing could open. It needs the `zip` package, which the installers now ask for.
 
 ## Rallypoint 1.0.5
