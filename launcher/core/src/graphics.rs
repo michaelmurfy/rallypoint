@@ -112,6 +112,8 @@ pub const EFFECTS: &[(&str, &[&str], &str, bool)] = &[
     ("PixelLighting", &["yes", "no"], "yes", false),
     ("AnisotropicFiltering", &["0", "4", "8", "16"], "16", false),
     ("CloudShadows", &["yes", "no"], "yes", false),
+    // the engine reads a number for this key (default 0.45), see `engine_value`
+    ("CloudShadowStrength", &["subtle", "normal", "strong"], "normal", false),
     ("Clouds", &["yes", "no"], "no", false),
     ("UpdatedWater", &["yes", "no"], "yes", true),
     ("WaterReflections", &["yes", "no"], "yes", false),
@@ -194,12 +196,22 @@ pub fn check_effect(key: &str, value: &str) -> Result<(), String> {
     }
 }
 
+/// What the engine is given for a setting: a few are named steps here and a plain number there.
+fn engine_value<'a>(key: &str, value: &'a str) -> &'a str {
+    match (key, value) {
+        ("CloudShadowStrength", "subtle") => "0.2",
+        ("CloudShadowStrength", "normal") => "0.45",
+        ("CloudShadowStrength", "strong") => "0.7",
+        _ => value,
+    }
+}
+
 /// `GEN_GFX` for the engine: every known setting the player changed, as `Key=value;Key=value` (they win over Options.ini).
 /// Unknown keys or values in the config are skipped, so nothing else reaches the engine's environment.
 pub fn effects_env(settings: &std::collections::BTreeMap<String, String>) -> Option<(String, String)> {
     let v: Vec<String> = EFFECTS
         .iter()
-        .filter_map(|(k, _, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={v}")))
+        .filter_map(|(k, _, _, _)| settings.get(*k).filter(|v| check_effect(k, v).is_ok()).map(|v| format!("{k}={}", engine_value(k, v))))
         .collect();
     (!v.is_empty()).then(|| ("GEN_GFX".into(), v.join(";")))
 }
@@ -257,6 +269,11 @@ mod tests {
     fn new_look_settings_reach_the_engine() {
         let e = effects_env(&preset("cinematic").unwrap()).unwrap().1;
         assert_eq!(e, "AmbientOcclusionQuality=full;ShadowQuality=high;BloomStrength=strong;ColorLook=cinematic;Sharpen=low;Vignette=yes");
+        let cloud = |v: &str| effects_env(&[("CloudShadowStrength".to_string(), v.to_string())].into()).map(|e| e.1);
+        assert_eq!(cloud("subtle").as_deref(), Some("CloudShadowStrength=0.2"));
+        assert_eq!(cloud("normal").as_deref(), Some("CloudShadowStrength=0.45"));
+        assert_eq!(cloud("strong").as_deref(), Some("CloudShadowStrength=0.7"));
+        assert_eq!(cloud("0.9"), None);
         assert!(check_effect("Sharpen", "max").is_err() && check_effect("SmokeShading", "no").is_ok());
     }
 

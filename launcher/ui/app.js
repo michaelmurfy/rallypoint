@@ -1914,6 +1914,7 @@ const EFFECT_TEXT = {
   PixelLighting: ["Per-pixel lighting", "Units and buildings get a soft sun highlight."],
   AnisotropicFiltering: ["Texture filtering", "Ground textures stay sharp at a low angle.", { 0: "Off", 4: "4x", 8: "8x", 16: "16x" }],
   CloudShadows: ["Cloud shadows", "Moving cloud shadows on the ground."],
+  CloudShadowStrength: ["Cloud shadow strength", "How dark the cloud shadows are. Needs Cloud shadows.", { subtle: "Subtle", normal: "Normal", strong: "Strong" }],
   Clouds: ["Clouds", "Visible clouds when you zoom far out."],
   UpdatedWater: ["Updated water", "Waves, depth colour and foam."],
   WaterReflections: ["Water reflections", "The scene mirrored in the water."],
@@ -1932,7 +1933,7 @@ const betaTag = () => h("span", { class: "pill warn beta" }, "Beta");
 const EFFECT_GROUPS = [
   ["Picture", ["PostProcessing", "AntiAliasingFXAA", "Sharpen", "ColorLook", "Vignette"]],
   ["Light and glow", ["Bloom", "BloomStrength", "DynamicLights", "PixelLighting", "AmbientOcclusion", "AmbientOcclusionQuality"]],
-  ["Shadows and sky", ["SoftShadows", "ShadowQuality", "CloudShadows", "Clouds"]],
+  ["Shadows and sky", ["SoftShadows", "ShadowQuality", "CloudShadows", "CloudShadowStrength", "Clouds"]],
   ["Smoke and explosions", ["SoftParticles", "SmokeShading", "Shockwaves", "ScorchRelief"]],
   ["Water and ground", ["UpdatedWater", "WaterReflections", "AnisotropicFiltering"]],
 ];
@@ -1940,7 +1941,7 @@ const EFFECT_GROUPS = [
 const EFFECT_NEEDS = {
   Bloom: "PostProcessing", AmbientOcclusion: "PostProcessing", AntiAliasingFXAA: "PostProcessing", Sharpen: "PostProcessing", ColorLook: "PostProcessing",
   Vignette: "PostProcessing", DynamicLights: "PostProcessing", BloomStrength: "Bloom", AmbientOcclusionQuality: "AmbientOcclusion",
-  ShadowQuality: "SoftShadows", WaterReflections: "UpdatedWater", SmokeShading: "SoftParticles",
+  ShadowQuality: "SoftShadows", CloudShadowStrength: "CloudShadows", WaterReflections: "UpdatedWater", SmokeShading: "SoftParticles",
 };
 /** The Enhanced renderer's effects: a preset, then every effect by what it changes. Saved one by one; they apply at the next start. */
 function effectsPanel(fb) {

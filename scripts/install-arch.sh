@@ -18,7 +18,7 @@
 
 PREFIX=${RALLYPOINT_PREFIX:-$HOME/.local}
 REPO=michaelmurfy/rallypoint
-DEPS_PACKAGES="webkit2gtk-4.1 gtk3 libx11 freetype2 vulkan-icd-loader alsa-lib curl tar"
+DEPS_PACKAGES="webkit2gtk-4.1 gtk3 libx11 freetype2 vulkan-icd-loader alsa-lib curl tar zip"
 TARBALL=
 NO_DEPS=0
 UNINSTALL=0
