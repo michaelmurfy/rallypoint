@@ -24,6 +24,11 @@ on:
   schedule:
     - cron: '17 3 * * 1' # caches unused for a week are deleted; this also notices a runner image that breaks the build
   workflow_dispatch:
+    inputs:
+      asan:
+        description: 'Also build the Linux engine with AddressSanitizer (artifact engine-linux-asan; publishes nothing)'
+        type: boolean
+        default: false
 
 # Least privilege: jobs that need more ask for it themselves.
 permissions:
@@ -347,6 +352,46 @@ jobs:
           path: out/symbols
           if-no-files-found: ignore
           retention-days: 90
+
+  # AddressSanitizer build of the Linux engine, for tracking down heap corruption (Actions > Release > Run workflow,
+  # tick "asan", download the artifact engine-linux-asan). RTS_BUILD_OPTION_ASAN also turns the engine's memory pools
+  # off (every allocation is a plain malloc, so ASan sees overruns between objects). Never cached, never published.
+  engine-linux-asan:
+    name: Engine (Linux x86_64, AddressSanitizer)
+    if: inputs.asan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          sh scripts/ci-apt.sh clang libclang-rt-18-dev cmake ninja-build pkg-config libx11-dev libvulkan-dev libasound2-dev libfreetype6-dev fonts-dejavu-core
+          sh patches/apply.sh
+      - name: Configure and build
+        working-directory: engine
+        run: |
+          cmake --preset linux-x64 -DRTS_BUILD_OPTION_ASAN=ON -DCMAKE_C_FLAGS=-fno-omit-frame-pointer -DCMAKE_CXX_FLAGS=-fno-omit-frame-pointer
+          cmake --build build/linux-x64 --target z_generals
+      - name: Collect (symbols kept in the binary)
+        run: |
+          sh scripts/package-linux.sh engine out
+          cp engine/build/linux-x64/GeneralsMD/generalszh out/engine/generalszh
+          cat > out/engine/README-asan.txt <<'EOF'
+          AddressSanitizer build of the Rallypoint Linux engine. Slower than the normal one and it uses about
+          three times the memory. Play one game; if the engine finds a memory error it stops and writes a report.
+          1. Close Rallypoint. Back up ~/.local/lib/Rallypoint/engine and copy this folder over it
+             (chmod +x generalszh).
+          2. Start Rallypoint from a terminal with:
+             ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:log_path=$HOME/asan:malloc_context_size=30 rallypoint
+          3. Play. The report is the file ~/asan.<pid>: send it together with engine.log.
+          EOF
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-linux-asan
+          path: out/engine
+          if-no-files-found: error
+          retention-days: 14
 
   # ---- Red Alert 2 engine (ra2/patches applied on top of ra2/engine/, see ra2/README.md) ------------------------
   # Each job runs the engine's doctest suite on the binary it ships (Windows under Wine).
