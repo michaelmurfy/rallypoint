@@ -1,0 +1,12 @@
+--- a/Core/Libraries/Source/WWVegas/WW3D2/gfx_vk_post.inl
++++ b/Core/Libraries/Source/WWVegas/WW3D2/gfx_vk_post.inl
+@@ -314,7 +314,8 @@
+ 	memcpy(a.invView, invView, 64);
+ 	a.sunDir[0] = g_sh.sun[0]; a.sunDir[1] = g_sh.sun[1]; a.sunDir[2] = g_sh.sun[2];
+ 	a.cloudA[0] = g_cloud.base; a.cloudA[1] = g_cloud.thickness; a.cloudA[2] = g_cloud.coverage; a.cloudA[3] = g_cloud.density;
+-	a.cloudB[0] = g_gameTime >= 0.0f ? g_gameTime : (float)(GetTickCount() % 3600000) * 0.001f; a.cloudB[1] = g_cloud.speed; a.cloudB[2] = g_cloud.shadowStrength; a.cloudB[3] = g_cloud.shadows ? 1.0f : 0.0f;
++	// the shader multiplies this into the whole lit pixel (ambient too) and a thick cloud saturates exp() to ~0, so the setting is scaled: 0.45 leaves 0.73 of the light, not 0.55
++	a.cloudB[0] = g_gameTime >= 0.0f ? g_gameTime : (float)(GetTickCount() % 3600000) * 0.001f; a.cloudB[1] = g_cloud.speed; a.cloudB[2] = g_cloud.shadowStrength * 0.6f; a.cloudB[3] = g_cloud.shadows ? 1.0f : 0.0f;
+ 	a.cloudC[0] = g_cloud.clouds ? 1.0f : 0.0f; a.cloudC[1] = 160.0f;
+ }
+ 
