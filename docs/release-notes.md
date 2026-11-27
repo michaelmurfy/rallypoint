@@ -4,6 +4,7 @@
 
 - **Softer by default.** The shadow keeps most of the light, so a cloud reads as shade, not a hole.
 - **Your call.** Settings > Graphics > Enhanced effects has a new **Cloud shadow strength**: subtle, normal or strong.
+- **Linux debug bundle is a real zip.** It was a plain tar with a .zip name that nothing could open. It needs the `zip` package, which the installers now ask for.
 
 ## Rallypoint 1.0.5
 
