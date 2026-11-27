@@ -127,9 +127,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # A ra2/ tree that already passed here is not built again (see the Rust tests above).
+      # RA2 sources that already passed here are not built again (see the Rust tests above); the docs are not in the key.
       - id: key
-        run: echo "key=passed-ra2-${{ matrix.name }}-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/ci.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+        run: echo "key=passed-ra2-${{ matrix.name }}-$(git rev-parse HEAD:ra2/engine HEAD:ra2/patches HEAD:ra2/third-party HEAD:ra2/mingw-w64-x86_64.cmake HEAD:.github/workflows/ci.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
       - id: passed
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -29,9 +29,11 @@ on:
 permissions:
   contents: read
 
+# A newer dry run of the same branch replaces the older one. Pushes and the weekly run queue per ref and never cancel:
+# a tag must finish, and a main run is what fills the caches. (Each engine job also has a group of its own, see below.)
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   # ---- game engine (our patches applied on top of engine/) -----------------------------
@@ -39,8 +41,12 @@ jobs:
   # patches/ and third-party/ plus this file. A release that only changes the launcher then ships the engine that main
   # already built from the same sources, in seconds. Tags never save (nothing else could read it); the weekly run
   # always builds, so a runner image that breaks the build is still noticed.
+  # One build per commit: each engine job (Generals and RA2) shares a concurrency group with the same job of every other
+  # run of that commit. A tag pushed straight after its merge used to build every engine again beside main's run; now it
+  # waits for main's job and reuses what it saved.
   engine-macos:
     name: Engine (macOS arm64)
+    concurrency: engine-macos-${{ github.sha }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -95,6 +101,7 @@ jobs:
 
   engine-windows:
     name: Engine (Windows x86)
+    concurrency: engine-windows-x86-${{ github.sha }}
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -181,6 +188,7 @@ jobs:
   # x86 job until it is proven in real games; the launcher prefers this one.
   engine-windows-x64:
     name: Engine (Windows x64)
+    concurrency: engine-windows-x64-${{ github.sha }}
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -302,6 +310,7 @@ jobs:
   # Ubuntu 24.04, so the packages need glibc 2.39 or newer (Debian 13, Ubuntu 24.04, Fedora 40, CachyOS).
   engine-linux:
     name: Engine (Linux x86_64)
+    concurrency: engine-linux-${{ github.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -352,16 +361,18 @@ jobs:
   # Each job runs the engine's doctest suite on the binary it ships (Windows under Wine).
   ra2-engine-linux:
     name: RA2 engine (Linux x86_64)
+    concurrency: ra2-engine-linux-${{ github.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      # Reused like the Generals engine; the key is what the build reads in ra2/ (engine, patches, SDL tarball, MinGW
+      # toolchain; not the docs) plus this file.
       - id: key
         shell: bash
-        run: echo "key=ra2-engine-out-linux-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+        run: echo "key=ra2-engine-out-linux-$(git rev-parse HEAD:ra2/engine HEAD:ra2/patches HEAD:ra2/third-party HEAD:ra2/mingw-w64-x86_64.cmake HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
       - id: built
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -418,16 +429,18 @@ jobs:
 
   ra2-engine-windows:
     name: RA2 engine (Windows x64, MinGW)
+    concurrency: ra2-engine-windows-${{ github.sha }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      # Reused like the Generals engine; the key is what the build reads in ra2/ (engine, patches, SDL tarball, MinGW
+      # toolchain; not the docs) plus this file.
       - id: key
         shell: bash
-        run: echo "key=ra2-engine-out-windows-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+        run: echo "key=ra2-engine-out-windows-$(git rev-parse HEAD:ra2/engine HEAD:ra2/patches HEAD:ra2/third-party HEAD:ra2/mingw-w64-x86_64.cmake HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
       - id: built
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -481,16 +494,18 @@ jobs:
 
   ra2-engine-macos:
     name: RA2 engine (macOS arm64)
+    concurrency: ra2-engine-macos-${{ github.sha }}
     runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Reused like the Generals engine; the key is the git tree of ra2/ (engine, patches, SDL tarball) plus this file.
+      # Reused like the Generals engine; the key is what the build reads in ra2/ (engine, patches, SDL tarball, MinGW
+      # toolchain; not the docs) plus this file.
       - id: key
         shell: bash
-        run: echo "key=ra2-engine-out-macos-$(git rev-parse HEAD:ra2 HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+        run: echo "key=ra2-engine-out-macos-$(git rev-parse HEAD:ra2/engine HEAD:ra2/patches HEAD:ra2/third-party HEAD:ra2/mingw-w64-x86_64.cmake HEAD:.github/workflows/release.yml | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
       - id: built
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -706,7 +721,9 @@ jobs:
           ls -l dist
       - name: Docker image and smoke test
         run: |
-          docker build -f server/Dockerfile --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" -t rallypoint-relay .
+          # The builder above already compiled amd64 with these arguments; plain `docker build` compiled it all again.
+          docker buildx build --builder multi --load --platform linux/amd64 -f server/Dockerfile \
+            --build-arg RALLYPOINT_VERSION="$RALLYPOINT_VERSION" -t rallypoint-relay .
           # same hardening as docker-compose.yml
           docker run -d --name relay -p 7777:7777/udp --read-only --tmpfs /tmp --cap-drop ALL \
             --security-opt no-new-privileges:true -v relay-data:/data rallypoint-relay
@@ -735,8 +752,11 @@ jobs:
           path: dist/*
 
   # ---- relay server for macOS and Windows (Linux is built above) -----------------------------
+  # Tags only: nothing but the release reads these zips, and CI already builds and tests the server on macOS and Windows.
+  # So no Rust cache either (only main could have saved one); a cold build takes a couple of minutes beside the engines.
   server-desktop:
     name: Relay server (${{ matrix.os }})
+    if: startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
       matrix:
@@ -749,10 +769,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Only main saves: nothing else can read a cache a tag saved, and each release was uploading about 1 GB of them.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         shell: bash
         run: |
