@@ -3,6 +3,8 @@
 // mod names come from outside and the page has a strict content security policy.
 const tauri = window.__TAURI__;
 const invoke = (cmd, args) => tauri.core.invoke(cmd, args);
+// The engine ended within seconds of starting: say why (the end of its log) instead of letting the window just vanish.
+if (tauri.event) tauri.event.listen("game-died", (e) => toast(String(e.payload), "bad"));
 
 // ---------------------------------------------------------------- helpers
 function h(tag, props, ...kids) {
