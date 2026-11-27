@@ -72,10 +72,11 @@ Linux: the mouse cursor (the game's .ANI cursors as X cursors through libXcursor
  Win* asWin(HWND h) { return h ? static_cast<Win*>(h) : g; }
  
  // GNOME and other desktops present several monitors as one big X screen, so DisplayWidth() is all of them
-@@ -345,9 +368,14 @@
+@@ -345,9 +368,15 @@
      if (title) XStoreName(g->dpy, g->win, title);
      g->wmDelete = XInternAtom(g->dpy, "WM_DELETE_WINDOW", 0);
      XSetWMProtocols(g->dpy, g->win, &g->wmDelete, 1);
++    XSetErrorHandler([](Display*, XErrorEvent* e) -> int { std::fprintf(stderr, "[linux] X error %d (request %d) ignored\n", e->error_code, e->request_code); return 0; }); // a focus request before the window is mapped is BadMatch on Xwayland; Xlib would exit
 +    XWMHints wmh{};
 +    wmh.flags = InputHint; // the window wants the keyboard focus (without this some window managers never give it)
 +    wmh.input = 1;

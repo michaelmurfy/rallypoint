@@ -5,7 +5,7 @@ use generals_core::{ra2, ra2flags, ra2launch, ra2lobby, ra2maps, generals, bundl
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const MODS_JSON: &str = include_str!("../../../mods/mods.json");
 const MAP_PACKS_JSON: &str = include_str!("../../../mods/mappacks.json");
@@ -1120,7 +1120,17 @@ fn launch_game(app: tauri::AppHandle, relay: tauri::State<Relay>, game_dir: Path
     if let Some(a) = relay.0.lock().unwrap().as_ref() {
         a.new_engine();
     }
-    launch::command(&exe, &game_dir, &opts).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
+    let mut child = launch::command(&exe, &game_dir, &opts).spawn().map_err(|e| format!("{}: {e}", exe.display()))?;
+    // Wait for it on a thread of its own: a finished child nobody waits for stays a zombie on Linux, and a game that
+    // dies at start tells the player why instead of just vanishing.
+    let (log, started, handle) = (engine_log(&app)?, std::time::Instant::now(), app.clone());
+    std::thread::spawn(move || {
+        let ok = child.wait().map(|s| s.success()).unwrap_or(true);
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if let Some(msg) = launch::early_death(&text, ok, started.elapsed().as_secs()) {
+            let _ = handle.emit("game-died", msg);
+        }
+    });
     // Remember the folder that worked.
     let path = config_path(&app)?;
     let mut c = Config::load(&path);

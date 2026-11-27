@@ -317,6 +317,21 @@ fn open_log(path: &Path, o: &LaunchOptions) -> Option<std::fs::File> {
     Some(f)
 }
 
+/// What to tell the player when the engine ended soon after it started without success (a crash, a fatal X or Vulkan
+/// error): the last lines of its log. `None` for a game that ran a while or ended normally.
+pub fn early_death(log: &str, success: bool, ran_secs: u64) -> Option<String> {
+    if success || ran_secs > 30 {
+        return None;
+    }
+    let tail: Vec<&str> = log.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail = tail[tail.len().saturating_sub(3)..].join(" | ");
+    Some(if tail.is_empty() {
+        format!("The game closed {ran_secs} s after starting and wrote nothing to engine.log.")
+    } else {
+        format!("The game closed {ran_secs} s after starting. The end of engine.log: {tail}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -528,5 +543,14 @@ mod tests {
         std::fs::write(modd.join("Install_Final_shw.bmp"), [b"PNG".as_slice(), &[2u8; 100]].concat()).unwrap();
         assert_eq!(game_art(&game, &[modd.clone()]).unwrap()[2], 1, "not a BMP: fall back to the game's");
         let _ = std::fs::remove_dir_all(t);
+    }
+
+    #[test]
+    fn a_game_that_dies_at_start_says_why() {
+        let m = early_death("a\n\n[linux] window\nX Error of failed request: BadMatch\n  Major opcode 42\n", false, 2).unwrap();
+        assert!(m.contains("2 s") && m.ends_with("[linux] window | X Error of failed request: BadMatch | Major opcode 42"), "{m}");
+        assert!(early_death("x", true, 2).is_none(), "a normal exit");
+        assert!(early_death("x", false, 600).is_none(), "a long game that crashed is not a failed start");
+        assert!(early_death("", false, 1).unwrap().contains("nothing"));
     }
 }

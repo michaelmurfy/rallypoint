@@ -41,11 +41,11 @@ Linux: fullscreen uses one monitor (the one under the mouse, else the primary) i
 +    if (!m || n <= 0) { if (m) release(m); return; }
 +    bool span = std::getenv("GEN_SPAN_MONITORS") && std::getenv("GEN_SPAN_MONITORS")[0] == '1';
 +    ::Window rootRet, childRet; int rx = 0, ry = 0, wx, wy; unsigned mask;
-+    XQueryPointer(w->dpy, DefaultRootWindow(w->dpy), &rootRet, &childRet, &rx, &ry, &wx, &wy, &mask);
++    XQueryPointer(w->dpy, DefaultRootWindow(w->dpy), &rootRet, &childRet, &rx, &ry, &wx, &wy, &mask); bool wayland = std::getenv("WAYLAND_DISPLAY") != nullptr; // Xwayland only knows the pointer over X windows
 +    int pick = 0, found = -1;
 +    for (int i = 0; i < n; i++) {
 +        if (m[i].primary) pick = i;
-+        if (found < 0 && rx >= m[i].x && rx < m[i].x + m[i].width && ry >= m[i].y && ry < m[i].y + m[i].height) found = i;
++        if (!wayland && found < 0 && rx >= m[i].x && rx < m[i].x + m[i].width && ry >= m[i].y && ry < m[i].y + m[i].height) found = i;
 +    }
 +    if (found >= 0) pick = found;
 +    if (span && n > 1) {
