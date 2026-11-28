@@ -1,0 +1,110 @@
+diff --git a/engine/game_scene_controls.inc b/engine/game_scene_controls.inc
+--- a/engine/game_scene_controls.inc
++++ b/engine/game_scene_controls.inc
+@@ -8,7 +8,9 @@
+     }
+
+     // G-08: the cursor STATE under the pointer (what a left click would do).
+-    // Agent E draws the cursor art from this; over the sidebar it is None.
++    // Agent E draws the cursor art from this; over the sidebar it is None,
++    // except over the radar minimap with a selection (Move: a left click
++    // orders there, patch 0117).
+     ra2engine::Input::Action cursor_action() const {
+         int cx = 0, cy = 0;
+         const bool armed = input_.sw_targeting() || input_.base_mode() != ra2engine::Input::BaseMode::None || input_.placement_active();
+diff --git a/engine/main.cpp b/engine/main.cpp
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -7964,9 +7964,11 @@
+                                       world_.repair_frame(), zx(mx_), zy(my_)));
+         // G-08 (draw half): every other pointer is the MOUSE.SHP action cursor.
+-        if (!drew && !modal_overlay && mouse_present_)
+-            drew = pres_.draw_cursor(ren, tc, mouse_, world_, input_, mx_, my_,
+-                                     sidebar_up_ && lay_.contains(mx_, my_), playfield_w_, kWinW,
+-                                     kWinH, world_.repair_frame(), static_cast<int>(cursor_action()));
++        if (!drew && !modal_overlay && mouse_present_) {
++            const bool over_sidebar = sidebar_up_ && lay_.contains(mx_, my_);
++            drew = pres_.draw_cursor(ren, tc, mouse_, world_, input_, mx_, my_, over_sidebar,
++                                     over_sidebar && lay_.radar.contains(mx_, my_), playfield_w_, kWinW,
++                                     kWinH, world_.repair_frame(), static_cast<int>(cursor_action()));
++        }
+         if (drew != os_cursor_hidden_) {
+             SDL_ShowCursor(drew ? SDL_DISABLE : SDL_ENABLE);
+             os_cursor_hidden_ = drew;
+             SDL_ShowCursor(drew ? SDL_DISABLE : SDL_ENABLE);
+             os_cursor_hidden_ = drew;
+diff --git a/engine/pres_game.inc b/engine/pres_game.inc
+--- a/engine/pres_game.inc
++++ b/engine/pres_game.inc
+@@ -446,15 +446,17 @@
+     // Returns true when it drew, so the caller hides the OS pointer.
+     bool draw_cursor(SDL_Renderer* ren, ra2engine::TextureCache& tc, const ModeCursor& mc,
+                      const ra2engine::World& w, const ra2engine::Input& in, int mx, int my,
+-                     bool over_sidebar, int view_w, int win_w, int win_h, std::uint64_t game_frame,
+-                     int action = -1) {
++                     bool over_sidebar, bool over_radar, int view_w, int win_w, int win_h,
++                     std::uint64_t game_frame, int action = -1) {
+         if (!mc.ok) return false;
+         armed_sw_ = in.sw_armed_type();
+         int id = probe_cursor(w, in, mx, my, over_sidebar, view_w, win_w, win_h);
+-        // Edge-scroll arrows and the sidebar keep the probe's answer; the
+-        // playfield follows B's action_at when supplied.
++        // Edge-scroll arrows keep the probe's answer; everywhere else B's
++        // action wins when supplied: the playfield, and the radar minimap
++        // (patch 0117 reports Move there with a selection, which the old
++        // !over_sidebar guard threw away, so the minimap never showed it).
+         const bool scroll = id >= kScrollN && id < kNoScrollN;
+-        if (action >= 0 && !scroll && !over_sidebar && mx < view_w)
++        if (action >= 0 && !scroll && ra2engine::action_cursor_wins(over_sidebar, over_radar, mx, view_w))
+             id = cursor_for_action(static_cast<ra2engine::Input::Action>(action), w, in, mx, my);
+
+         if (id != last_cursor_) {
+@@ -469,7 +471,7 @@
+         int frame = d.start + (d.rate > 0 ? static_cast<int>((tick / d.rate) % d.count) : 0);
+         if (frame >= mc.shp.count()) frame = 0;
+         const ra2assets::ShpFile::Frame f = mc.shp.frame_info(frame);
+-        if (f.w <= 0 || f.h <= 0) return true;
++        if (f.w <= 0 || f.h <= 0) return false;   // no art: keep the OS pointer, never hide it with nothing drawn
+         char key[32];
+         std::snprintf(key, sizeof key, "mouse:%d", frame);
+         SDL_Texture* tex = static_cast<SDL_Texture*>(tc.peek(key));
+diff --git a/engine/sidebar.hpp b/engine/sidebar.hpp
+--- a/engine/sidebar.hpp
++++ b/engine/sidebar.hpp
+@@ -125,4 +125,12 @@
+     bool contains(int px, int py) const { return bar.contains(px, py); }
+ };
+
++// G-08 cursor rule: B's action cursor wins on the tactical view and on the
++// radar minimap (patch 0117: Move with a selection); the probe's answer
++// stands on the rest of the sidebar, where the action is None anyway (None
++// resolves to Default, the probe's answer there). Pure so the gates pin it.
++inline bool action_cursor_wins(bool over_sidebar, bool over_radar, int mx, int view_w) {
++    return (!over_sidebar && mx < view_w) || over_radar;
++}
++
+ }  // namespace ra2engine
+diff --git a/tests/test_sidebar.cpp b/tests/test_sidebar.cpp
+--- a/tests/test_sidebar.cpp
++++ b/tests/test_sidebar.cpp
+@@ -183,3 +183,20 @@
+     CHECK(lay.bar.h == 1080);
+     CHECK(lay.side2_rows == (1080 - 234 - 26) / 50);
+ }
++
++TEST_CASE("sidebar cursor: B's action wins on the view and the radar, the probe elsewhere") {
++    auto lay = SidebarLayout::compute(1280, 720, {1, 2, 3});
++    const int view_w = 1280 - 168;   // the playfield ends where the bar starts
++    const int rx = lay.radar.x + 10, ry = lay.radar.y + 10;
++    REQUIRE(lay.contains(rx, ry));         // the radar lives in the sidebar
++    REQUIRE(lay.radar.contains(rx, ry));
++    // The tactical view follows B's action (a click orders there).
++    CHECK(action_cursor_wins(false, false, view_w - 1, view_w));
++    // The radar minimap too (patch 0117: Move with a selection orders there).
++    CHECK(action_cursor_wins(true, true, rx, view_w));
++    // The rest of the sidebar keeps the probe's answer (no orders from it).
++    CHECK_FALSE(action_cursor_wins(true, false, lay.bar.x + 10, view_w));
++    CHECK_FALSE(action_cursor_wins(true, false, lay.tabs[0].x + 1, view_w));
++    // Off the view the probe stands (a stale coordinate never takes the action).
++    CHECK_FALSE(action_cursor_wins(false, false, view_w + 600, view_w));
++}
