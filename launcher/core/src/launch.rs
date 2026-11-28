@@ -98,8 +98,10 @@ pub fn game_art(game_dir: &Path, layers: &[std::path::PathBuf]) -> Option<Vec<u8
     bmp(&game_dir.join("Install_Final.bmp"))
 }
 
-/// "Stronger AI" (0 off, 1 to 3): the engine's computer players build and field teams faster and run more supply trucks.
-/// Only for a skirmish, where nobody else's game has to match; anything but 1 to 3 sets nothing.
+/// "Stronger AI" (0 off, 1 to 3): the engine's computer players build faster (structures, teams and rebuilds),
+/// run extra supply gatherers plus free supplies, start attack teams with less banked, and fight at least as
+/// well as Medium (1) or Brutal (2-3). For a skirmish it is local; in a relay room every player starts with the
+/// master's level (it is part of the simulation id, so mismatches are refused at the lobby). Anything but 1 to 3 sets nothing.
 pub fn ai_boost_env(level: u32) -> Option<(String, String)> {
     (1..=3).contains(&level).then(|| ("GEN_AI_BOOST".to_string(), level.to_string()))
 }

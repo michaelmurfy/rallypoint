@@ -1,0 +1,133 @@
+diff --git a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+--- a/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
++++ b/GeneralsMD/Code/GameEngine/Include/GameLogic/AI.h
+@@ -255,10 +255,14 @@
+ 
+ 	Pathfinder *pathfinder() { return m_pathfinder; }	///< public access to the pathfind system
+ 
+-	/// Rallypoint "Stronger AI" (GEN_AI_BOOST=1..3): speed factor for the AI's build timers and extra supply gatherers. 1.0 and 0 when off.
++	/// Rallypoint "Stronger AI" (GEN_AI_BOOST=1..3): speed factor for the AI's build timers (and rebuilds),
++	/// extra supply gatherers, free supplies per second, and the fraction of a team's cost it must have banked
++	/// before starting it. 1.0, 0, 0 and 1.0 when off.
+ 	static Int boostLevel();
+ 	static Real boostSpeed();
+ 	static Int boostGatherers();
++	static Int boostIncome();
++	static Real boostTeamFunds();
+ 	enum
+ 	{
+ 		CAN_SEE														=	1 << 0,
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AI.cpp
+@@ -329,6 +329,22 @@
+ 	return extra[aiBoostLevel()];
+ }
+ 
++/// Free supplies per second for computer players. Faster build timers alone stall on cash (the AI cannot
++/// spend money it does not have), so the trickle funds the pace: roughly one extra gatherer at 1, more above.
++Int AI::boostIncome()
++{
++	static const Int income[4] = { 0, 25, 60, 110 };
++	return income[aiBoostLevel()];
++}
++
++/// Fraction of a team's cost the AI must have banked before starting it (times AIData's TeamResourcesToBuild).
++/// Below 1.0 the AI attacks with less saved up instead of turtling until it can afford the whole team.
++Real AI::boostTeamFunds()
++{
++	static const Real funds[4] = { 1.0f, 0.85f, 0.7f, 0.55f };
++	return funds[aiBoostLevel()];
++}
++
+ AI::AI()
+ {
+ 	m_aiData = NEW TAiData;
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AIPlayer.cpp
+@@ -198,7 +198,7 @@
+ 		const AISideInfo *resInfo = TheAI->getAiData()->m_sideInfo;
+ 		while (resInfo) {
+ 			if (resInfo->m_side == m_player->getSide()) {
+-				GameDifficulty difficulty = m_difficulty;
++				GameDifficulty difficulty = getAIDifficulty(); // floored by "Stronger AI", like everything else
+ 				if (difficulty == DIFFICULTY_EASY) {
+ 					desiredGatherers = resInfo->m_easy;
+ 				}
+@@ -774,8 +774,8 @@
+ 			}
+ 			if (info->getObjectID()==INVALID_ID && info->getObjectTimestamp()>0) {
+ 				// this object was built at some time, and got destroyed at or near objectTimestamp.
+-				// Wait a few seconds before initiating a rebuild.
+-				if (info->getObjectTimestamp()+TheAI->getAiData()->m_rebuildDelaySeconds*LOGICFRAMES_PER_SECOND > TheGameLogic->getFrame()) {
++				// Wait a few seconds before initiating a rebuild (less with Rallypoint "Stronger AI").
++				if (info->getObjectTimestamp()+TheAI->getAiData()->m_rebuildDelaySeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed() > TheGameLogic->getFrame()) {
+ 					continue;
+ 				}	else {
+ 					DEBUG_LOG(("Enabling rebuild for %s", info->getTemplateName().str()));
+@@ -1497,7 +1497,7 @@
+ 			cost += thingCost * ((unitInfo[i].maxUnits+unitInfo[i].minUnits)/2.0f);
+ 		}
+ 	}
+-	cost *= TheAI->getAiData()->m_teamResourcesToBuild;
++	cost *= TheAI->getAiData()->m_teamResourcesToBuild * AI::boostTeamFunds(); // "Stronger AI" starts teams with less banked
+ 	if (m_player->getMoney()->countMoney() < cost)	{
+ 		notEnoughMoney = true;
+ 		return false; // too expensive
+@@ -3054,6 +3054,13 @@
+ 
+ 	doUpgradesAndSkills(); // See if it's time to build an upgrade or buy a skill.
+ 
++	// Rallypoint "Stronger AI": free supplies once a second. This runs only for computer players (only they
++	// have an AIPlayer), on the game frame so every machine agrees, and counts as income on the score screen.
++	Int boostCash = AI::boostIncome();
++	if (boostCash > 0 && TheGameLogic->getFrame() % LOGICFRAMES_PER_SECOND == 0) {
++		m_player->getMoney()->deposit(boostCash, FALSE, TRUE);
++	}
++
+ 	updateBridgeRepair(); // Handle any bridge repairs.
+ 
+ }
+@@ -3232,6 +3239,15 @@
+ //-------------------------------------------------------------------------------------------------
+ enum GameDifficulty AIPlayer::getAIDifficulty() const
+ {
++	// Rallypoint "Stronger AI": a boosted computer player fights at least as well as the level below says.
++	// Everything that reads the difficulty (victim choice, team focus fire, gatherer counts, map team conditions)
++	// moves up together; the saved m_difficulty is untouched, so this matches on every machine.
++	if (AI::boostLevel() >= 2) {
++		return DIFFICULTY_HARD;
++	}
++	if (AI::boostLevel() == 1 && m_difficulty == DIFFICULTY_EASY) {
++		return DIFFICULTY_NORMAL;
++	}
+ 	return m_difficulty;
+ }
+ 
+diff --git a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/GameLogic/AI/AISkirmishPlayer.cpp
+@@ -182,8 +182,8 @@
+ 			}
+ 			if (info->getObjectID()==INVALID_ID && info->getObjectTimestamp()>0) {
+ 				// this object was built at some time, and got destroyed at or near objectTimestamp.
+-				// Wait a few seconds before initiating a rebuild.
+-				if (info->getObjectTimestamp()+TheAI->getAiData()->m_rebuildDelaySeconds*LOGICFRAMES_PER_SECOND > TheGameLogic->getFrame()) {
++				// Wait a few seconds before initiating a rebuild (less with Rallypoint "Stronger AI").
++				if (info->getObjectTimestamp()+TheAI->getAiData()->m_rebuildDelaySeconds*LOGICFRAMES_PER_SECOND/AI::boostSpeed() > TheGameLogic->getFrame()) {
+ 					continue;
+ 				}	else {
+ 					DEBUG_LOG(("Enabling rebuild for %s", info->getTemplateName().str()));
+diff --git a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+--- a/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
++++ b/GeneralsMD/Code/GameEngine/Source/Common/GlobalData.cpp
+@@ -1360,7 +1360,7 @@
+ 		// the same simulation, which is what this number says. Raise it whenever a change alters how the game plays out
+ 		// (math, logic, data handling); builds with different numbers then refuse to join each other instead of
+ 		// starting a game that goes out of sync.
+-		static const UnsignedInt kRallypointSimulationId = 13;
++		static const UnsignedInt kRallypointSimulationId = 14;
+ 		// The "Stronger AI" level changes how computer players play, so players who start with different levels are refused at the lobby.
+ 		const UnsignedInt idBlock[4] = { 0x53545052u /* "RPTS" */, kRallypointSimulationId, mathFingerprint(), (UnsignedInt)AI::boostLevel() };
+ 		exeCRC.computeCRC(idBlock, sizeof(idBlock));
