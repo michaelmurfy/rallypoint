@@ -1,3 +1,12 @@
+## Rallypoint 1.0.7
+
+**Red Alert 2 skirmishes, rebuilt.** The setup dialog now matches the Generals map viewer: a full-size map picture with the start positions on it (click one to give it to the selected player), arrows to step through the maps, and hover previews in the map list.
+
+- **Stronger computer players.** Stronger AI no longer just builds faster: boosted opponents take extra supplies, rebuild sooner, and attack with less in the bank, so each level plays differently.
+- **Spy plane flies straight.** The overfly used to circle its target instead of covering the area; it now flies a straight corridor like retail.
+- **Minimap you can read.** Hovering the radar with a selection shows the move cursor, and the terrain no longer has black speckles.
+- **Ships sail to shore.** Water orders near land no longer die outright: ships sail to the nearest reachable shore. Terror Drones animate while moving.
+
 ## Rallypoint 1.0.6
 
 **Shadows are softer.** On Linux and Windows 64-bit with the Enhanced renderer, neither a thick cloud nor a low sun turns the ground nearly black.
