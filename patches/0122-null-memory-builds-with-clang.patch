@@ -1,0 +1,15 @@
+The null memory manager (RTS_BUILD_OPTION_ASAN, DISABLE_GAMEMEMORY) used sizeof on a type name without parentheses, which clang rejects; it had never been built with clang.
+
+--- a/Core/GameEngine/Source/Common/System/GameMemoryNull.cpp
++++ b/Core/GameEngine/Source/Common/System/GameMemoryNull.cpp
+@@ -109,8 +109,8 @@
+ {
+ 	if (TheMemoryPoolFactory == nullptr && TheDynamicMemoryAllocator == nullptr)
+ 	{
+-		TheMemoryPoolFactory = new (malloc(sizeof MemoryPoolFactory)) MemoryPoolFactory;
+-		TheDynamicMemoryAllocator = new (malloc(sizeof DynamicMemoryAllocator)) DynamicMemoryAllocator;
++		TheMemoryPoolFactory = new (malloc(sizeof(MemoryPoolFactory))) MemoryPoolFactory;
++		TheDynamicMemoryAllocator = new (malloc(sizeof(DynamicMemoryAllocator))) DynamicMemoryAllocator;
+ 
+ 		DEBUG_INIT(DEBUG_FLAGS_DEFAULT);
+ 		DEBUG_LOG(("*** Initialized the Null Memory Manager"));
