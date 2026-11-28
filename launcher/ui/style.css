@@ -412,6 +412,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ---- skirmish setup (the map preview) ---- */
 .wizard.mapviewer { width: min(1060px, 100%); animation: rise .22s var(--ease); }
+.wizard.mapviewer.ra2 { width: min(1180px, 100%); } /* six columns of seat choices beside the full-size map */
+.mapviewer.ra2 .mapside .playbtn { margin-top: 8px; }
+.mapviewer.ra2 .skgrid.ra2 .skrowhead, .mapviewer.ra2 .skgrid.ra2 .skrow2 { grid-template-columns: 14px minmax(104px, 1fr) minmax(136px, 1.5fr) minmax(88px, .9fr) minmax(80px, .8fr) minmax(84px, .8fr); }
+.mapviewer.ra2 .wiz-foot > .row { margin-left: auto; gap: 10px; }
 .mvhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 4px; }
 .mvtitle { min-width: 0; }
 .mvtitle h2 { font-size: 22px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0; }
@@ -741,8 +745,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .skfoot { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; margin: 6px -16px -14px; padding: 14px 16px; border-top: 1px solid var(--line); border-radius: 0 0 var(--r-panel) var(--r-panel); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
 .skwhat { margin: 0; font-size: 13.5px; font-weight: 600; min-width: 0; }
 .skfoot > .row { margin-left: auto; gap: 14px; }
-.maphint { width: 220px; margin: 0; }
-@media (max-width: 1080px) { .maphint { width: auto; } }
 /* the slim header: which game, and the screen it starts on */
 .card.hero.slim { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; padding: 18px 24px; }
 .herodisp { display: flex; align-items: baseline; gap: 10px; }

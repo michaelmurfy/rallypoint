@@ -101,6 +101,14 @@ function growFrom(overlay, from) {
   };
 }
 
+/** A press and release both on the dim backdrop (not inside the dialog) closes it. Both, so a text selection that
+ *  starts in the dialog and ends outside it does not. */
+function backdropCloses(overlay, close) {
+  let down = false;
+  overlay.addEventListener("pointerdown", (e) => { down = e.target === overlay; });
+  overlay.addEventListener("click", (e) => { if (down && e.target === overlay) close(); down = false; });
+}
+
 function busyOverlay(text) {
   const label = h("span", {}, text);
   const el = h("div", { class: "busy-overlay", role: "status", "aria-live": "polite" }, h("div", { class: "busy-card" }, h("span", { class: "spin big", "aria-hidden": "true" }), label));
@@ -527,7 +535,7 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
 
 /** Draw a map preview (a map_view result) on its square canvas with the start markers. `owner(n)` says who has start n:
  *  null, or { color, halo }. Returns where the markers are, for clicks (`spotUnder`). Shared by Generals and RA2. */
-function paintMap(canvas, v, owner) {
+function paintMap(canvas, v, owner, hot = 0) {
   const info = v.info;
   // The canvas is always the same square, so nothing moves between maps: the picture is drawn at the map's own
   // proportions, centred in it.
@@ -557,7 +565,9 @@ function paintMap(canvas, v, owner) {
       spots.push({ x, y, n: st.number });
       // a taken start wears its owner's colour; the selected one's start also gets a halo
       if (o && o.halo) { ctx.beginPath(); ctx.arc(x, y, 21, 0, Math.PI * 2); ctx.fillStyle = o.color; ctx.globalAlpha = .3; ctx.fill(); ctx.globalAlpha = 1; }
-      ctx.beginPath(); ctx.arc(x, y, o ? 14 : 11, 0, Math.PI * 2);
+      // the one under the pointer: a ring, so it is clear what a click will pick
+      if (st.number === hot) { ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255, 255, 255, .85)"; ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(x, y, o ? 14 : st.number === hot ? 13 : 11, 0, Math.PI * 2);
       ctx.fillStyle = o ? o.color : "rgba(20, 8, 9, .72)"; ctx.fill();
       ctx.lineWidth = o ? 2.5 : 1.5; ctx.strokeStyle = o ? "#fff" : "rgba(255, 255, 255, .7)"; ctx.stroke();
       ctx.fillStyle = "#fff"; ctx.fillText(String(st.number), x, y + 1);
@@ -565,11 +575,89 @@ function paintMap(canvas, v, owner) {
   }
   return spots;
 }
-/** The start marker under the pointer, if any. */
+/** The start marker nearest the pointer, within a generous reach (at least 28 screen pixels, whatever size the
+ *  canvas is shown at), so a start is easy to hit even on a small preview. */
 function spotUnder(canvas, spots, e) {
   const r = canvas.getBoundingClientRect(), k = MAP_VIEW / r.width;
-  const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
-  return spots.find((s) => Math.hypot(s.x - x, s.y - y) <= 18);
+  const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k, reach = Math.max(24, 28 * k);
+  let best = null, bd = reach;
+  for (const s of spots) { const d = Math.hypot(s.x - x, s.y - y); if (d <= bd) { best = s; bd = d; } }
+  return best;
+}
+/** Click-to-pick on a map canvas: `pick(spot)` on a click, `hover(n)` (0 for none) when the start under the pointer changes. */
+function startPicker(canvas, spots, pick, hover, what) {
+  let hot = 0;
+  const set = (s) => {
+    const n = s ? s.n : 0;
+    canvas.style.cursor = s ? "pointer" : "default";
+    canvas.title = s ? `Start ${s.n}: ${what}` : "";
+    if (n !== hot) { hot = n; hover(n); }
+  };
+  canvas.addEventListener("click", (e) => { const s = spotUnder(canvas, spots(), e); if (s) pick(s); });
+  canvas.addEventListener("mousemove", (e) => set(spotUnder(canvas, spots(), e)));
+  canvas.addEventListener("mouseleave", () => set(null));
+  return () => hot;
+}
+
+/** A small picture of the map under the mouse, following it. `view(m)` gets a map_view result; pictures are fetched
+ *  once per `key(m)`, a moment after the mouse settles. The tip goes on the body (a page mid-animation has a
+ *  transform, which would move a fixed child): call `remove()` when the page goes. */
+function mapTips(view, key) {
+  const TIP = 200;
+  const tipCanvas = h("canvas", { width: TIP, height: TIP });
+  const tip = h("div", { class: "maptip", hidden: true, "aria-hidden": "true" }, tipCanvas);
+  document.body.append(tip);
+  const pictures = new Map(); // key -> { bmp, ratio, starts }, or null when there is no picture
+  async function pictureOf(m) {
+    if (pictures.has(key(m))) return pictures.get(key(m));
+    let pic = null;
+    try {
+      const v = await view(m);
+      if (v.rgba) {
+        const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
+        for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
+        const bmp = document.createElement("canvas");
+        bmp.width = v.image_w; bmp.height = v.image_h;
+        bmp.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
+        pic = { bmp, ratio: v.info ? v.info.width / v.info.height : 1, starts: v.info ? v.info.starts : [] };
+      }
+    } catch { /* no picture: no tip */ }
+    pictures.set(key(m), pic);
+    return pic;
+  }
+  function place(e) {
+    const x = e.clientX + 18 + TIP > innerWidth ? e.clientX - 18 - TIP : e.clientX + 18;
+    const y = Math.min(Math.max(8, e.clientY - TIP / 2), innerHeight - TIP - 8);
+    tip.style.transform = `translate(${x}px, ${y}px)`;
+  }
+  function attach(target, m) {
+    let timer = null, token = 0;
+    target.addEventListener("mouseenter", (e) => {
+      const mine = ++token;
+      place(e);
+      timer = setTimeout(async () => {
+        const pic = await pictureOf(m);
+        if (mine !== token || !pic) return;
+        const cw = pic.ratio >= 1 ? TIP : Math.round(TIP * pic.ratio), ch = pic.ratio >= 1 ? Math.round(TIP / pic.ratio) : TIP;
+        tipCanvas.width = cw; tipCanvas.height = ch; // the frame takes the map's own proportions
+        const ctx = tipCanvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(pic.bmp, 0, 0, cw, ch);
+        // where the players start, numbered: the thing a skirmish is chosen by
+        ctx.font = "700 9px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        for (const st of pic.starts) {
+          const x = st.x * cw, y = (1 - st.y) * ch;
+          ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI * 2); ctx.fillStyle = "rgba(20, 8, 9, .78)"; ctx.fill();
+          ctx.lineWidth = 1.2; ctx.strokeStyle = "rgba(255, 255, 255, .8)"; ctx.stroke();
+          ctx.fillStyle = "#fff"; ctx.fillText(String(st.number), x, y + .5);
+        }
+        tip.hidden = false;
+      }, 140);
+    });
+    target.addEventListener("mousemove", place);
+    target.addEventListener("mouseleave", () => { token++; clearTimeout(timer); tip.hidden = true; });
+  }
+  return { attach, remove: () => tip.remove() };
 }
 
 /** A map as the game shows it: the preview picture with the start positions on it, beside the skirmish table. */
@@ -706,12 +794,11 @@ function openMapViewer(entries, start, onChange, from) {
     spots = paintMap(canvas, v, (n) => {
       const owner = rows.findIndex((r) => r.kind !== "closed" && r.start === n);
       return owner < 0 ? null : { color: PLACE_COLORS[owner], halo: owner === active };
-    });
+    }, hot());
   }
   // Click a start position on the picture to give it to the selected place in the table (again to make it random).
-  const spotAt = (e) => spotUnder(canvas, spots, e);
-  canvas.addEventListener("click", (e) => { const s = spotAt(e); if (s && rows[active] && rows[active].kind !== "closed") assign(active, rows[active].start === s.n ? null : s.n); });
-  canvas.addEventListener("mousemove", (e) => { const s = spotAt(e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected place` : ""; });
+  const hot = startPicker(canvas, () => spots, (s) => { if (rows[active] && rows[active].kind !== "closed") assign(active, rows[active].start === s.n ? null : s.n); },
+    () => paint(shown), "click to give it to the selected place");
 
   async function show() {
     const m = entries[i], mine = ++token;
@@ -751,6 +838,7 @@ function openMapViewer(entries, start, onChange, from) {
   }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  backdropCloses(overlay, finish);
   shrink = growFrom(overlay, from);
   drawGames();
   show();
@@ -792,52 +880,7 @@ function mapOrganiser(onLoad) {
   const off = h("button", { class: "btn small", onclick: () => bulk(false) }, "Switch off shown");
   const del = h("button", { class: "btn small ghost danger", onclick: () => remove() }, "Delete shown…");
   const empty = h("div", { class: "listempty", role: "status", hidden: true });
-  // A small picture of the map under the mouse, following it. Pictures are fetched once, a moment after the mouse settles on a row.
-  const TIP = 190;
-  const tipCanvas = h("canvas", { width: TIP, height: TIP });
-  const tip = h("div", { class: "maptip", hidden: true, "aria-hidden": "true" }, tipCanvas);
-  const pictures = new Map(); // map name -> the bitmap, or null when it has none
-  async function pictureOf(m) {
-    if (pictures.has(m.name)) return pictures.get(m.name);
-    let pic = null;
-    try {
-      const v = m.official ? await invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: officialFolders(m), name: m.name }) : await invoke("map_view", { name: m.name });
-      if (v.rgba) {
-        const bin = atob(v.rgba), px = new Uint8ClampedArray(bin.length);
-        for (let k = 0; k < bin.length; k++) px[k] = bin.charCodeAt(k);
-        const bmp = document.createElement("canvas");
-        bmp.width = v.image_w; bmp.height = v.image_h;
-        bmp.getContext("2d").putImageData(new ImageData(px, v.image_w, v.image_h), 0, 0);
-        pic = { bmp, ratio: v.info ? v.info.width / v.info.height : 1 };
-      }
-    } catch { /* no picture: no tip */ }
-    pictures.set(m.name, pic);
-    return pic;
-  }
-  function placeTip(e) {
-    const x = e.clientX + 18 + TIP > innerWidth ? e.clientX - 18 - TIP : e.clientX + 18;
-    const y = Math.min(Math.max(8, e.clientY - TIP / 2), innerHeight - TIP - 8);
-    tip.style.transform = `translate(${x}px, ${y}px)`;
-  }
-  function hoverPreview(target, m) {
-    let timer = null, token = 0;
-    target.addEventListener("mouseenter", (e) => {
-      const mine = ++token;
-      placeTip(e);
-      timer = setTimeout(async () => {
-        const pic = await pictureOf(m);
-        if (mine !== token || !pic) return;
-        const cw = pic.ratio >= 1 ? TIP : Math.round(TIP * pic.ratio), ch = pic.ratio >= 1 ? Math.round(TIP / pic.ratio) : TIP;
-        tipCanvas.width = cw; tipCanvas.height = ch; // the frame takes the map's own proportions
-        const ctx = tipCanvas.getContext("2d");
-        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(pic.bmp, 0, 0, cw, ch);
-        tip.hidden = false;
-      }, 140);
-    });
-    target.addEventListener("mousemove", placeTip);
-    target.addEventListener("mouseleave", () => { token++; clearTimeout(timer); tip.hidden = true; });
-  }
+  const tips = mapTips((m) => m.official ? invoke("official_map_view", { gameDir: store.cfg.game_dir, modFolders: officialFolders(m), name: m.name }) : invoke("map_view", { name: m.name }), (m) => m.name);
   const players = (m) => (m.official ? m.players : counts && m.name in counts ? counts[m.name] : null);
   const playerText = (n) => (n === null ? "" : n === 0 ? "Solo" : `${n} players`);
   const base = () => all.filter((m) => (!q || m.name.toLowerCase().includes(q)) && (!packs.size || packs.has(m.pack)) && (view === "all" || (view === "on") === m.enabled));
@@ -906,7 +949,7 @@ function mapOrganiser(onLoad) {
         m.official || !store.cfg.editor_available ? null : (() => { const b = h("button", { class: "btn small", "aria-label": `Edit ${m.name} in World Builder`, title: `Open ${m.name} in World Builder with ${editorGame().name}`, onclick: (e) => { e.preventDefault(); e.stopPropagation(); launchEditor(m.name, [b]); } }, "Edit"); return b; })(),
         h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose players, generals, teams and start positions", onclick: (e) => { e.preventDefault(); e.stopPropagation(); openMapViewer(v, idx, () => { row.classList.toggle("on", m.enabled); box.checked = m.enabled; drawSummary(); }, e.currentTarget); } }, icon("play"), "Skirmish"),
         m.official ? null : shareButton(m.name));
-      hoverPreview(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
+      tips.attach(row.querySelector(".mapname"), m); // only the title, not the buttons or the rest of the row
       return row;
     }));
     more.hidden = v.length <= shown;
@@ -956,7 +999,6 @@ function mapOrganiser(onLoad) {
   }
   refreshers.add(reloadOrganiser);
   reloadOrganiser();
-  document.body.append(tip); // on the body: a page that is mid-animation has a transform, which would move a fixed child
   const el = h("div", { class: "organiser" },
     h("div", { class: "row between" }, h("h2", {}, "Your maps"), summary),
     h("div", { class: "organiser-bar" }, searchBox, packPick, segs),
@@ -968,7 +1010,7 @@ function mapOrganiser(onLoad) {
       h("div", { class: "listfoot" }, h("div", { class: "row" }, on, off), del)),
     h("div", { class: "row center" }, more),
     h("p", { class: "muted small" }, "Switched-off maps are moved aside, not deleted. Changes apply the next time the game starts."));
-  return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tip.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("focusin", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
+  return { el, packCount: (name) => own.filter((m) => m.pack === name).length, dispose: () => { tips.remove(); refreshers.delete(reloadOrganiser); document.removeEventListener("pointerdown", closeOutside, true); document.removeEventListener("focusin", closeOutside); document.removeEventListener("keydown", closeOnEscape); } };
 }
 
 // ---------------------------------------------------------------- map editor (World Builder)
@@ -2100,6 +2142,7 @@ function openBundleDialog(fb) {
   function finish() { document.removeEventListener("keydown", onKey); overlay.remove(); }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  backdropCloses(overlay, finish);
   go.focus();
 }
 
@@ -2308,151 +2351,6 @@ async function launchRa2(setup) {
   return ok;
 }
 
-/** The skirmish table: you, then one row per other start on the map (a computer player or closed). Assigning a start
- *  or a colour someone else has takes it from them (a start goes back to random, a colour is swapped). */
-function ra2Skirmish(onChange) {
-  let maps = [], view = null, rows = [], active = 0, spots = [], token = 0;
-  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start to give it to the selected player" });
-  const facts = h("p", { class: "factline" });
-  const note = h("p", { class: "muted small", role: "status" });
-  const mapSel = h("select", { "aria-label": "Map", onchange: () => { prefs.set({ ra2Map: mapSel.value }); load(); } });
-  const table = h("div", { class: "skgrid ra2", role: "group", "aria-label": "Skirmish players" });
-  const summary = h("span", { class: "muted small" });
-  const hint = h("p", { class: "muted small maphint" }, "Click a start on the map to place the highlighted player.");
-  const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
-
-  function newRows(n) {
-    const wantAi = Math.min(Math.max(1, prefs.get().ra2Ai || 1), n - 1), diff = RA2_DIFFS.some(([d]) => d === prefs.get().ra2Diff) ? prefs.get().ra2Diff : "medium";
-    const mine = store.cfg.ra2.color >= 0 ? store.cfg.ra2.color : 0;
-    rows = Array.from({ length: n }, (_, k) => ({ kind: k === 0 ? "you" : k <= wantAi ? "ai" : "closed", difficulty: diff, side: k === 0 ? store.cfg.ra2.side : -1, color: -1, start: -1, team: -1 }));
-    // every open place gets its own colour, so the map and the table agree from the start
-    rows[0].color = mine;
-    rows.forEach((r, k) => { if (k && r.kind !== "closed") r.color = freeColor(k); });
-    active = 0;
-  }
-  function freeColor(k, want = -1) {
-    const used = new Set(rows.filter((r, j) => j !== k && r.kind !== "closed").map((r) => r.color).filter((c) => c >= 0));
-    if (want >= 0 && !used.has(want)) return want;
-    for (let c = 0; c < RA2_COLORS.length; c++) if (!used.has(c)) return c;
-    return -1;
-  }
-  function change(k, patch) {
-    const r = rows[k];
-    if ("start" in patch && patch.start > 0) rows.forEach((o, j) => { if (j !== k && o.start === patch.start) o.start = -1; });
-    if ("color" in patch && patch.color >= 0) rows.forEach((o, j) => { if (j !== k && o.color === patch.color) o.color = r.color; });
-    Object.assign(r, patch);
-    draw();
-  }
-  function setActive(k) {
-    if (active === k) return;
-    active = k;
-    table.querySelectorAll(".skrow2").forEach((el, j) => el.classList.toggle("active", j === k));
-    paint();
-  }
-  function draw() {
-    const n = starts();
-    if (!rows.length) {
-      fill(table, h("p", { class: "muted small" }, !maps.length ? "" : "This map has no start positions for a skirmish."));
-      summary.textContent = "";
-    } else {
-      const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"));
-      fill(table, head, rows.map((r, k) => {
-        const closed = r.kind === "closed";
-        const who = k === 0 ? h("span", { class: "skwho" }, "You")
-          : pick(`Place ${k + 1}`, [...RA2_DIFFS.map(([d, t]) => [d, `${t} AI`]), ["closed", "Closed"]], closed ? "closed" : r.difficulty, (v) => {
-            if (v === "closed") change(k, { kind: "closed" });
-            else { prefs.set({ ra2Diff: v }); change(k, { kind: "ai", difficulty: v, color: closed ? freeColor(k) : r.color }); }
-          });
-        const cells = closed ? [h("span", {}), h("span", {}), h("span", {}), h("span", {})] : seatCells(k === 0 ? "you" : `place ${k + 1}`, r, n, (p) => change(k, p));
-        return h("div", { class: "skrow2" + (closed ? " closed" : ra2RowClass(r.color)) + (k === active ? " active" : ""), onclick: () => setActive(k), onfocusin: () => setActive(k) }, ra2Swatch(closed ? -1 : r.color), who, cells);
-      }));
-      const ai = rows.filter((r) => r.kind === "ai").length;
-      summary.textContent = ai ? `You and ${ai} computer player${ai === 1 ? "" : "s"}` : "No computer players";
-    }
-    hint.hidden = !rows.length;
-    paint();
-    show();
-    onChange && onChange();
-  }
-  function paint() {
-    if (!view) { const c = canvas.getContext("2d"); c.fillStyle = css("--bg"); c.fillRect(0, 0, MAP_VIEW, MAP_VIEW); spots = []; return; }
-    spots = paintMap(canvas, view, (n) => {
-      const k = rows.findIndex((r) => r.kind !== "closed" && r.start === n);
-      return k < 0 ? null : { color: markerColor(rows[k].color), halo: k === active };
-    });
-  }
-  canvas.addEventListener("click", (e) => { const s = spotUnder(canvas, spots, e); const r = rows[active]; if (s && r && r.kind !== "closed") change(active, { start: r.start === s.n ? -1 : s.n }); });
-  canvas.addEventListener("mousemove", (e) => { const s = spotUnder(canvas, spots, e); canvas.style.cursor = s ? "pointer" : "default"; canvas.title = s ? `Start ${s.n}: click to give it to the selected player` : ""; });
-
-  async function load() {
-    const file = mapSel.value, mine = ++token;
-    view = null; rows = []; fill(facts); note.textContent = file ? "Loading…" : ""; errBox.hidden = true;
-    canvas.parentNode && canvas.parentNode.classList.toggle("loading", !!file);
-    draw();
-    if (!file) return;
-    try {
-      const v = await invoke("ra2_map_view", { file });
-      if (mine !== token) return;
-      view = v;
-      const n = starts();
-      if (n >= 2) newRows(n);
-      const m = maps.find((x) => fileOf(x.path) === file);
-      fill(facts, [`${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0)].map((b) => h("span", {}, b)));
-      note.textContent = !v.rgba ? "This map has no preview picture." : "";
-      canvas.parentNode.classList.remove("loading");
-      draw();
-    } catch (e) {
-      if (mine !== token) return;
-      note.textContent = ""; canvas.parentNode.classList.remove("loading");
-      errBox.hidden = false;
-      fill(errBox, callout("bad", `This map could not be read (${errText(e)}). Pick another one, or try it again.`, h("button", { class: "btn small", onclick: load }, "Try again")));
-      onChange && onChange();
-    }
-  }
-  async function reload() {
-    maps = playable(await loadRa2Maps());
-    loaded = true;
-    const want = prefs.get().ra2Map;
-    fill(mapSel, maps.map((m) => new Option(`${m.name} (${m.players})`, fileOf(m.path))));
-    mapSel.disabled = !maps.length;
-    mapSel.value = maps.some((m) => fileOf(m.path) === want) ? want : maps.length ? fileOf(maps[0].path) : "";
-    show();
-    await load();
-  }
-  const setup = () => ({
-    map: mapSel.value, seed: 0,
-    ...ra2RulesNow(),
-    players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
-  });
-  /** Why Play cannot start this setup yet ("" when it can). */
-  const why = () => !store.cfg.ra2.game_dir ? "Find your game files first."
-    : !loaded ? "Reading your maps…" : !maps.length ? "Add a map first." : errBox.hidden === false ? "Pick a map that can be read." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
-    : !rows.some((r) => r.kind === "ai") ? "Give the computer at least one place." : "";
-  const empty = emptyState("maps", "No skirmish maps yet", "Maps with at least two start positions show up here. Add community packs or your own files.", h("button", { class: "btn", onclick: () => go("maps") }, "Open Maps"));
-  const skel = h("div", { class: "ra2setup", "aria-hidden": "true" }, h("span", { class: "skeleton sk-map" }), h("div", { class: "stack" }, h("span", { class: "skeleton sk-line" }), skeletonLines(4)));
-  const errBox = h("div", { hidden: true });
-  const rules = ra2Rules(ra2RulesNow(), (p) => { ra2SaveRules(p); onChange && onChange(); });
-  const body = h("div", { class: "ra2setup" },
-    h("div", { class: "mapcol" }, h("div", { class: "stage" }, canvas), facts, hint),
-    h("div", { class: "mapside" },
-      h("label", { class: "field" }, h("span", {}, "Map"), mapSel),
-      h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox,
-      h("h3", { class: "ruleshead" }, "Rules"), rules));
-  const el = h("div", { class: "stack" }, skel, empty, body);
-  let loaded = false;
-  const show = () => { skel.hidden = loaded; empty.hidden = !loaded || !!maps.length; body.hidden = !loaded || !maps.length; };
-  /** What Play will start, in one line, for the footer beside it. */
-  const what = () => {
-    const m = maps.find((x) => fileOf(x.path) === mapSel.value), ai = rows.filter((r) => r.kind === "ai").length;
-    if (!m || !ai) return "";
-    const speedName = (RA2_SPEEDS.find(([v]) => v === ra2Speed()) || [0, ""])[1].toLowerCase();
-    return `${m.name}: you against ${ai} computer player${ai === 1 ? "" : "s"}, $${ra2Credits().toLocaleString("en-US")}, ${speedName} speed`;
-  };
-  reload();
-  ra2FlagArt().then(draw); // the official side flags arrive a moment later; redraw then
-  return { el, setup, why, what, reload, remember: () => prefs.set({ ra2Ai: rows.filter((r) => r.kind === "ai").length }) };
-}
-
 /** Drawn flags for the ten countries (index = RA2_SIDES); -1 is Random. Only a fallback: the game's own 47x23
  *  pictures (side emblem + national flag) are read from the player's ra2.mix/ra2md.mix by `ra2FlagArt` below. */
 const RA2_FLAGS = {
@@ -2545,29 +2443,161 @@ function ra2PlayPage() {
   return { el };
 }
 
-/** The full skirmish setup for one map, in a dialog (the Generals map viewer's counterpart). */
-function openRa2Skirmish(m, from) {
-  prefs.set({ ra2Map: fileOf(m.path) });
+/** The skirmish setup for one map, in a dialog laid out like the Generals map viewer: the map's name and facts on top,
+ *  the picture with its starts on the left (arrows step through the list the dialog was opened from), the players and
+ *  rules on the right with Play under them. Assigning a start or a colour someone else has takes it from them (a start
+ *  goes back to random, a colour is swapped). */
+function openRa2Skirmish(entries, start, from) {
+  let i = start, view = null, rows = [], active = 0, spots = [], token = 0;
+  const file = () => fileOf(entries[i].path);
+  const canvas = h("canvas", { class: "mapview-canvas", width: MAP_VIEW, height: MAP_VIEW, role: "img", "aria-label": "Map preview: click a start to give it to the selected player" });
+  const stage = h("div", { class: "stage" }, canvas);
+  const title = h("h2", {});
+  const facts = h("p", { class: "factline" });
+  const note = h("p", { class: "muted small mapnote", role: "status" });
+  const errBox = h("div", { hidden: true });
+  const table = h("div", { class: "skgrid ra2", role: "group", "aria-label": "Skirmish players" });
+  const summary = h("span", { class: "muted small" });
+  const position = h("span", { class: "muted small mappos" });
+  const prev = h("button", { class: "btn iconbtn", "aria-label": "Previous map", onclick: () => step(-1) }, icon("prev"));
+  const next = h("button", { class: "btn iconbtn", "aria-label": "Next map", onclick: () => step(1) }, icon("next"));
   const status = liveStatus();
-  const sk = ra2Skirmish(() => update());
+  const sendBtn = shareButton(() => file(), "Send to room");
+  const starts = () => (view && view.info ? Math.min(8, view.info.starts.length) : 0);
+
+  function newRows(n) {
+    const wantAi = Math.min(Math.max(1, prefs.get().ra2Ai || 1), n - 1), diff = RA2_DIFFS.some(([d]) => d === prefs.get().ra2Diff) ? prefs.get().ra2Diff : "medium";
+    const mine = store.cfg.ra2.color >= 0 ? store.cfg.ra2.color : 0;
+    rows = Array.from({ length: n }, (_, k) => ({ kind: k === 0 ? "you" : k <= wantAi ? "ai" : "closed", difficulty: diff, side: k === 0 ? store.cfg.ra2.side : -1, color: -1, start: -1, team: -1 }));
+    // every open place gets its own colour, so the map and the table agree from the start
+    rows[0].color = mine;
+    rows.forEach((r, k) => { if (k && r.kind !== "closed") r.color = freeColor(k); });
+    active = 0;
+  }
+  function freeColor(k, want = -1) {
+    const used = new Set(rows.filter((r, j) => j !== k && r.kind !== "closed").map((r) => r.color).filter((c) => c >= 0));
+    if (want >= 0 && !used.has(want)) return want;
+    for (let c = 0; c < RA2_COLORS.length; c++) if (!used.has(c)) return c;
+    return -1;
+  }
+  function change(k, patch) {
+    const r = rows[k];
+    if ("start" in patch && patch.start > 0) rows.forEach((o, j) => { if (j !== k && o.start === patch.start) o.start = -1; });
+    if ("color" in patch && patch.color >= 0) rows.forEach((o, j) => { if (j !== k && o.color === patch.color) o.color = r.color; });
+    Object.assign(r, patch);
+    draw();
+  }
+  // Choosing a row only moves the highlight: rebuilding the table here would close a drop-down as it opens.
+  function setActive(k) {
+    if (active === k) return;
+    active = k;
+    table.querySelectorAll(".skrow2").forEach((el, j) => el.classList.toggle("active", j === k));
+    paint();
+  }
+  function draw() {
+    const n = starts();
+    if (!rows.length) {
+      fill(table, view ? h("p", { class: "muted small" }, "This map has no start positions for a skirmish.") : null);
+      summary.textContent = "";
+    } else {
+      const head = h("div", { class: "skrowhead muted small" }, h("span", {}), h("span", {}, "Player"), h("span", {}, "Side"), h("span", {}, "Colour"), h("span", {}, "Start"), h("span", {}, "Team"));
+      fill(table, head, rows.map((r, k) => {
+        const closed = r.kind === "closed";
+        const who = k === 0 ? h("span", { class: "skwho" }, "You")
+          : pick(`Place ${k + 1}`, [...RA2_DIFFS.map(([d, t]) => [d, `${t} AI`]), ["closed", "Closed"]], closed ? "closed" : r.difficulty, (v) => {
+            if (v === "closed") change(k, { kind: "closed" });
+            else { prefs.set({ ra2Diff: v }); change(k, { kind: "ai", difficulty: v, color: closed ? freeColor(k) : r.color }); }
+          });
+        const cells = closed ? [h("span", {}), h("span", {}), h("span", {}), h("span", {})] : seatCells(k === 0 ? "you" : `place ${k + 1}`, r, n, (p) => change(k, p));
+        return h("div", { class: "skrow2" + (closed ? " closed" : ra2RowClass(r.color)) + (k === active ? " active" : ""), onclick: () => setActive(k), onfocusin: () => setActive(k) }, ra2Swatch(closed ? -1 : r.color), who, cells);
+      }));
+      const ai = rows.filter((r) => r.kind === "ai").length;
+      summary.textContent = ai ? `You and ${ai} computer player${ai === 1 ? "" : "s"}` : "No computer players";
+    }
+    paint();
+    update();
+  }
+  function paint() {
+    if (!view) { const c = canvas.getContext("2d"); c.fillStyle = css("--bg"); c.fillRect(0, 0, MAP_VIEW, MAP_VIEW); spots = []; return; }
+    spots = paintMap(canvas, view, (n) => {
+      const k = rows.findIndex((r) => r.kind !== "closed" && r.start === n);
+      return k < 0 ? null : { color: markerColor(rows[k].color), halo: k === active };
+    }, hot());
+  }
+  // Click a start on the picture to give it to the selected player (again to make it random).
+  const hot = startPicker(canvas, () => spots, (s) => { const r = rows[active]; if (r && r.kind !== "closed") change(active, { start: r.start === s.n ? -1 : s.n }); },
+    () => paint(), "click to give it to the selected player");
+
+  async function load() {
+    const m = entries[i], mine = ++token;
+    prefs.set({ ra2Map: file() });
+    title.textContent = m.name;
+    position.textContent = `${i + 1} of ${entries.length}`;
+    prev.disabled = i === 0; next.disabled = i === entries.length - 1;
+    sendBtn.hidden = !ra2Shareable(m);
+    sendBtn.dataset.map = file();
+    view = null; rows = []; errBox.hidden = true; note.textContent = "Loading…";
+    fill(facts, [playersText(m.players), sizeText(m.size_kb)].map((b) => h("span", {}, b)));
+    stage.classList.add("loading");
+    draw();
+    try {
+      const v = await invoke("ra2_map_view", { file: file() });
+      if (mine !== token) return;
+      view = v;
+      if (starts() >= 2) newRows(starts());
+      fill(facts, [`${v.cells_w} × ${v.cells_h}`, playersText(v.info ? v.info.starts.length : 0), sizeText(m.size_kb)].map((b) => h("span", {}, b)));
+      note.textContent = !v.rgba ? "This map has no preview picture." : rows.length ? "Select a player, then click a start on the map." : "";
+    } catch (e) {
+      if (mine !== token) return;
+      note.textContent = "";
+      errBox.hidden = false;
+      fill(errBox, callout("bad", `This map could not be read (${errText(e)}). Try the next one, or try it again.`, h("button", { class: "btn small", onclick: load }, "Try again")));
+    }
+    stage.classList.remove("loading");
+    draw();
+  }
+  function step(d) { const n = i + d; if (n >= 0 && n < entries.length) { i = n; load(); } }
+
+  const setup = () => ({
+    map: file(), seed: 0,
+    ...ra2RulesNow(),
+    players: rows.filter((r) => r.kind !== "closed").map((r) => ({ name: r.kind === "you" ? (store.cfg.player_name || store.cfg.default_player_name || "Player") : "", ...(r.kind === "ai" ? { ai: r.difficulty } : {}), side: r.side, color: r.color, start: r.start, team: r.team })),
+  });
+  /** Why Play cannot start this setup yet ("" when it can). */
+  const why = () => !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : !store.cfg.ra2.game_dir ? "Find your game files first."
+    : !errBox.hidden ? "Pick a map that can be read." : !view ? "Loading the map…" : !rows.length ? "This map has no start positions."
+    : !rows.some((r) => r.kind === "ai") ? "Give the computer at least one place." : "";
   const play = h("button", { class: "btn primary big playbtn", onclick: async () => {
     play.disabled = true;
-    sk.remember();
-    if (await launchRa2(sk.setup())) finish(); else update();
+    prefs.set({ ra2Ai: rows.filter((r) => r.kind === "ai").length });
+    if (await launchRa2(setup())) finish(); else update();
   } }, icon("play"), "Play skirmish");
-  function update() { const why = !store.cfg.ra2_engine ? "This build has no Red Alert 2 engine yet." : sk.why(); play.disabled = !!why; status.set(why); }
+  function update() { const w = why(); play.disabled = !!w; status.set(w); }
+
+  const close = h("button", { class: "btn", onclick: () => finish() }, "Close");
   const overlay = h("div", { class: "overlay", role: "dialog", "aria-modal": "true", "aria-label": "Skirmish setup" },
-    h("div", { class: "wizard mapviewer" },
-      h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, h("h2", {}, "Skirmish setup"))),
-      h("div", { class: "wiz-body" }, sk.el),
-      h("div", { class: "wiz-foot" }, status.el, h("button", { class: "btn", onclick: () => finish() }, "Close"), play)));
-  const onKey = (e) => { if (e.key === "Escape" && e.target.tagName !== "SELECT") finish(); };
+    h("div", { class: "wizard mapviewer ra2" },
+      h("div", { class: "wiz-head mvhead" }, h("div", { class: "mvtitle" }, title, facts)),
+      h("div", { class: "wiz-body mapbody" },
+        h("div", { class: "mapcol" }, stage, h("div", { class: "mapnav" }, prev, position, next)),
+        h("div", { class: "mapside" },
+          h("div", { class: "sidehead" }, h("h3", {}, "Players"), summary), table, note, errBox,
+          h("h3", { class: "ruleshead" }, "Rules"), ra2Rules(ra2RulesNow(), (p) => ra2SaveRules(p)),
+          play)),
+      h("div", { class: "wiz-foot" }, status.el, h("div", { class: "row" }, sendBtn, close))));
+  const onKey = (e) => {
+    if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+    if (e.key === "Escape") finish(); else if (e.key === "ArrowLeft") step(-1); else if (e.key === "ArrowRight") step(1);
+  };
   let shrink = null;
   function finish() { document.removeEventListener("keydown", onKey); shrink(() => overlay.remove()); }
   document.addEventListener("keydown", onKey);
   document.getElementById("root").append(overlay);
+  backdropCloses(overlay, finish);
   shrink = growFrom(overlay, from);
-  update();
+  ra2FlagArt().then(() => { if (rows.length) draw(); }); // the official side flags arrive a moment later; redraw then
+  load();
+  close.focus();
 }
 
 /** Maps for Red Alert 2, laid out like the Generals page: search, player chips, sort, one row per map with Skirmish,
@@ -2587,6 +2617,7 @@ function ra2MapsPage() {
   const list = h("div", { class: "maplist" });
   const empty = h("div", { class: "listempty", role: "status", hidden: true });
   const more = h("button", { class: "btn small", hidden: true, onclick: () => { shown += LIMIT; draw(); } }, "Show more");
+  const tips = mapTips((m) => invoke("ra2_map_view", { file: fileOf(m.path) }), (m) => m.path);
   const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
   const base = () => maps.filter((m) => !q || m.name.toLowerCase().includes(q));
   const visible = () => {
@@ -2621,10 +2652,10 @@ function ra2MapsPage() {
       ? [h("strong", {}, "No maps match"), h("span", { class: "muted small" }, q ? `Nothing is called “${search.value.trim()}” with these filters.` : "No map fits these filters."), h("button", { class: "btn small", onclick: () => clear.click() }, "Clear filters")]
       : [h("strong", {}, "No maps yet"), h("span", { class: "muted small" }, "Install the community packs below, or put .map, .mpr and .yrm files in your map folder.")]);
     fill(list, v.slice(0, shown).map((m) => h("div", { class: "maprow ra2" + (ra2Shareable(m) ? " sharable" : "") },
-      h("span", { class: "maptext" }, h("span", { class: "mapname" }, m.name)),
+      h("span", { class: "maptext" }, (() => { const n = h("span", { class: "mapname" }, m.name); tips.attach(n, m); return n; })()),
       h("span", { class: "small mapplayers" }, m.players >= 2 ? `${m.players} players` : "Solo"),
       h("span", { class: "muted small mapsize" }, sizeText(m.size_kb)),
-      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: (e) => openRa2Skirmish(m, e.currentTarget) }, icon("play"), "Skirmish") : h("span", {}),
+      m.players >= 2 ? h("button", { class: "btn small", "aria-label": `Set up a skirmish on ${m.name}`, title: "Choose countries, colours, teams and start positions", onclick: (e) => { const list = playable(v); openRa2Skirmish(list, list.indexOf(m), e.currentTarget); } }, icon("play"), "Skirmish") : h("span", {}),
       ra2Shareable(m) ? shareButton(fileOf(m.path)) : null)));
     more.hidden = v.length <= shown;
     more.textContent = `Show more (${v.length - shown} left)`;
@@ -2673,7 +2704,7 @@ function ra2MapsPage() {
           list, empty),
         h("div", { class: "row center" }, more))),
     h("div", { class: "card" }, h("h2", {}, "Get more maps"), packStatus, h("div", { class: "row" }, installPacks, h("button", { class: "btn", onclick: openFolder }, icon("folder"), "Open map folder"))));
-  return { el, dispose: () => { window.removeEventListener("focus", onFocus); window.removeEventListener("maps-changed", onFocus); } };
+  return { el, dispose: () => { tips.remove(); window.removeEventListener("focus", onFocus); window.removeEventListener("maps-changed", onFocus); } };
 }
 
 /** The online lobby: the host's map with its starts, who is in the room, their seats, the options, and Start. Shown
@@ -3371,6 +3402,7 @@ function showWhatsNew(w) {
       h("div", { class: "wiz-body" }, renderNotes(w.notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Continue"))));
   document.getElementById("root").append(overlay);
+  backdropCloses(overlay, close);
 }
 
 /** The release notes shipped with this version (the last three releases), opened from Settings > Updates. */
@@ -3382,6 +3414,7 @@ function showChangelog(notes, title = "Changelog") {
       h("div", { class: "wiz-body" }, renderNotes(notes)),
       h("div", { class: "wiz-foot" }, h("span"), h("button", { class: "btn primary", onclick: close }, "Close"))));
   document.getElementById("root").append(overlay);
+  backdropCloses(overlay, close);
 }
 
 // ---------------------------------------------------------------- start
