@@ -1,0 +1,145 @@
+Water units sail to the nearest reachable water instead of refusing the order.
+
+Ships (and amphibious units) kept the exact A* in order_unit_move while land
+units got the W2-SK-05/16 nearest-reachable fallback, so any order whose goal
+cell was not water-passable -- a click that landed on the shore, a pond no
+route reaches, a group-formation cell that fell on land -- was refused
+outright and the ship just sat still. All domains now take the same
+find_path_nearest_t on their own grid (plus the same unit-cost re-search),
+so a ship sails to the nearest shore of its own water body. Reachable water
+orders are byte-identical (same A* body, same goal); the old "naval unit
+ordered onto land is BLOCKED" case still stays put, correctly, because the
+ship is already on the only reachable water cell. No save-format change.
+
+--- a/engine/world.cpp
++++ b/engine/world.cpp
+@@ -1694,9 +1694,14 @@
+     // naval unit uses the EXACT ground occupancy path above (release_all_of + set
+     // + find_path); only the grid differs. naval_any_ is a diagnostics flag.
+     if (u.is_naval) naval_any_ = true;
+-    // W2-SK-05/16: a ground (Land-domain) unit ordered onto an impassable or
+-    // unreachable cell walks to the nearest reachable one (budgeted search);
+-    // ships keep the exact search (a land click is refused, naval.md).
++    // W2-SK-05/16: a unit ordered onto an impassable or unreachable cell
++    // walks (sails, for ships) to the nearest reachable one (budgeted
++    // search). 0260: ships and amphibious units used to keep the exact
++    // search here, so a shore click, a disconnected pond, or a formation
++    // cell that fell on land was refused outright and the ship just sat
++    // still; the nearest-fallback is the same FootClass rule the land
++    // search follows, on the unit's own domain grid (`grid` below is
++    // grid_for(domain) for Water/Amphibious -- crush_paths is Land-only).
+     const bool crush = crush_paths(u);   // P4: a crusher routes over crushable walls
+     // R-210: the height gate, high-bridge decks and allied gates (null = 2-D).
+     sync_deck_layer(u);
+@@ -1707,9 +1712,7 @@
+     const std::vector<std::uint8_t>* leak =
+         u.movement_domain == MovementDomain::Water ? nullptr : crush ? crush_leak_of(u) : wall_leak();
+     std::vector<Cellxy> path =
+-        u.movement_domain == MovementDomain::Land
+-            ? find_path_nearest_t(grid, grid_w_, grid_h_, start, {gx, gy}, kNearestPathBudget, leak, tp)
+-            : find_path_t(grid_for(u.movement_domain), grid_w_, grid_h_, start, {gx, gy}, leak, tp);
++        find_path_nearest_t(grid, grid_w_, grid_h_, start, {gx, gy}, kNearestPathBudget, leak, tp);
+     // W7-11-08 [RE: A* FUN_00429A10 + Can_Enter costs DAT_0081770C]: the A*
+     // charges the cells other units hold (a parked ally 8, a moving unit 1 / 4,
+     // an enemy 20). The terrain-only route (memoised) is kept when it meets no
+@@ -1719,10 +1722,7 @@
+         std::vector<std::uint16_t>& cost = occupancy_cost_scratch();   // W9-02-06 / W9-02-10: no per-order 69k alloc
+         build_occupancy_cost(units_, occ_, grid_w_, grid_h_, idx, false, this, cost);
+         std::vector<Cellxy> p2 =
+-            u.movement_domain == MovementDomain::Land
+-                ? find_path_nearest_t(grid, grid_w_, grid_h_, start, {gx, gy}, kNearestPathBudget, leak, tp, &cost)
+-                : find_path_bounded_t(grid_for(u.movement_domain), grid_w_, grid_h_, start, {gx, gy}, 0, leak, tp,
+-                                      &cost);
++            find_path_nearest_t(grid, grid_w_, grid_h_, start, {gx, gy}, kNearestPathBudget, leak, tp, &cost);
+         if (p2.size() > 1) path = std::move(p2);
+     }
+     if (!track_prefix.empty()) {
+
+--- a/tests/test_world.cpp
++++ b/tests/test_world.cpp
+@@ -3472,6 +3472,85 @@
+     CHECK(world.units()[0].cell_y == 50);
+ }
+ 
++// 0260: ships sail to the nearest reachable water instead of refusing the
++// order outright (the land units' nearest-fallback, W2-SK-05/16). Synthetic
++// blank(32,32) diamond (cells x/y 1..63, the x[20..40] y[20..40] rect is
++// solid), no install needed. Water block x[24..34] y[24..34], ship inside;
++// the optional second pond x[37..40] y[37..40] is landlocked from it.
++namespace {
++// Long-lived: World keeps a NON-owning pointer to its map (same pattern as
++// the mapsmd03 fixture above), so this must outlive every shore_world().
++const ra2assets::MapFile& shore_map() {
++    static const ra2assets::MapFile m = ra2assets::MapFile::blank(32, 32);
++    return m;
++}
++ra2engine::World shore_world(bool second_pond) {
++    ra2engine::World world(shore_map());
++    using ra2assets::LandType;
++    const int gw = world.grid_w(), gh = world.grid_h();
++    std::vector<LandType> lt(static_cast<size_t>(gw) * gh, LandType::Clear);
++    for (int y = 24; y <= 34; ++y)
++        for (int x = 24; x <= 34; ++x) lt[static_cast<size_t>(y) * gw + x] = LandType::Water;
++    if (second_pond)
++        for (int y = 37; y <= 40; ++y)
++            for (int x = 37; x <= 40; ++x) lt[static_cast<size_t>(y) * gw + x] = LandType::Water;
++    world.set_land_terrain(lt);   // water grid + land closed on water, as on a real map
++    return world;
++}
++}  // namespace
++
++TEST_CASE("0260: a ship ordered onto land sails to the nearest shore, not a refusal") {
++    ra2engine::World world = shore_world(false);
++    const int gw = world.grid_w();
++    REQUIRE(gw > 40);
++    world.add_combat_unit(29, 29, /*house=*/0, hyd_stats());
++    world.order_unit_move(0, 20, 20);   // materialized land, off the water block's corner
++    const ra2engine::Unit& u0 = world.units()[0];
++    REQUIRE(u0.path.size() > 1);        // refused (empty) before 0260
++    CHECK(u0.path.back().x == 24);      // the water cell nearest the click
++    CHECK(u0.path.back().y == 24);
++    const std::vector<std::uint8_t>& wg = world.grid_for(ra2engine::MovementDomain::Water);
++    for (const ra2engine::Cellxy& c : u0.path)
++        CHECK(wg[static_cast<size_t>(c.y) * gw + c.x] != 0);
++    const double dt = 1.0 / 15.0;
++    for (int f = 0; f < 4000 && world.units()[0].moving(); ++f) world.step(dt);
++    CHECK(world.units()[0].cell_x == 24);
++    CHECK(world.units()[0].cell_y == 24);
++}
++
++TEST_CASE("0260: a ship ordered to disconnected water sails to its own nearest shore") {
++    ra2engine::World world = shore_world(true);
++    world.add_combat_unit(29, 29, /*house=*/0, hyd_stats());
++    world.order_unit_move(0, 38, 38);   // water, but a pond no route reaches
++    const ra2engine::Unit& u0 = world.units()[0];
++    REQUIRE(u0.path.size() > 1);        // refused (empty) before 0260
++    CHECK(u0.path.back().x == 34);      // own water nearest the goal
++    CHECK(u0.path.back().y == 34);
++    const double dt = 1.0 / 15.0;
++    for (int f = 0; f < 4000 && world.units()[0].moving(); ++f) world.step(dt);
++    CHECK(world.units()[0].cell_x == 34);
++    CHECK(world.units()[0].cell_y == 34);
++}
++
++TEST_CASE("0260: a group of ships ordered onto land all sail (none refuses)") {
++    ra2engine::World world = shore_world(false);
++    const int gw = world.grid_w();
++    world.add_combat_unit(28, 29, /*house=*/0, hyd_stats());
++    world.add_combat_unit(30, 29, /*house=*/0, hyd_stats());
++    world.group_move(ra2engine::kAnyHouse, {0, 1}, 20, 20);
++    for (int i = 0; i < 2; ++i) CHECK(world.units()[static_cast<size_t>(i)].path.size() > 1);
++    const double dt = 1.0 / 15.0;
++    for (int f = 0; f < 4000 && (world.units()[0].moving() || world.units()[1].moving()); ++f)
++        world.step(dt);
++    const std::vector<std::uint8_t>& wg = world.grid_for(ra2engine::MovementDomain::Water);
++    for (int i = 0; i < 2; ++i) {
++        const ra2engine::Unit& u = world.units()[static_cast<size_t>(i)];
++        CHECK(wg[static_cast<size_t>(u.cell_y) * gw + u.cell_x] != 0);
++    }
++    CHECK_FALSE(world.units()[0].moving());
++    CHECK_FALSE(world.units()[1].moving());
++}
++
+ TEST_CASE("World: a ground unit's A* is byte-identical with and without a naval unit present") {
+     if (!ra2fixture::mapsmd03_available()) {
+         MESSAGE("skipped: real map assets not found under RA2_INSTALL_DIR");
