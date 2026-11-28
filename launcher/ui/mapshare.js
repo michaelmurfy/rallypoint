@@ -281,6 +281,7 @@ function shareModal(label, body, foot, from, { alert = false } = {}) {
   }
   document.addEventListener("keydown", onKey, true);
   document.getElementById("root").append(overlay);
+  if (!alert) backdropCloses(overlay, close); // a question that needs an answer stays until it gets one
   return { overlay, close, onClose: (f) => { onClose = f; } };
 }
 
