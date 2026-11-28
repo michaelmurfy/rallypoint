@@ -6,6 +6,7 @@
 - **Your call.** Settings > Graphics > Enhanced effects has a new **Cloud shadow strength**: subtle, normal or strong.
 - **Gentler sun shadows.** The random sun now stays higher and its shadows are a little lighter, so buildings no longer throw long dark stripes over an ultra wide screen.
 - **Linux debug bundle is a real zip.** It was a plain tar with a .zip name that nothing could open. It needs the `zip` package, which the installers now ask for.
+- **Red Alert 2: see enemy health.** Hovering an enemy building now shows its health bar, like hovering an enemy unit already did.
 
 ## Rallypoint 1.0.5
 
