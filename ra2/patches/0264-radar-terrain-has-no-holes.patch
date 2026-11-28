@@ -1,0 +1,100 @@
+diff --git a/engine/pres_radar.inc b/engine/pres_radar.inc
+--- a/engine/pres_radar.inc
++++ b/engine/pres_radar.inc
+@@ -102,15 +102,33 @@
+                         p[3] = 255;
+                     }
+             };
+-            for (int y = 0; y < gh_; ++y)
+-                for (int x = 0; x < gw_; ++x) {
+-                    ra2assets::Rgba c = base_[static_cast<std::size_t>(y) * gw_ + x];
++            // Destination-driven base fill: every texture pixel inverse-maps to
++            // its cell (the same centre rounding B's clicks use, unclamped so
++            // the diamond corners stay transparent), so the terrain layer has
++            // no coverage gaps and no transparent holes. Cells with no record
++            // stay transparent (off-map grid stays black); unexplored cells
++            // are black; fog dims. Ore tints its cells here, under the
++            // building/unit overlays below.
++            ra2engine::RadarMap fill;
++            fill.ox = ox; fill.oy = oy; fill.s = s; fill.u0 = u0_; fill.v0 = v0_; fill.gw = gw_; fill.gh = gh_;
++            for (int ty = 0; ty < TH; ++ty)
++                for (int tx = 0; tx < TW; ++tx) {
++                    int cx = -1, cy = -1;
++                    if (!fill.cell_at_raw(ox + tx, oy + ty, cx, cy)) continue;
++                    if (cx < 0 || cy < 0 || cx >= gw_ || cy >= gh_) continue;
++                    ra2assets::Rgba c = base_[static_cast<std::size_t>(cy) * gw_ + cx];
+                     if (c.a == 0) continue;
+-                    if (!w.explored_at(g_local_house, x, y)) { plot(x, y, ra2assets::Rgba{0, 0, 0, 255}, 1.0); continue; }
+-                    if (w.ore().has_ore(x, y))
+-                        c = w.ore().kind_at(x, y) == ra2engine::OreKind::Gems ? ra2assets::Rgba{60, 110, 200, 255}
++                    if (!w.explored_at(g_local_house, cx, cy)) c = ra2assets::Rgba{0, 0, 0, 255};
++                    else if (w.ore().has_ore(cx, cy))
++                        c = w.ore().kind_at(cx, cy) == ra2engine::OreKind::Gems ? ra2assets::Rgba{60, 110, 200, 255}
+                                                                                 : ra2assets::Rgba{200, 170, 40, 255};
+-                    plot(x, y, c, (w.fog_of_war() && !w.visible_at(g_local_house, x, y)) ? 0.55 : 1.0);   // W2-GA-03
++                    const double dim =
++                        (w.fog_of_war() && !w.visible_at(g_local_house, cx, cy)) ? 0.55 : 1.0;   // W2-GA-03
++                    uint8_t* p = &px[(static_cast<std::size_t>(ty) * TW + tx) * 4];
++                    p[0] = static_cast<uint8_t>(c.r * dim);
++                    p[1] = static_cast<uint8_t>(c.g * dim);
++                    p[2] = static_cast<uint8_t>(c.b * dim);
++                    p[3] = 255;
+                 }
+             if (g_map_dressing)
+                 for (const auto& o : g_map_dressing->objects())
+diff --git a/engine/radar_map.hpp b/engine/radar_map.hpp
+--- a/engine/radar_map.hpp
++++ b/engine/radar_map.hpp
+@@ -26,6 +26,17 @@
+         cx = std::clamp(static_cast<int>(std::lround((u + v) / 2.0)), 0, gw - 1);
+         cy = std::clamp(static_cast<int>(std::lround((v - u) / 2.0)), 0, gh - 1);
+         return true;
+     }
++    // Radar pixel -> the nearest cell, WITHOUT clamping: out-of-grid pixels
++    // report out-of-grid coords (the draw fill keeps those transparent, so
++    // the diamond corners and off-map grid stay black). Same centre rounding
++    // as cell_at, so a click lands on the cell drawn under it.
++    bool cell_at_raw(int px, int py, int& cx, int& cy) const {
++        if (s <= 0 || gw <= 0 || gh <= 0) return false;
++        const double u = (px - ox) / s + u0 - 0.5, v = (py - oy) / (0.5 * s) + v0 - 0.5;
++        cx = static_cast<int>(std::lround((u + v) / 2.0));
++        cy = static_cast<int>(std::lround((v - u) / 2.0));
++        return true;
++    }
+ };
+ 
+ // What a mouse press on the sidebar radar does [RE: RadarClass::Action 0x006539D0, via vera20k's reading:
+diff --git a/tests/test_radar_map.cpp b/tests/test_radar_map.cpp
+--- a/tests/test_radar_map.cpp
++++ b/tests/test_radar_map.cpp
+@@ -108,3 +108,30 @@
+         CHECK(radar_click_action(true, false, false, have) == RadarClickAction::Inert);
+     }
+ }
++
++TEST_CASE("radar map: raw pixels map to their cell unclamped, outside stays outside") {
++    RadarMap m;
++    m.ox = 10; m.oy = 20; m.s = 3.0; m.u0 = -39; m.v0 = 0; m.gw = 40; m.gh = 40;
++    // Every cell centre pixel maps back onto its cell, exactly like the clamped probe.
++    for (int y = 0; y < m.gh; ++y)
++        for (int x = 0; x < m.gw; ++x) {
++            double px, py;
++            m.cell_to_pixel(x, y, px, py);
++            int cx = -999, cy = -999, kx = -999, ky = -999;
++            REQUIRE(m.cell_at_raw(static_cast<int>(px), static_cast<int>(py), cx, cy));
++            REQUIRE(m.cell_at(static_cast<int>(px), static_cast<int>(py), kx, ky));
++            CHECK(cx == x);
++            CHECK(cy == y);
++            CHECK(cx == kx);   // the draw fill and B's clicks agree
++            CHECK(cy == ky);
++        }
++    // Far outside the diamond reports out-of-grid (the draw fill keeps those transparent).
++    int cx = 0, cy = 0;
++    REQUIRE(m.cell_at_raw(-1000, -1000, cx, cy));
++    CHECK((cx < 0 || cy < 0 || cx >= m.gw || cy >= m.gh));
++    REQUIRE(m.cell_at_raw(10000, 10000, cx, cy));
++    CHECK((cx < 0 || cy < 0 || cx >= m.gw || cy >= m.gh));
++    // Degenerate maps refuse.
++    RadarMap none;
++    CHECK_FALSE(none.cell_at_raw(1, 1, cx, cy));
++}
