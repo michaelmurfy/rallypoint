@@ -1,0 +1,106 @@
+Terror Drones animate while moving again.
+
+The Terror Drone rides the infantry path in the sim (its combat has
+is_vehicle/is_aircraft/is_naval all false, because the voxel loader cannot
+load its SHP art), but it draws through the SHP-vehicle frame rule
+(W2-GA-11). pres_walk_tick only advanced the walk stage for vehicle,
+aircraft and naval units, so the drone's WalkedFramesSoFar stage stayed 0
+and shp_vehicle_frame picked the same first walk frame every draw -- the
+drone glided without animating. The tick now also covers units in the
+SHP-vehicle draw set, via a small tested predicate
+(unit_advances_walk_stage) and a main.cpp lookup over g_shp_vehicles.
+Render-only: the sim, save format and network traffic are untouched.
+
+--- a/engine/present_motion.hpp
++++ b/engine/present_motion.hpp
+@@ -113,6 +113,18 @@
+     gy = fy + sy / 256.0;
+ }
+ 
++// 0265: whether a unit's walk animation advances (the W3-B WalkedFramesSoFar
++// stage that steps SHP-vehicle walk frames and voxel HVA frames). SHP-drawn
++// vehicles (W2-GA-11: artmd Voxel=no, e.g. DRON/DLPH/SQD) animate by that
++// stage whatever the sim's vehicle flags say -- the Terror Drone rides the
++// infantry path in the sim (combat is_vehicle=false) but draws SHP frames,
++// so without `shp_vehicle` its walk stage stayed 0 and it never stepped out
++// of its first frame while moving. Purely presentational: the sim is untouched.
++inline bool unit_advances_walk_stage(const Unit& u, bool shp_vehicle) {
++    if (!u.alive || u.die_time >= 0.0) return false;
++    return u.is_vehicle || u.is_aircraft || u.is_naval || shp_vehicle;
++}
++
+ // Cell fx/fy for depth sort. Unbound, leaves fx/fy alone (no sub-cell term).
+ inline void present_cell(const Unit& u, double& fx, double& fy) {
+     const PresentBind& b = present_bind_slot();
+
+--- a/engine/pres_bldanim.inc
++++ b/engine/pres_bldanim.inc
+@@ -503,12 +503,19 @@
+ int pres_walk_stage(int idx) {
+     return idx >= 0 && idx < static_cast<int>(g_walk_stage.size()) ? g_walk_stage[static_cast<std::size_t>(idx)] : 0;
+ }
++// main.cpp (W2-GA-11): true when this image draws through the SHP-vehicle
++// frame rule, whatever the sim's vehicle flags say (DRON rides the infantry
++// path in the sim but draws SHP walk frames). Defined after g_shp_vehicles.
++bool pres_draws_shp_vehicle(const std::string& image);
+ void pres_walk_tick(const ra2engine::World& w, long now) {
+     const auto& us = w.units();
+     if (g_walk_stage.size() < us.size()) g_walk_stage.resize(us.size(), 0);
+     for (std::size_t i = 0; i < us.size(); ++i) {
+         const ra2engine::Unit& u = us[i];
+-        if (!u.alive || !(u.is_vehicle || u.is_aircraft || u.is_naval) || u.die_time >= 0.0) continue;
++        // 0265: the Terror Drone is not is_vehicle/is_aircraft/is_naval in
++        // the sim, so it never ticked and never animated; the SHP-vehicle
++        // draw set covers it (render-only, the sim is untouched).
++        if (!ra2engine::unit_advances_walk_stage(u, pres_draws_shp_vehicle(u.image))) continue;
+         const std::pair<int, int>& r = pres_walk_rates(u.image);
+         const bool moving = u.moving() || (u.is_aircraft && u.altitude > 0.0);
+         if (moving ? (now % r.first == 0) : (r.second > 0 && now % r.second == 0)) ++g_walk_stage[i];
+
+--- a/engine/main.cpp
++++ b/engine/main.cpp
+@@ -4462,6 +4462,11 @@ struct ShpVehicleArt {
+     int facings = 8, walk = 12, fire = 0, stand = 0;
+     int start_walk = 0, start_stand = 0, start_fire = 0;
+ };
+ std::map<std::string, ShpVehicleArt> g_shp_vehicles;
++// 0265 (declared in pres_bldanim.inc): the walk-stage tick's view of the
++// SHP-vehicle draw set above.
++bool pres_draws_shp_vehicle(const std::string& image) {
++    return g_shp_vehicles.count(image) != 0;
++}
+ ShpVehicleArt shp_vehicle_art(const Ini& art, const std::string& image) {
+     auto gi = [&](const char* k, int d) {
+         const std::string v = pres_clean(art.get(image, k));
+
+--- a/tests/test_movement.cpp
++++ b/tests/test_movement.cpp
+@@ -288,3 +288,28 @@
+     CHECK(fx == doctest::Approx(5.0));
+     CHECK(sx == doctest::Approx(128.0));
+ }
++
++TEST_CASE("0265: a Terror Drone (infantry-path SHP vehicle) advances the walk stage") {
++    using ra2engine::unit_advances_walk_stage;
++    ra2engine::Unit drone;   // DRON: combat is_vehicle/is_aircraft/is_naval all false
++    drone.alive = true;
++    drone.die_time = -1.0;
++    // Drawn through the SHP-vehicle frame rule (g_shp_vehicles): must tick,
++    // or its walk frames never step while it moves.
++    CHECK(unit_advances_walk_stage(drone, /*shp_vehicle=*/true));
++    // An infantry-path unit with no SHP-vehicle draw keeps the old behavior.
++    CHECK_FALSE(unit_advances_walk_stage(drone, /*shp_vehicle=*/false));
++    // Vehicles are unaffected by the new flag.
++    ra2engine::Unit tank;
++    tank.alive = true;
++    tank.die_time = -1.0;
++    tank.is_vehicle = true;
++    CHECK(unit_advances_walk_stage(tank, false));
++    CHECK(unit_advances_walk_stage(tank, true));
++    // Dead / dying units never advance, SHP draw or not.
++    drone.alive = false;
++    CHECK_FALSE(unit_advances_walk_stage(drone, true));
++    drone.alive = true;
++    drone.die_time = 0.0;
++    CHECK_FALSE(unit_advances_walk_stage(drone, true));
++}
