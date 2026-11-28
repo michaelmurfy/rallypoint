@@ -1340,6 +1340,15 @@ function resolutionSelect() {
 }
 
 const AI_BOOSTS = [[0, "Off"], [1, "Sharper"], [2, "Strong"], [3, "Relentless"]];
+// What each Stronger AI level does (the engine's GEN_AI_BOOST): faster building, extra supplies, quicker
+// rebuilds, attacks with less saved up, and fiercer fighting (Strong and Relentless fight like Brutal).
+const AI_BOOST_DESC = [
+  "Normal AI, the game's own pace.",
+  "Sharper AI builds 35% faster, with extra supplies and quicker rebuilds.",
+  "Strong AI builds 70% faster, attacks with less saved up and fights like Brutal.",
+  "Relentless AI builds twice as fast, with a large supply bonus, early attacks and focused fire.",
+];
+const aiBoostDesc = (v) => AI_BOOST_DESC[v] || AI_BOOST_DESC[0];
 // Stronger AI is one setting everywhere (Play options, the skirmish dialog, the Online page's Room card). In a room the
 // master's choice is everyone's: the others see it, locked, and the controls follow it.
 const aiRoom = () => { const d = net.last; return d && d.room_master != null ? { master: !!d.room_master, level: d.ai_level ?? 0 } : null; };
@@ -1375,11 +1384,11 @@ function bindAiSelect(sel, after) {
 }
 /** The Stronger AI level beside the other skirmish options (money, speed, screen). */
 function aiSelect() {
-  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI", title: "How fast the computer players build and gather" },
-    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, v ? `${t} AI` : "Normal AI")));
+  const sel = h("select", { class: "speedsel", "aria-label": "Stronger AI", title: "How hard the computer players are" },
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v), title: aiBoostDesc(v) }, v ? `${t} AI` : "Normal AI")));
   sel.value = String(aiLocal());
   const wrap = h("div", { class: "speedpick" }, icon("ai"), sel);
-  const mark = () => wrap.classList.toggle("changed", sel.value !== "0"); // anything but normal is lit up
+  const mark = () => { wrap.classList.toggle("changed", sel.value !== "0"); sel.title = aiBoostDesc(+sel.value); }; // anything but normal is lit up
   mark();
   sel.addEventListener("change", () => { prefs.set({ aiBoost: +sel.value }); mark(); });
   return wrap;
@@ -1417,11 +1426,12 @@ function playPage() {
   const custom = h("div", { class: "row", hidden: true }, cw, "×", ch);
   const fs = h("input", { type: "checkbox", checked: p.fs, onchange: () => prefs.set({ fs: fs.checked }) });
   const cam = h("input", { type: "checkbox", checked: !!p.camera, onchange: () => prefs.set({ camera: cam.checked }) });
-  const aiSel = h("select", { "aria-label": "Stronger AI" }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+  const aiSel = h("select", { "aria-label": "Stronger AI" }, ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v), title: aiBoostDesc(v) }, t)));
   const aiNote = h("span", {});
   bindAiSelect(aiSel, () => {
     const r = aiRoom();
-    aiNote.textContent = !r ? "Need a bit more of a challenge? Make the AI build and gather faster." : r.master ? "Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room." : "The room master can set this if they choose to.";
+    aiNote.textContent = !r ? `Need a bit more of a challenge? ${aiBoostDesc(aiLocal())}` : r.master ? `Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room. ${aiBoostDesc(aiBoost())}` : "The room master can set this if they choose to.";
+    aiSel.title = aiBoostDesc(aiBoost());
   });
   const files = h("div", { class: "row between" });
   const heroTitle = h("h2", {}), heroSub = h("p", { class: "muted" });
@@ -1755,7 +1765,7 @@ function connectionCard() {
 function roomCard() {
   const badge = h("span", {}), note = h("span", {}), fb = liveStatus(), level = h("span", { class: "pill" }), auto = shareAutoAccept();
   const sel = h("select", { "aria-label": "Stronger AI for the room", onchange: () => { fb.busy("Saving…"); setAiBoost(+sel.value); } },
-    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v) }, t)));
+    ...AI_BOOSTS.map(([v, t]) => h("option", { value: String(v), title: aiBoostDesc(v) }, t)));
   const card = h("div", { class: "card", hidden: true }, h("div", { class: "row between" }, h("h2", {}, "Room"), badge),
     h("div", { class: "settings" }, setting("Stronger AI", note, h("div", { class: "ctl-inline" }, fb.el, sel, level)),
       setting("Maps from the room master", "Normally every map someone sends waits for your answer. Turn this on to take the master's maps straight away. A map with the name of one you have is always asked about.", auto.el)));
@@ -1772,7 +1782,8 @@ function roomCard() {
     // only the master has a control; everyone else sees the level as a value, not a greyed-out menu
     sel.hidden = !master; level.hidden = master;
     level.textContent = (AI_BOOSTS.find(([v]) => v === (d.ai_level ?? 0)) || AI_BOOSTS[0])[1];
-    note.textContent = master ? "Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room." : "The room master can set this if they choose to.";
+    sel.title = level.title = aiBoostDesc(d.ai_level ?? 0);
+    note.textContent = master ? `Want to change how the AI plays for everyone? You're the room master, so this applies to the whole room. ${aiBoostDesc(aiBoost())}` : `The room master can set this if they choose to. ${aiBoostDesc(d.ai_level ?? 0)}`;
   }
   window.addEventListener("net", draw);
   draw();
