@@ -1,0 +1,256 @@
+diff --git a/engine/world.hpp b/engine/world.hpp
+index e30f8ac..4b49e40 100644
+--- a/engine/world.hpp
++++ b/engine/world.hpp
+@@ -3104,7 +3104,7 @@ private:
+     // [RE: FUN_006CD66F / FUN_004155F0 / FUN_004157C0]: SPYP Approach → Overfly
+     // camera sweep that reveals SpyCameraWeapon Damage= cells along the path.
+     void an_spyplane(int house, int cx, int cy);
+-    void an_spy_camera_shot(int plane);  // one Reveal disc + Ammo--
++    void an_spy_camera_shot(int plane, bool sound);  // one Reveal disc + Ammo--
+     bool an_para_jump(int plane);   // W8-05-07: one trooper out (FUN_00415C60)
+     void an_step_parachutes(double dt);  // W4-SQ-06: falling paratroopers
+     void an_chrono(int house, int sx, int sy, int dx, int dy);
+diff --git a/engine/world_an.cpp b/engine/world_an.cpp
+index d53a06c..162d7e3 100644
+--- a/engine/world_an.cpp
++++ b/engine/world_an.cpp
+@@ -35,6 +35,9 @@ enum Sortie : int { kDocked = 0, kOutbound = 1, kMoveTo = 2, kReturn = 3, kLandi
+ // Stock YR SpyCameraWeapon / SpyPlaneCameraFrames now live in SwParams
+ // (rules-driven, mods can retune them).
+ constexpr int kSpyApproachLept = 0x300; // FUN_004155F0 @0x415700
++// Mission_SpyplaneOverfly returns 3 (0x004158C8): past the target the camera
++// fires every 3rd frame, not every SpyPlaneCameraFrames (Approach only).
++constexpr int kSpyOverflyFrames = 3;
+ constexpr const char* kSpyPlaneType = "SPYP";
+ bool live(const Unit& u) { return u.alive && u.die_time < 0.0 && u.cargo_of < 0; }
+ double cdist(double ax, double ay, double bx, double by) { return om::hypot(ax - bx, ay - by); }
+@@ -848,6 +851,9 @@ void World::an_step_fixed_wing(double dt) {
+         // --- state machine ---
+         double goal_x = u.fx, goal_y = u.fy;
+         bool fly = false;
++        // The spy plane's Overfly freezes the heading at the transition and
++        // flies straight to the far edge (the +0x6D2 latch): no homing turns.
++        bool straight = false;
+         switch (u.an.sortie) {
+             case kDocked:
+                 // Docked: rearm one ammo point every ReloadRate (270 frames).
+@@ -1024,7 +1030,7 @@ void World::an_step_fixed_wing(double dt) {
+                     if (d_cells <= static_cast<double>(P.spy_camera_range)) {
+                         if (u.an.para_timer > 0) --u.an.para_timer;
+                         if (u.an.para_timer <= 0 && u.an.ammo > 0) {
+-                            an_spy_camera_shot(i);
++                            an_spy_camera_shot(i, /*sound=*/true);
+                             u.an.para_timer = P.spy_camera_frames;
+                         }
+                     }
+@@ -1036,28 +1042,33 @@ void World::an_step_fixed_wing(double dt) {
+                 break;
+             }
+             case kSpyplaneOverfly: {
+-                // [RE: Mission_SpyplaneOverfly FUN_004157C0]: keep photographing
+-                // while Ammo remains and the target is still set; then leave
+-                // over the far map edge (loaner Retreat), like a spent PDPLANE.
+-                const bool shooting = u.an.ammo > 0 && u.an.drop_x >= 0;
+-                goal_x = shooting ? u.an.drop_x : u.an.exit_x;
+-                goal_y = shooting ? u.an.drop_y : u.an.exit_y;
++                // [RE: Mission_SpyplaneOverfly FUN_004157C0]: the transition
++                // latched +0x6D2, freezing the Fly heading so the plane flies
++                // straight through to the far edge (it never homes on the
++                // target: homing circled it until the ammo ran out, painting
++                // loops and missing the straight corridor). Snapshots while
++                // within Range= of the target, without the sound, every 3rd
++                // frame; past the edge the plane leaves (leave_map).
++                goal_x = u.an.exit_x;
++                goal_y = u.an.exit_y;
+                 fly = true;
+-                if (shooting) {
+-                    const double d_cells = cdist(u.fx, u.fy, goal_x, goal_y);
++                straight = true;
++                if (u.an.ammo > 0 && u.an.drop_x >= 0) {
++                    const double d_cells = cdist(u.fx, u.fy, u.an.drop_x, u.an.drop_y);
+                     if (d_cells <= static_cast<double>(P.spy_camera_range)) {
+                         if (u.an.para_timer > 0) --u.an.para_timer;
+                         if (u.an.para_timer <= 0 && u.an.ammo > 0) {
+-                            an_spy_camera_shot(i);
+-                            u.an.para_timer = P.spy_camera_frames;
++                            an_spy_camera_shot(i, /*sound=*/false);
++                            u.an.para_timer = kSpyOverflyFrames;
+                         }
+                     }
+-                    // Past the target with no ammo left: head for the exit.
+-                    if (u.an.ammo <= 0) u.an.drop_x = u.an.drop_y = -1;
+-                } else if (cdist(u.fx, u.fy, goal_x, goal_y) < 0.5) {
+-                    units_[i].alive = false;
++                }
++                if (cdist(u.fx, u.fy, goal_x, goal_y) < 0.5 || u.fx < -1.0 ||
++                    u.fx > static_cast<double>(grid_w_) || u.fy < -1.0 ||
++                    u.fy > static_cast<double>(grid_h_)) {
++                    units_[i].alive = false;   // left the map
+                     units_[i].die_time = 1.0;
+-                    units_[i].deployed_away = true;
++                    units_[i].deployed_away = true;   // W4-SQ-03: gone, not destroyed (no loss)
+                     continue;
+                 }
+                 break;
+@@ -1126,7 +1137,7 @@ void World::an_step_fixed_wing(double dt) {
+             if (stopped) u.an.fly_throttle *= 0.5;            // DAT_007E0738 = 0.5
+             if (u.flight_state == FlightState::TakingOff && u.altitude < fl / 2.0) tgt = 0.0;
+             u.an.fly_throttle = fly_throttle_ramp(u.an.fly_throttle, tgt, fr);
+-            if (dist > 0.0)
++            if (dist > 0.0 && !straight)
+                 u.body_facing = heading_toward(u.body_facing, goal_x - u.fx, goal_y - u.fy,
+                                                u.flight_turn * dt, false);
+             const double full = u.an.t.fly_speed_cps * kLept / 15.0;   // type+0x678 (vet-scaled)
+@@ -1378,7 +1389,8 @@ void World::an_spyplane(int house, int cx, int cy) {
+     p.an.exit_y = cy;
+     p.an.drop_left = 0;
+     p.an.drop_type.clear();
+-    p.an.para_timer = 0;
++    // The first Approach visit sets the course, with no snapshot this visit.
++    p.an.para_timer = P.spy_camera_frames;
+     p.an.para_overfly = false;
+     // Ammo from the type (SPYP Ammo=100); camera shots consume it.
+     if (p.an.ammo <= 0) p.an.ammo = std::max(1, p.an.t.ammo);
+@@ -1387,14 +1399,20 @@ void World::an_spyplane(int house, int cx, int cy) {
+     p.body_facing = facing_u16_from_delta(cx - sx, 0);
+ }
+ 
+-// One SpyCameraWeapon "shot": reveal Damage= cells and spend one Ammo.
+-// [RE: Approach/Overfly Fire path; SpyPlaneCameraFrames paces the Report=.]
+-void World::an_spy_camera_shot(int plane) {
++// One SpyCameraWeapon "shot": reveal Damage= cells around the plane's own cell
++// and spend one Ammo. The plane flies straight through (Overfly freezes the
++// heading), so consecutive shots sweep the corridor; the sight radius is the
++// weapon's Damage=, the photo gate its Range=.
++// [RE: Approach/Overfly Fire path; SpyPlaneCameraFrames paces the Report= in
++// Approach, Mission_SpyplaneOverfly returns 3 past the target. Approach plays
++// SpyPlaneCamera= at the plane; Overfly snapshots are silent.]
++void World::an_spy_camera_shot(int plane, bool sound) {
+     if (plane < 0 || plane >= static_cast<int>(units_.size())) return;
+     Unit& u = units_[plane];
+     if (!u.alive || u.die_time >= 0.0 || u.an.ammo <= 0) return;
+     if (shroud_enabled()) reveal_source(u.house, u.cell_x, u.cell_y, an_.sw.spy_camera_reveal);
+     --u.an.ammo;
++    if (!sound) return;
+     // Presentation: reuse Dropped so the camera-click can be wired to
+     // SpyPlaneCamera / SpyPlaneSnapshot without a new SwEvent kind.
+     an_event(SwEvent::Dropped, u.house, SuperweaponType::SpyPlane, u.cell_x, u.cell_y);
+diff --git a/tests/test_superweapon.cpp b/tests/test_superweapon.cpp
+index 3d26a3f..f09260d 100644
+--- a/tests/test_superweapon.cpp
++++ b/tests/test_superweapon.cpp
+@@ -340,3 +340,113 @@ TEST_CASE("superweapon: spy camera pacing and range follow SwParams") {
+     }
+     CHECK(w2.units()[0].an.ammo == 3);
+ }
++
++namespace {
++
++// Retail SPYP (rulesmd [SPYP]): Speed=15, ROT=2, Ammo=100, Sight=0. The zero
++// sight isolates the camera: only SpyCameraWeapon snapshots reveal.
++UnitCombat spyp_like() {
++    UnitCombat c;
++    c.image = "SPYP";
++    c.strength = 400;
++    c.armor = "light";
++    c.is_aircraft = true;
++    c.is_vehicle = true;
++    c.verses = std::vector<int>(11, 100);
++    c.sight = 0;
++    c.an.fixed_wing = true;
++    c.an.ammo = 100;
++    c.an.fly_speed_cps = 2.25;               // Speed=15 -> 15*15/100 cells/sec
++    c.flight_turn = 2 * 256.0 * 15.0;        // ROT=2 (w2air_main.inc)
++    return c;
++}
++
++int count_dropped(const World& w) {
++    int n = 0;
++    for (const SwEvent& e : w.sw_events())
++        if (e.kind == SwEvent::Dropped) ++n;
++    return n;
++}
++
++}  // namespace
++
++TEST_CASE("superweapon: spy plane flies a straight overfly pass, then leaves with ammo spare") {
++    // [RE: FUN_004155F0/FUN_004157C0]: at 3 cells the plane latches its
++    // heading and flies straight to the far edge (never homing on the
++    // target: homing circled it until the ammo ran out, painting loops and
++    // missing the straight corridor). The pass clears a corridor along the
++    // target row and the plane is gone long before the ammo is spent.
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(64, 64);
++    World w(map);
++    w.enable_shroud(true);
++    w.register_an_type("SPYP", spyp_like());
++    w.grant_superweapon_type(0, SuperweaponType::SpyPlane, /*recharge_secs=*/0.5,
++                             /*is_powered=*/false);
++    for (int i = 0; i < 15 && !w.sw_ready(0, SuperweaponType::SpyPlane); ++i)
++        w.step(1.0 / 15.0);
++    REQUIRE(w.sw_ready(0, SuperweaponType::SpyPlane));
++    REQUIRE(w.fire_superweapon_at(0, SuperweaponType::SpyPlane, 32, 32));
++    int plane = -1;
++    for (std::size_t i = 0; i < w.units().size(); ++i)
++        if (w.units()[i].image == "SPYP") plane = static_cast<int>(i);
++    REQUIRE(plane >= 0);
++    int gone_at = -1;
++    const int kCap = 1500;
++    for (int f = 0; f < kCap; ++f) {
++        w.step(1.0 / 15.0);
++        if (!w.units()[static_cast<std::size_t>(plane)].alive) { gone_at = f; break; }
++    }
++    REQUIRE(gone_at >= 0);   // the loaner left the map, not orbited forever
++    CHECK(gone_at < 1000);   // one pass (~450 frames), not 100 orbits (~2000)
++    const int ammo_left = w.units()[static_cast<std::size_t>(plane)].an.ammo;
++    CHECK(ammo_left > 0);    // retail leaves past the edge with shots to spare
++    CHECK(ammo_left < 100);  // ... after photographing the pass
++    CHECK(w.units()[static_cast<std::size_t>(plane)].deployed_away);  // gone, not destroyed
++    // The corridor follows the target row through the target ...
++    CHECK(w.explored_at(0, 32, 32));
++    CHECK(w.explored_at(0, 20, 32));
++    CHECK(w.explored_at(0, 50, 32));
++    // ... and stays narrow: well off the row nothing was cleared.
++    CHECK_FALSE(w.explored_at(0, 32, 44));
++    CHECK_FALSE(w.explored_at(0, 44, 44));
++    CHECK_FALSE(w.explored_at(0, 20, 44));
++}
++
++TEST_CASE("superweapon: spy overfly snapshots every 3rd frame, silently") {
++    // Approach plays SpyPlaneCamera= per shot (a Dropped event); Overfly
++    // snapshots without the sound (vera20k spyplane_mission: Approach plays
++    // SpyPlaneCamera=, Overfly "without the sound").
++    const ra2assets::MapFile map = ra2assets::MapFile::blank(40, 40);
++    World w(map);
++    w.enable_shroud(true);
++    UnitCombat spy = spyp_like();
++    spy.an.ammo = 0;   // per-unit below
++    w.add_combat_unit(20, 20, 0, spy);
++    w.units()[0].fx = 20.0; w.units()[0].fy = 20.0;
++    w.units()[0].cell_x = 20; w.units()[0].cell_y = 20;
++    w.units()[0].an.sortie = 7;   // Approach, on top of the target
++    w.units()[0].an.drop_x = 20; w.units()[0].an.drop_y = 20;
++    w.units()[0].an.ammo = 3;
++    w.units()[0].an.para_timer = 0;
++    w.step(1.0 / 15.0);
++    CHECK(w.units()[0].an.ammo == 2);   // one Approach shot ...
++    CHECK(count_dropped(w) == 1);       // ... with its camera click
++    // Overfly, held on station inside Range=: a shot every 3rd frame, silent.
++    World w2(map);
++    w2.enable_shroud(true);
++    w2.add_combat_unit(20, 20, 0, spy);
++    w2.units()[0].fx = 20.0; w2.units()[0].fy = 20.0;
++    w2.units()[0].cell_x = 20; w2.units()[0].cell_y = 20;
++    w2.units()[0].an.sortie = 8;   // kSpyplaneOverfly
++    w2.units()[0].an.drop_x = 20; w2.units()[0].an.drop_y = 20;
++    w2.units()[0].an.exit_x = 39; w2.units()[0].an.exit_y = 20;
++    w2.units()[0].an.ammo = 3;
++    w2.units()[0].an.para_timer = 0;
++    for (int f = 0; f < 12; ++f) {
++        w2.step(1.0 / 15.0);
++        w2.units()[0].fx = 20.0; w2.units()[0].fy = 20.0;   // hold station
++        w2.units()[0].cell_x = 20; w2.units()[0].cell_y = 20;
++    }
++    CHECK(w2.units()[0].an.ammo == 0);   // shots on steps 1, 4, 7
++    CHECK(count_dropped(w2) == 0);       // ... none of them clicked
++}
